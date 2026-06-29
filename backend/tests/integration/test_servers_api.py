@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 from app.api import deps
@@ -15,6 +16,7 @@ from app.schemas.server import (
     ServerMetricsResponse,
     ServerStatusResponse,
 )
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 
@@ -56,7 +58,7 @@ class FakeServersService:
         ]
         self.deleted: set[uuid.UUID] = set()
 
-    async def create_server(self, payload: object) -> ServerCreatedResponse:
+    async def create_server(self, payload: Any) -> ServerCreatedResponse:
         ip = payload.ip
         if str(ip) == "10.0.0.10":
             raise server_conflict()
@@ -111,7 +113,7 @@ def fake_service() -> FakeServersService:
 
 
 @pytest.fixture
-def app(fake_service: FakeServersService):
+def app(fake_service: FakeServersService) -> FastAPI:
     from app.config import get_settings
     from app.main import create_app
 
@@ -122,7 +124,7 @@ def app(fake_service: FakeServersService):
 
 
 @pytest.mark.asyncio
-async def test_servers_create_contract_202_pending_conflict_and_no_password(app) -> None:
+async def test_servers_create_contract_202_pending_conflict_and_no_password(app: FastAPI) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         created = await client.post(
             "/api/servers",
@@ -152,7 +154,7 @@ async def test_servers_create_contract_202_pending_conflict_and_no_password(app)
 
 
 @pytest.mark.asyncio
-async def test_servers_invalid_ip_is_422_unprocessable(app) -> None:
+async def test_servers_invalid_ip_is_422_unprocessable(app: FastAPI) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
             "/api/servers",
@@ -169,7 +171,7 @@ async def test_servers_invalid_ip_is_422_unprocessable(app) -> None:
 
 
 @pytest.mark.asyncio
-async def test_servers_list_sorted_created_at_desc_and_prometheus_degradation(app) -> None:
+async def test_servers_list_sorted_created_at_desc_and_prometheus_degradation(app: FastAPI) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.get("/api/servers")
 
@@ -181,7 +183,7 @@ async def test_servers_list_sorted_created_at_desc_and_prometheus_degradation(ap
 
 
 @pytest.mark.asyncio
-async def test_server_metrics_prometheus_down_is_502_but_up_zero_is_200(app) -> None:
+async def test_server_metrics_prometheus_down_is_502_but_up_zero_is_200(app: FastAPI) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         offline = await client.get(f"/api/servers/{FakeServersService.first_id}/metrics")
         prom_down = await client.get("/api/servers/00000000-0000-0000-0000-000000000099/metrics")
@@ -205,7 +207,9 @@ async def test_server_metrics_prometheus_down_is_502_but_up_zero_is_200(app) -> 
 
 
 @pytest.mark.asyncio
-async def test_server_status_and_delete_contracts(app, fake_service: FakeServersService) -> None:
+async def test_server_status_and_delete_contracts(
+    app: FastAPI, fake_service: FakeServersService
+) -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         status = await client.get(f"/api/servers/{FakeServersService.first_id}/status")
         deleted = await client.delete(f"/api/servers/{FakeServersService.first_id}")

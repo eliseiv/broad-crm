@@ -101,7 +101,8 @@ async def test_provisioning_success_transitions_pending_installing_online_and_wr
 
     monkeypatch.setattr(provisioning_service, "run_install_node_exporter", fake_runner)
     monkeypatch.setattr(
-        provisioning_service.file_sd, "write_target", lambda **kwargs: writes.append(kwargs)
+        "app.services.provisioning_service.file_sd.write_target",
+        lambda **kwargs: writes.append(kwargs),
     )
 
     service = ProvisioningService(FakeSessionMaker(), get_settings())  # type: ignore[arg-type]

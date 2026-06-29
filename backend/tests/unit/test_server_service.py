@@ -4,6 +4,7 @@ import asyncio
 import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from typing import Any, cast
 
 import pytest
 from app.errors import AppError
@@ -60,11 +61,11 @@ class FakeRepo:
 
     async def create(self, **kwargs: object) -> FakeServer:
         server = FakeServer(
-            name=str(kwargs["name"]),
-            ip=str(kwargs["ip"]),
-            ssh_user=str(kwargs["ssh_user"]),
-            ssh_password_encrypted=bytes(kwargs["ssh_password_encrypted"]),
-            exporter_port=int(kwargs["exporter_port"]),
+            name=cast(str, kwargs["name"]),
+            ip=cast(str, kwargs["ip"]),
+            ssh_user=cast(str, kwargs["ssh_user"]),
+            ssh_password_encrypted=cast(bytes, kwargs["ssh_password_encrypted"]),
+            exporter_port=cast(int, kwargs["exporter_port"]),
             provision_status=ProvisionStatus.pending.value,
         )
         self.servers.append(server)
@@ -116,6 +117,18 @@ class FakeProvisioning:
         self.scheduled.append(server_id)
 
 
+def make_service(
+    repo: FakeRepo | None = None,
+    monitoring: FakeMonitoring | None = None,
+    provisioning: FakeProvisioning | None = None,
+) -> ServerService:
+    return ServerService(
+        cast(Any, repo or FakeRepo()),
+        cast(Any, monitoring or FakeMonitoring()),
+        cast(Any, provisioning or FakeProvisioning()),
+    )
+
+
 def sample_metrics() -> ServerMetrics:
     return ServerMetrics(
         cpu=Metric(
@@ -136,7 +149,7 @@ async def test_create_server_encrypts_password_returns_202_shape_and_schedules_p
 ):
     repo = FakeRepo()
     provisioning = FakeProvisioning()
-    service = ServerService(repo, FakeMonitoring(), provisioning)  # type: ignore[arg-type]
+    service = make_service(repo, provisioning=provisioning)
 
     response = await service.create_server(
         ServerCreateRequest(
@@ -158,7 +171,7 @@ async def test_create_server_encrypts_password_returns_202_shape_and_schedules_p
 
 @pytest.mark.asyncio
 async def test_create_server_duplicate_ip_raises_409() -> None:
-    service = ServerService(FakeRepo(), FakeMonitoring(), FakeProvisioning())  # type: ignore[arg-type]
+    service = make_service()
 
     with pytest.raises(AppError) as exc:
         await service.create_server(
@@ -176,11 +189,7 @@ async def test_create_server_duplicate_ip_raises_409() -> None:
 
 @pytest.mark.asyncio
 async def test_list_servers_degrades_to_null_metrics_when_prometheus_unavailable() -> None:
-    service = ServerService(
-        FakeRepo(),
-        FakeMonitoring(unavailable=True),
-        FakeProvisioning(),
-    )  # type: ignore[arg-type]
+    service = make_service(monitoring=FakeMonitoring(unavailable=True))
 
     response = await service.list_servers()
 
@@ -192,13 +201,12 @@ async def test_list_servers_degrades_to_null_metrics_when_prometheus_unavailable
 @pytest.mark.asyncio
 async def test_get_metrics_offline_returns_null_details_without_502() -> None:
     repo = FakeRepo()
-    service = ServerService(
+    service = make_service(
         repo,
         FakeMonitoring(
             InstanceMetrics(online=False, uptime_seconds=None, last_updated=None, metrics=None)
         ),
-        FakeProvisioning(),
-    )  # type: ignore[arg-type]
+    )
 
     response = await service.get_metrics(repo.servers[0].id)
 
@@ -219,7 +227,7 @@ async def test_get_metrics_offline_returns_null_details_without_502() -> None:
 
 @pytest.mark.asyncio
 async def test_get_status_and_delete_missing_server_raise_404() -> None:
-    service = ServerService(FakeRepo(), FakeMonitoring(), FakeProvisioning())  # type: ignore[arg-type]
+    service = make_service()
     missing = uuid.uuid4()
 
     with pytest.raises(AppError) as status_exc:

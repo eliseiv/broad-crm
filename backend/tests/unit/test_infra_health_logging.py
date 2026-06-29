@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -69,7 +69,7 @@ async def test_prometheus_client_parses_success_vector(monkeypatch: pytest.Monke
             assert params == {"query": "vector(1)"}
             return FakeResponse()
 
-    monkeypatch.setattr(prometheus.httpx, "AsyncClient", FakeClient)
+    monkeypatch.setattr("app.infra.prometheus.httpx.AsyncClient", FakeClient)
 
     assert await PrometheusClient("http://prometheus:9090", 10).query("vector(1)") == [
         {"metric": {"instance": "10.0.0.10:9100"}, "value": [1, "42"]}
@@ -103,13 +103,92 @@ async def test_prometheus_client_raises_on_http_and_status_errors(
 
             return ErrorResponse()
 
-    monkeypatch.setattr(prometheus.httpx, "AsyncClient", FailingClient)
+    monkeypatch.setattr("app.infra.prometheus.httpx.AsyncClient", FailingClient)
     client = PrometheusClient("http://prometheus:9090", 10)
 
     with pytest.raises(PrometheusUnavailable):
         await client.query("http_error")
     with pytest.raises(PrometheusUnavailable):
         await client.query("status_error")
+
+
+@pytest.mark.asyncio
+async def test_prometheus_client_retries_503_twice_then_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    class RetryClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> RetryClient:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        async def get(self, url: str, params: dict[str, str]) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            request = httpx.Request("GET", url, params=params)
+            if attempts < 3:
+                return httpx.Response(503, request=request)
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "status": "success",
+                    "data": {
+                        "resultType": "vector",
+                        "result": [{"metric": {"instance": "10.0.0.10:9100"}, "value": [1, "1"]}],
+                    },
+                },
+            )
+
+    monkeypatch.setattr("app.infra.prometheus.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("app.infra.prometheus.httpx.AsyncClient", RetryClient)
+
+    result = await PrometheusClient("http://prometheus:9090", 10).query("up")
+
+    assert attempts == 3
+    assert result == [{"metric": {"instance": "10.0.0.10:9100"}, "value": [1, "1"]}]
+
+
+@pytest.mark.asyncio
+async def test_prometheus_client_does_not_retry_non_429_4xx(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attempts = 0
+
+    async def no_sleep(_delay: float) -> None:
+        pytest.fail("400 must not be retried")
+
+    class BadRequestClient:
+        def __init__(self, **_kwargs: object) -> None:
+            return None
+
+        async def __aenter__(self) -> BadRequestClient:
+            return self
+
+        async def __aexit__(self, *_exc: object) -> None:
+            return None
+
+        async def get(self, url: str, params: dict[str, str]) -> httpx.Response:
+            nonlocal attempts
+            attempts += 1
+            return httpx.Response(400, request=httpx.Request("GET", url, params=params))
+
+    monkeypatch.setattr("app.infra.prometheus.asyncio.sleep", no_sleep)
+    monkeypatch.setattr("app.infra.prometheus.httpx.AsyncClient", BadRequestClient)
+
+    with pytest.raises(PrometheusUnavailable):
+        await PrometheusClient("http://prometheus:9090", 10).query("bad promql")
+
+    assert attempts == 1
 
 
 @pytest.mark.asyncio
@@ -125,7 +204,7 @@ async def test_health_reports_degraded_dependencies(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(prometheus, "get_prometheus_client", lambda: BadPrometheus())
     monkeypatch.setattr("app.api.health.get_prometheus_client", lambda: BadPrometheus())
 
-    assert await health(BadSession()) == {
+    assert await health(cast(Any, BadSession())) == {
         "status": "degraded",
         "db": "down",
         "prometheus": "down",
@@ -134,7 +213,7 @@ async def test_health_reports_degraded_dependencies(monkeypatch: pytest.MonkeyPa
 
 def test_logging_masks_passwords_tokens_and_keys() -> None:
     event = _mask_secrets(
-        None,  # type: ignore[arg-type]
+        None,
         "info",
         {
             "password": "plain",
