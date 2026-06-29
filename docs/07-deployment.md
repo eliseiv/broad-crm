@@ -105,6 +105,18 @@ location / {
 - Приватные ключи в volume `proxy-certs` — не в репозитории, не в образе. См. [05-security.md](05-security.md#tls-сертификаты).
 - Zero-downtime продление (webroot/ACME-companion вместо standalone) — улучшение ([TD-011](100-known-tech-debt.md)).
 
+## Сетевая настройка сервера (self-monitoring)
+
+Если CRM мониторит сам себя (свой хост как целевой сервер), node_exporter ставится на хост и слушает `:9100`, а Prometheus идёт из docker-сети CRM. Хостовый firewall (ufw) ОБЯЗАН разрешить `9100` из подсети docker-сети CRM, иначе скрейп не проходит (`up=0`, «Не в сети») — усвоенный урок.
+
+```bash
+# <crm-net-subnet> — подсеть docker-сети crm-net (например, 172.18.0.0/16; узнать: docker network inspect crm-net)
+ufw allow from <crm-net-subnet> to any port 9100 proto tcp
+```
+
+- Открывать `9100` **только** для подсети CRM, не миру (NFR-9, [05-security.md](05-security.md)).
+- Для **remote-целей** firewall `9100` (открыт для IP CRM-сервера `37.27.192.211`) настраивается на стороне целевого сервера — предусловие/ответственность администратора; авто-открытие в плейбуке — [TD-017](100-known-tech-debt.md). Детали — [09-provisioning.md](09-provisioning.md#сетевая-доступность-node_exporter-9100).
+
 ## Переменные окружения
 
 `.env` в корне (в `.gitignore`); `.env.example` — в репозитории.
