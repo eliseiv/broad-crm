@@ -25,6 +25,8 @@
 
 Менеджер зависимостей: **uv** (`uv.lock` + `pyproject.toml`). Допустима `pip` + `requirements.txt`, если devops так решит — фиксируется в этом файле при изменении.
 
+**Системные пакеты backend-образа (apt):** `openssh-client`, **`sshpass`** (обязателен для Ansible password-SSH — см. [07-deployment.md](07-deployment.md#backend-образ), [09-provisioning.md](09-provisioning.md)). Без `sshpass` провижининг по паролю падает (`"you must install the sshpass program"`).
+
 ## Frontend
 
 | Технология | Версия | Назначение |

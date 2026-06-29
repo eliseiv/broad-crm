@@ -17,7 +17,7 @@
 ## DevOps — ТЗ
 1. Плейбук `ansible/install_node_exporter.yml` — идемпотентный (NFR-6), шаги — [09-provisioning.md](../../09-provisioning.md#плейбук-install_node_exporter).
 2. node_exporter фиксированной версии ([02-tech-stack.md](../../02-tech-stack.md)), systemd unit, порт `EXPORTER_PORT`.
-3. Backend-образ содержит `ansible-core` + `openssh-client`.
+3. Backend-образ содержит `ansible-core` + `openssh-client` + **`sshpass`** (последний ОБЯЗАТЕЛЕН для password-SSH; без него провижининг падает с `"you must install the sshpass program"`). См. [07-deployment.md](../../07-deployment.md#backend-образ).
 4. `ANSIBLE_HOST_KEY_CHECKING=false` на Этапе 1 ([TD-007](../../100-known-tech-debt.md)).
 5. Smoke-тест идемпотентности — [06-testing-strategy.md](../../06-testing-strategy.md).
 

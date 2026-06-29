@@ -39,7 +39,9 @@ flowchart TB
 **Наружу публикуется только `proxy`.** `postgres`, `prometheus`, `grafana`, `backend` доступны лишь внутри `crm-net` (NFR-9, [05-security.md](05-security.md)).
 
 ### Backend-образ
-Базовый `python:3.12-slim`; устанавливается `ansible-core`, `openssh-client`, зависимости проекта (через `uv`). Backend-контейнер должен иметь сетевой доступ по SSH (порт 22) к целевым серверам и доступ к volume `file_sd`.
+Базовый `python:3.12-slim`; устанавливается `ansible-core`, `openssh-client`, **`sshpass`**, зависимости проекта (через `uv`). Backend-контейнер должен иметь сетевой доступ по SSH (порт 22) к целевым серверам и доступ к volume `file_sd`.
+
+> **`sshpass` ОБЯЗАТЕЛЕН** (усвоенный урок): Ansible для **password-аутентификации по SSH** (`ansible_password`) вызывает внешний `sshpass`. Без него провижининг падает с `"you must install the sshpass program"`, что в UI выглядело как `«node_exporter installation failed»`. Поскольку креды серверов на Этапе 1 — пароли ([модалка добавления](08-design-system.md)), `sshpass` критичен для happy-path добавления сервера.
 
 ### proxy-образ (nginx + TLS)
 Базовый `nginx:1.27-alpine` + кастомный entrypoint автогенерации self-signed TLS ([TLS-сертификаты](#tls-сертификаты)). **Требует `openssl`** для генерации серта: `apk add --no-cache openssl` в Dockerfile (в `nginx:alpine` openssl не предустановлен). Без него entrypoint падает при первом старте.

@@ -33,9 +33,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PATH="/app/.venv/bin:$PATH" \
     FILE_SD_DIR=/etc/prometheus/targets
 
-# openssh-client — Ansible ходит по SSH на целевые серверы; ca-certificates — TLS.
+# openssh-client + sshpass — Ansible ходит по SSH с password-аутентификацией
+# (ansible_password): без sshpass ssh-коннектор падает с "you must install the
+# sshpass program" (09-provisioning.md). ca-certificates — TLS.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssh-client ca-certificates \
+    && apt-get install -y --no-install-recommends openssh-client sshpass ca-certificates \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --system app \
     && useradd --system --gid app --no-create-home --home-dir /app app
