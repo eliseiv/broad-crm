@@ -83,6 +83,9 @@ def run_install_node_exporter(
                 "node_exporter_version": settings.node_exporter_version,
                 "node_exporter_url": settings.node_exporter_url,
                 "node_exporter_sha256": settings.node_exporter_sha256,
+                # Источник скрейпа для firewall на цели (TD-017); пустая строка
+                # допустима — плейбук пропустит firewall-шаг.
+                "scrape_source_ip": settings.scrape_source_ip,
             },
             envvars={
                 "ANSIBLE_HOST_KEY_CHECKING": host_key_checking,

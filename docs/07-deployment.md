@@ -115,7 +115,7 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 ```
 
 - Открывать `9100` **только** для подсети CRM, не миру (NFR-9, [05-security.md](05-security.md)).
-- Для **remote-целей** firewall `9100` (открыт для IP CRM-сервера `37.27.192.211`) настраивается на стороне целевого сервера — предусловие/ответственность администратора; авто-открытие в плейбуке — [TD-017](100-known-tech-debt.md). Детали — [09-provisioning.md](09-provisioning.md#сетевая-доступность-node_exporter-9100).
+- **Разграничение:** этот ufw-шаг — только для **self-host** (источник = docker-подсеть). `SCRAPE_SOURCE_IP` для self-host **не задавать** (он про публичный IP CRM при SNAT к remote-целям). Для **remote-целей** порт `9100` открывает сам Ansible-плейбук для `SCRAPE_SOURCE_IP` (ufw/firewalld, graceful skip) — [09-provisioning.md](09-provisioning.md#шаг-6--открытие-firewall-на-цели-нормативно-реализует-devops).
 
 ## Переменные окружения
 
@@ -139,6 +139,7 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `PROMETHEUS_URL` | `http://prometheus:9090` | Базовый URL Prometheus API |
 | `PROM_QUERY_TIMEOUT_SEC` | `10` | Таймаут PromQL-запроса |
 | `EXPORTER_PORT` | `9100` | Порт node_exporter по умолчанию |
+| `SCRAPE_SOURCE_IP` | `37.27.192.211` | Публичный IP CRM-сервера, с которого Prometheus достукивается до remote-целей (SNAT). Передаётся в плейбук как `scrape_source_ip` → открытие `9100` на цели ТОЛЬКО для этого IP. **Пусто → плейбук firewall не трогает** (для self-host не задавать: источник = docker-подсеть, см. [09-provisioning.md](09-provisioning.md#сетевая-доступность-node_exporter-9100)) |
 | `FILE_SD_DIR` | `/etc/prometheus/targets` | Каталог file_sd (общий volume) |
 | `ANSIBLE_TIMEOUT_SEC` | `300` | Таймаут плейбука |
 | `ANSIBLE_HOST_KEY_CHECKING` | `false` | (Этап 1) [TD-007](100-known-tech-debt.md) |

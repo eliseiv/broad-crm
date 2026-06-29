@@ -60,11 +60,25 @@ sequenceDiagram
 3. Скачать node_exporter точной версии и **проверить SHA256** (URL и контрольная сумма — [02-tech-stack.md](02-tech-stack.md#node_exporter-бинарь-для-ansible); Ansible `get_url` с `checksum: "sha256:<...>"`), распаковать в `/usr/local/bin/node_exporter` (только если версия/хэш не совпадают).
 4. Установить systemd unit `/etc/systemd/system/node_exporter.service` (слушает `:{{ exporter_port }}`, default 9100).
 5. `systemd daemon-reload`, `enable` + `start`/`restart при изменении`.
-6. Проверка: порт слушается, сервис `active`.
+6. **Открыть `exporter_port` на firewall цели ТОЛЬКО для IP CRM-сервера** (если задан `scrape_source_ip` — см. ниже). Идемпотентно.
+7. Проверка: порт слушается, сервис `active`.
 
-Параметры передаются как extravars: `target_ip`, `ansible_user`, `ansible_password`, `exporter_port`.
+Параметры передаются как extravars: `target_ip`, `ansible_user`, `ansible_password`, `exporter_port`, **`scrape_source_ip`**.
 
 Идемпотентность: повторный прогон не даёт `changed` (кроме реальных изменений версии/конфига).
+
+### Шаг 6 — открытие firewall на цели (нормативно, реализует devops)
+
+Реализует [TD-017](100-known-tech-debt.md). Prometheus-контейнер достукивается до `<target_ip>:9100`; исходящий трафик приходит с публичного IP CRM-сервера (SNAT) = `scrape_source_ip`. На цели нужно разрешить `9100` именно с этого IP.
+
+- **Источник `scrape_source_ip`** — extravar из переменной окружения backend `SCRAPE_SOURCE_IP` (на этом деплое `37.27.192.211`).
+- **Если `scrape_source_ip` пуст/не задан → задача firewall ПОЛНОСТЬЮ пропускается** (предполагается, что на цели firewall открыт/отсутствует; хосты без firewall не ломаем).
+- **Если задан** — идемпотентно открыть `exporter_port` **только для этого IP**, с поддержкой распространённых firewall:
+  - **ufw**: если установлен и активен → `ufw allow from {{ scrape_source_ip }} to any port {{ exporter_port }} proto tcp` (идемпотентно).
+  - **firewalld**: если активен → rich rule `rule family=ipv4 source address={{ scrape_source_ip }} port port={{ exporter_port }} protocol=tcp accept`, `permanent=yes` + reload (идемпотентно).
+  - Firewall не установлен/не активен → задача **пропускается без ошибки** (graceful skip, `failed_when: false`/условия по факту наличия).
+- **Никогда не открывать `9100` миру** (`0.0.0.0/0`). Только конкретный `scrape_source_ip`.
+- Нестандартные firewall (nftables напрямую, iptables-only, облачные security groups) на Этапе 1 не покрываются плейбуком — остаточный [TD-017](100-known-tech-debt.md).
 
 ## Регистрация таргета (file_sd)
 
@@ -100,9 +114,11 @@ sequenceDiagram
 
 Prometheus скрейпит `<target_ip>:${EXPORTER_PORT}` (9100). Порт ОБЯЗАН быть доступен с источника (Prometheus-контейнер); иначе `up=0`, сервер «Не в сети» при успешной установке агента (усвоенный урок).
 
-- **Self-host (мониторинг самого CRM-сервера):** на хосте firewall (ufw) должен разрешать `9100` из docker-сети CRM. Шаг настройки сервера зафиксирован в [07-deployment.md](07-deployment.md#сетевая-настройка-сервера-self-monitoring). node_exporter слушает на хосте, Prometheus идёт из docker-сети.
-- **Remote-цели:** на целевом сервере порт `9100` должен быть открыт **для IP CRM-сервера** (по умолчанию `37.27.192.211`). На Этапе 1 это **предусловие/ответственность администратора** (firewall целевого сервера настраивается вне нашего плейбука). Авто-открытие порта в Ansible-плейбуке (ufw/firewalld, restricted к IP CRM) — [TD-017](100-known-tech-debt.md).
-- Рекомендация безопасности: ограничивать `9100` источником (IP/подсеть CRM), не открывать миру — node_exporter наружу не публикуется (NFR-9, [05-security.md](05-security.md)).
+Два разных случая (важно не путать источник трафика):
+
+- **Remote-цели (другой сервер):** firewall `9100` открывается **автоматически плейбуком** (шаг 6) для IP CRM-сервера `scrape_source_ip` (`SCRAPE_SOURCE_IP`, по умолчанию `37.27.192.211`) — трафик Prometheus-контейнера приходит на цель с публичного IP CRM-сервера (SNAT). Поддержка ufw/firewalld, graceful skip. Если `SCRAPE_SOURCE_IP` пуст — плейбук firewall не трогает (предусловие: порт уже открыт). Детали — [шаг 6](#шаг-6--открытие-firewall-на-цели-нормативно-реализует-devops).
+- **Self-host (мониторинг самого CRM-сервера):** источник скрейпа — **docker-подсеть CRM**, НЕ публичный IP, поэтому `SCRAPE_SOURCE_IP`/плейбук здесь **не применимы**. Хостовый ufw разрешает `9100` из docker-сети CRM отдельно — [07-deployment.md](07-deployment.md#сетевая-настройка-сервера-self-monitoring). node_exporter слушает на хосте, Prometheus идёт из docker-сети.
+- Рекомендация безопасности: всегда ограничивать `9100` конкретным источником (IP CRM для remote / docker-подсеть для self), не открывать миру — node_exporter наружу не публикуется (NFR-9, [05-security.md](05-security.md)).
 
 ## Удаление
 

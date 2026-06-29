@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     ansible_timeout_sec: int = 300
     ansible_host_key_checking: bool = False
     ansible_playbook_path: str = "ansible/install_node_exporter.yml"
+    # Публичный IP CRM-сервера, с которого Prometheus скрейпит цели; плейбук
+    # открывает firewall на цели для этого источника (TD-017). Пусто → шаг
+    # firewall пропускается.
+    scrape_source_ip: str = ""
 
     # --- node_exporter (02-tech-stack.md) ---
     node_exporter_version: str = "1.8.2"

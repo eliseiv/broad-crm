@@ -132,6 +132,45 @@
     - name: Flush handlers so restart happens before the readiness check
       ansible.builtin.meta: flush_handlers
 
+    # Открытие exporter_port на firewall целевого сервера ТОЛЬКО для IP CRM-сервера
+    # (источник скрейпа), TD-017. Иначе ufw/firewalld на цели (обычно открыты лишь
+    # 22/80/443) блокируют скрейп → таргет down по timeout. Идемпотентно, без внешних
+    # коллекций (только ansible.builtin.command — в backend-образе ansible-core).
+    # Выполняется лишь если scrape_source_ip задан и непуст; порт 0.0.0.0/0 не открываем.
+    - name: Open exporter port for the CRM scrape source on target firewall (TD-017)
+      when: scrape_source_ip is defined and (scrape_source_ip | length) > 0
+      block:
+        - name: Detect ufw status
+          ansible.builtin.command: ufw status
+          register: ufw_status
+          changed_when: false
+          failed_when: false
+
+        - name: Allow exporter port via ufw (restricted to CRM scrape source)
+          ansible.builtin.command: "ufw allow from {{ scrape_source_ip }} to any port {{ exporter_port }} proto tcp"
+          register: ufw_allow
+          when: "'Status: active' in ufw_status.stdout"
+          changed_when: "'Rule added' in ufw_allow.stdout"
+
+        - name: Detect firewalld state
+          ansible.builtin.command: firewall-cmd --state
+          register: firewalld_state
+          changed_when: false
+          failed_when: false
+
+        - name: Allow exporter port via firewalld rich rule (restricted to CRM scrape source)
+          ansible.builtin.command: 'firewall-cmd --permanent --add-rich-rule="rule family=ipv4 source address={{ scrape_source_ip }} port port={{ exporter_port }} protocol=tcp accept"'
+          register: firewalld_rule
+          when: "'running' in firewalld_state.stdout"
+          changed_when: "'ALREADY_ENABLED' not in (firewalld_rule.stdout + firewalld_rule.stderr)"
+
+        - name: Reload firewalld to apply the permanent rich rule
+          ansible.builtin.command: firewall-cmd --reload
+          when:
+            - "'running' in firewalld_state.stdout"
+            - firewalld_rule is changed
+          changed_when: true
+
     - name: Verify node_exporter is listening on the exporter port
       ansible.builtin.wait_for:
         host: 127.0.0.1
