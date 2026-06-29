@@ -38,10 +38,16 @@ class InstanceMetrics:
 
 
 def _instance_matcher(instances: list[str]) -> str:
-    """Label-селектор instance: точный для одного, regex для нескольких."""
+    """Label-селектор instance: точный для одного, regex (=~) для нескольких.
+
+    Для regex каждый instance экранируется re.escape (RE2: точки → `\\.`), затем
+    одиночный бэкслэш удваивается, чтобы пережить парсер double-quoted строк
+    PromQL: источник `\\\\.` → строка `\\.` → RE2 получает корректный `\\.`.
+    Без удвоения PromQL падает с `parse error: unknown escape sequence`.
+    """
     if len(instances) == 1:
         return f'instance="{instances[0]}"'
-    pattern = "|".join(re.escape(inst) for inst in instances)
+    pattern = "|".join(re.escape(inst).replace("\\", "\\\\") for inst in instances)
     return f'instance=~"{pattern}"'
 
 
