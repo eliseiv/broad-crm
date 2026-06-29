@@ -1,0 +1,14 @@
+# Нормализация переводов строк. Критично для shell-скриптов, попадающих в Docker-образы:
+# CRLF в shebang (#!/bin/sh\r) ломает запуск в Linux-контейнере (exit 127).
+* text=auto eol=lf
+
+# Скрипты и конфиги, исполняемые/читаемые в Linux-контейнерах — всегда LF.
+*.sh   text eol=lf
+*.yml  text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf
+
+# Бинарные артефакты — без нормализации.
+*.png binary
+*.jpg binary
+*.ico binary

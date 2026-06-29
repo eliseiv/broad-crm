@@ -1,0 +1,149 @@
+---
+# Идемпотентная установка node_exporter на целевой Linux-сервер (09-provisioning.md, NFR-6).
+#
+# Запускается из backend через ansible-runner (app/infra/ansible.py). Параметры приходят как
+# extravars: target_ip, exporter_port, node_exporter_version, node_exporter_url,
+# node_exporter_sha256. Версия/URL/SHA256 зафиксированы в 02-tech-stack.md.
+#
+# БЕЗОПАСНОСТЬ КРЕДОВ (05-security.md#ansible-и-секреты, 09-provisioning.md):
+#   SSH-логин/пароль передаются ТОЛЬКО как connection-переменные инвентаря
+#   (ansible_user / ansible_password), сформированного ansible-runner'ом в памяти.
+#   Ни одна task ниже НЕ принимает пароль как аргумент — поэтому секрет не может
+#   попасть в вывод task'ов и per-task `no_log` здесь не требуется (нечего скрывать
+#   на уровне task). ansible-runner вызывается с quiet=True; пароль не пишется на диск.
+#
+# ПРИВИЛЕГИИ / become (09-provisioning.md#привилегии-become, Q-SEC-3):
+#   Допущение Этапа 1 (нормативно): целевой SSH-пользователь — либо `root`, либо
+#   sudoer с passwordless sudo (NOPASSWD). В обоих случаях ansible_become_password
+#   НЕ требуется и backend'ом НЕ передаётся. Sudoer с паролем не поддерживается
+#   (провижининг такого хоста завершится ошибкой) — поддержка отложена (Q-SEC-3).
+
+- name: Install node_exporter on target server
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    exporter_port: "{{ exporter_port | default(9100) }}"
+    node_exporter_version: "{{ node_exporter_version | default('1.8.2') }}"
+    node_exporter_url: >-
+      {{ node_exporter_url | default('https://github.com/prometheus/node_exporter/releases/download/v1.8.2/node_exporter-1.8.2.linux-amd64.tar.gz') }}
+    node_exporter_sha256: "{{ node_exporter_sha256 | default('6809dd0b3ec45fd6e992c19071d6b5253aed3ead7bf0686885a51d85c6643c66') }}"
+    node_exporter_user: node_exporter
+    node_exporter_bin: /usr/local/bin/node_exporter
+    node_exporter_archive: "/tmp/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+    node_exporter_extract_dir: "/tmp/node_exporter-{{ node_exporter_version }}-extract"
+
+  handlers:
+    - name: Reload systemd and restart node_exporter
+      ansible.builtin.systemd:
+        name: node_exporter
+        daemon_reload: true
+        state: restarted
+
+  tasks:
+    - name: Ensure node_exporter system user exists
+      ansible.builtin.user:
+        name: "{{ node_exporter_user }}"
+        system: true
+        shell: /usr/sbin/nologin
+        create_home: false
+        state: present
+
+    - name: Check installed node_exporter version (if any)
+      ansible.builtin.command: "{{ node_exporter_bin }} --version"
+      register: ne_current
+      changed_when: false
+      failed_when: false
+
+    - name: Compute whether (re)install is required
+      ansible.builtin.set_fact:
+        node_exporter_install_required: >-
+          {{ ne_current.rc != 0 or node_exporter_version not in (ne_current.stderr | default('') ~ ne_current.stdout | default('')) }}
+
+    - name: Download node_exporter archive and verify SHA256
+      ansible.builtin.get_url:
+        url: "{{ node_exporter_url }}"
+        dest: "{{ node_exporter_archive }}"
+        checksum: "sha256:{{ node_exporter_sha256 }}"
+        mode: "0644"
+      when: node_exporter_install_required | bool
+
+    - name: Create extraction directory
+      ansible.builtin.file:
+        path: "{{ node_exporter_extract_dir }}"
+        state: directory
+        mode: "0755"
+      when: node_exporter_install_required | bool
+
+    - name: Extract node_exporter binary
+      ansible.builtin.unarchive:
+        src: "{{ node_exporter_archive }}"
+        dest: "{{ node_exporter_extract_dir }}"
+        remote_src: true
+        extra_opts: ["--strip-components=1"]
+      when: node_exporter_install_required | bool
+
+    - name: Install node_exporter binary to /usr/local/bin
+      ansible.builtin.copy:
+        src: "{{ node_exporter_extract_dir }}/node_exporter"
+        dest: "{{ node_exporter_bin }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      when: node_exporter_install_required | bool
+      notify: Reload systemd and restart node_exporter
+
+    - name: Install node_exporter systemd unit
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/node_exporter.service
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Prometheus node_exporter
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          Type=simple
+          User={{ node_exporter_user }}
+          Group={{ node_exporter_user }}
+          ExecStart={{ node_exporter_bin }} --web.listen-address=:{{ exporter_port }}
+          Restart=on-failure
+          RestartSec=5
+          NoNewPrivileges=true
+          ProtectSystem=strict
+          ProtectHome=true
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Reload systemd and restart node_exporter
+
+    - name: Ensure node_exporter is enabled and running
+      ansible.builtin.systemd:
+        name: node_exporter
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Flush handlers so restart happens before the readiness check
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify node_exporter is listening on the exporter port
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ exporter_port | int }}"
+        state: started
+        timeout: 30
+
+    - name: Clean up downloaded archive and extraction directory
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: absent
+      loop:
+        - "{{ node_exporter_archive }}"
+        - "{{ node_exporter_extract_dir }}"
+      when: node_exporter_install_required | bool

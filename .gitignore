@@ -1,0 +1,36 @@
+# === Секреты окружения — НИКОГДА не коммитить (05-security.md). Пример — .env.example ===
+.env
+.env.*
+!.env.example
+
+# === TLS-сертификаты / ключи (живут только в volume proxy-certs, не в репозитории) ===
+*.pem
+*.key
+*.crt
+
+# === Python ===
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage/
+htmlcov/
+
+# === Node / frontend ===
+node_modules/
+dist/
+build/
+
+# === Архивы / бэкапы (pre-deploy pg_dump → infra/scripts/backup-db.sh) ===
+*.tar.gz
+backups/
+
+# === OS / IDE / инструменты ===
+.DS_Store
+.idea/
+.vscode/
+*.log
+.cursor

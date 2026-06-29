@@ -1,0 +1,15 @@
+# Конфигурация Prometheus (07-deployment.md#конфигурация-prometheus, ADR-004).
+# Таргеты регистрируются backend'ом через file_sd (общий volume), без рестарта.
+
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # node_exporter целевых серверов (:9100). Файлы targets/<id>.json пишет backend
+  # после успешного провижининга (09-provisioning.md#регистрация-таргета-file_sd).
+  - job_name: "node"
+    file_sd_configs:
+      - files:
+          - /etc/prometheus/targets/*.json
+        refresh_interval: 30s

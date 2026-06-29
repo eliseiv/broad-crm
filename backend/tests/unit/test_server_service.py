@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+import asyncio
+import uuid
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+
+import pytest
+from app.errors import AppError
+from app.infra.prometheus import PrometheusUnavailable
+from app.models.server import ProvisionStatus
+from app.schemas.metrics import Metric, MetricDetail, ServerMetrics
+from app.schemas.server import ServerCreateRequest
+from app.services.monitoring_service import InstanceMetrics
+from app.services.server_service import ServerService
+
+
+@dataclass
+class FakeServer:
+    id: uuid.UUID = field(default_factory=uuid.uuid4)
+    name: str = "Server 01"
+    ip: str = "10.0.0.10"
+    ssh_user: str = "root"
+    ssh_password_encrypted: bytes = b"encrypted"
+    exporter_port: int = 9100
+    provision_status: str = ProvisionStatus.online.value
+    error_message: str | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+
+    @property
+    def instance(self) -> str:
+        return f"{self.ip}:{self.exporter_port}"
+
+
+class FakeSession:
+    commits = 0
+    rollbacks = 0
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+class FakeRepo:
+    def __init__(self) -> None:
+        self.session = FakeSession()
+        self.servers = [
+            FakeServer(name="Online", provision_status=ProvisionStatus.online.value),
+            FakeServer(
+                name="Pending", ip="10.0.0.11", provision_status=ProvisionStatus.pending.value
+            ),
+        ]
+        self.deleted: list[uuid.UUID] = []
+
+    async def exists_by_ip(self, ip: str) -> bool:
+        return any(str(server.ip) == ip for server in self.servers)
+
+    async def create(self, **kwargs: object) -> FakeServer:
+        server = FakeServer(
+            name=str(kwargs["name"]),
+            ip=str(kwargs["ip"]),
+            ssh_user=str(kwargs["ssh_user"]),
+            ssh_password_encrypted=bytes(kwargs["ssh_password_encrypted"]),
+            exporter_port=int(kwargs["exporter_port"]),
+            provision_status=ProvisionStatus.pending.value,
+        )
+        self.servers.append(server)
+        return server
+
+    async def list_all(self, *, status: str | None = None) -> list[FakeServer]:
+        if status is None:
+            return self.servers
+        return [server for server in self.servers if server.provision_status == status]
+
+    async def get_by_id(self, server_id: uuid.UUID) -> FakeServer | None:
+        return next((server for server in self.servers if server.id == server_id), None)
+
+    async def delete_by_id(self, server_id: uuid.UUID) -> bool:
+        server = await self.get_by_id(server_id)
+        if server is None:
+            return False
+        self.servers.remove(server)
+        self.deleted.append(server_id)
+        return True
+
+
+class FakeMonitoring:
+    def __init__(
+        self, metrics: InstanceMetrics | None = None, *, unavailable: bool = False
+    ) -> None:
+        self.metrics = metrics
+        self.unavailable = unavailable
+        self.instances: list[list[str]] = []
+
+    async def fetch_for_instances(self, instances: list[str]) -> dict[str, InstanceMetrics]:
+        self.instances.append(instances)
+        if self.unavailable:
+            raise PrometheusUnavailable("down")
+        return {instance: self.metrics for instance in instances if self.metrics is not None}
+
+    async def fetch_one(self, instance: str) -> InstanceMetrics:
+        if self.unavailable:
+            raise PrometheusUnavailable("down")
+        assert self.metrics is not None
+        return self.metrics
+
+
+class FakeProvisioning:
+    def __init__(self) -> None:
+        self.scheduled: list[uuid.UUID] = []
+
+    async def provision_server(self, server_id: uuid.UUID) -> None:
+        self.scheduled.append(server_id)
+
+
+def sample_metrics() -> ServerMetrics:
+    return ServerMetrics(
+        cpu=Metric(
+            usage_percent=65, zone="green", detail=MetricDetail(value=2.6, total=4, unit="GHz")
+        ),
+        ram=Metric(
+            usage_percent=80, zone="yellow", detail=MetricDetail(value=11.5, total=16, unit="GB")
+        ),
+        ssd=Metric(
+            usage_percent=91, zone="red", detail=MetricDetail(value=238, total=500, unit="GB")
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_create_server_encrypts_password_returns_202_shape_and_schedules_provisioning() -> (
+    None
+):
+    repo = FakeRepo()
+    provisioning = FakeProvisioning()
+    service = ServerService(repo, FakeMonitoring(), provisioning)  # type: ignore[arg-type]
+
+    response = await service.create_server(
+        ServerCreateRequest(
+            name="Created",
+            ip="10.0.0.20",
+            ssh_user="root",
+            ssh_password="plain-secret",
+        )
+    )
+
+    created = repo.servers[-1]
+    await asyncio.sleep(0)
+
+    assert response.provision_status == ProvisionStatus.pending
+    assert response.ip == "10.0.0.20"
+    assert created.ssh_password_encrypted != b"plain-secret"
+    assert provisioning.scheduled == [created.id]
+
+
+@pytest.mark.asyncio
+async def test_create_server_duplicate_ip_raises_409() -> None:
+    service = ServerService(FakeRepo(), FakeMonitoring(), FakeProvisioning())  # type: ignore[arg-type]
+
+    with pytest.raises(AppError) as exc:
+        await service.create_server(
+            ServerCreateRequest(
+                name="Duplicate",
+                ip="10.0.0.10",
+                ssh_user="root",
+                ssh_password="plain-secret",
+            )
+        )
+
+    assert exc.value.status_code == 409
+    assert exc.value.code == "server_conflict"
+
+
+@pytest.mark.asyncio
+async def test_list_servers_degrades_to_null_metrics_when_prometheus_unavailable() -> None:
+    service = ServerService(
+        FakeRepo(),
+        FakeMonitoring(unavailable=True),
+        FakeProvisioning(),
+    )  # type: ignore[arg-type]
+
+    response = await service.list_servers()
+
+    assert response.items[0].online is False
+    assert response.items[0].metrics is None
+    assert response.items[1].metrics is None
+
+
+@pytest.mark.asyncio
+async def test_get_metrics_offline_returns_null_details_without_502() -> None:
+    repo = FakeRepo()
+    service = ServerService(
+        repo,
+        FakeMonitoring(
+            InstanceMetrics(online=False, uptime_seconds=None, last_updated=None, metrics=None)
+        ),
+        FakeProvisioning(),
+    )  # type: ignore[arg-type]
+
+    response = await service.get_metrics(repo.servers[0].id)
+
+    assert response.online is False
+    assert response.cpu.usage_percent is None
+    assert response.cpu.zone is None
+    assert response.cpu.detail.value is None
+    assert response.cpu.detail.total is None
+    assert response.ram.usage_percent is None
+    assert response.ram.zone is None
+    assert response.ram.detail.value is None
+    assert response.ram.detail.total is None
+    assert response.ssd.usage_percent is None
+    assert response.ssd.zone is None
+    assert response.ssd.detail.value is None
+    assert response.ssd.detail.total is None
+
+
+@pytest.mark.asyncio
+async def test_get_status_and_delete_missing_server_raise_404() -> None:
+    service = ServerService(FakeRepo(), FakeMonitoring(), FakeProvisioning())  # type: ignore[arg-type]
+    missing = uuid.uuid4()
+
+    with pytest.raises(AppError) as status_exc:
+        await service.get_status(missing)
+    with pytest.raises(AppError) as delete_exc:
+        await service.delete_server(missing)
+
+    assert status_exc.value.status_code == 404
+    assert delete_exc.value.code == "server_not_found"

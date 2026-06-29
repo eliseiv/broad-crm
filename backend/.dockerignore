@@ -1,0 +1,18 @@
+# Кэши и окружения — не нужны в образе (deps ставятся через uv.lock).
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Локальные секреты и тесты не попадают в runtime-образ.
+.env
+.env.*
+tests/
+
+# VCS / IDE
+.git/
+.gitignore
+.idea/
+.vscode/
