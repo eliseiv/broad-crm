@@ -138,6 +138,7 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `POSTGRES_USER` / `POSTGRES_PASSWORD` / `POSTGRES_DB` | `crm` / `pwd` / `crm` | Инициализация postgres |
 | `PROMETHEUS_URL` | `http://prometheus:9090` | Базовый URL Prometheus API |
 | `PROM_QUERY_TIMEOUT_SEC` | `10` | Таймаут PromQL-запроса |
+| `METRICS_CACHE_TTL_SEC` | `5` | TTL короткого кэша ответа `GET /api/servers` (с). Сглаживает частоту обращений к Prometheus (single-flight); не маскирует недоступность дольше TTL ([modules/monitoring](modules/monitoring/README.md#устойчивость-read-path-нормативно)) |
 | `EXPORTER_PORT` | `9100` | Порт node_exporter по умолчанию |
 | `SCRAPE_SOURCE_IP` | `37.27.192.211` | Публичный IP CRM-сервера, с которого Prometheus достукивается до remote-целей (SNAT). Передаётся в плейбук как `scrape_source_ip` → открытие `9100` на цели ТОЛЬКО для этого IP. **Пусто → плейбук firewall не трогает** (для self-host не задавать: источник = docker-подсеть, см. [09-provisioning.md](09-provisioning.md#сетевая-доступность-node_exporter-9100)) |
 | `FILE_SD_DIR` | `/etc/prometheus/targets` | Каталог file_sd (общий volume) |
@@ -166,6 +167,7 @@ scrape_configs:
 ```
 - `file_sd` обновляется без рестарта; интервал перечитывания 30 с ([ADR-004](adr/ADR-004-file-sd-registraciya-targetov.md)).
 - Формат `targets/<id>.json` — см. [09-provisioning.md](09-provisioning.md).
+- **Флаг запуска Prometheus:** `--query.max-concurrency=50` (ограничение одновременных запросов на стороне Prometheus; защита от лавины при всплеске polling). Согласуется с backend-стороной устойчивости read-path ([modules/monitoring](modules/monitoring/README.md#устойчивость-read-path-нормативно)).
 
 ## Конфигурация Grafana
 

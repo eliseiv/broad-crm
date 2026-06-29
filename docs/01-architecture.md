@@ -56,7 +56,7 @@ flowchart TB
 Подсистемы (модули):
 - **auth** — двухшаговый вход, выдача/валидация JWT.
 - **servers** — CRUD реестра серверов.
-- **monitoring** — клиент Prometheus HTTP API, маппинг PromQL → метрики карточки.
+- **monitoring** — клиент Prometheus HTTP API, маппинг PromQL → метрики карточки. **Устойчивость read-path:** короткий TTL-кэш + single-flight для `GET /api/servers`, ограничение конкурентности исходящих PromQL (семафор) и ретраи на транзиентные ошибки — чтобы periodic polling и несколько вкладок не усиливали нагрузку на Prometheus и не вызывали массовую деградацию (см. [modules/monitoring](modules/monitoring/README.md#устойчивость-read-path-нормативно)).
 - **provisioning** — оркестрация Ansible, запись file_sd, управление `provision_status`.
 
 ### PostgreSQL

@@ -65,6 +65,9 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.path=/prometheus"
+      # Запас параллелизма PromQL (default 20) против 503 при всплеске опросов —
+      # доп. защита к backend cache+single-flight+семафор+ретраи (P0 устойчивости).
+      - "--query.max-concurrency=50"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - file_sd:/etc/prometheus/targets:ro

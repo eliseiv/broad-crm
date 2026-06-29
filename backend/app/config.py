@@ -50,6 +50,8 @@ class Settings(BaseSettings):
     # --- Prometheus (monitoring) ---
     prometheus_url: str = "http://prometheus:9090"
     prom_query_timeout_sec: float = 10.0
+    # TTL кэша результатов метрик (short-lived, гасит thundering herd на read-path).
+    metrics_cache_ttl_sec: float = 5.0
 
     # --- Провижининг / node_exporter ---
     exporter_port: int = 9100

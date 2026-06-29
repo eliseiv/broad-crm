@@ -8,13 +8,23 @@ from __future__ import annotations
 
 import asyncio
 import re
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 
+from app.config import get_settings
 from app.domain.thresholds import usage_to_zone
 from app.infra.prometheus import PrometheusClient, PrometheusUnavailable
+from app.logging import get_logger
 from app.schemas.metrics import Metric, MetricDetail, ServerMetrics
+
+logger = get_logger(__name__)
+
+# Максимум одновременных PromQL-запросов ко всему Prometheus (защита от
+# превышения query.max-concurrency при наложении опросов). Глобальный на процесс.
+_MAX_CONCURRENT_QUERIES = 4
+_PROM_SEMAPHORE = asyncio.Semaphore(_MAX_CONCURRENT_QUERIES)
 
 
 @dataclass(frozen=True)
@@ -157,6 +167,25 @@ def _build_metrics(maps: dict[str, dict[str, float]], instance: str) -> ServerMe
     return ServerMetrics(cpu=cpu, ram=ram, ssd=ssd)
 
 
+# --- Short-lived TTL-кэш + single-flight для read-path (общие на процесс) ---
+# Ключ = tuple(sorted(instances)). Кэшируется только успешный результат.
+_CacheKey = tuple[str, ...]
+_cache: dict[_CacheKey, tuple[float, dict[str, InstanceMetrics]]] = {}
+_inflight: dict[_CacheKey, asyncio.Future[dict[str, InstanceMetrics]]] = {}
+_state_lock = asyncio.Lock()
+
+
+def _cache_get(key: _CacheKey, ttl: float) -> dict[str, InstanceMetrics] | None:
+    """Возвращает свежий (в пределах TTL) кэш или None. Без await — атомарно."""
+    entry = _cache.get(key)
+    if entry is None:
+        return None
+    stored_at, value = entry
+    if time.monotonic() - stored_at <= ttl:
+        return value
+    return None
+
+
 class MonitoringService:
     """Выполняет PromQL и маппит результат в схему метрик карточки."""
 
@@ -164,17 +193,71 @@ class MonitoringService:
         self._client = client
 
     async def fetch_for_instances(self, instances: list[str]) -> dict[str, InstanceMetrics]:
-        """Батч-запрос метрик для набора instance.
+        """Батч-запрос метрик для набора instance с TTL-кэшем и single-flight.
 
+        Свежий кэш возвращается без запросов к Prometheus. При промахе
+        одновременные вызовы с тем же ключом ждут один общий запрос (single-flight).
         Бросает PrometheusUnavailable, если Prometheus недоступен (решение о
-        graceful degradation принимает вызывающий слой).
+        graceful degradation принимает вызывающий слой); ошибки не кэшируются.
         """
         if not instances:
             return {}
 
+        key: _CacheKey = tuple(sorted(instances))
+        ttl = get_settings().metrics_cache_ttl_sec
+
+        cached = _cache_get(key, ttl)
+        if cached is not None:
+            return cached
+
+        return await self._fetch_single_flight(key, instances, ttl)
+
+    async def _fetch_single_flight(
+        self, key: _CacheKey, instances: list[str], ttl: float
+    ) -> dict[str, InstanceMetrics]:
+        """Single-flight: один общий запрос на ключ, остальные ждут его результат."""
+        async with _state_lock:
+            cached = _cache_get(key, ttl)
+            if cached is not None:
+                return cached
+            existing = _inflight.get(key)
+            if existing is not None:
+                future = existing
+                is_owner = False
+            else:
+                future = asyncio.get_running_loop().create_future()
+                _inflight[key] = future
+                is_owner = True
+
+        if not is_owner:
+            return await future
+
+        try:
+            result = await self._execute_batch(instances)
+        except BaseException as exc:
+            async with _state_lock:
+                _inflight.pop(key, None)
+            if not future.done():
+                future.set_exception(exc)
+            raise
+        else:
+            async with _state_lock:
+                _cache[key] = (time.monotonic(), result)
+                _inflight.pop(key, None)
+            if not future.done():
+                future.set_result(result)
+            return result
+
+    async def _guarded_query(self, promql: str) -> list[dict[str, Any]]:
+        """Один PromQL-запрос под глобальным семафором конкурентности."""
+        async with _PROM_SEMAPHORE:
+            return await self._client.query(promql)
+
+    async def _execute_batch(self, instances: list[str]) -> dict[str, InstanceMetrics]:
+        """Выполняет батч PromQL (с ограничением конкурентности) и маппит в схему."""
         queries = _build_queries(_instance_matcher(instances))
         keys = list(queries.keys())
-        results = await asyncio.gather(*(self._client.query(queries[k]) for k in keys))
+        results = await asyncio.gather(*(self._guarded_query(queries[k]) for k in keys))
         raw = dict(zip(keys, results, strict=True))
 
         maps = {k: _parse_values(raw[k]) for k in keys}
