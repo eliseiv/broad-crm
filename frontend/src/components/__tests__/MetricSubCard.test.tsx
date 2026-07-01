@@ -27,9 +27,9 @@ describe('MetricSubCard', () => {
   it('renders RAM and SSD details in gigabytes', () => {
     const { rerender } = render(<MetricSubCard kind="ram" metric={metric(11.5, 16, 'GB')} />);
 
-    expect(screen.getByText('11.5 / 16 ГБ')).toBeInTheDocument();
+    expect(screen.getByText('11.5/16 ГБ')).toBeInTheDocument();
     rerender(<MetricSubCard kind="ssd" metric={metric(238, 500, 'GB')} />);
-    expect(screen.getByText('238 / 500 ГБ')).toBeInTheDocument();
+    expect(screen.getByText('238/500 ГБ')).toBeInTheDocument();
   });
 
   it('hides absolute details when both value and total are null', () => {
