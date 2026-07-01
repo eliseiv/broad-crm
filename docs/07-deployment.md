@@ -25,6 +25,10 @@ flowchart TB
 
 > Целевые серверы и их node_exporter НЕ часть compose — они провижинятся Ansible (см. [09-provisioning.md](09-provisioning.md)).
 
+> **Telegram-нотификатор** не отдельный сервис: это фоновая asyncio-задача внутри `backend` ([ADR-009](adr/ADR-009-in-backend-notifier-vs-alertmanager.md), [modules/notifier](modules/notifier/README.md)). Активируется опционально через `TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID`; исходящий HTTPS к `api.telegram.org` (backend должен иметь egress в интернет).
+
+> **Монитор AI-ключей** также не отдельный сервис: фоновая asyncio-задача внутри `backend` ([ADR-010](adr/ADR-010-ai-key-monitor-vnutri-backend.md), [modules/ai-keys](modules/ai-keys/README.md)). Стартует всегда; требует исходящий HTTPS к `api.openai.com` и `api.anthropic.com` (`GET /v1/models`) — backend должен иметь egress в интернет. Telegram-алерты о ключах используют тот же `TELEGRAM_*`-гейт.
+
 ## Состав сервисов
 
 | Сервис | Образ | Порт (наружу) | Назначение |
@@ -139,17 +143,25 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `PROMETHEUS_URL` | `http://prometheus:9090` | Базовый URL Prometheus API |
 | `PROM_QUERY_TIMEOUT_SEC` | `10` | Таймаут PromQL-запроса |
 | `METRICS_CACHE_TTL_SEC` | `5` | TTL короткого кэша ответа `GET /api/servers` (с). Сглаживает частоту обращений к Prometheus (single-flight); не маскирует недоступность дольше TTL ([modules/monitoring](modules/monitoring/README.md#устойчивость-read-path-нормативно)) |
+| `TELEGRAM_BOT_TOKEN` | `123456:ABC-DEF...` | Токен Telegram-бота. **Секрет** (только env). Пусто → нотификатор не запускается ([modules/notifier](modules/notifier/README.md#опциональность-активация)) |
+| `TELEGRAM_CHAT_ID` | `-1001234567890` | ID Telegram-группы для алертов. Пусто → нотификатор не запускается. Нотификатор активен **только если заданы оба** (`TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID`) |
+| `NOTIFIER_POLL_INTERVAL_SEC` | `60` | Интервал опроса серверов нотификатором (с). Алерты — только при эскалации зоны/потере доступности ([modules/notifier](modules/notifier/README.md)) |
+| `AI_KEY_CHECK_INTERVAL_SEC` | `900` | Интервал проверки AI-ключей (с). Монитор стартует всегда; Telegram-алерты гейтятся `TELEGRAM_*` ([modules/ai-keys](modules/ai-keys/README.md)) |
+| `AI_PROVIDER_TIMEOUT_SEC` | `10` | Таймаут HTTP-запроса к AI-провайдеру (`GET /v1/models`) |
+| `OPENAI_API_BASE` | `https://api.openai.com/v1` | Базовый URL OpenAI API (проверка ключа) |
+| `ANTHROPIC_API_BASE` | `https://api.anthropic.com/v1` | Базовый URL Anthropic API (проверка ключа) |
+| `ANTHROPIC_API_VERSION` | `2023-06-01` | Значение заголовка `anthropic-version` |
 | `EXPORTER_PORT` | `9100` | Порт node_exporter по умолчанию |
 | `SCRAPE_SOURCE_IP` | `37.27.192.211` | Публичный IP CRM-сервера, с которого Prometheus достукивается до remote-целей (SNAT). Передаётся в плейбук как `scrape_source_ip` → открытие `9100` на цели ТОЛЬКО для этого IP. **Пусто → плейбук firewall не трогает** (для self-host не задавать: источник = docker-подсеть, см. [09-provisioning.md](09-provisioning.md#сетевая-доступность-node_exporter-9100)) |
 | `FILE_SD_DIR` | `/etc/prometheus/targets` | Каталог file_sd (общий volume) |
 | `ANSIBLE_TIMEOUT_SEC` | `300` | Таймаут плейбука |
 | `ANSIBLE_HOST_KEY_CHECKING` | `false` | (Этап 1) [TD-007](100-known-tech-debt.md) |
 | `CORS_ALLOW_ORIGINS` | `https://broadappsdev.shop` | Разрешённые origin (если нужно) |
-| `GRAFANA_BASE_URL` | `https://broadappsdev.shop/grafana` | Для drill-down ссылок |
 | `GF_SECURITY_ADMIN_PASSWORD` | `change-me` | Grafana admin |
 | `VITE_API_BASE_URL` | `/api` | База API для SPA (build-time) |
 | `VITE_POLL_INTERVAL_MS` | `15000` | Интервал polling карточек |
-| `VITE_GRAFANA_URL` | `/grafana` | Ссылка drill-down во фронте |
+
+> **Удалены (Этап 1):** `GRAFANA_BASE_URL` (backend) и `VITE_GRAFANA_URL` (frontend) — drill-down ссылка из карточки сервера убрана ([ADR-005, поправка](adr/ADR-005-custom-gauge-vs-grafana-embed.md#поправка-2026-06-30--удаление-drill-down-ссылки-из-карточки)). Grafana остаётся в составе compose (datasource-only) и доступна напрямую через proxy `/grafana`; ссылки из UI на неё больше нет.
 
 ## Конфигурация Prometheus
 
@@ -172,7 +184,7 @@ scrape_configs:
 ## Конфигурация Grafana
 
 - Provisioning datasource → Prometheus (`http://prometheus:9090`). **Это весь scope Grafana на Этапе 1: только датасорс (datasource-only).**
-- **Преднастроенный дашборд node_exporter — ВНЕ scope Этапа 1** ([TD-010](100-known-tech-debt.md)). Drill-down из карточки ведёт на Grafana (`VITE_GRAFANA_URL`/`GRAFANA_BASE_URL`), где администратор использует Explore по готовому датасорсу или импортирует дашборд вручную. Автопровижининг дашборда — будущий этап.
+- **Преднастроенный дашборд node_exporter — ВНЕ scope Этапа 1** ([TD-010](100-known-tech-debt.md)). **Drill-down ссылки из карточки сервера НЕТ** ([ADR-005, поправка](adr/ADR-005-custom-gauge-vs-grafana-embed.md#поправка-2026-06-30--удаление-drill-down-ссылки-из-карточки)). Grafana доступна **напрямую** через proxy `/grafana`, где администратор использует Explore по готовому датасорсу или импортирует дашборд вручную. Автопровижининг дашборда и ссылки из UI — будущий этап.
 - `GF_AUTH_ANONYMOUS_ENABLED=false`, сменённый admin-пароль.
 - Доступ через proxy `/grafana` (sub-path, `GF_SERVER_ROOT_URL`).
 

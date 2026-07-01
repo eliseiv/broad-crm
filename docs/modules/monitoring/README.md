@@ -28,6 +28,43 @@
 
 Параметры: `METRICS_CACHE_TTL_SEC` (env, default 5), конкурентность семафора и политика ретраев — константы backend (рекомендация: семафор 4). Со стороны Prometheus — `--query.max-concurrency=50` ([07-deployment.md](../../07-deployment.md#конфигурация-prometheus)).
 
+## Переиспользуемый внутренний интерфейс (нормативно)
+
+`monitoring` экспонирует внутри backend (не наружу по HTTP) переиспользуемый контракт, на который опираются и read-path API (`GET /api/servers`), и [modules/notifier](../notifier/README.md). Это единственное место объявления типов/метода/исключения — другие модули их не переопределяют.
+
+### Метод
+
+```
+MonitoringService.fetch_for_instances(instances: list[str]) -> dict[str, InstanceMetrics]
+```
+
+- `instances` — список `"<ip>:<exporter_port>"` (см. `Server.instance` в [modules/servers](../servers/README.md)).
+- Возвращает словарь `instance -> InstanceMetrics`. Бросает `PrometheusUnavailable` при устойчивой недоступности самого Prometheus (случай «а» из таблицы [«Доступность метрик»](../../04-api.md#доступность-метрик-up0--отсутствие-данных-vs-prometheus-down), после исчерпания ретраев). Случай «б» (`up==0` / частичный валидный ответ) исключения НЕ даёт.
+
+### Типы
+
+```
+InstanceMetrics = {
+  online: bool,                       # up == 1
+  uptime_seconds: int | None,
+  last_updated: datetime,             # момент сбора (для UI/диагностики)
+  metrics: ServerMetrics | None,      # None — online, но метрики недоступны (случай «б»)
+}
+ServerMetrics = { cpu: Metric, ram: Metric, ssd: Metric }
+Metric = { usage_percent: float | None, zone: Zone, detail: {value, total, unit} }
+```
+
+Маппинг полей и единиц — как в [04-api.md](../../04-api.md) и п. 3/7 раздела «Backend — ТЗ».
+
+### Каноническое вычисление зоны и исключение
+
+- `app.domain.thresholds.usage_to_zone()` — **единственная** реализация порогов (`<80 green`, `80..90 yellow`, `>90 red`). Переиспользуется backend, frontend-контрактом и notifier без дублирования.
+- `PrometheusUnavailable` — исключение домена monitoring; его ловят и read-path (→ `502`/деградация), и notifier (→ пропуск итерации).
+
+### Семантика кэша (нормативно — важно для шаринга)
+
+TTL-кэш ключуется по **набору instances**: `key = tuple(sorted(instances))`. Шаринг кэшированного результата между вызовами происходит **только при полном совпадении набора** instances. Следствие: агрегат UI (`GET /api/servers` — все online-серверы) и опрос notifier (его собственный набор online-instances) в общем случае имеют **разные ключи**, поэтому **общего попадания в один кэш-элемент между ботом и UI нет** — это разные кэш-записи и, как правило, отдельные исходящие PromQL. Защита от лавины обеспечивается **общим семафором конкуренции** `_MAX_CONCURRENT_QUERIES` (рекомендация 4), а не общим кэш-элементом. Single-flight схлопывает только параллельные вызовы с **идентичным** ключом.
+
 ## DoD
 - [ ] PromQL и маппинг соответствуют [02-promql.md](02-promql.md).
 - [ ] Граничные тесты зон (79.9/80/90/90.1), деградация при недоступности ([06-testing-strategy.md](../../06-testing-strategy.md)).

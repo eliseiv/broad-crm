@@ -33,6 +33,16 @@
 - Пароль (в любом виде) НЕ возвращается ни в одном ответе API.
 - Ротация `FERNET_KEY` — `MultiFernet` (новый + старый ключ) — будущий этап ([TD-006](100-known-tech-debt.md)).
 
+## Защита AI-ключей
+
+Ключи AI-провайдеров (OpenAI/Anthropic) — секреты того же класса, что и SSH-пароли ([modules/ai-keys](modules/ai-keys/README.md#безопасность-ключа-нормативно), [ADR-010](adr/ADR-010-ai-key-monitor-vnutri-backend.md)).
+
+- Полный ключ шифруется **Fernet** тем же `FERNET_KEY` сразу при `POST /api/ai-keys`; в БД — только `key_encrypted bytea` ([03-data-model.md](03-data-model.md#таблица-ai_keys)).
+- Расшифровка — только в памяти монитора/проверки непосредственно перед HTTP-запросом к провайдеру (`GET /v1/models`); расшифрованное значение не логируется и не покидает процесс.
+- **Полный ключ (в любом виде) НЕ возвращается ни в одном ответе API.** В ответах — только маска `key_masked` (первые 4 … последние 4 символа; для ключа короче 8 символов — полная маска `********`).
+- `key_prefix`/`key_last4` (по 4 plaintext-символа) хранятся ради маски и текста Telegram-алерта — осознанное раскрытие 8 символов, секрет из них не восстанавливается.
+- Ключ провайдера **не передаётся** в query-строке/URL и не пишется в structlog (фильтр секретов); заголовки `Authorization: Bearer`/`x-api-key` не логируются.
+
 ## Ansible и секреты
 
 - Креды передаются в Ansible через переменные среды/`extravars` в памяти ansible-runner, не через файлы на диске (или через временные файлы с `0600`, удаляемые в `finally`).
@@ -44,7 +54,8 @@
 
 - **Prometheus и Grafana не публикуются наружу** (NFR-9). В docker-compose их порты не маппятся на хост-интерфейс `0.0.0.0`; доступ — только внутри docker-сети или через защищённый reverse-proxy с auth.
 - Grafana: сменить дефолтный admin-пароль (`GF_SECURITY_ADMIN_PASSWORD` из `.env`), `GF_AUTH_ANONYMOUS_ENABLED=false`.
-- Drill-down ссылка в UI ведёт на Grafana, защищённую её собственным логином.
+- Grafana защищена собственным логином; доступ — напрямую через proxy `/grafana` (drill-down ссылки из карточки в UI нет — [ADR-005, поправка](adr/ADR-005-custom-gauge-vs-grafana-embed.md#поправка-2026-06-30--удаление-drill-down-ссылки-из-карточки)).
+- **Telegram-нотификатор:** `TELEGRAM_BOT_TOKEN`/`TELEGRAM_CHAT_ID` — секреты, только из env; в код/логи/ответы API не попадают ([modules/notifier](modules/notifier/README.md)). Исходящий трафик — HTTPS к `api.telegram.org`.
 - Reverse-proxy (nginx) терминирует TLS, проксирует `/api`→backend, `/`→SPA.
 
 ## TLS-сертификаты
@@ -94,7 +105,7 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 | `base-uri` | `'self'` | Запрет подмены `<base>` |
 | `form-action` | `'self'` | Формы только на свой origin |
 
-- **Grafana drill-down** ведёт на `/grafana` (тот же origin, обычная навигация/новая вкладка, **не iframe** — на главной кастомные SVG-гейджи, [ADR-005](adr/ADR-005-custom-gauge-vs-grafana-embed.md)). Поэтому `frame-src`/расширение `connect-src` не требуются; same-origin навигация под CSP не подпадает. Grafana под `/grafana` имеет собственную CSP, выставляемую самим Grafana.
+- **Grafana** доступна **напрямую** по `/grafana` (тот же origin); **ссылки/drill-down из карточки в UI нет** ([ADR-005, поправка](adr/ADR-005-custom-gauge-vs-grafana-embed.md#поправка-2026-06-30--удаление-drill-down-ссылки-из-карточки), см. также строку про сетевую безопасность выше). На главной — кастомные SVG-гейджи, Grafana **не встраивается во фрейм**. Поэтому `frame-src` не требуется (`frame-ancestors 'none'` достаточно), а `connect-src`/расширений под Grafana не нужно. Grafana под `/grafana` имеет собственную CSP, выставляемую самим Grafana.
 - Поскольку внешних CDN/доменов нет (шрифты и ассеты self-hosted), ослаблять директивы внешними источниками не требуется.
 
 ## Управление секретами
@@ -106,6 +117,9 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 | `FERNET_KEY` | `.env` | base64 32 байта |
 | `POSTGRES_PASSWORD` | `.env` | — |
 | `GF_SECURITY_ADMIN_PASSWORD` | `.env` | Grafana admin |
+| `TELEGRAM_BOT_TOKEN` | `.env` | секрет, маскируется в логах; нотификатор ([modules/notifier](modules/notifier/README.md)) |
+| `TELEGRAM_CHAT_ID` | `.env` | не секрет в строгом смысле, но не в репо; вместе с токеном активирует нотификатор и Telegram-алерты AI-ключей |
+| AI-ключи (OpenAI/Anthropic) | БД (`ai_keys.key_encrypted`) | вводятся через API, шифруются `FERNET_KEY`; не в env/логах/ответах ([modules/ai-keys](modules/ai-keys/README.md)) |
 
 - `.env` — в `.gitignore`; в репозитории только `.env.example` без значений.
 - Логи проходят через structlog с фильтром секретов (пароли, токены, ключи маскируются).
@@ -117,6 +131,7 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 | Перебор пароля админа | rate-limit + constant-time сравнение |
 | Кража JWT через XSS | токен в памяти, CSP, экранирование, no `localStorage` |
 | Утечка SSH-паролей из БД | Fernet at-rest, ключ вне БД |
+| Утечка AI-ключей из БД / логов / API | Fernet at-rest (`key_encrypted`), полный ключ не в ответах/логах, в UI/API только маска ([modules/ai-keys](modules/ai-keys/README.md)) |
 | Утечка секретов в логи | маскирование, `no_log` в Ansible |
 | Доступ к Prometheus/Grafana извне | не публикуются наружу |
 | User enumeration на входе | единое сообщение об ошибке, шаг 1 без запроса |

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator, Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,7 +13,12 @@ from app.api.router import api_router
 from app.config import AppEnv, Settings, get_settings
 from app.db import get_sessionmaker
 from app.errors import register_exception_handlers
+from app.infra.prometheus import get_prometheus_client
+from app.infra.telegram import TelegramClient
 from app.logging import configure_logging, get_logger
+from app.services.ai_key_monitor_service import AiKeyMonitorService
+from app.services.monitoring_service import MonitoringService
+from app.services.notifier_service import NotifierService
 from app.services.provisioning_service import ProvisioningService
 
 logger = get_logger(__name__)
@@ -36,7 +42,45 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         logger.info("startup_recovery", recovered=recovered, file_sd_regenerated=regenerated)
     except Exception as exc:
         logger.error("startup_recovery_failed", error_type=type(exc).__name__)
+
+    # Telegram-нотификатор (modules/notifier, ADR-009): фоновая задача только
+    # если заданы обе переменные TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID.
+    notifier_task: asyncio.Task[None] | None = None
+    if settings.notifier_enabled:
+        notifier = NotifierService(
+            telegram=TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id),
+            monitoring=MonitoringService(get_prometheus_client()),
+            poll_interval_sec=settings.notifier_poll_interval_sec,
+        )
+        notifier_task = asyncio.create_task(notifier.run())
+    else:
+        logger.info("notifier_disabled")
+
+    # Монитор AI-ключей (modules/ai-keys, ADR-010): стартует ВСЕГДА (не гейтится
+    # Telegram) — обновление check_status для UI работает независимо от бота.
+    # Telegram-клиент передаётся только при notifier_enabled.
+    ai_key_telegram = (
+        TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
+        if settings.notifier_enabled
+        else None
+    )
+    ai_key_monitor = AiKeyMonitorService(
+        sessionmaker=get_sessionmaker(),
+        telegram=ai_key_telegram,
+        settings=settings,
+    )
+    ai_key_monitor_task = asyncio.create_task(ai_key_monitor.run())
+
     yield
+
+    if notifier_task is not None:
+        notifier_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await notifier_task
+
+    ai_key_monitor_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await ai_key_monitor_task
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

@@ -14,7 +14,11 @@ from app.errors import unauthorized
 from app.infra.jwt import TokenError, decode_access_token
 from app.infra.prometheus import get_prometheus_client
 from app.infra.rate_limit import get_login_rate_limiter
+from app.infra.telegram import TelegramClient
+from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.server_repository import ServerRepository
+from app.services.ai_key_monitor_service import AiKeyMonitorService
+from app.services.ai_key_service import AiKeyService
 from app.services.auth_service import AuthService
 from app.services.monitoring_service import MonitoringService
 from app.services.provisioning_service import ProvisioningService
@@ -75,6 +79,27 @@ def get_server_service(
     )
 
 
+def get_ai_key_monitor(settings: SettingsDep) -> AiKeyMonitorService:
+    """Монитор AI-ключей для немедленной проверки при создании (собственный
+    sessionmaker для фоновой задачи). Telegram — только при notifier_enabled."""
+    telegram = (
+        TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
+        if settings.notifier_enabled
+        else None
+    )
+    return AiKeyMonitorService(
+        sessionmaker=get_sessionmaker(), telegram=telegram, settings=settings
+    )
+
+
+def get_ai_key_service(
+    session: DbSession,
+    monitor: Annotated[AiKeyMonitorService, Depends(get_ai_key_monitor)],
+) -> AiKeyService:
+    """Сервис реестра AI-ключей."""
+    return AiKeyService(repository=AiKeyRepository(session), monitor=monitor)
+
+
 def get_client_ip(request: Request) -> str:
     """Реальный IP клиента для rate-limit входа (05-security.md).
 
@@ -100,4 +125,5 @@ def get_client_ip(request: Request) -> str:
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 ServerServiceDep = Annotated[ServerService, Depends(get_server_service)]
+AiKeyServiceDep = Annotated[AiKeyService, Depends(get_ai_key_service)]
 ClientIp = Annotated[str, Depends(get_client_ip)]

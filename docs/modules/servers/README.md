@@ -26,6 +26,13 @@ CRUD реестра серверов: создание (с запуском пр
 6. Recovery-hook: при старте backend «зависшие» `installing` старше `ANSIBLE_TIMEOUT_SEC` → `error` ([ADR-006](../../adr/ADR-006-async-provisioning-bez-brokera.md)).
 7. **Каждая Alembic-миграция обязана иметь рабочий `downgrade()`** (основа отката релиза — [07-deployment.md](../../07-deployment.md#откат-миграций-бд), [03-data-model.md](../../03-data-model.md)).
 
+### Переиспользуемый контракт репозитория и модели (нормативно)
+
+Объявляется здесь как единственный источник; на него опираются read-path и [modules/notifier](../notifier/README.md):
+
+- `ServerRepository.list_online() -> list[Server]` — серверы с `provision_status == online`. Используется notifier для опроса и read-path при необходимости.
+- `Server.instance` (property) = `f"{ip}:{exporter_port}"` — целевой `instance` для PromQL/Prometheus file_sd. Единственное место формирования строки `instance`; модуль `monitoring` (`fetch_for_instances`) и notifier принимают именно её.
+
 ## DoD
 - [ ] Endpoints и коды ошибок соответствуют [04-api.md](../../04-api.md).
 - [ ] Пароль зашифрован в БД, отсутствует в ответах/логах.

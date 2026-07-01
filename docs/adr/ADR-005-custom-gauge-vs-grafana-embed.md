@@ -31,3 +31,12 @@
 
 - **Grafana embed/iframe** — отвергнуто: нет контроля над дизайном, тяжело, не отвечает цвету-по-нагрузке и референсу.
 - **Chart-библиотека (Recharts/ECharts)** — отвергнуто: избыточно для простого gauge, хуже контроль над формой/свечением.
+
+## Поправка (2026-06-30) — удаление drill-down ссылки из карточки
+
+Ссылка drill-down из карточки сервера на Grafana **удалена** из UI Этапа 1 (вместе с мёртвой конфигурацией `VITE_GRAFANA_URL` и `GRAFANA_BASE_URL`).
+
+- **Центральное решение ADR-005 не меняется:** на главной — кастомные SVG-спидометры, без Grafana-embed/iframe.
+- **Grafana остаётся** в составе compose как datasource-only ([TD-010](../100-known-tech-debt.md)) и доступна **напрямую** через proxy `/grafana` (Explore); из карточки на неё больше нет ссылки.
+- Затронуто: [modules/ui](../modules/ui/README.md), [01-architecture.md](../01-architecture.md), [00-vision.md](../00-vision.md), [05-security.md](../05-security.md), [07-deployment.md](../07-deployment.md#переменные-окружения).
+- Статус ADR-005 — по-прежнему `accepted` (поправка сужает UI-scope, не отменяет решение о gauge).

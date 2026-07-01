@@ -1,7 +1,7 @@
 # CRM — мониторинг серверов, Этап 1 (07-deployment.md).
 # Запуск из корня репозитория (где лежит .env):
 #   docker compose --env-file .env -f infra/docker-compose.yml up -d
-# --env-file нужен для интерполяции ${POSTGRES_*}/${GF_*}/${GRAFANA_BASE_URL}.
+# --env-file нужен для интерполяции ${POSTGRES_*}/${GF_*}/${PUBLIC_HOSTNAME}.
 #
 # Наружу публикуется ТОЛЬКО proxy (:80/:443). postgres, backend, prometheus, grafana
 # доступны лишь внутри сети crm-net (NFR-9, 05-security.md).
@@ -92,7 +92,10 @@ services:
       GF_SECURITY_ADMIN_USER: ${GF_SECURITY_ADMIN_USER:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD}
       GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_SERVER_ROOT_URL: ${GRAFANA_BASE_URL:-https://localhost/grafana}
+      # Root URL для sub-path /grafana (07-deployment.md#конфигурация-grafana).
+      # Выводится из PUBLIC_HOSTNAME (отдельной переменной base-url больше нет —
+      # drill-down из UI убран, ADR-005 поправка). Grafana остаётся datasource-only.
+      GF_SERVER_ROOT_URL: https://${PUBLIC_HOSTNAME:-crm.local}/grafana
       GF_SERVER_SERVE_FROM_SUB_PATH: "true"
     volumes:
       - grafana-data:/var/lib/grafana
@@ -120,7 +123,6 @@ services:
         # ПУСТО по умолчанию: buildUrl сам добавляет '/api' (same-origin за nginx),
         # иначе двойной префикс /api/api/... (reviewer critical).
         VITE_API_BASE_URL: ${VITE_API_BASE_URL:-}
-        VITE_GRAFANA_URL: ${VITE_GRAFANA_URL:-/grafana}
         VITE_POLL_INTERVAL_MS: ${VITE_POLL_INTERVAL_MS:-15000}
     restart: unless-stopped
     environment:

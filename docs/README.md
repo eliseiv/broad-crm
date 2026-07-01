@@ -4,7 +4,7 @@
 
 ## О проекте
 
-CRM-система мониторинга backend-сервисов и серверов. **Этап 1** — страница «Серверы»: список карточек серверов с кастомными SVG-спидометрами (CPU / RAM / SSD), двухшаговый вход администратора, добавление сервера с автоматическим провижинингом (Ansible → node_exporter → Prometheus).
+CRM-система мониторинга backend-сервисов и серверов. **Этап 1** — страница «Серверы»: список карточек серверов с кастомными SVG-спидометрами (CPU / RAM / SSD), двухшаговый вход администратора, добавление сервера с автоматическим провижинингом (Ansible → node_exporter → Prometheus); плюс страница «ИИ - ключи» — реестр API-ключей AI-провайдеров (OpenAI/Anthropic) с шифрованием, маской и автоматической проверкой валидности + Telegram-алерты ([modules/ai-keys](modules/ai-keys/README.md)).
 
 ## Карта документации
 
@@ -32,6 +32,8 @@ CRM-система мониторинга backend-сервисов и серве
 | Servers (реестр + CRUD) | [modules/servers/README.md](modules/servers/README.md) | backend |
 | Monitoring (Prometheus, PromQL) | [modules/monitoring/README.md](modules/monitoring/README.md) | backend |
 | Provisioning (Ansible) | [modules/provisioning/README.md](modules/provisioning/README.md) | backend, devops |
+| Notifier (Telegram-уведомления) | [modules/notifier/README.md](modules/notifier/README.md) | backend |
+| AI Keys (реестр ключей + проверка + алерты) | [modules/ai-keys/README.md](modules/ai-keys/README.md) | backend, frontend |
 | UI (страница «Серверы», спидометры) | [modules/ui/README.md](modules/ui/README.md) | frontend |
 
 ## Статусы модулей
@@ -42,6 +44,8 @@ CRM-система мониторинга backend-сервисов и серве
 | servers | `spec-ready` | Не реализован — спецификация готова |
 | monitoring | `spec-ready` | Не реализован — спецификация готова |
 | provisioning | `spec-ready` | Не реализован — спецификация готова |
+| notifier | `spec-ready` | Не реализован — спецификация готова |
+| ai-keys | `spec-ready` | Не реализован — спецификация готова |
 | ui | `spec-ready` | Не реализован — спецификация готова |
 
 ## Глоссарий
@@ -49,7 +53,8 @@ CRM-система мониторинга backend-сервисов и серве
 - **Спидометр (gauge)** — кастомный SVG-компонент с дугой ~270°, отображающий метрику 0–100 %.
 - **Провижининг** — автоматическая установка node_exporter на целевой сервер через Ansible и регистрация scrape-таргета Prometheus.
 - **file_sd** — file-based service discovery Prometheus: backend пишет JSON-файлы таргетов, Prometheus перечитывает их без рестарта.
-- **Drill-down** — детальный просмотр метрик в Grafana по ссылке из карточки.
+- **Drill-down** — детальный просмотр метрик в Grafana. На Этапе 1 ссылки из карточки нет ([ADR-005, поправка](adr/ADR-005-custom-gauge-vs-grafana-embed.md#поправка-2026-06-30--удаление-drill-down-ссылки-из-карточки)); Grafana открывается напрямую через `/grafana`.
+- **Notifier** — фоновая asyncio-задача backend, шлёт Telegram-алерты при эскалации нагрузки/доступности ([ADR-009](adr/ADR-009-in-backend-notifier-vs-alertmanager.md)).
 
 ## Принципы
 

@@ -12,3 +12,5 @@ Architecture Decision Records. Каждое значимое решение — 
 | [ADR-006](ADR-006-async-provisioning-bez-brokera.md) | Асинхронный провижининг без брокера сообщений | accepted | 2026-06-28 |
 | [ADR-007](ADR-007-shifrovanie-fernet.md) | Шифрование SSH-паролей через Fernet | accepted | 2026-06-28 |
 | [ADR-008](ADR-008-admin-iz-env.md) | Учётка администратора только из `.env` | accepted | 2026-06-28 |
+| [ADR-009](ADR-009-in-backend-notifier-vs-alertmanager.md) | In-backend Telegram-нотификатор vs Alertmanager | accepted | 2026-06-30 |
+| [ADR-010](ADR-010-ai-key-monitor-vnutri-backend.md) | Проверка AI-ключей внутри backend vs внешний воркер + Fernet-шифрование | accepted | 2026-07-01 |

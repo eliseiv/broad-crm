@@ -1,13 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import {
-  AlertTriangle,
-  Clock,
-  ExternalLink,
-  Loader2,
-  Server as ServerIcon,
-  Trash2,
-} from 'lucide-react';
+import { AlertTriangle, Clock, Loader2, Server as ServerIcon, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -15,7 +8,6 @@ import { Card } from '@/components/ui/Card';
 import { MetricSubCard } from '@/components/MetricSubCard';
 import { Modal } from '@/components/ui/Modal';
 import { ApiError } from '@/lib/api';
-import { env } from '@/lib/env';
 import { formatRelativeTime, formatUptime } from '@/lib/format';
 import { serversKey, useDeleteServer, useServerStatus } from '@/features/servers/hooks';
 import type { ProvisionStatus, Server } from '@/types/api';
@@ -101,17 +93,6 @@ export function ServerCard({ server }: ServerCardProps) {
           </div>
 
           <div className="flex shrink-0 items-center gap-1">
-            {env.grafanaUrl && isOnline && (
-              <a
-                href={env.grafanaUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label="Открыть дашборд Grafana"
-                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-              >
-                <ExternalLink className="h-4 w-4" aria-hidden="true" />
-              </a>
-            )}
             <button
               type="button"
               onClick={() => setConfirmOpen(true)}

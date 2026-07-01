@@ -68,6 +68,14 @@ def server_conflict() -> AppError:
     )
 
 
+def ai_key_not_found() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="ai_key_not_found",
+        message="AI-ключ не найден",
+    )
+
+
 def unprocessable(message: str, details: Any = None) -> AppError:
     return AppError(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -119,6 +127,24 @@ def _has_invalid_ip_error(errors: Sequence[Any]) -> bool:
     return False
 
 
+def _semantic_error_message(errors: Sequence[Any]) -> str | None:
+    """Возвращает сообщение 422 unprocessable для семантически некорректных полей.
+
+    По 04-api.md это `422 unprocessable` (значение присутствует, но недопустимо),
+    а не `400 validation_error`:
+      - невалидный IP в поле `ip`;
+      - `provider` вне enum (тип `enum`) в поле `provider` (modules/ai-keys).
+    Структурные ошибки (отсутствует поле / неверная форма тела) → 400.
+    """
+    if _has_invalid_ip_error(errors):
+        return "Невалидный IP-адрес"
+    for err in errors:
+        loc = err.get("loc", ())
+        if loc and loc[-1] == "provider" and err.get("type") == "enum":
+            return "Недопустимый провайдер"
+    return None
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Регистрирует обработчики, приводящие все ошибки к единому формату."""
 
@@ -136,13 +162,14 @@ def register_exception_handlers(app: FastAPI) -> None:
             {"field": ".".join(str(p) for p in err["loc"][1:]), "message": err["msg"]}
             for err in raw_errors
         ]
-        # Семантически некорректный IP → 422 unprocessable (04-api.md): значение
-        # поля `ip` присутствует, но не является валидным IP. Структурные ошибки
+        # Семантически некорректное значение → 422 unprocessable (04-api.md):
+        # невалидный IP в `ip` или `provider` вне enum. Структурные ошибки
         # (отсутствует поле / неверная форма тела) остаются 400 validation_error.
-        if _has_invalid_ip_error(raw_errors):
+        semantic_message = _semantic_error_message(raw_errors)
+        if semantic_message is not None:
             return JSONResponse(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                content=_error_body("unprocessable", "Невалидный IP-адрес", details),
+                content=_error_body("unprocessable", semantic_message, details),
             )
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,

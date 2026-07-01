@@ -15,6 +15,4 @@ export const env = {
   pollIntervalMs: readInt(import.meta.env.VITE_POLL_INTERVAL_MS, 15000),
   /** Опрос GET /{id}/status во время провижининга (pending/installing). */
   statusPollIntervalMs: readInt(import.meta.env.VITE_STATUS_POLL_INTERVAL_MS, 2500),
-  /** URL Grafana для drill-down; пусто → ссылка скрыта. */
-  grafanaUrl: (import.meta.env.VITE_GRAFANA_URL ?? '').replace(/\/$/, ''),
 } as const;

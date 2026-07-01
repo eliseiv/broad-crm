@@ -53,6 +53,26 @@ class Settings(BaseSettings):
     # TTL кэша результатов метрик (short-lived, гасит thundering herd на read-path).
     metrics_cache_ttl_sec: float = 5.0
 
+    # --- Telegram-нотификатор (modules/notifier, ADR-009) ---
+    # Активен только если заданы обе переменные (непустые); иначе задача не стартует.
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    notifier_poll_interval_sec: int = 60
+
+    @property
+    def notifier_enabled(self) -> bool:
+        """Нотификатор активен только при заданных токене И chat_id (modules/notifier)."""
+        return bool(self.telegram_bot_token and self.telegram_chat_id)
+
+    # --- Монитор AI-ключей (modules/ai-keys, ADR-010) ---
+    # Интервал периодической проверки всех ключей; монитор стартует всегда.
+    ai_key_check_interval_sec: int = 900
+    # Таймаут HTTP-запроса к провайдеру при проверке ключа (GET /v1/models).
+    ai_provider_timeout_sec: float = 10.0
+    openai_api_base: str = "https://api.openai.com/v1"
+    anthropic_api_base: str = "https://api.anthropic.com/v1"
+    anthropic_api_version: str = "2023-06-01"
+
     # --- Провижининг / node_exporter ---
     exporter_port: int = 9100
     file_sd_dir: str = "/etc/prometheus/targets"

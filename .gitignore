@@ -37,3 +37,6 @@ backups/
 .vscode/
 *.log
 .cursor
+
+.claude
+CLAUDE.md

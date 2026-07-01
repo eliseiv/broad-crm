@@ -18,7 +18,7 @@ flowchart TB
         API["Backend · FastAPI<br/>auth · servers · monitoring · provisioning"]
         DB[("PostgreSQL 16<br/>реестр серверов")]
         PROM["Prometheus<br/>хранилище метрик + file_sd"]
-        GRAF["Grafana<br/>drill-down дашборды"]
+        GRAF["Grafana<br/>datasource-only (прямой доступ /grafana)"]
         ANS["Ansible runner<br/>(в процессе backend)"]
         SD[("targets/*.json<br/>file_sd volume")]
     end
@@ -29,7 +29,6 @@ flowchart TB
     end
 
     UI -->|"HTTPS REST + JWT"| API
-    UI -->|"ссылка drill-down"| GRAF
     API -->|"CRUD реестра"| DB
     API -->|"PromQL HTTP API"| PROM
     API -->|"пишет targets/<id>.json"| SD
@@ -58,6 +57,7 @@ flowchart TB
 - **servers** — CRUD реестра серверов.
 - **monitoring** — клиент Prometheus HTTP API, маппинг PromQL → метрики карточки. **Устойчивость read-path:** короткий TTL-кэш + single-flight для `GET /api/servers`, ограничение конкурентности исходящих PromQL (семафор) и ретраи на транзиентные ошибки — чтобы periodic polling и несколько вкладок не усиливали нагрузку на Prometheus и не вызывали массовую деградацию (см. [modules/monitoring](modules/monitoring/README.md#устойчивость-read-path-нормативно)).
 - **provisioning** — оркестрация Ansible, запись file_sd, управление `provision_status`.
+- **notifier** — фоновая asyncio-задача Telegram-уведомлений об эскалации нагрузки/доступности; переиспользует `monitoring` и пороги зон ([ADR-009](adr/ADR-009-in-backend-notifier-vs-alertmanager.md), [modules/notifier](modules/notifier/README.md)). Опционален.
 
 ### PostgreSQL
 Реестр серверов и статус провижининга. Метрики НЕ хранятся ([ADR-003](adr/ADR-003-prometheus-istochnik-metrik.md)).
@@ -69,7 +69,10 @@ flowchart TB
 Агент на целевых серверах, порт 9100. Ставится Ansible как systemd-сервис.
 
 ### Grafana
-Детальные дашборды (drill-down). На главной странице CRM НЕ встраивается — там кастомные SVG-гейджи ([ADR-005](adr/ADR-005-custom-gauge-vs-grafana-embed.md)). На Этапе 1 Grafana настраивается **datasource-only** (преднастроенный дашборд вне scope — [TD-010](100-known-tech-debt.md)); drill-down ведёт в Grafana Explore.
+Детальный анализ метрик. На главной странице CRM НЕ встраивается — там кастомные SVG-гейджи ([ADR-005](adr/ADR-005-custom-gauge-vs-grafana-embed.md)). На Этапе 1 Grafana настраивается **datasource-only** (преднастроенный дашборд вне scope — [TD-010](100-known-tech-debt.md)). **Drill-down ссылки из карточки сервера нет** ([ADR-005, поправка](adr/ADR-005-custom-gauge-vs-grafana-embed.md#поправка-2026-06-30--удаление-drill-down-ссылки-из-карточки)); администратор открывает Grafana Explore **напрямую** через `/grafana`.
+
+### Notifier (Telegram)
+Фоновая asyncio-задача в процессе backend ([ADR-009](adr/ADR-009-in-backend-notifier-vs-alertmanager.md)). Периодически опрашивает online-серверы через `monitoring`/`MonitoringService`, держит in-memory state-машину и шлёт в Telegram-группу сообщения **только при эскалации** зоны нагрузки или потере доступности (`up` 1→0). Опционален (env `TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID`). Пороги — те же `usage_to_zone()`, что у UI/`monitoring`. Спецификация — [modules/notifier](modules/notifier/README.md).
 
 ### Ansible runner
 Запускается в процессе backend через библиотеку `ansible-runner` (см. [09-provisioning.md](09-provisioning.md)). На Этапе 1 — асинхронная фоновая задача без внешнего брокера ([ADR-006](adr/ADR-006-async-provisioning-bez-brokera.md)).

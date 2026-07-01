@@ -26,6 +26,7 @@
 | 401 | `invalid_credentials` | Неверные логин/пароль на `/auth/login` |
 | 401 | `unauthorized` | Отсутствует/просрочен/невалиден JWT |
 | 404 | `server_not_found` | Сервера с таким `id` нет |
+| 404 | `ai_key_not_found` | AI-ключа с таким `id` нет |
 | 409 | `server_conflict` | Сервер с таким `ip` уже существует |
 | 422 | `unprocessable` | Семантически некорректные данные (например, невалидный IP) |
 | 429 | `rate_limited` | Превышен лимит попыток входа |
@@ -200,6 +201,78 @@
 
 **Ошибки:** `401`, `404 server_not_found`.
 > node_exporter на целевом сервере не удаляется ([TD-002](100-known-tech-debt.md)).
+
+---
+
+## AI Keys
+
+Реестр API-ключей AI-провайдеров с автоматической проверкой валидности. Модуль — [modules/ai-keys](modules/ai-keys/README.md), модель — [03-data-model.md](03-data-model.md#таблица-ai_keys), решение — [ADR-010](adr/ADR-010-ai-key-monitor-vnutri-backend.md). Все эндпоинты требуют JWT. **Полный ключ никогда не возвращается** — только маска `key_masked`.
+
+### Схема `AiKeyListItem`
+
+```json
+{
+  "id": "3f2a...c1",
+  "name": "OpenAI Prod",
+  "provider": "openai",
+  "key_masked": "sk-p…bA3T",
+  "check_status": "working",
+  "error_message": null,
+  "last_checked_at": "2026-07-01T10:15:00Z",
+  "created_at": "2026-07-01T09:00:00Z",
+  "updated_at": "2026-07-01T10:15:00Z"
+}
+```
+
+- `provider` ∈ {`openai`,`anthropic`}.
+- `key_masked` — производное: `"<первые4>…<последние4>"` (разделитель `…` U+2026), например `sk-p…bA3T`. Для ключа короче 8 символов — полная маска `"********"`. Правило — [modules/ai-keys](modules/ai-keys/README.md#правило-маски-key_masked). Backend НИКОГДА не отдаёт полный ключ или его расшифровку.
+- `check_status` ∈ {`pending`,`working`,`error`}. `error_message` — рус. причина при `error` (иначе `null`).
+
+### GET `/api/ai-keys`
+Список AI-ключей. Требует JWT. Сортировка `created_at DESC`, вторичный ключ `id`. Пагинации нет.
+
+**Response 200**
+```json
+{ "items": [ { "id": "3f2a...c1", "name": "OpenAI Prod", "provider": "openai", "key_masked": "sk-p…bA3T", "check_status": "working", "error_message": null, "last_checked_at": "2026-07-01T10:15:00Z", "created_at": "2026-07-01T09:00:00Z", "updated_at": "2026-07-01T10:15:00Z" } ] }
+```
+**Ошибки:** `401 unauthorized`.
+
+### POST `/api/ai-keys`
+Создаёт ключ и запускает **немедленную фоновую проверку** валидности. Требует JWT.
+
+**Request**
+```json
+{ "name": "OpenAI Prod", "provider": "openai", "key": "sk-proj-...bA3T" }
+```
+| Поле | Тип | Правила |
+|------|-----|---------|
+| `name` | string | required, 1–64 |
+| `provider` | string | required, ∈ {`openai`,`anthropic`} |
+| `key` | string | required, 1–512 |
+
+**Response 202 Accepted** — созданный `AiKeyListItem` с `check_status:"pending"`:
+```json
+{ "id": "3f2a...c1", "name": "OpenAI Prod", "provider": "openai", "key_masked": "sk-p…bA3T", "check_status": "pending", "error_message": null, "last_checked_at": null, "created_at": "2026-07-01T09:00:00Z", "updated_at": "2026-07-01T09:00:00Z" }
+```
+> `202`, т.к. проверка провайдера асинхронна; статус отслеживается через `GET /api/ai-keys/{id}/status`. Ключ (plaintext) в ответе не возвращается.
+
+**Ошибки:** `400 validation_error`, `422 unprocessable` (невалидный `provider`).
+
+### GET `/api/ai-keys/{id}/status`
+Лёгкий endpoint статуса проверки (для polling после добавления). Требует JWT.
+
+**Response 200**
+```json
+{ "id": "3f2a...c1", "check_status": "error", "error_message": "Недостаточно средств", "last_checked_at": "2026-07-01T10:15:00Z" }
+```
+**Ошибки:** `401`, `404 ai_key_not_found`.
+
+### DELETE `/api/ai-keys/{id}`
+Удаляет ключ из реестра (hard delete). Требует JWT.
+
+**Response 204** (без тела).
+
+**Ошибки:** `401`, `404 ai_key_not_found`.
 
 ---
 

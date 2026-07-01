@@ -14,7 +14,7 @@
 
 ## Coverage gate
 
-- Backend: строки ≥ **80 %** (`pytest --cov=app`), критичные модули (`auth`, `crypto`, `monitoring` маппинг, зоны) — ≥ **90 %**.
+- Backend: строки ≥ **80 %** (`pytest --cov=app`), критичные модули (`auth`, `crypto`, `monitoring` маппинг, зоны, `notifier` функция перехода/классификации сообщений) — ≥ **90 %**.
 - Frontend: строки ≥ **70 %** (Vitest), компоненты `Gauge`, логика зон — ≥ **90 %**.
 - **В CI на Этапе 1 — только backend-гейты** (`ruff`/`mypy`/`pytest --cov-fail-under=80`); проверяются в GitHub Actions ([07-deployment.md §CI/CD](07-deployment.md#cicd)), падение ниже порога — красный билд.
 - **Frontend вне CI на Этапе 1** (решение пользователя): линт/typecheck/сборка frontend в CI **не выполняются** — SPA собирается на прод-сервере в `docker compose build` (proxy-образ), что само по себе валидирует сборку. Тестовые гейты frontend (`vitest` ≥70 %, Gauge/зоны ≥90 %, Playwright e2e) — целевые пороги, но на Этапе 1 **не подключены к CI** ([TD-015](100-known-tech-debt.md)); их добавляет `qa` и возвращает в CI на этапе тестирования.
@@ -27,6 +27,7 @@
 - **crypto**: Fernet encrypt→decrypt round-trip; неверный ключ → ошибка; ciphertext ≠ plaintext.
 - **monitoring**: маппинг ответов Prometheus → схема метрик; вычисление `zone` на границах (79.9→green, 80→yellow, 90→yellow, 90.1→red); деградация при пустом/ошибочном ответе.
 - **provisioning**: переходы `provision_status` (pending→installing→online/error); формирование `targets/<id>.json`; имена/санитизация.
+- **notifier** (≥90 %, чистая функция перехода): матрица эскалаций — `green→yellow`/`green→red`/`yellow→red` → алерт; `red→yellow`/`*→green` и `offline→online` → молча; `online→offline` → offline-алерт; первая встреча online → база без алерта; возврат `offline→online` в нагрузке → переалерт (база `green`); `online` без метрик → пропуск без алерта; `PrometheusUnavailable` → state не тронут; формат всех 3 сообщений и `int(usage_percent)` (floor); опциональность (нет токена → задача не стартует). См. [modules/notifier](modules/notifier/README.md).
 
 ### Интеграционные
 - API + тестовая PostgreSQL (testcontainers или отдельная схема). Prometheus и Ansible — **замоканы** (httpx mock / fake runner).

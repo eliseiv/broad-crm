@@ -129,6 +129,22 @@ describe('ServerCard', () => {
     expect(screen.getByText(/Не в сети\. Обновлено:/)).toBeInTheDocument();
   });
 
+  it('does not render a Grafana link/icon even when VITE_GRAFANA_URL is set', () => {
+    vi.stubEnv('VITE_GRAFANA_URL', 'https://grafana.example.com');
+    try {
+      render(<ServerCard server={server()} />, { wrapper });
+
+      // Ссылки на Grafana в DOM нет ни в каком состоянии.
+      expect(screen.queryByRole('link')).not.toBeInTheDocument();
+      expect(screen.queryByLabelText('Открыть дашборд Grafana')).not.toBeInTheDocument();
+      expect(screen.queryByText(/grafana/i)).not.toBeInTheDocument();
+      // Кнопка удаления при этом на месте.
+      expect(screen.getByLabelText('Удалить сервер Server 01')).toBeInTheDocument();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('renders offline placeholders when metric values are nullable', () => {
     render(
       <ServerCard

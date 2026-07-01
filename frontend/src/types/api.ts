@@ -77,6 +77,57 @@ export interface StatusResponse {
   updated_at: string;
 }
 
+// --- AI Keys (04-api.md «AI Keys», modules/ai-keys) ---
+
+/** Провайдер AI-ключа (04-api.md). */
+export type AiProvider = 'openai' | 'anthropic';
+
+/** Статус проверки валидности AI-ключа (04-api.md). */
+export type AiKeyStatus = 'pending' | 'working' | 'error';
+
+/** Элемент списка AI-ключей. Полный ключ не возвращается — только маска. */
+export interface AiKey {
+  id: string;
+  name: string;
+  provider: AiProvider;
+  /** Маска вида «sk-p…bA3T» (04-api.md, key_masked). */
+  key_masked: string;
+  check_status: AiKeyStatus;
+  /** Рус. причина при check_status='error', иначе null. */
+  error_message: string | null;
+  last_checked_at: string | null;
+  created_at: string;
+}
+
+export interface AiKeysListResponse {
+  items: AiKey[];
+}
+
+/**
+ * Тело POST /api/ai-keys. Поле ключа на проводе — `key` (04-api.md, source of truth),
+ * NOT `api_key`. См. prompt_issues в отчёте frontend.
+ */
+export interface CreateAiKeyRequest {
+  name: string;
+  provider: AiProvider;
+  key: string;
+}
+
+export interface CreateAiKeyResponse {
+  id: string;
+  name: string;
+  provider: AiProvider;
+  check_status: AiKeyStatus;
+}
+
+/** Лёгкий статус проверки ключа (04-api.md, GET /api/ai-keys/{id}/status). */
+export interface AiKeyStatusResponse {
+  id: string;
+  check_status: AiKeyStatus;
+  error_message: string | null;
+  last_checked_at: string | null;
+}
+
 /** Единый формат ошибки API (04-api.md). */
 export interface ApiErrorBody {
   error: {

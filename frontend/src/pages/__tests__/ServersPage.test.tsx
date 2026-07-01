@@ -111,13 +111,13 @@ describe('ServersPage', () => {
     expect(refetch).toHaveBeenCalledTimes(1);
   });
 
-  it('clears session on logout', async () => {
-    const user = userEvent.setup();
+  it('renders the empty state without an owning logout button (moved to AppLayout)', () => {
     serversHook.value = { ...serversHook.value, data: { items: [] } };
 
     render(<ServersPage />, { wrapper });
-    await user.click(screen.getByRole('button', { name: /выйти/i }));
 
-    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    // Логаут вынесен в AppLayout — ServersPage его больше не отрисовывает.
+    expect(screen.queryByRole('button', { name: /выйти/i })).not.toBeInTheDocument();
+    expect(screen.getByText('Пока нет серверов')).toBeInTheDocument();
   });
 });

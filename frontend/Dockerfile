@@ -14,11 +14,9 @@ WORKDIR /app
 # VITE_API_BASE_URL ПУСТ по умолчанию: buildUrl (src/lib/api.ts) сам добавляет '/api'
 # → same-origin запросы /api/...; непустое значение дало бы /api/api/... .
 ARG VITE_API_BASE_URL=
-ARG VITE_GRAFANA_URL=/grafana
 ARG VITE_POLL_INTERVAL_MS=15000
 ARG VITE_STATUS_POLL_INTERVAL_MS=2500
 ENV VITE_API_BASE_URL=$VITE_API_BASE_URL \
-    VITE_GRAFANA_URL=$VITE_GRAFANA_URL \
     VITE_POLL_INTERVAL_MS=$VITE_POLL_INTERVAL_MS \
     VITE_STATUS_POLL_INTERVAL_MS=$VITE_STATUS_POLL_INTERVAL_MS
 
