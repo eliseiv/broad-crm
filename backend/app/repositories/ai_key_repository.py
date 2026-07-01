@@ -46,11 +46,12 @@ class AiKeyRepository:
         return ai_key
 
     async def list_all(self) -> list[AiKey]:
-        """Все ключи, сортировка created_at DESC, вторичный ключ id (04-api.md).
+        """Все ключи, сортировка `position ASC, created_at DESC, id` (04-api.md).
 
-        Используется как для списка API, так и для снимка ключей монитором.
+        Используется как для списка API, так и для снимка ключей монитором
+        (для монитора порядок несуществен).
         """
-        stmt = select(AiKey).order_by(AiKey.created_at.desc(), AiKey.id.desc())
+        stmt = select(AiKey).order_by(AiKey.position.asc(), AiKey.created_at.desc(), AiKey.id.asc())
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
@@ -58,10 +59,32 @@ class AiKeyRepository:
         """Возвращает ключ по id или None."""
         return await self._session.get(AiKey, ai_key_id)
 
+    async def all_ids(self) -> set[uuid.UUID]:
+        """Множество id всех ключей (любой провайдер) — для проверки существования (404)."""
+        result = await self._session.execute(select(AiKey.id))
+        return set(result.scalars().all())
+
+    async def ids_by_provider(self, provider: str) -> set[uuid.UUID]:
+        """Множество id ключей одного провайдера — ожидаемая группа для reorder (422)."""
+        result = await self._session.execute(select(AiKey.id).where(AiKey.provider == provider))
+        return set(result.scalars().all())
+
+    async def reorder(self, ordered_ids: list[uuid.UUID]) -> None:
+        """Присваивает `position = 0..M-1` по индексу в массиве (одна транзакция).
+
+        Вызывается только после валидации, что `ordered_ids` — полная перестановка
+        группы провайдера; коммит выполняет вызывающий сервис.
+        """
+        for index, ai_key_id in enumerate(ordered_ids):
+            await self._session.execute(
+                update(AiKey).where(AiKey.id == ai_key_id).values(position=index)
+            )
+
     async def delete_by_id(self, ai_key_id: uuid.UUID) -> bool:
         """Hard-delete по id. True, если запись была удалена."""
         stmt = delete(AiKey).where(AiKey.id == ai_key_id)
         result = await self._session.execute(stmt)
+        # CursorResult.rowcount не типизирован в SQLAlchemy stubs (известное ограничение).
         return (result.rowcount or 0) > 0  # type: ignore[attr-defined]
 
     async def update_check(

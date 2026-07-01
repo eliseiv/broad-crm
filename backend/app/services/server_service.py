@@ -11,6 +11,7 @@ from app.errors import (
     provisioning_unavailable,
     server_conflict,
     server_not_found,
+    unprocessable,
 )
 from app.infra import file_sd
 from app.infra.crypto import encrypt_password
@@ -25,6 +26,8 @@ from app.schemas.server import (
     ServerListResponse,
     ServerMetricsResponse,
     ServerStatusResponse,
+    ServerSummaryResponse,
+    ServerUpdateRequest,
 )
 from app.services.monitoring_service import InstanceMetrics, MonitoringService
 from app.services.provisioning_service import ProvisioningService
@@ -85,6 +88,7 @@ class ServerService:
             ip=str(server.ip),
             exporter_port=server.exporter_port,
             provision_status=ProvisionStatus(server.provision_status),
+            position=server.position,
         )
 
     def _repo_default_port(self) -> int:
@@ -121,6 +125,7 @@ class ServerService:
                 ip=str(server.ip),
                 exporter_port=server.exporter_port,
                 provision_status=ProvisionStatus(server.provision_status),
+                position=server.position,
                 online=False,
                 uptime_seconds=None,
                 last_updated=None,
@@ -135,6 +140,7 @@ class ServerService:
                 ip=str(server.ip),
                 exporter_port=server.exporter_port,
                 provision_status=ProvisionStatus(server.provision_status),
+                position=server.position,
                 online=False,
                 uptime_seconds=None,
                 last_updated=None,
@@ -147,6 +153,7 @@ class ServerService:
             ip=str(server.ip),
             exporter_port=server.exporter_port,
             provision_status=ProvisionStatus(server.provision_status),
+            position=server.position,
             online=instance_metrics.online,
             uptime_seconds=instance_metrics.uptime_seconds,
             last_updated=instance_metrics.last_updated,
@@ -209,6 +216,49 @@ class ServerService:
             error_message=server.error_message,
             updated_at=server.updated_at,
         )
+
+    async def update_server(
+        self, server_id: uuid.UUID, payload: ServerUpdateRequest
+    ) -> ServerSummaryResponse:
+        """Меняет только `name` (04-api.md). Нет записи → 404. `updated_at` обновляется.
+
+        `ip`/SSH/провижининг не трогаются. Немедленная перезапись file_sd-таргета для
+        переименования не требуется (скрейп идёт по `instance`, label `name`
+        информативный) — modules/servers.
+        """
+        server = await self._repo.update_name(server_id, name=payload.name)
+        if server is None:
+            raise server_not_found()
+        response = ServerSummaryResponse(
+            id=server.id,
+            name=server.name,
+            ip=str(server.ip),
+            exporter_port=server.exporter_port,
+            provision_status=ProvisionStatus(server.provision_status),
+            position=server.position,
+            created_at=server.created_at,
+            updated_at=server.updated_at,
+        )
+        await self._repo.session.commit()
+        logger.info("server_renamed", server_id=str(server_id))
+        return response
+
+    async def reorder_servers(self, ids: list[uuid.UUID]) -> None:
+        """Перестановка серверов: `position = 0..N-1` в одной транзакции.
+
+        Прецеденция ошибок (04-api.md#прецеденция-ошибок-валидации): форма тела
+        уже проверена pydantic (400); здесь — существование всех `id` (404, до
+        полноты), затем полнота перестановки множества серверов (422).
+        """
+        all_ids = await self._repo.all_ids()
+        for server_id in ids:
+            if server_id not in all_ids:
+                raise server_not_found()
+        if len(ids) != len(all_ids) or set(ids) != all_ids:
+            raise unprocessable("Список не является полной перестановкой серверов")
+        await self._repo.reorder(ids)
+        await self._repo.session.commit()
+        logger.info("servers_reordered", count=len(ids))
 
     async def delete_server(self, server_id: uuid.UUID) -> None:
         """Удаляет file_sd-таргет и запись; повтор → 404."""

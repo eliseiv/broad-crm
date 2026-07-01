@@ -11,7 +11,9 @@ from app.schemas.ai_key import (
     AiKeyCreateRequest,
     AiKeyListItem,
     AiKeyListResponse,
+    AiKeyOrderRequest,
     AiKeyStatusResponse,
+    AiKeyUpdateRequest,
 )
 
 router = APIRouter(prefix="/ai-keys", tags=["ai-keys"])
@@ -19,7 +21,7 @@ router = APIRouter(prefix="/ai-keys", tags=["ai-keys"])
 
 @router.get("", response_model=AiKeyListResponse)
 async def list_ai_keys(service: AiKeyServiceDep, _user: CurrentUser) -> AiKeyListResponse:
-    """Список AI-ключей (created_at DESC). Полный ключ не раскрывается."""
+    """Список AI-ключей (position ASC, created_at DESC, id). Полный ключ не раскрывается."""
     return await service.list_keys()
 
 
@@ -29,6 +31,26 @@ async def create_ai_key(
 ) -> AiKeyListItem:
     """Создаёт ключ и запускает немедленную фоновую проверку (202, check_status pending)."""
     return await service.create_key(payload)
+
+
+@router.patch("/order", status_code=status.HTTP_204_NO_CONTENT)
+async def reorder_ai_keys(
+    payload: AiKeyOrderRequest, service: AiKeyServiceDep, _user: CurrentUser
+) -> Response:
+    """Перестановка ключей внутри провайдер-группы (position=0..M-1)."""
+    await service.reorder_keys(payload.provider, payload.ids)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch("/{ai_key_id}", response_model=AiKeyListItem)
+async def update_ai_key(
+    ai_key_id: uuid.UUID,
+    payload: AiKeyUpdateRequest,
+    service: AiKeyServiceDep,
+    _user: CurrentUser,
+) -> AiKeyListItem:
+    """Редактирование ключа (name/provider/key); re-check при смене provider/key (200)."""
+    return await service.update_key(ai_key_id, payload)
 
 
 @router.get("/{ai_key_id}/status", response_model=AiKeyStatusResponse)

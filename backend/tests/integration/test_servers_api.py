@@ -39,6 +39,7 @@ class FakeServersService:
                 ip="10.0.0.20",
                 exporter_port=9100,
                 provision_status=ProvisionStatus.online,
+                position=0,
                 online=False,
                 uptime_seconds=None,
                 last_updated=now,
@@ -50,6 +51,7 @@ class FakeServersService:
                 ip="10.0.0.10",
                 exporter_port=9100,
                 provision_status=ProvisionStatus.pending,
+                position=1,
                 online=False,
                 uptime_seconds=None,
                 last_updated=now - timedelta(minutes=5),
@@ -68,6 +70,7 @@ class FakeServersService:
             ip=str(ip),
             exporter_port=9100,
             provision_status=ProvisionStatus.pending,
+            position=0,
         )
 
     async def list_servers(self, *, status: str | None = None) -> ServerListResponse:

@@ -22,8 +22,27 @@ class AiKeyCreateRequest(BaseModel):
     key: str = Field(min_length=1, max_length=512)
 
 
+class AiKeyUpdateRequest(BaseModel):
+    """Тело PATCH /api/ai-keys/{id} (04-api.md). Все поля опциональны.
+
+    `key` пустой (`""`) или отсутствует = «не менять ключ»; поэтому у него нет
+    `min_length` (иначе `""` был бы отклонён). Непустой `key` ≤ 512 символов.
+    """
+
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    provider: AiProvider | None = None
+    key: str | None = Field(default=None, max_length=512)
+
+
+class AiKeyOrderRequest(BaseModel):
+    """Тело PATCH /api/ai-keys/order — перестановка внутри провайдер-группы."""
+
+    provider: AiProvider
+    ids: list[uuid.UUID]
+
+
 class AiKeyListItem(BaseModel):
-    """Элемент списка GET /api/ai-keys и тело ответа 202 POST (04-api.md)."""
+    """Элемент списка GET /api/ai-keys и тело ответа 202 POST / 200 PATCH (04-api.md)."""
 
     id: uuid.UUID
     name: str
@@ -31,6 +50,7 @@ class AiKeyListItem(BaseModel):
     key_masked: str
     check_status: AiKeyStatus
     error_message: str | None
+    position: int
     last_checked_at: datetime | None
     created_at: datetime
     updated_at: datetime

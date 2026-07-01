@@ -46,17 +46,43 @@ class ServerRepository:
         return server
 
     async def list_all(self, *, status: str | None = None) -> list[Server]:
-        """Список серверов, сортировка created_at DESC, вторичный ключ id (04-api.md)."""
+        """Список серверов, сортировка `position ASC, created_at DESC, id` (04-api.md)."""
         stmt = select(Server)
         if status is not None:
             stmt = stmt.where(Server.provision_status == status)
-        stmt = stmt.order_by(Server.created_at.desc(), Server.id.desc())
+        stmt = stmt.order_by(Server.position.asc(), Server.created_at.desc(), Server.id.asc())
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
 
     async def get_by_id(self, server_id: uuid.UUID) -> Server | None:
         """Возвращает сервер по id или None."""
         return await self._session.get(Server, server_id)
+
+    async def update_name(self, server_id: uuid.UUID, *, name: str) -> Server | None:
+        """Меняет `name` (updated_at обновляется через onupdate). None, если нет записи."""
+        server = await self._session.get(Server, server_id)
+        if server is None:
+            return None
+        server.name = name
+        await self._session.flush()
+        await self._session.refresh(server)
+        return server
+
+    async def all_ids(self) -> set[uuid.UUID]:
+        """Множество id всех серверов — для валидации полной перестановки (reorder)."""
+        result = await self._session.execute(select(Server.id))
+        return set(result.scalars().all())
+
+    async def reorder(self, ordered_ids: list[uuid.UUID]) -> None:
+        """Присваивает `position = 0..N-1` по индексу в массиве (одна транзакция).
+
+        Коммит выполняет вызывающий сервис. Валидация полноты перестановки —
+        тоже в сервисе (04-api.md#прецеденция-ошибок-валидации).
+        """
+        for index, server_id in enumerate(ordered_ids):
+            await self._session.execute(
+                update(Server).where(Server.id == server_id).values(position=index)
+            )
 
     async def exists_by_ip(self, ip: str) -> bool:
         """Проверяет наличие сервера с таким IP (для 409)."""
@@ -68,6 +94,7 @@ class ServerRepository:
         """Hard-delete по id. True, если запись была удалена."""
         stmt = delete(Server).where(Server.id == server_id)
         result = await self._session.execute(stmt)
+        # CursorResult.rowcount не типизирован в SQLAlchemy stubs (известное ограничение).
         return (result.rowcount or 0) > 0  # type: ignore[attr-defined]
 
     async def update_status(

@@ -17,6 +17,7 @@ erDiagram
         int exporter_port
         text provision_status
         text error_message
+        int position
         timestamptz created_at
         timestamptz updated_at
     }
@@ -29,6 +30,7 @@ erDiagram
         text key_last4
         text check_status
         text error_message
+        int position
         timestamptz last_checked_at
         timestamptz created_at
         timestamptz updated_at
@@ -49,6 +51,7 @@ erDiagram
 | `exporter_port` | `integer` | `NOT NULL`, `DEFAULT 9100`, 1–65535 | Порт node_exporter. |
 | `provision_status` | `text` | `NOT NULL`, `DEFAULT 'pending'`, CHECK | Статус провижининга (см. ниже). |
 | `error_message` | `text` | `NULL` | Текст ошибки провижининга (без секретов). |
+| `position` | `integer` | `NOT NULL`, `DEFAULT 0` | Порядок карточки в списке (drag-and-drop). См. [«Колонка `position`»](#колонка-position-порядок-карточек). |
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения (обновляется триггером/приложением). |
 
@@ -96,18 +99,19 @@ CREATE TABLE servers (
     provision_status        text NOT NULL DEFAULT 'pending'
                                 CHECK (provision_status IN ('pending','installing','online','error')),
     error_message           text,
+    position                integer NOT NULL DEFAULT 0,
     created_at              timestamptz NOT NULL DEFAULT now(),
     updated_at              timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX ix_servers_provision_status ON servers (provision_status);
-CREATE INDEX ix_servers_created_at ON servers (created_at DESC);
+CREATE INDEX ix_servers_position ON servers (position);
 ```
 
 ### Индексы и обоснование
 - `UNIQUE(ip)` — нельзя добавить один и тот же сервер дважды; даёт детерминированную ошибку конфликта (409).
 - `ix_servers_provision_status` — выборка серверов в работе/ошибке.
-- `ix_servers_created_at` — стабильная сортировка списка `GET /api/servers` по `created_at DESC` (новые сверху), вторичный ключ `id` (см. [04-api.md](04-api.md#get-apiservers)).
+- `ix_servers_position` — стабильная сортировка списка `GET /api/servers` по `position ASC` (порядок drag-and-drop), тай-брейк `created_at DESC`, `id` (см. [04-api.md](04-api.md#get-apiservers), [«Колонка `position`»](#колонка-position-порядок-карточек)). Индекс `ix_servers_created_at` больше не нужен как основной ключ сортировки (тай-брейк по `created_at` на ≤50 строках не требует отдельного индекса).
 
 ## Маппинг на Prometheus
 
@@ -147,6 +151,7 @@ CREATE INDEX ix_servers_created_at ON servers (created_at DESC);
 | `key_last4` | `text` | `NULL` | Последние 4 символа ключа (plaintext, для маски и Telegram). `NULL` для ключа короче 8 символов. |
 | `check_status` | `text` | `NOT NULL`, `DEFAULT 'pending'`, CHECK | Статус проверки: `pending` \| `working` \| `error`. Источник состояния переходов (переживает рестарт). |
 | `error_message` | `text` | `NULL` | Причина при `error` (рус.): «Ключ недействителен»/«Доступ запрещён»/«Недостаточно средств»/«Ошибка провайдера». |
+| `position` | `integer` | `NOT NULL`, `DEFAULT 0` | Порядок карточки **внутри провайдер-группы** (drag-and-drop). См. [«Колонка `position`»](#колонка-position-порядок-карточек). |
 | `last_checked_at` | `timestamptz` | `NULL` | Время последней **конклюзивной** проверки (`working`/`error`), обновляется монитором. Транзиентный `unknown` (сеть/таймаут/`5xx`) строку не трогает, поэтому конклюзивной проверкой не считается. |
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
@@ -186,13 +191,16 @@ CREATE TABLE ai_keys (
     check_status     text NOT NULL DEFAULT 'pending'
                          CHECK (check_status IN ('pending','working','error')),
     error_message    text,
+    position         integer NOT NULL DEFAULT 0,
     last_checked_at  timestamptz,
     created_at       timestamptz NOT NULL DEFAULT now(),
     updated_at       timestamptz NOT NULL DEFAULT now()
 );
 
-CREATE INDEX ix_ai_keys_created_at ON ai_keys (created_at DESC);
+CREATE INDEX ix_ai_keys_provider_position ON ai_keys (provider, position);
 ```
+
+> Индекс `(provider, position)` — списки AI-ключей отдаются `ORDER BY position ASC, created_at DESC, id`, а перестановка идёт **внутри провайдер-группы** (`WHERE provider = :p`). Прежний `ix_ai_keys_created_at` заменён: `created_at` остаётся лишь тай-брейком.
 
 ### Шифрование `key_encrypted`
 
@@ -203,3 +211,67 @@ CREATE INDEX ix_ai_keys_created_at ON ai_keys (created_at DESC);
 ### Политика удаления
 
 Этап 1 — **hard delete** (`DELETE FROM ai_keys WHERE id = ...`). Soft-delete/аудит — будущий этап ([TD-001](100-known-tech-debt.md)).
+
+---
+
+## Колонка `position` (порядок карточек)
+
+Общая для `servers` и `ai_keys`. Хранит пользовательский порядок карточек (drag-and-drop), решение — [ADR-011](adr/ADR-011-poryadok-blokov-server-side-dnd-kit.md). API — [04-api.md](04-api.md#перестановка-порядок-карточек).
+
+**Правило сортировки (нормативно, одинаково для обеих таблиц):**
+
+```sql
+ORDER BY position ASC, created_at DESC, id
+```
+
+- `position ASC` — меньшее значение = выше в списке (`0` — первая карточка).
+- `created_at DESC` — тай-брейк при равных `position` (новые выше). Гарантирует детерминизм даже до первой перестановки и для только что созданных карточек (`DEFAULT 0`).
+- `id` — финальный тай-брейк для полной детерминированности.
+
+**Присвоение `position` при перестановке:** endpoint reorder ([04-api.md](04-api.md#перестановка-порядок-карточек)) получает полный упорядоченный список `id` и в **одной транзакции** присваивает `position = 0..N-1` по индексу в массиве. Значения `position` после перестановки уникальны и непрерывны в пределах переставляемого набора.
+
+**Область `position` для `ai_keys` — провайдер-группа.** Перестановка AI-ключей идёт **внутри одного провайдера** (`WHERE provider = :provider`), `position` присваивается `0..M-1` внутри группы. Глобальная уникальность `position` между провайдерами НЕ требуется: frontend сначала группирует по `provider`, затем внутри секции сортирует по `position` (см. [04-api.md](04-api.md#patch-apiai-keysorder)). Для `servers` — единый список, `position` уникален по всей таблице после перестановки.
+
+**Новые строки (`INSERT`):** `position` берёт `DEFAULT 0`; за счёт тай-брейка `created_at DESC` новая карточка появляется вверху своего списка/группы (совместимо с прежним поведением «новые сверху»). Явного пересчёта `position` при создании не требуется.
+
+## Миграция `0003_add_position` (концепт)
+
+> Реализуется через Alembic. `down_revision = "0002_create_ai_keys"`. **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат на одну ревизию — см. [07-deployment.md](07-deployment.md#откат-миграций-бд).
+
+**`upgrade()`** — добавить колонку в обе таблицы, backfill существующих строк по текущему порядку (новые сверху → меньший `position`), создать индексы, заменить старый индекс сортировки:
+
+```sql
+-- servers
+ALTER TABLE servers ADD COLUMN position integer NOT NULL DEFAULT 0;
+WITH ordered AS (
+    SELECT id, row_number() OVER (ORDER BY created_at DESC, id) - 1 AS pos
+    FROM servers
+)
+UPDATE servers s SET position = ordered.pos FROM ordered WHERE s.id = ordered.id;
+DROP INDEX IF EXISTS ix_servers_created_at;
+CREATE INDEX ix_servers_position ON servers (position);
+
+-- ai_keys (backfill порядка ВНУТРИ провайдер-группы)
+ALTER TABLE ai_keys ADD COLUMN position integer NOT NULL DEFAULT 0;
+WITH ordered AS (
+    SELECT id, row_number() OVER (PARTITION BY provider ORDER BY created_at DESC, id) - 1 AS pos
+    FROM ai_keys
+)
+UPDATE ai_keys k SET position = ordered.pos FROM ordered WHERE k.id = ordered.id;
+DROP INDEX IF EXISTS ix_ai_keys_created_at;
+CREATE INDEX ix_ai_keys_provider_position ON ai_keys (provider, position);
+```
+
+**`downgrade()`** — симметричный откат (вернуть прежние индексы сортировки, снять колонки и новые индексы):
+
+```sql
+DROP INDEX IF EXISTS ix_ai_keys_provider_position;
+CREATE INDEX ix_ai_keys_created_at ON ai_keys (created_at DESC);
+ALTER TABLE ai_keys DROP COLUMN position;
+
+DROP INDEX IF EXISTS ix_servers_position;
+CREATE INDEX ix_servers_created_at ON servers (created_at DESC);
+ALTER TABLE servers DROP COLUMN position;
+```
+
+> Backfill использует `created_at DESC` — тот же порядок, что показывался до появления drag-and-drop (новые сверху), поэтому визуальный порядок карточек после миграции не меняется.

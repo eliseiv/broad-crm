@@ -20,6 +20,18 @@ class ServerCreateRequest(BaseModel):
     ssh_password: str = Field(min_length=1, max_length=256)
 
 
+class ServerUpdateRequest(BaseModel):
+    """Тело PATCH /api/servers/{id} — на Этапе 1 меняется только `name`."""
+
+    name: str = Field(min_length=1, max_length=64)
+
+
+class ServerOrderRequest(BaseModel):
+    """Тело PATCH /api/servers/order — полная перестановка множества серверов."""
+
+    ids: list[uuid.UUID]
+
+
 class ServerCreatedResponse(BaseModel):
     """Ответ 202 POST /api/servers (без пароля)."""
 
@@ -28,6 +40,20 @@ class ServerCreatedResponse(BaseModel):
     ip: str
     exporter_port: int
     provision_status: ProvisionStatus
+    position: int
+
+
+class ServerSummaryResponse(BaseModel):
+    """Ответ 200 PATCH /api/servers/{id} — summary-объект сервера (без метрик)."""
+
+    id: uuid.UUID
+    name: str
+    ip: str
+    exporter_port: int
+    provision_status: ProvisionStatus
+    position: int
+    created_at: datetime
+    updated_at: datetime
 
 
 class ServerListItem(BaseModel):
@@ -38,6 +64,7 @@ class ServerListItem(BaseModel):
     ip: str
     exporter_port: int
     provision_status: ProvisionStatus
+    position: int
     online: bool
     uptime_seconds: int | None
     last_updated: datetime | None

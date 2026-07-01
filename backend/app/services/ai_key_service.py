@@ -6,7 +6,7 @@ import asyncio
 import uuid
 
 from app.domain.ai_keys import compute_key_fragments, mask_key
-from app.errors import ai_key_not_found
+from app.errors import ai_key_not_found, unprocessable
 from app.infra.crypto import encrypt_secret
 from app.logging import get_logger
 from app.models.ai_key import AiKey, AiKeyStatus, AiProvider
@@ -16,6 +16,7 @@ from app.schemas.ai_key import (
     AiKeyListItem,
     AiKeyListResponse,
     AiKeyStatusResponse,
+    AiKeyUpdateRequest,
 )
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 
@@ -58,9 +59,79 @@ class AiKeyService:
         return self._to_list_item(ai_key)
 
     async def list_keys(self) -> AiKeyListResponse:
-        """Список ключей (created_at DESC), полный ключ не раскрывается."""
+        """Список ключей (position ASC, created_at DESC, id), полный ключ не раскрывается."""
         keys = await self._repo.list_all()
         return AiKeyListResponse(items=[self._to_list_item(key) for key in keys])
+
+    async def update_key(self, ai_key_id: uuid.UUID, payload: AiKeyUpdateRequest) -> AiKeyListItem:
+        """Редактирует ключ (04-api.md, modules/ai-keys#редактирование-ключа).
+
+        Семантика секрета: `key` пустой/отсутствует = не менять; непустой → re-encrypt
+        + пересчёт `key_prefix`/`key_last4`. Re-check (`check_status='pending'`,
+        `error_message=NULL`, немедленная фоновая проверка от `prev='pending'`)
+        запускается, если изменился `provider` ИЛИ передан непустой `key`. Только
+        смена `name` — без re-check. `updated_at` обновляется через onupdate при
+        изменении любого поля. Нет записи → 404.
+        """
+        ai_key = await self._repo.get_by_id(ai_key_id)
+        if ai_key is None:
+            raise ai_key_not_found()
+
+        provider_changed = (
+            payload.provider is not None and payload.provider.value != ai_key.provider
+        )
+        # «Непустой ключ» = не None и не пустая строка (пустая = «оставить как есть»).
+        key_provided = payload.key is not None and payload.key != ""
+
+        if payload.name is not None:
+            ai_key.name = payload.name
+        if provider_changed:
+            # mypy: provider_changed истинно ⇒ payload.provider не None.
+            assert payload.provider is not None
+            ai_key.provider = payload.provider.value
+        if key_provided:
+            # mypy: key_provided истинно ⇒ payload.key непустая строка.
+            assert payload.key is not None
+            key_prefix, key_last4 = compute_key_fragments(payload.key)
+            ai_key.key_encrypted = encrypt_secret(payload.key)
+            ai_key.key_prefix = key_prefix
+            ai_key.key_last4 = key_last4
+
+        re_check = provider_changed or key_provided
+        if re_check:
+            ai_key.check_status = AiKeyStatus.pending.value
+            ai_key.error_message = None
+
+        await self._repo.session.commit()
+        await self._repo.session.refresh(ai_key)
+
+        if re_check:
+            # Немедленная фоновая проверка (тот же путь, что POST; prev='pending').
+            task = asyncio.create_task(self._monitor.check_one(ai_key.id))
+            _background_tasks.add(task)
+            task.add_done_callback(_background_tasks.discard)
+
+        logger.info("ai_key_updated", ai_key_id=str(ai_key_id), re_check=re_check)
+        return self._to_list_item(ai_key)
+
+    async def reorder_keys(self, provider: AiProvider, ids: list[uuid.UUID]) -> None:
+        """Перестановка ключей ВНУТРИ провайдер-группы: `position = 0..M-1`.
+
+        Прецеденция ошибок (04-api.md#прецеденция-ошибок-валидации): форма тела и
+        `provider` вне enum уже обработаны pydantic (400/422); здесь — существование
+        всех `id` (404, до полноты), затем полнота перестановки группы провайдера
+        (422; чужой провайдер трактуется как «лишний» → 422).
+        """
+        all_ids = await self._repo.all_ids()
+        for ai_key_id in ids:
+            if ai_key_id not in all_ids:
+                raise ai_key_not_found()
+        group_ids = await self._repo.ids_by_provider(provider.value)
+        if len(ids) != len(group_ids) or set(ids) != group_ids:
+            raise unprocessable("Список не является полной перестановкой ключей провайдера")
+        await self._repo.reorder(ids)
+        await self._repo.session.commit()
+        logger.info("ai_keys_reordered", provider=provider.value, count=len(ids))
 
     async def get_status(self, ai_key_id: uuid.UUID) -> AiKeyStatusResponse:
         """Лёгкий статус проверки; отсутствует → 404 ai_key_not_found."""
@@ -92,6 +163,7 @@ class AiKeyService:
             key_masked=mask_key(ai_key.key_prefix, ai_key.key_last4),
             check_status=AiKeyStatus(ai_key.check_status),
             error_message=ai_key.error_message,
+            position=ai_key.position,
             last_checked_at=ai_key.last_checked_at,
             created_at=ai_key.created_at,
             updated_at=ai_key.updated_at,

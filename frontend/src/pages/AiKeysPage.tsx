@@ -1,17 +1,30 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
+import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
+import type { DragEndEvent } from '@dnd-kit/core';
+import { arrayMove, rectSortingStrategy, SortableContext } from '@dnd-kit/sortable';
 import { AddAiKeyCard } from '@/components/AddAiKeyCard';
 import { AddAiKeyModal } from '@/components/AddAiKeyModal';
 import { AiKeyCard } from '@/components/AiKeyCard';
 import { AiKeyCardSkeleton } from '@/components/AiKeyCardSkeleton';
+import { SortableItem } from '@/components/SortableItem';
 import { Button } from '@/components/ui/Button';
 import { ApiError } from '@/lib/api';
-import { useAiKeys } from '@/features/ai-keys/hooks';
+import { useAiKeys, useReorderAiKeys } from '@/features/ai-keys/hooks';
+import type { AiKey, AiProvider } from '@/types/api';
+
+/** Фиксированный порядок секций: сначала OpenAI, затем Anthropic (08-design-system.md). */
+const PROVIDER_ORDER: AiProvider[] = ['openai', 'anthropic'];
+const PROVIDER_LABEL: Record<AiProvider, string> = {
+  openai: 'OpenAI',
+  anthropic: 'Anthropic',
+};
 
 export function AiKeysPage() {
   const { data, isLoading, isError, error, refetch, isFetching } = useAiKeys();
   const [addOpen, setAddOpen] = useState(false);
+  const [addProvider, setAddProvider] = useState<AiProvider | undefined>(undefined);
 
   const isAuthError = error instanceof ApiError && error.status === 401;
 
@@ -21,8 +34,23 @@ export function AiKeysPage() {
     }
   }, [isError, isAuthError]);
 
-  const keys = data?.items ?? [];
+  const keys = useMemo(() => data?.items ?? [], [data?.items]);
+
+  // Группировка плоского списка по provider; внутри группы — сортировка по position
+  // (стабильная, сохраняет тай-брейк из GET). 08-design-system.md, 04-api.md.
+  const grouped = useMemo(() => {
+    const map: Record<AiProvider, AiKey[]> = { openai: [], anthropic: [] };
+    for (const k of keys) map[k.provider].push(k);
+    for (const p of PROVIDER_ORDER) map[p].sort((a, b) => a.position - b.position);
+    return map;
+  }, [keys]);
+
   const isEmpty = !isLoading && !isError && keys.length === 0;
+
+  const openAdd = (provider?: AiProvider) => {
+    setAddProvider(provider);
+    setAddOpen(true);
+  };
 
   return (
     <>
@@ -73,7 +101,7 @@ export function AiKeysPage() {
 
       {isEmpty && (
         <div className="mx-auto max-w-md">
-          <AddAiKeyCard onClick={() => setAddOpen(true)} />
+          <AddAiKeyCard onClick={() => openAdd(undefined)} />
           <div className="mt-4 text-center">
             <p className="text-sm font-medium text-text-primary">Пока нет ключей</p>
             <p className="mt-1 text-[13px] text-text-secondary">Добавьте первый AI-ключ</p>
@@ -82,16 +110,75 @@ export function AiKeysPage() {
       )}
 
       {!isLoading && !isError && keys.length > 0 && (
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
-          {keys.map((aiKey) => (
-            <AiKeyCard key={aiKey.id} aiKey={aiKey} />
-          ))}
-          <AddAiKeyCard onClick={() => setAddOpen(true)} />
+        <div className="flex flex-col gap-8">
+          {PROVIDER_ORDER.map((provider) =>
+            grouped[provider].length > 0 ? (
+              <AiKeySection
+                key={provider}
+                provider={provider}
+                label={PROVIDER_LABEL[provider]}
+                keys={grouped[provider]}
+                onAdd={() => openAdd(provider)}
+              />
+            ) : null,
+          )}
         </div>
       )}
 
-      <AddAiKeyModal open={addOpen} onOpenChange={setAddOpen} />
+      <AddAiKeyModal open={addOpen} onOpenChange={setAddOpen} defaultProvider={addProvider} />
     </>
+  );
+}
+
+interface AiKeySectionProps {
+  provider: AiProvider;
+  label: string;
+  keys: AiKey[];
+  onAdd: () => void;
+}
+
+/**
+ * Секция одного провайдера: собственный DndContext + SortableContext (перестановка
+ * ТОЛЬКО внутри секции — между провайдерами карточки не перемещаются, 04-api.md,
+ * 08-design-system.md). onDragEnd → оптимистичный reorder + PATCH /api/ai-keys/order.
+ */
+function AiKeySection({ provider, label, keys, onAdd }: AiKeySectionProps) {
+  const reorderMutation = useReorderAiKeys();
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  );
+  const ids = useMemo(() => keys.map((k) => k.id), [keys]);
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = ids.indexOf(String(active.id));
+    const newIndex = ids.indexOf(String(over.id));
+    if (oldIndex === -1 || newIndex === -1) return;
+    reorderMutation.mutate({ provider, ids: arrayMove(ids, oldIndex, newIndex) });
+  };
+
+  return (
+    <section>
+      <div className="mb-4 flex items-baseline gap-2 border-b border-border-subtle pb-2">
+        <h2 className="text-base font-semibold text-text-secondary">{label}</h2>
+        <span className="text-[13px] text-text-tertiary">
+          {keys.length} {pluralKeys(keys.length)}
+        </span>
+      </div>
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+          <SortableContext items={ids} strategy={rectSortingStrategy}>
+            {keys.map((aiKey) => (
+              <SortableItem key={aiKey.id} id={aiKey.id}>
+                <AiKeyCard aiKey={aiKey} />
+              </SortableItem>
+            ))}
+          </SortableContext>
+          <AddAiKeyCard onClick={onAdd} />
+        </div>
+      </DndContext>
+    </section>
   );
 }
 

@@ -33,6 +33,7 @@ class _Row:
         self.key_last4 = kw["key_last4"]
         self.check_status = AiKeyStatus.pending.value
         self.error_message: str | None = None
+        self.position = 0
         self.last_checked_at: datetime | None = None
         self.created_at = now
         self.updated_at = now

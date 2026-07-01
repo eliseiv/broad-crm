@@ -14,7 +14,10 @@ from app.schemas.server import (
     ServerCreateRequest,
     ServerListResponse,
     ServerMetricsResponse,
+    ServerOrderRequest,
     ServerStatusResponse,
+    ServerSummaryResponse,
+    ServerUpdateRequest,
 )
 
 router = APIRouter(prefix="/servers", tags=["servers"])
@@ -28,7 +31,10 @@ async def list_servers(
     _user: CurrentUser,
     status_filter: StatusFilter = None,
 ) -> ServerListResponse:
-    """Список серверов с метриками (created_at DESC). Graceful degradation Prometheus."""
+    """Список серверов с метриками (position ASC, created_at DESC, id).
+
+    Graceful degradation Prometheus.
+    """
     status_value = status_filter.value if status_filter is not None else None
     return await service.list_servers(status=status_value)
 
@@ -39,6 +45,26 @@ async def create_server(
 ) -> ServerCreatedResponse:
     """Создаёт сервер и запускает асинхронный провижининг (202)."""
     return await service.create_server(payload)
+
+
+@router.patch("/order", status_code=status.HTTP_204_NO_CONTENT)
+async def reorder_servers(
+    payload: ServerOrderRequest, service: ServerServiceDep, _user: CurrentUser
+) -> Response:
+    """Перестановка серверов (полный упорядоченный список id, position=0..N-1)."""
+    await service.reorder_servers(payload.ids)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.patch("/{server_id}", response_model=ServerSummaryResponse)
+async def update_server(
+    server_id: uuid.UUID,
+    payload: ServerUpdateRequest,
+    service: ServerServiceDep,
+    _user: CurrentUser,
+) -> ServerSummaryResponse:
+    """Редактирование сервера — меняет только `name` (200)."""
+    return await service.update_server(server_id, payload)
 
 
 @router.get("/{server_id}/metrics", response_model=ServerMetricsResponse)

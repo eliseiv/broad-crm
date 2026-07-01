@@ -5,12 +5,16 @@ import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { ApiError } from '@/lib/api';
-import { useCreateServer } from '@/features/servers/hooks';
-import type { CreateServerRequest } from '@/types/api';
+import { useCreateServer, useUpdateServer } from '@/features/servers/hooks';
+import type { CreateServerRequest, Server } from '@/types/api';
 
 interface AddServerModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** 'add' — создание (по умолчанию); 'edit' — редактирование существующего сервера. */
+  mode?: 'add' | 'edit';
+  /** Обязателен в режиме edit — источник префила и id для PATCH. */
+  server?: Server;
 }
 
 type Field = keyof CreateServerRequest;
@@ -26,11 +30,17 @@ function isValidIp(value: string): boolean {
 
 const EMPTY: CreateServerRequest = { name: '', ip: '', ssh_user: '', ssh_password: '' };
 
+function validateName(name: string): string | undefined {
+  const trimmed = name.trim();
+  if (!trimmed) return 'Укажите название';
+  if (trimmed.length > 64) return 'Не более 64 символов';
+  return undefined;
+}
+
 function validate(values: CreateServerRequest): Errors {
   const errors: Errors = {};
-  const name = values.name.trim();
-  if (!name) errors.name = 'Укажите название';
-  else if (name.length > 64) errors.name = 'Не более 64 символов';
+  const nameError = validateName(values.name);
+  if (nameError) errors.name = nameError;
 
   const ip = values.ip.trim();
   if (!ip) errors.ip = 'Укажите IP-адрес';
@@ -47,14 +57,24 @@ function validate(values: CreateServerRequest): Errors {
 }
 
 /**
- * Тонкая обёртка: ремоунтит внутренний диалог по ключу open, что даёт
+ * Тонкая обёртка: ремоунтит внутренний диалог по ключу mode+id+open, что даёт
  * чистый сброс состояния формы без эффекта (и без подавления линтера).
  */
-export function AddServerModal({ open, onOpenChange }: AddServerModalProps) {
-  return <AddServerDialog key={open ? 'open' : 'closed'} open={open} onOpenChange={onOpenChange} />;
+export function AddServerModal({ open, onOpenChange, mode = 'add', server }: AddServerModalProps) {
+  const key = `${mode}-${server?.id ?? 'new'}-${open ? 'open' : 'closed'}`;
+  if (mode === 'edit' && server) {
+    return <EditServerDialog key={key} open={open} onOpenChange={onOpenChange} server={server} />;
+  }
+  return <AddServerDialog key={key} open={open} onOpenChange={onOpenChange} />;
 }
 
-function AddServerDialog({ open, onOpenChange }: AddServerModalProps) {
+function AddServerDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
   const [values, setValues] = useState<CreateServerRequest>(EMPTY);
   const [errors, setErrors] = useState<Errors>({});
   const [touched, setTouched] = useState(false);
@@ -215,6 +235,101 @@ function AddServerDialog({ open, onOpenChange }: AddServerModalProps) {
           />
         </form>
       )}
+    </Modal>
+  );
+}
+
+/**
+ * Режим редактирования (08-design-system.md «Режим редактирования модалок»):
+ * заголовок «Изменить сервер», кнопка «Сохранить», редактируется ТОЛЬКО «Название»
+ * (IP/Пользователь/Пароль вне scope Этапа 1). PATCH /api/servers/{id} { name }.
+ */
+function EditServerDialog({
+  open,
+  onOpenChange,
+  server,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  server: Server;
+}) {
+  const [name, setName] = useState(server.name);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [touched, setTouched] = useState(false);
+  const updateMutation = useUpdateServer(server.id);
+
+  const update = (value: string) => {
+    setName(value);
+    if (touched) setError(validateName(value));
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setTouched(true);
+    const nameError = validateName(name);
+    setError(nameError);
+    if (nameError) return;
+
+    updateMutation.mutate(
+      { name: name.trim() },
+      {
+        onSuccess: () => {
+          toast.success('Сервер обновлён');
+          onOpenChange(false);
+        },
+        onError: (err) => {
+          if (err instanceof ApiError) {
+            if (err.status === 400) {
+              const detail = err.details?.find((d) => d.field === 'name');
+              setError(detail?.message ?? 'Некорректное название');
+              toast.error('Проверьте корректность названия');
+              return;
+            }
+            toast.error(err.message);
+            return;
+          }
+          toast.error('Не удалось обновить сервер');
+        },
+      },
+    );
+  };
+
+  const isSubmitting = updateMutation.isPending;
+
+  return (
+    <Modal
+      open={open}
+      onOpenChange={(next) => !isSubmitting && onOpenChange(next)}
+      title="Изменить сервер"
+      description="На этом этапе редактируется только название сервера."
+      dismissible={!isSubmitting}
+      footer={
+        <>
+          <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={isSubmitting}>
+            Отмена
+          </Button>
+          <Button type="submit" form="edit-server-form" loading={isSubmitting}>
+            Сохранить
+          </Button>
+        </>
+      }
+    >
+      <form
+        id="edit-server-form"
+        onSubmit={handleSubmit}
+        className="flex flex-col gap-4"
+        noValidate
+      >
+        <Input
+          label="Название"
+          placeholder="Сервер 01"
+          value={name}
+          error={error}
+          autoFocus
+          maxLength={64}
+          onChange={(e) => update(e.target.value)}
+        />
+      </form>
     </Modal>
   );
 }

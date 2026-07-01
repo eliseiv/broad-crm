@@ -1,7 +1,24 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { createAiKey, deleteAiKey, getAiKeyStatus, listAiKeys } from '@/features/ai-keys/api';
+import { toast } from 'sonner';
+import {
+  createAiKey,
+  deleteAiKey,
+  getAiKeyStatus,
+  listAiKeys,
+  reorderAiKeys,
+  updateAiKey,
+} from '@/features/ai-keys/api';
 import { env } from '@/lib/env';
-import type { AiKeyStatus, AiKeyStatusResponse, CreateAiKeyRequest } from '@/types/api';
+import type {
+  AiKey,
+  AiKeysListResponse,
+  AiKeyStatus,
+  AiKeyStatusResponse,
+  AiProvider,
+  CreateAiKeyRequest,
+  ReorderAiKeysRequest,
+  UpdateAiKeyRequest,
+} from '@/types/api';
 
 export const aiKeysKey = ['ai-keys'] as const;
 export const aiKeyStatusKey = (id: string) => ['ai-key-status', id] as const;
@@ -51,11 +68,55 @@ export function useCreateAiKey() {
   });
 }
 
+export function useUpdateAiKey(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: UpdateAiKeyRequest) => updateAiKey(id, payload),
+    onSuccess: () => {
+      // Инвалидация вернёт свежий check_status; при provider/key → 'pending',
+      // карточка возобновит polling через useAiKeyStatus (08-design-system.md).
+      void queryClient.invalidateQueries({ queryKey: aiKeysKey });
+    },
+  });
+}
+
 export function useDeleteAiKey() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => deleteAiKey(id),
     onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: aiKeysKey });
+    },
+  });
+}
+
+/**
+ * Перестановка AI-ключей ВНУТРИ одной провайдер-группы с оптимистичным обновлением.
+ * onMutate: перезаписываем position ключей этого провайдера; onError: откат + toast;
+ * onSettled: invalidate GET /api/ai-keys (08-design-system.md, 04-api.md).
+ */
+export function useReorderAiKeys() {
+  const queryClient = useQueryClient();
+  return useMutation<void, unknown, ReorderAiKeysRequest, { previous?: AiKeysListResponse }>({
+    mutationFn: (payload) => reorderAiKeys(payload),
+    onMutate: async ({ provider, ids }: { provider: AiProvider; ids: string[] }) => {
+      await queryClient.cancelQueries({ queryKey: aiKeysKey });
+      const previous = queryClient.getQueryData<AiKeysListResponse>(aiKeysKey);
+      if (previous) {
+        const items: AiKey[] = previous.items.map((k) =>
+          k.provider === provider ? { ...k, position: ids.indexOf(k.id) } : k,
+        );
+        queryClient.setQueryData<AiKeysListResponse>(aiKeysKey, { ...previous, items });
+      }
+      return { previous };
+    },
+    onError: (_err, _payload, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(aiKeysKey, context.previous);
+      }
+      toast.error('Не удалось сохранить порядок');
+    },
+    onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: aiKeysKey });
     },
   });

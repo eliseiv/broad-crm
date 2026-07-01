@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { Clock, KeyRound, Loader2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { AddAiKeyModal } from '@/components/AddAiKeyModal';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -26,6 +27,7 @@ export function AiKeyCard({ aiKey }: AiKeyCardProps) {
   const statusQuery = useAiKeyStatus(aiKey.id, aiKey.check_status);
   const deleteMutation = useDeleteAiKey();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   const status: AiKeyStatus = statusQuery.data?.check_status ?? aiKey.check_status;
   const errorMessage = statusQuery.data?.error_message ?? aiKey.error_message;
@@ -54,11 +56,26 @@ export function AiKeyCard({ aiKey }: AiKeyCardProps) {
   const isError = status === 'error';
   const isPending = status === 'pending';
 
+  // Клик по карточке → edit; кнопки «Удалить» гасят событие (stopPropagation),
+  // чтобы не открывать edit и не стартовать drag.
+  const onCardKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setEditOpen(true);
+    }
+  };
+  const stopForDelete = (e: React.SyntheticEvent) => e.stopPropagation();
+
   return (
     <>
       <Card
         interactive
-        className={`flex flex-col gap-4 p-4 sm:p-5 ${isError ? 'border-status-red/70' : ''}`}
+        role="button"
+        tabIndex={0}
+        aria-label={`Изменить ключ ${aiKey.name}`}
+        onClick={() => setEditOpen(true)}
+        onKeyDown={onCardKeyDown}
+        className={`flex cursor-pointer flex-col gap-4 p-4 sm:p-5 ${isError ? 'border-status-red/70' : ''}`}
       >
         {/* Шапка: иконка + имя + статус-бейдж */}
         <div className="flex items-start justify-between gap-2">
@@ -87,7 +104,11 @@ export function AiKeyCard({ aiKey }: AiKeyCardProps) {
           <div className="flex shrink-0 items-center gap-1">
             <button
               type="button"
-              onClick={() => setConfirmOpen(true)}
+              onPointerDown={stopForDelete}
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmOpen(true);
+              }}
               aria-label={`Удалить ключ ${aiKey.name}`}
               className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-3 hover:text-status-red focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
@@ -121,7 +142,11 @@ export function AiKeyCard({ aiKey }: AiKeyCardProps) {
               variant="danger"
               size="sm"
               loading={deleteMutation.isPending}
-              onClick={() => setConfirmOpen(true)}
+              onPointerDown={stopForDelete}
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmOpen(true);
+              }}
             >
               <Trash2 className="h-3.5 w-3.5" />
               Удалить
@@ -155,6 +180,8 @@ export function AiKeyCard({ aiKey }: AiKeyCardProps) {
           Мониторинг валидности этого ключа будет прекращён.
         </p>
       </Modal>
+
+      <AddAiKeyModal mode="edit" aiKey={aiKey} open={editOpen} onOpenChange={setEditOpen} />
     </>
   );
 }

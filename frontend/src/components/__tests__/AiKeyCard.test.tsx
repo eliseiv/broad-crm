@@ -12,6 +12,8 @@ vi.mock('@/features/ai-keys/hooks', () => ({
   aiKeysKey: ['ai-keys'],
   useAiKeyStatus: () => ({ data: undefined }),
   useDeleteAiKey: () => deleteMutation,
+  // EditAiKeyDialog (внутри AddAiKeyModal, рендерится AiKeyCard) вызывает useUpdateAiKey.
+  useUpdateAiKey: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock('sonner', () => ({
@@ -30,6 +32,7 @@ function makeKey(overrides: Partial<AiKey> = {}): AiKey {
     key_masked: 'sk-p…bA3T',
     check_status: 'working' as AiKeyStatus,
     error_message: null,
+    position: 0,
     last_checked_at: '2026-07-01T10:15:00Z',
     created_at: '2026-07-01T09:00:00Z',
     ...overrides,

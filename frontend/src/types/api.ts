@@ -30,6 +30,8 @@ export interface Server {
   ip: string;
   exporter_port: number;
   provision_status: ProvisionStatus;
+  /** Порядок карточки (drag-and-drop). Меньше = выше. 04-api.md. */
+  position: number;
   online: boolean;
   uptime_seconds: number | null;
   last_updated: string | null;
@@ -68,6 +70,29 @@ export interface CreateServerResponse {
   ip: string;
   exporter_port: number;
   provision_status: ProvisionStatus;
+  position: number;
+}
+
+/** Тело PATCH /api/servers/{id} — на Этапе 1 меняется только name (04-api.md). */
+export interface UpdateServerRequest {
+  name: string;
+}
+
+/** Ответ PATCH /api/servers/{id} — summary-объект сервера без метрик (04-api.md). */
+export interface UpdateServerResponse {
+  id: string;
+  name: string;
+  ip: string;
+  exporter_port: number;
+  provision_status: ProvisionStatus;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Тело PATCH /api/servers/order — полная перестановка (04-api.md). */
+export interface ReorderServersRequest {
+  ids: string[];
 }
 
 export interface StatusResponse {
@@ -95,6 +120,8 @@ export interface AiKey {
   check_status: AiKeyStatus;
   /** Рус. причина при check_status='error', иначе null. */
   error_message: string | null;
+  /** Порядок карточки внутри провайдер-группы (drag-and-drop). Меньше = выше. 04-api.md. */
+  position: number;
   last_checked_at: string | null;
   created_at: string;
 }
@@ -118,6 +145,23 @@ export interface CreateAiKeyResponse {
   name: string;
   provider: AiProvider;
   check_status: AiKeyStatus;
+  position: number;
+}
+
+/**
+ * Тело PATCH /api/ai-keys/{id} (04-api.md). Все поля опциональны — передаются
+ * только изменяемые. Пустой/отсутствующий `key` = «не менять ключ» (секрет не префилится).
+ */
+export interface UpdateAiKeyRequest {
+  name?: string;
+  provider?: AiProvider;
+  key?: string;
+}
+
+/** Тело PATCH /api/ai-keys/order — перестановка внутри провайдер-группы (04-api.md). */
+export interface ReorderAiKeysRequest {
+  provider: AiProvider;
+  ids: string[];
 }
 
 /** Лёгкий статус проверки ключа (04-api.md, GET /api/ai-keys/{id}/status). */

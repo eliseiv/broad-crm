@@ -1,17 +1,28 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
+import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
+import type { DragEndEvent } from '@dnd-kit/core';
+import { arrayMove, rectSortingStrategy, SortableContext } from '@dnd-kit/sortable';
 import { AddServerCard } from '@/components/AddServerCard';
 import { AddServerModal } from '@/components/AddServerModal';
 import { ServerCard } from '@/components/ServerCard';
 import { ServerCardSkeleton } from '@/components/ServerCardSkeleton';
+import { SortableItem } from '@/components/SortableItem';
 import { Button } from '@/components/ui/Button';
 import { ApiError } from '@/lib/api';
-import { useServers } from '@/features/servers/hooks';
+import { useReorderServers, useServers } from '@/features/servers/hooks';
 
 export function ServersPage() {
   const { data, isLoading, isError, error, refetch, isFetching } = useServers();
   const [addOpen, setAddOpen] = useState(false);
+  const reorderMutation = useReorderServers();
+
+  // PointerSensor: короткий клик (<200 мс) → edit; зажатие + движение → drag
+  // (08-design-system.md, 02-tech-stack.md).
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  );
 
   const isAuthError = error instanceof ApiError && error.status === 401;
 
@@ -21,8 +32,23 @@ export function ServersPage() {
     }
   }, [isError, isAuthError]);
 
-  const servers = data?.items ?? [];
+  // Порядок отрисовки — по position (стабильная сортировка сохраняет тай-брейк
+  // из ответа GET, 04-api.md: position ASC, created_at DESC, id).
+  const servers = useMemo(
+    () => [...(data?.items ?? [])].sort((a, b) => a.position - b.position),
+    [data?.items],
+  );
+  const serverIds = useMemo(() => servers.map((s) => s.id), [servers]);
   const isEmpty = !isLoading && !isError && servers.length === 0;
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || active.id === over.id) return;
+    const oldIndex = serverIds.indexOf(String(active.id));
+    const newIndex = serverIds.indexOf(String(over.id));
+    if (oldIndex === -1 || newIndex === -1) return;
+    reorderMutation.mutate(arrayMove(serverIds, oldIndex, newIndex));
+  };
 
   return (
     <>
@@ -88,12 +114,18 @@ export function ServersPage() {
       )}
 
       {!isLoading && !isError && servers.length > 0 && (
-        <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
-          {servers.map((server) => (
-            <ServerCard key={server.id} server={server} />
-          ))}
-          <AddServerCard onClick={() => setAddOpen(true)} />
-        </div>
+        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
+            <SortableContext items={serverIds} strategy={rectSortingStrategy}>
+              {servers.map((server) => (
+                <SortableItem key={server.id} id={server.id}>
+                  <ServerCard server={server} />
+                </SortableItem>
+              ))}
+            </SortableContext>
+            <AddServerCard onClick={() => setAddOpen(true)} />
+          </div>
+        </DndContext>
       )}
 
       <AddServerModal open={addOpen} onOpenChange={setAddOpen} />

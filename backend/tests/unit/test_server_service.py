@@ -26,6 +26,7 @@ class FakeServer:
     exporter_port: int = 9100
     provision_status: str = ProvisionStatus.online.value
     error_message: str | None = None
+    position: int = 0
     created_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 

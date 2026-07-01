@@ -54,6 +54,7 @@ function server(): Server {
     ip: '10.0.0.10',
     exporter_port: 9100,
     provision_status: 'online',
+    position: 0,
     online: false,
     uptime_seconds: null,
     last_updated: null,

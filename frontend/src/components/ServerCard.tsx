@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Clock, Loader2, Server as ServerIcon, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { AddServerModal } from '@/components/AddServerModal';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -33,6 +34,7 @@ export function ServerCard({ server }: ServerCardProps) {
   const statusQuery = useServerStatus(server.id, server.provision_status);
   const deleteMutation = useDeleteServer();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
 
   const status: ProvisionStatus = statusQuery.data?.provision_status ?? server.provision_status;
   const errorMessage = statusQuery.data?.error_message ?? null;
@@ -62,11 +64,26 @@ export function ServerCard({ server }: ServerCardProps) {
   const isOnline = status === 'online' && server.online;
   const isOffline = status === 'online' && !server.online;
 
+  // Клик по карточке → edit (короткий клик; drag активируется зажатием — см.
+  // PointerSensor в ServersPage). Кнопки «Удалить» гасят событие (stopPropagation).
+  const onCardKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      setEditOpen(true);
+    }
+  };
+  const stopForDelete = (e: React.SyntheticEvent) => e.stopPropagation();
+
   return (
     <>
       <Card
         interactive
-        className={`flex flex-col gap-4 p-4 sm:p-5 ${isError ? 'border-status-red/70' : ''}`}
+        role="button"
+        tabIndex={0}
+        aria-label={`Изменить сервер ${server.name}`}
+        onClick={() => setEditOpen(true)}
+        onKeyDown={onCardKeyDown}
+        className={`flex cursor-pointer flex-col gap-4 p-4 sm:p-5 ${isError ? 'border-status-red/70' : ''}`}
       >
         {/* Шапка */}
         <div className="flex items-start justify-between gap-2">
@@ -95,7 +112,11 @@ export function ServerCard({ server }: ServerCardProps) {
           <div className="flex shrink-0 items-center gap-1">
             <button
               type="button"
-              onClick={() => setConfirmOpen(true)}
+              onPointerDown={stopForDelete}
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmOpen(true);
+              }}
               aria-label={`Удалить сервер ${server.name}`}
               className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-3 hover:text-status-red focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
@@ -142,7 +163,11 @@ export function ServerCard({ server }: ServerCardProps) {
               variant="danger"
               size="sm"
               loading={deleteMutation.isPending}
-              onClick={() => setConfirmOpen(true)}
+              onPointerDown={stopForDelete}
+              onClick={(e) => {
+                e.stopPropagation();
+                setConfirmOpen(true);
+              }}
             >
               <Trash2 className="h-3.5 w-3.5" />
               Удалить
@@ -190,6 +215,8 @@ export function ServerCard({ server }: ServerCardProps) {
           node_exporter на целевом сервере не удаляется автоматически.
         </p>
       </Modal>
+
+      <AddServerModal mode="edit" server={server} open={editOpen} onOpenChange={setEditOpen} />
     </>
   );
 }
