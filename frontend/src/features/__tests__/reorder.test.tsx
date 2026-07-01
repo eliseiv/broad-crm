@@ -113,11 +113,7 @@ describe('useReorderAiKeys', () => {
   it('sends { provider, ids } body and reorders only within the provider group', async () => {
     aiKeysApi.reorderAiKeys.mockResolvedValue(undefined);
     queryClient.setQueryData(aiKeysKey, {
-      items: [
-        aiKey('o1', 'openai', 0),
-        aiKey('o2', 'openai', 1),
-        aiKey('a1', 'anthropic', 0),
-      ],
+      items: [aiKey('o1', 'openai', 0), aiKey('o2', 'openai', 1), aiKey('a1', 'anthropic', 0)],
     });
 
     const { result } = renderHook(() => useReorderAiKeys(), { wrapper });
@@ -141,9 +137,9 @@ describe('useReorderAiKeys', () => {
 
     const { result } = renderHook(() => useReorderAiKeys(), { wrapper });
     await act(async () => {
-      await result.current.mutateAsync({ provider: 'openai', ids: ['o2', 'o1'] }).catch(
-        () => undefined,
-      );
+      await result.current
+        .mutateAsync({ provider: 'openai', ids: ['o2', 'o1'] })
+        .catch(() => undefined);
     });
 
     const cached = queryClient.getQueryData<{ items: AiKey[] }>(aiKeysKey);

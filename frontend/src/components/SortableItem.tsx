@@ -46,6 +46,10 @@ export function SortableItem({ id, children }: SortableItemProps) {
       // обеспечивает сама карточка.
       {...listeners}
       className={cn(
+        // Обёртка занимает ячейку грида полностью (как раньше ServerCard напрямую):
+        // h-full — равная высота карточек в ряду; w-full/min-w-0 — корректный расчёт
+        // min-content внутренней сетки метрик (grid-cols-3) при minmax(0,1fr) колонках.
+        'h-full w-full min-w-0',
         // touch-action не блокируем: delay-активация (200 мс) сама разводит
         // тап/скролл и drag, а touch-none ломал бы прокрутку списка на тач-устройствах.
         isDragging &&

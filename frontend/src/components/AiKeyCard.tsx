@@ -75,7 +75,7 @@ export function AiKeyCard({ aiKey }: AiKeyCardProps) {
         aria-label={`Изменить ключ ${aiKey.name}`}
         onClick={() => setEditOpen(true)}
         onKeyDown={onCardKeyDown}
-        className={`flex cursor-pointer flex-col gap-4 p-4 sm:p-5 ${isError ? 'border-status-red/70' : ''}`}
+        className={`flex h-full cursor-pointer flex-col gap-4 p-4 sm:p-5 ${isError ? 'border-status-red/70' : ''}`}
       >
         {/* Шапка: иконка + имя + статус-бейдж */}
         <div className="flex items-start justify-between gap-2">

@@ -59,7 +59,7 @@ export function MetricSubCard({ kind, metric }: MetricSubCardProps) {
   const detailText = renderDetail(metric);
 
   return (
-    <div className="flex flex-col rounded-sub border border-border-subtle bg-surface-2 p-2.5 shadow-sub">
+    <div className="flex flex-col overflow-hidden rounded-sub border border-border-subtle bg-surface-2 p-2.5 shadow-sub">
       <div className="flex items-center justify-between">
         <div className="flex min-w-0 items-center gap-1.5">
           <span
@@ -79,7 +79,7 @@ export function MetricSubCard({ kind, metric }: MetricSubCardProps) {
       <div className="mt-1 flex items-center gap-1.5 border-t border-border-subtle pt-2.5">
         <FooterIcon className={`h-3.5 w-3.5 shrink-0 ${chip.split(' ')[0]}`} aria-hidden="true" />
         {detailText ? (
-          <span className="font-mono text-[12px] font-medium leading-tight text-text-primary">
+          <span className="whitespace-nowrap font-mono text-[12px] font-medium leading-tight text-text-primary">
             {detailText}
           </span>
         ) : (

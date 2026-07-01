@@ -72,9 +72,7 @@ describe('AiKeysPage grouping', () => {
     };
     render(<AiKeysPage />, { wrapper });
 
-    const sectionHeadings = screen
-      .getAllByRole('heading', { level: 2 })
-      .map((h) => h.textContent);
+    const sectionHeadings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
     // Секции всегда в фиксированном порядке: OpenAI, затем Anthropic.
     expect(sectionHeadings).toEqual(['OpenAI', 'Anthropic']);
   });
