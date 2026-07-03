@@ -1,11 +1,12 @@
-"""Unit-тесты httpx-клиента почты `app/infra/mail_client.py` (modules/mail, ADR-012).
+"""Unit-тесты httpx-клиента почты `app/infra/mail_client.py` (modules/mail, ADR-013).
 
 Внешний сервис `postapp.store` НЕ вызывается вживую: httpx-граница замокана через
 `httpx.MockTransport` (паттерн `test_ai_provider.py`/`test_infra_health_logging.py`).
 Проверяются: секрет `MAIL_API_KEY` только в заголовке `X-API-Key` и не в URL/логах
-(05-security.md); идемпотентность ретраев (list ретраит транзиентные; reply НЕ
-ретраит read-timeout/5xx — защита от двойной отправки); маппинг внешних кодов в
-типизированные исключения модуля; несовместимое тело → MailUnavailable.
+(05-security.md); проброс `order` во внешний API всегда явно, `since_id` — только при
+`order=asc`, `before_id` — только при `order=desc`; идемпотентность ретраев (list ретраит
+транзиентные; reply НЕ ретраит read-timeout/5xx — защита от двойной отправки); маппинг
+внешних кодов в типизированные исключения модуля; несовместимое тело → MailUnavailable.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from app.infra.mail_client import (
 
 KEY = "mail-secret-KEY-abc123XYZ"
 
-_VALID_LIST = {"messages": [], "next_since_id": None, "has_more": False}
+_VALID_LIST = {"messages": [], "next_before_id": None, "has_more": False}
 _VALID_REPLY = {"sent_id": 5099, "smtp_message_id": "<abc123@postapp.store>"}
 
 
@@ -60,7 +61,7 @@ async def test_list_sends_api_key_header_and_key_not_in_url(
 
     _install(monkeypatch, httpx.MockTransport(handler))
 
-    result = await _client().list_messages(since_id=100, limit=50)
+    result = await _client().list_messages(order="desc", since_id=None, before_id=100, limit=50)
 
     assert result == _VALID_LIST
     assert captured["x_api_key"] == KEY  # ключ — только в X-API-Key
@@ -87,33 +88,74 @@ async def test_reply_sends_api_key_header_and_key_not_in_url(
     assert KEY not in str(captured["url"])
 
 
-async def test_list_forwards_since_id_and_limit_params(monkeypatch: pytest.MonkeyPatch) -> None:
+# ---------------------------------------------- проброс order/курсоров/limit в query
+async def test_list_desc_forwards_order_and_before_id(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["since_id"] = request.url.params.get("since_id")
-        captured["limit"] = request.url.params.get("limit")
         captured["path"] = request.url.path
-        return httpx.Response(200, json=_VALID_LIST)
-
-    _install(monkeypatch, httpx.MockTransport(handler))
-    await _client().list_messages(since_id=777, limit=25)
-
-    assert captured["path"] == "/api/external/messages"
-    assert captured["since_id"] == "777"
-    assert captured["limit"] == "25"
-
-
-async def test_list_omits_since_id_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: dict[str, object] = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
+        captured["order"] = request.url.params.get("order")
+        captured["before_id"] = request.url.params.get("before_id")
+        captured["limit"] = request.url.params.get("limit")
         captured["has_since"] = "since_id" in request.url.params
         return httpx.Response(200, json=_VALID_LIST)
 
     _install(monkeypatch, httpx.MockTransport(handler))
-    await _client().list_messages(since_id=None, limit=50)
+    await _client().list_messages(order="desc", since_id=None, before_id=1001, limit=25)
 
+    assert captured["path"] == "/api/external/messages"
+    assert captured["order"] == "desc"
+    assert captured["before_id"] == "1001"
+    assert captured["limit"] == "25"
+    assert captured["has_since"] is False  # since_id не пробрасывается в desc
+
+
+async def test_list_desc_omits_before_id_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["order"] = request.url.params.get("order")
+        captured["has_before"] = "before_id" in request.url.params
+        captured["has_since"] = "since_id" in request.url.params
+        return httpx.Response(200, json=_VALID_LIST)
+
+    _install(monkeypatch, httpx.MockTransport(handler))
+    await _client().list_messages(order="desc", since_id=None, before_id=None, limit=50)
+
+    assert captured["order"] == "desc"  # order передаётся всегда явно
+    assert captured["has_before"] is False
+    assert captured["has_since"] is False
+
+
+async def test_list_asc_forwards_order_and_since_id(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["order"] = request.url.params.get("order")
+        captured["since_id"] = request.url.params.get("since_id")
+        captured["has_before"] = "before_id" in request.url.params
+        return httpx.Response(200, json={"messages": [], "next_since_id": None, "has_more": False})
+
+    _install(monkeypatch, httpx.MockTransport(handler))
+    await _client().list_messages(order="asc", since_id=777, before_id=None, limit=50)
+
+    assert captured["order"] == "asc"
+    assert captured["since_id"] == "777"
+    assert captured["has_before"] is False  # before_id не пробрасывается в asc
+
+
+async def test_list_asc_omits_since_id_when_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["order"] = request.url.params.get("order")
+        captured["has_since"] = "since_id" in request.url.params
+        return httpx.Response(200, json={"messages": [], "next_since_id": None, "has_more": False})
+
+    _install(monkeypatch, httpx.MockTransport(handler))
+    await _client().list_messages(order="asc", since_id=None, before_id=None, limit=50)
+
+    assert captured["order"] == "asc"
     assert captured["has_since"] is False
 
 
@@ -128,7 +170,7 @@ async def test_list_retries_5xx_then_succeeds(monkeypatch: pytest.MonkeyPatch) -
         return httpx.Response(200, json=_VALID_LIST)
 
     _install(monkeypatch, httpx.MockTransport(handler))
-    result = await _client().list_messages(since_id=None, limit=50)
+    result = await _client().list_messages(order="desc", since_id=None, before_id=None, limit=50)
 
     assert result == _VALID_LIST
     assert calls["n"] == 3  # 1 попытка + 2 ретрая
@@ -143,7 +185,7 @@ async def test_list_exhausts_5xx_raises_unavailable(monkeypatch: pytest.MonkeyPa
 
     _install(monkeypatch, httpx.MockTransport(handler))
     with pytest.raises(MailUnavailable):
-        await _client().list_messages(since_id=None, limit=50)
+        await _client().list_messages(order="desc", since_id=None, before_id=None, limit=50)
 
     assert calls["n"] == 3
 
@@ -159,7 +201,7 @@ async def test_list_retries_read_timeout_then_unavailable(
 
     _install(monkeypatch, httpx.MockTransport(handler))
     with pytest.raises(MailUnavailable):
-        await _client().list_messages(since_id=None, limit=50)
+        await _client().list_messages(order="desc", since_id=None, before_id=None, limit=50)
 
     assert calls["n"] == 3  # read-timeout ретраится для идемпотентного GET
 
@@ -174,7 +216,7 @@ async def test_list_retries_connect_error_then_recovers(monkeypatch: pytest.Monk
         return httpx.Response(200, json=_VALID_LIST)
 
     _install(monkeypatch, httpx.MockTransport(handler))
-    result = await _client().list_messages(since_id=None, limit=50)
+    result = await _client().list_messages(order="desc", since_id=None, before_id=None, limit=50)
 
     assert result == _VALID_LIST
     assert calls["n"] == 2
@@ -256,8 +298,10 @@ async def test_other_4xx_raises_rejected(monkeypatch: pytest.MonkeyPatch, status
         monkeypatch,
         httpx.MockTransport(lambda _r: httpx.Response(status_code, json={"d": "bad"})),
     )
-    with pytest.raises(MailRejected):
-        await _client().reply(message_id=1, payload={"body": "x"})
+    with pytest.raises(MailRejected) as exc:
+        await _client().list_messages(order="desc", since_id=None, before_id=None, limit=50)
+
+    assert exc.value.status_code == status_code  # статус несётся для маппинга в сервисе
 
 
 async def test_non_json_body_raises_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -266,7 +310,7 @@ async def test_non_json_body_raises_unavailable(monkeypatch: pytest.MonkeyPatch)
         httpx.MockTransport(lambda _r: httpx.Response(200, content=b"not-json")),
     )
     with pytest.raises(MailUnavailable):
-        await _client().list_messages(since_id=None, limit=50)
+        await _client().list_messages(order="desc", since_id=None, before_id=None, limit=50)
 
 
 async def test_non_dict_json_body_raises_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -275,7 +319,7 @@ async def test_non_dict_json_body_raises_unavailable(monkeypatch: pytest.MonkeyP
         httpx.MockTransport(lambda _r: httpx.Response(200, json=[1, 2, 3])),
     )
     with pytest.raises(MailUnavailable):
-        await _client().list_messages(since_id=None, limit=50)
+        await _client().list_messages(order="desc", since_id=None, before_id=None, limit=50)
 
 
 async def test_generic_http_error_maps_unavailable_no_retry(
@@ -289,7 +333,7 @@ async def test_generic_http_error_maps_unavailable_no_retry(
 
     _install(monkeypatch, httpx.MockTransport(handler))
     with pytest.raises(MailUnavailable):
-        await _client().list_messages(since_id=None, limit=50)
+        await _client().list_messages(order="desc", since_id=None, before_id=None, limit=50)
 
     assert calls["n"] == 1  # прочая ошибка httpx неретраябельна
 
@@ -310,7 +354,7 @@ async def test_api_key_not_logged_on_failure(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(mod, "logger", structlog.get_logger(mod.__name__))
 
     with structlog.testing.capture_logs() as logs, pytest.raises(MailUnavailable):
-        await _client().list_messages(since_id=None, limit=50)
+        await _client().list_messages(order="desc", since_id=None, before_id=None, limit=50)
 
     assert logs  # событие(я) записаны
     serialized = repr(logs)

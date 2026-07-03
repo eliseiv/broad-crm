@@ -1,4 +1,6 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import type { PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useMailFeed } from '@/features/mail/hooks';
 import { ApiError } from '@/lib/api';
@@ -7,11 +9,10 @@ import type { MailListResponse, MailMessage } from '@/types/api';
 const api = vi.hoisted(() => ({
   listMail: vi.fn(),
   replyMail: vi.fn(),
-  MAIL_PAGE_LIMIT: 50,
+  MAIL_PAGE_LIMIT: 20,
 }));
 
 vi.mock('@/features/mail/api', () => api);
-vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 function makeMessage(id: number): MailMessage {
   return {
@@ -31,32 +32,50 @@ function makeMessage(id: number): MailMessage {
   };
 }
 
-function page(messages: MailMessage[], next: number, hasMore: boolean): MailListResponse {
-  return { messages, next_since_id: next, has_more: hasMore };
+/** desc-страница: заполнен `next_before_id`, `next_since_id` = null (04-api.md). */
+function page(
+  messages: MailMessage[],
+  nextBeforeId: number | null,
+  hasMore: boolean,
+): MailListResponse {
+  return { messages, next_since_id: null, next_before_id: nextBeforeId, has_more: hasMore };
 }
 
-describe('useMailFeed', () => {
+/** Свежий QueryClient на каждый тест — изоляция кэша между прогонами. */
+function makeWrapper() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 0 } },
+  });
+  return function Wrapper({ children }: PropsWithChildren) {
+    return <QueryClientProvider client={client}>{children}</QueryClientProvider>;
+  };
+}
+
+describe('useMailFeed (ADR-013 infinite desc feed)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('loads the first batch newest-first and requests without since_id', async () => {
-    api.listMail.mockResolvedValueOnce(page([makeMessage(1), makeMessage(2)], 2, true));
-    const { result } = renderHook(() => useMailFeed());
+  it('loads the first batch newest-first without a cursor (order=desc, limit=20)', async () => {
+    api.listMail.mockResolvedValueOnce(page([makeMessage(2), makeMessage(1)], 1, true));
+    const { result } = renderHook(() => useMailFeed(), { wrapper: makeWrapper() });
 
     await waitFor(() => expect(result.current.phase).toBe('ready'));
-    // Первый запрос без since_id (первый батч от начала окна).
-    expect(api.listMail).toHaveBeenCalledWith(undefined, 50);
-    // Отображение новыми сверху (id DESC).
+    // Первая страница — без before_id, order=desc, дефолтный лимит 20.
+    expect(api.listMail.mock.calls[0][0]).toEqual({
+      order: 'desc',
+      beforeId: undefined,
+      limit: 20,
+    });
     expect(result.current.messages.map((m) => m.id)).toEqual([2, 1]);
     expect(result.current.hasMore).toBe(true);
   });
 
-  it('paginates forward by next_since_id and dedups overlapping ids', async () => {
+  it('paginates older by next_before_id, dedups overlaps and keeps id DESC', async () => {
     api.listMail
-      .mockResolvedValueOnce(page([makeMessage(1), makeMessage(2)], 2, true))
-      .mockResolvedValueOnce(page([makeMessage(2), makeMessage(3)], 3, false));
-    const { result } = renderHook(() => useMailFeed());
+      .mockResolvedValueOnce(page([makeMessage(5), makeMessage(4)], 4, true))
+      .mockResolvedValueOnce(page([makeMessage(4), makeMessage(3)], 3, false));
+    const { result } = renderHook(() => useMailFeed(), { wrapper: makeWrapper() });
     await waitFor(() => expect(result.current.phase).toBe('ready'));
 
     await act(async () => {
@@ -64,15 +83,19 @@ describe('useMailFeed', () => {
     });
 
     await waitFor(() => expect(result.current.hasMore).toBe(false));
-    // «Загрузить ещё» шлёт since_id = предыдущий next_since_id (2).
-    expect(api.listMail).toHaveBeenNthCalledWith(2, 2, 50);
-    // Дедуп по id: письмо 2 не задвоилось; порядок — новые сверху.
-    expect(result.current.messages.map((m) => m.id)).toEqual([3, 2, 1]);
+    // Догрузка старых шлёт before_id = next_before_id первой страницы (4).
+    expect(api.listMail.mock.calls[1][0]).toEqual({
+      order: 'desc',
+      beforeId: 4,
+      limit: 20,
+    });
+    // Дедуп по id: письмо 4 не задвоилось; порядок — новые сверху.
+    expect(result.current.messages.map((m) => m.id)).toEqual([5, 4, 3]);
   });
 
   it('does not fetch more when hasMore is false (idempotent guard)', async () => {
-    api.listMail.mockResolvedValueOnce(page([makeMessage(1)], 1, false));
-    const { result } = renderHook(() => useMailFeed());
+    api.listMail.mockResolvedValueOnce(page([makeMessage(1)], null, false));
+    const { result } = renderHook(() => useMailFeed(), { wrapper: makeWrapper() });
     await waitFor(() => expect(result.current.phase).toBe('ready'));
 
     await act(async () => {
@@ -83,17 +106,17 @@ describe('useMailFeed', () => {
     expect(api.listMail).toHaveBeenCalledTimes(1);
   });
 
-  it('enters not_configured phase on 503', async () => {
+  it('enters not_configured phase on 503 mail_not_configured', async () => {
     api.listMail.mockRejectedValueOnce(new ApiError(503, 'mail_not_configured', 'x'));
-    const { result } = renderHook(() => useMailFeed());
+    const { result } = renderHook(() => useMailFeed(), { wrapper: makeWrapper() });
 
     await waitFor(() => expect(result.current.phase).toBe('not_configured'));
     expect(result.current.messages).toEqual([]);
   });
 
-  it('enters error phase on 502', async () => {
+  it('enters error phase on 502 mail_unavailable', async () => {
     api.listMail.mockRejectedValueOnce(new ApiError(502, 'mail_unavailable', 'x'));
-    const { result } = renderHook(() => useMailFeed());
+    const { result } = renderHook(() => useMailFeed(), { wrapper: makeWrapper() });
 
     await waitFor(() => expect(result.current.phase).toBe('error'));
   });

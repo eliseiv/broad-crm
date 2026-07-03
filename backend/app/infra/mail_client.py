@@ -42,7 +42,16 @@ class MailMessageNotFound(Exception):
 
 
 class MailRejected(Exception):
-    """Внешний сервис отклонил запрос как невалидный (4xx, кроме 404/429) → 422."""
+    """Внешний сервис отклонил запрос как невалидный (4xx, кроме 404/429).
+
+    Несёт `status_code` внешнего ответа: reply → `422 unprocessable`; на идемпотентном
+    list внешний `400` (взаимоисключение режимов пагинации) маппится в
+    `400 validation_error` (04-api.md#mail).
+    """
+
+    def __init__(self, status_code: int) -> None:
+        super().__init__(str(status_code))
+        self.status_code = status_code
 
 
 class MailClient:
@@ -53,14 +62,26 @@ class MailClient:
         self._api_key = api_key
         self._timeout = timeout_sec
 
-    async def list_messages(self, since_id: int | None, limit: int) -> dict[str, Any]:
-        """Лента писем: GET /api/external/messages (keyset вперёд по `since_id`).
+    async def list_messages(
+        self,
+        *,
+        order: str,
+        since_id: int | None,
+        before_id: int | None,
+        limit: int,
+    ) -> dict[str, Any]:
+        """Лента писем: GET /api/external/messages (04-api.md#mail, ADR-013).
 
+        `order` (`asc`/`desc`) передаётся во внешний API **всегда явно** (не полагаемся
+        на внешний default). `since_id` — только при `order=asc` (keyset вперёд по
+        `id ASC`); `before_id` — только при `order=desc` (backward по `id DESC`).
         Идемпотентен — ретраится на транзиентных ошибках.
         """
-        params: dict[str, Any] = {"limit": limit}
-        if since_id is not None:
+        params: dict[str, Any] = {"order": order, "limit": limit}
+        if order == "asc" and since_id is not None:
             params["since_id"] = since_id
+        elif order == "desc" and before_id is not None:
+            params["before_id"] = before_id
         return await self._request("GET", _EXTERNAL_MESSAGES_PATH, params=params, idempotent=True)
 
     async def reply(self, message_id: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -158,8 +179,9 @@ class MailClient:
         if status_code == httpx.codes.TOO_MANY_REQUESTS or status_code >= 500:
             logger.warning("mail_request_failed", status=status_code)
             raise MailUnavailable(f"Внешний сервис вернул {status_code}")
-        # Прочий 4xx — внешний сервис отклонил запрос (невалидное тело reply).
-        raise MailRejected(str(status_code))
+        # Прочий 4xx — внешний сервис отклонил запрос (невалидное тело reply /
+        # взаимоисключение режимов пагинации при list); статус несём для маппинга.
+        raise MailRejected(status_code)
 
 
 def get_mail_client() -> MailClient:

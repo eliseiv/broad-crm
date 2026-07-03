@@ -386,27 +386,40 @@ Backend отдаёт **единый плоский список** (без сек
 `MailTag = { id: integer, name: string, color: string }` (`color` — HEX, для `Badge`).
 
 ### GET `/api/mail/messages`
-Лента писем (прокси к внешнему `GET /api/external/messages`). Требует JWT.
+Лента писем (прокси к внешнему `GET /api/external/messages`). Требует JWT. Поддерживает **два режима** пагинации: `desc` (backward, newest-first — основной для страницы «Почты») и `asc` (keyset вперёд, обратная совместимость). Внешний backward-контракт — mail-агрегатор ADR-0036; решение CRM — [ADR-013](adr/ADR-013-mail-newest-first-master-detail-inline-reply.md).
 
 **Query**
 | Параметр | Тип | Правила |
 |----------|-----|---------|
-| `since_id` | integer? | опц., keyset вперёд: возвращаются письма с `id > since_id`. Не задан → с начала доступного окна (ретенция внешнего сервиса ~30 дней) |
-| `limit` | integer? | опц., `1..200`, default `50`. Вне диапазона → `400 validation_error` |
+| `order` | enum? | опц., ∈ {`asc`,`desc`}, **default `desc`**. Определяет режим пагинации |
+| `since_id` | integer? | опц., **только при `order=asc`**: keyset вперёд, возвращаются письма с `id > since_id`. При `order=desc` передан → `400 validation_error` |
+| `before_id` | integer? | опц., `ge=1`, **только при `order=desc`**: backward, возвращаются письма с `id < before_id` по `id DESC`. Не задан (при `order=desc`) → последние `limit` писем (самые свежие). При `order=asc` передан → `400 validation_error` |
+| `limit` | integer? | опц., `1..200`, default `50`. Вне диапазона → `400 validation_error`. Страница «Почты» шлёт `limit=20` |
 
-**Response 200** — схема `MailListResponse`:
+> **Проброс во внешний API (нормативно).** CRM всегда передаёт `order` во внешний `GET /api/external/messages` **явно** (не полагается на внешний default `asc`). CRM default `order=desc` отличается от внешнего default `asc` осознанно — отражает основной сценарий страницы (newest-first); frontend всё равно шлёт `order=desc` явно. `since_id`/`next_since_id` — маппинг asc-режима 1:1; `before_id`/`next_before_id` — маппинг desc-режима 1:1.
+
+**Response 200** — схема `MailListResponse` (единая для обоих режимов; заполнен курсор запрошенного режима, второй — `null`):
 ```json
 {
   "messages": [ /* MailMessage[] */ ],
-  "next_since_id": 1042,
+  "next_since_id": null,
+  "next_before_id": 1001,
   "has_more": true
 }
 ```
-- `next_since_id` — `integer | null`: максимальный `id` в батче (для следующего запроса `since_id`); **`null` для пустого батча** (нет новых писем вперёд — `messages` пуст, курсор не сдвигается). Backend реализован как `int | None` (безопасный супертип). Синхронизировано с keyset-уточнением в [modules/mail](modules/mail/README.md#пагинация-нормативно).
-- `has_more` — есть ли ещё письма вперёд.
-- **Пагинация — keyset вперёд по `id ASC`; server-side фильтров/поиска нет.** Frontend отображает батч новыми сверху (`id` DESC) и грузит дальше по `next_since_id` («Загрузить ещё»), пока `has_more=true`. Строгий глобальный newest-first и поиск недоступны — [TD-024](100-known-tech-debt.md).
+| Поле | Тип | Примечание |
+|------|-----|-----------|
+| `messages` | `MailMessage[]` | Батч писем. В `desc`-режиме — по `id DESC` (свежие первыми) как отдаёт внешний API; в `asc` — по `id ASC` |
+| `next_since_id` | integer \| null | **asc-режим:** максимальный `id` в батче (курсор следующего `since_id`); `null` для пустого батча (нет новых вперёд). **desc-режим:** всегда `null` |
+| `next_before_id` | integer \| null | **desc-режим:** минимальный `id` в батче (курсор следующего `before_id` — догрузка более старых); `null`, если старее нет (`has_more=false`) или батч пуст. **asc-режим:** всегда `null` |
+| `has_more` | boolean | Есть ли ещё письма в запрошенном направлении (вперёд для asc, в прошлое для desc) |
 
-**Ошибки:** `401 unauthorized`, `400 validation_error` (`limit` вне 1..200), `502 mail_unavailable`, `503 mail_not_configured`.
+- Backend реализует оба курсора как `int | None` (безопасный супертип). Синхронизировано с [modules/mail](modules/mail/README.md#пагинация-нормативно).
+- **desc (основной):** первый запрос — `order=desc` без `before_id` → новейшие `limit`; догрузка старых — `order=desc&before_id=<next_before_id>`, пока `has_more=true`. Даёт **строгий глобальный newest-first**.
+- **asc (совместимость):** `order=asc` (+опц. `since_id`) — keyset вперёд по `id ASC`, как прежде.
+- **Server-side фильтров/поиска нет** (внешний API их не предоставляет) — остаток [TD-024](100-known-tech-debt.md); newest-first backward-пагинацией снят.
+
+**Ошибки:** `401 unauthorized`, `400 validation_error` (`limit` вне 1..200; взаимоисключение режимов: `before_id` при `order=asc` ИЛИ `since_id` при `order=desc`; внешний `400` взаимоисключения также → `400`), `502 mail_unavailable`, `503 mail_not_configured`.
 
 ### POST `/api/mail/messages/{id}/reply`
 Ответ на письмо (прокси к внешнему `POST /api/external/messages/{id}/reply`). Требует JWT.

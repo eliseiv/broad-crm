@@ -9,8 +9,14 @@ modules/mail). Внешний DTO проксируется 1:1 в нормати
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel
+
+# Режим пагинации ленты (04-api.md#mail): `desc` — backward newest-first (основной
+# режим страницы), `asc` — keyset вперёд (обратная совместимость). Default эндпоинта
+# CRM — `desc`; во внешний API `order` передаётся всегда явно.
+MailOrder = Literal["asc", "desc"]
 
 
 class MailAccount(BaseModel):
@@ -48,14 +54,21 @@ class MailMessage(BaseModel):
 
 
 class MailListResponse(BaseModel):
-    """Ответ 200 GET /api/mail/messages (keyset вперёд, 04-api.md#mail).
+    """Ответ 200 GET /api/mail/messages (единая схема обоих режимов, 04-api.md#mail).
 
-    `next_since_id` — максимальный `id` в батче (следующий `since_id`); `null` для
-    пустого батча (нет писем вперёд). `has_more` — есть ли ещё письма.
+    Заполнен курсор запрошенного режима, второй — `null`:
+    - **asc:** `next_since_id` — максимальный `id` в батче (следующий `since_id`);
+      `null` для пустого батча (нет писем вперёд). `next_before_id` = `null`.
+    - **desc:** `next_before_id` — минимальный `id` в батче (следующий `before_id`,
+      догрузка более старых); `null`, если старее нет или батч пуст.
+      `next_since_id` = `null`.
+
+    `has_more` — есть ли ещё письма в запрошенном направлении.
     """
 
     messages: list[MailMessage]
     next_since_id: int | None
+    next_before_id: int | None
     has_more: bool
 
 
@@ -84,6 +97,7 @@ __all__ = [
     "MailAccount",
     "MailListResponse",
     "MailMessage",
+    "MailOrder",
     "MailReplyRequest",
     "MailReplyResponse",
     "MailTag",

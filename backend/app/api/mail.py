@@ -12,11 +12,13 @@ from typing import Annotated
 from fastapi import APIRouter, Query
 
 from app.api.deps import CurrentUser, MailServiceDep
-from app.schemas.mail import MailListResponse, MailReplyRequest, MailReplyResponse
+from app.schemas.mail import MailListResponse, MailOrder, MailReplyRequest, MailReplyResponse
 
 router = APIRouter(prefix="/mail", tags=["mail"])
 
+Order = Annotated[MailOrder, Query()]
 SinceId = Annotated[int | None, Query()]
+BeforeId = Annotated[int | None, Query(ge=1)]
 Limit = Annotated[int, Query()]
 
 
@@ -24,11 +26,20 @@ Limit = Annotated[int, Query()]
 async def list_messages(
     service: MailServiceDep,
     _user: CurrentUser,
+    order: Order = "desc",
     since_id: SinceId = None,
+    before_id: BeforeId = None,
     limit: Limit = 50,
 ) -> MailListResponse:
-    """Лента писем (keyset вперёд по `since_id`, `limit` 1..200, default 50)."""
-    return await service.list_messages(since_id=since_id, limit=limit)
+    """Лента писем (04-api.md#mail, ADR-013).
+
+    `order` (`asc`/`desc`, default `desc` — backward newest-first). `since_id` — только
+    при `asc`; `before_id` (`ge=1`) — только при `desc`; взаимоисключение → 400.
+    `limit` 1..200 (default 50).
+    """
+    return await service.list_messages(
+        order=order, since_id=since_id, before_id=before_id, limit=limit
+    )
 
 
 @router.post("/messages/{message_id}/reply", response_model=MailReplyResponse)

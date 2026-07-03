@@ -1,12 +1,14 @@
-"""Контрактные/интеграционные тесты роутера почты (04-api.md#mail, modules/mail).
+"""Контрактные/интеграционные тесты роутера почты (04-api.md#mail, modules/mail, ADR-013).
 
 Полный стек router→service→client, но httpx-граница к внешнему `postapp.store`
 замокана `httpx.MockTransport` (реальных запросов наружу нет). JWT — через
 dependency_override. Проверяются коды/схемы ответов, гейт mail_enabled (503) ДО
-валидации limit, границы limit (400), валидация reply (422/400), маппинг внешних
-кодов (404/422/502), проброс пагинации (next_since_id/has_more, null-курсор), а также
-инварианты безопасности: `MAIL_API_KEY` уходит только в заголовок `X-API-Key`
-исходящего запроса и НЕ присутствует в ответах CRM; тело внешней ошибки не пробрасывается.
+валидации limit, границы limit (400), проброс `order`/курсоров во внешний API,
+взаимоисключение режимов пагинации (400), `before_id` `ge=1` (400), нормализация
+курсоров (незапрошенный → null), валидация reply (422/400), маппинг внешних кодов
+(404/422/502, внешний 400 list → 400), а также инварианты безопасности: `MAIL_API_KEY`
+уходит только в заголовок `X-API-Key` исходящего запроса и НЕ присутствует в ответах CRM;
+тело внешней ошибки не пробрасывается.
 """
 
 from __future__ import annotations
@@ -37,7 +39,10 @@ _MESSAGE: dict[str, Any] = {
     "body_truncated": False,
     "tags": [{"id": 7, "name": "важное", "color": "#EF4444"}],
 }
-_VALID_LIST = {"messages": [_MESSAGE], "next_since_id": 1042, "has_more": True}
+# Внешний ответ desc-режима: несёт `next_before_id` (основной режим страницы «Почты»).
+_DESC_LIST: dict[str, Any] = {"messages": [_MESSAGE], "next_before_id": 1001, "has_more": True}
+# Внешний ответ asc-режима: несёт `next_since_id` (обратная совместимость).
+_ASC_LIST: dict[str, Any] = {"messages": [_MESSAGE], "next_since_id": 1042, "has_more": True}
 _VALID_REPLY = {"sent_id": 5099, "smtp_message_id": "<abc123@postapp.store>"}
 
 
@@ -104,7 +109,7 @@ def _client(app: FastAPI) -> AsyncClient:
 
 # --------------------------------------------------------- гейт mail_enabled (503)
 async def test_list_returns_503_when_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorder = Recorder(json_body=_VALID_LIST)
+    recorder = Recorder(json_body=_DESC_LIST)
     app = _build_app(monkeypatch, recorder, enabled=False)
     async with _client(app) as client:
         response = await client.get("/api/mail/messages")
@@ -127,7 +132,7 @@ async def test_reply_returns_503_when_not_configured(monkeypatch: pytest.MonkeyP
 
 async def test_gate_precedes_limit_validation(monkeypatch: pytest.MonkeyPatch) -> None:
     """Выключенная почта + невалидный limit → 503 (гейт до валидации диапазона)."""
-    recorder = Recorder(json_body=_VALID_LIST)
+    recorder = Recorder(json_body=_DESC_LIST)
     app = _build_app(monkeypatch, recorder, enabled=False)
     async with _client(app) as client:
         response = await client.get("/api/mail/messages", params={"limit": 999})
@@ -136,44 +141,141 @@ async def test_gate_precedes_limit_validation(monkeypatch: pytest.MonkeyPatch) -
     assert response.json()["error"]["code"] == "mail_not_configured"
 
 
-# --------------------------------------------------- список: успех, ключ, проброс
-async def test_list_success_passthrough_and_api_key_header(
+# --------------------------------------------- список desc: успех, ключ, проброс
+async def test_list_desc_default_passthrough_and_api_key_header(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recorder = Recorder(json_body=_VALID_LIST)
+    """order=desc (default) без before_id → внешний вызов order=desc; ответ: next_since_id
+    null, next_before_id из внешнего API. Ключ — только в заголовке, не в ответе."""
+    recorder = Recorder(json_body=_DESC_LIST)
     app = _build_app(monkeypatch, recorder)
     async with _client(app) as client:
-        response = await client.get("/api/mail/messages", params={"since_id": 100, "limit": 25})
+        response = await client.get("/api/mail/messages", params={"limit": 20})
 
     assert response.status_code == 200
     body = response.json()
-    assert body["next_since_id"] == 1042
+    assert body["next_since_id"] is None
+    assert body["next_before_id"] == 1001
     assert body["has_more"] is True
     assert body["messages"][0]["id"] == 1042
-    # Ключ ушёл только в заголовок исходящего запроса; в ответе CRM его нет.
     outgoing = recorder.requests[0]
     assert outgoing.headers.get("x-api-key") == MAIL_KEY
-    assert outgoing.url.params.get("since_id") == "100"
-    assert outgoing.url.params.get("limit") == "25"
+    assert outgoing.url.params.get("order") == "desc"  # order передаётся всегда явно
+    assert outgoing.url.params.get("limit") == "20"
+    assert "before_id" not in outgoing.url.params
+    assert "since_id" not in outgoing.url.params
     assert MAIL_KEY not in response.text
 
 
-async def test_list_null_next_since_id_empty_batch(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorder = Recorder(json_body={"messages": [], "next_since_id": None, "has_more": False})
+async def test_list_desc_with_before_id_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    """order=desc&before_id=N → проброс before_id; next_since_id принудительно null."""
+    recorder = Recorder(json_body=_DESC_LIST)
     app = _build_app(monkeypatch, recorder)
     async with _client(app) as client:
-        response = await client.get("/api/mail/messages")
+        response = await client.get(
+            "/api/mail/messages", params={"order": "desc", "before_id": 1001, "limit": 20}
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["next_since_id"] is None
+    assert body["next_before_id"] == 1001
+    outgoing = recorder.requests[0]
+    assert outgoing.url.params.get("order") == "desc"
+    assert outgoing.url.params.get("before_id") == "1001"
+    assert "since_id" not in outgoing.url.params
+
+
+async def test_list_asc_with_since_id_passthrough(monkeypatch: pytest.MonkeyPatch) -> None:
+    """order=asc&since_id=N → BC: проброс since_id; next_before_id принудительно null."""
+    recorder = Recorder(json_body=_ASC_LIST)
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get(
+            "/api/mail/messages", params={"order": "asc", "since_id": 1000, "limit": 25}
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["next_before_id"] is None
+    assert body["next_since_id"] == 1042
+    outgoing = recorder.requests[0]
+    assert outgoing.url.params.get("order") == "asc"
+    assert outgoing.url.params.get("since_id") == "1000"
+    assert "before_id" not in outgoing.url.params
+
+
+async def test_list_desc_null_next_before_id_empty_batch(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body={"messages": [], "next_before_id": None, "has_more": False})
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/messages", params={"before_id": 500})
 
     assert response.status_code == 200
     body = response.json()
     assert body["messages"] == []
+    assert body["next_before_id"] is None
     assert body["next_since_id"] is None
     assert body["has_more"] is False
 
 
+# ------------------------------------- взаимоисключение режимов пагинации (400)
+async def test_list_desc_with_since_id_returns_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body=_DESC_LIST)
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/messages", params={"order": "desc", "since_id": 100})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "validation_error"
+    assert recorder.requests == []  # локальная валидация — до внешнего вызова
+
+
+async def test_list_asc_with_before_id_returns_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body=_ASC_LIST)
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get(
+            "/api/mail/messages", params={"order": "asc", "before_id": 1001}
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "validation_error"
+    assert recorder.requests == []
+
+
+@pytest.mark.parametrize("before_id", [0, -1])
+async def test_list_before_id_below_one_returns_400(
+    monkeypatch: pytest.MonkeyPatch, before_id: int
+) -> None:
+    """before_id < 1 → 400 validation_error (Query ge=1), внешний сервис не вызывается."""
+    recorder = Recorder(json_body=_DESC_LIST)
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get(
+            "/api/mail/messages", params={"order": "desc", "before_id": before_id}
+        )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "validation_error"
+    assert recorder.requests == []
+
+
+async def test_list_invalid_order_returns_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body=_DESC_LIST)
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/messages", params={"order": "sideways"})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "validation_error"
+    assert recorder.requests == []
+
+
+# ------------------------------------------------------------- границы limit (400)
 @pytest.mark.parametrize("limit", [0, 201])
 async def test_list_limit_out_of_range_400(monkeypatch: pytest.MonkeyPatch, limit: int) -> None:
-    recorder = Recorder(json_body=_VALID_LIST)
+    recorder = Recorder(json_body=_DESC_LIST)
     app = _build_app(monkeypatch, recorder)
     async with _client(app) as client:
         response = await client.get("/api/mail/messages", params={"limit": limit})
@@ -184,7 +286,7 @@ async def test_list_limit_out_of_range_400(monkeypatch: pytest.MonkeyPatch, limi
 
 
 async def test_list_invalid_limit_type_400(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorder = Recorder(json_body=_VALID_LIST)
+    recorder = Recorder(json_body=_DESC_LIST)
     app = _build_app(monkeypatch, recorder)
     async with _client(app) as client:
         response = await client.get("/api/mail/messages", params={"limit": "abc"})
@@ -192,6 +294,19 @@ async def test_list_invalid_limit_type_400(monkeypatch: pytest.MonkeyPatch) -> N
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "validation_error"
     assert recorder.requests == []
+
+
+# ------------------------------------------------- маппинг внешних ошибок list
+async def test_list_external_400_maps_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Внешний 400 (рассинхрон взаимоисключения) → 400 validation_error (04-api.md#mail)."""
+    recorder = Recorder(status_code=400, json_body={"detail": EXTERNAL_SECRET_MARKER})
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/messages")
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "validation_error"
+    assert EXTERNAL_SECRET_MARKER not in response.text
 
 
 async def test_list_external_5xx_maps_502_and_no_body_leak(
@@ -210,7 +325,7 @@ async def test_list_external_5xx_maps_502_and_no_body_leak(
 
 async def test_list_malformed_external_body_maps_502(monkeypatch: pytest.MonkeyPatch) -> None:
     # Нет обязательного has_more → схема не проходит → 502.
-    recorder = Recorder(json_body={"messages": [], "next_since_id": None})
+    recorder = Recorder(json_body={"messages": [], "next_before_id": None})
     app = _build_app(monkeypatch, recorder)
     async with _client(app) as client:
         response = await client.get("/api/mail/messages")
@@ -299,7 +414,7 @@ async def test_reply_external_5xx_maps_502_no_leak(monkeypatch: pytest.MonkeyPat
 
 # ------------------------------------------------------------------- JWT (401)
 async def test_endpoints_require_jwt_401(monkeypatch: pytest.MonkeyPatch) -> None:
-    recorder = Recorder(json_body=_VALID_LIST)
+    recorder = Recorder(json_body=_DESC_LIST)
     app = _build_app(monkeypatch, recorder, with_auth=False)
     async with _client(app) as client:
         listed = await client.get("/api/mail/messages")

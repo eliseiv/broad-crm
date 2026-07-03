@@ -209,15 +209,23 @@ export interface MailMessage {
   tags: MailTag[];
 }
 
+/** Режим пагинации ленты писем (04-api.md, GET /api/mail/messages `order`). */
+export type MailOrder = 'asc' | 'desc';
+
 /**
- * Ответ GET /api/mail/messages (04-api.md, MailListResponse). Keyset вперёд:
- * `next_since_id` — максимальный `id` в батче (курсор для «Загрузить ещё»);
- * `null` для пустого батча — нет новых писем вперёд.
- * `has_more` — есть ли ещё письма вперёд.
+ * Ответ GET /api/mail/messages (04-api.md, MailListResponse). Единая схема для обоих
+ * режимов; заполнен курсор запрошенного режима, второй — `null`.
+ * - `next_since_id` — asc-режим: максимальный `id` батча (курсор `since_id` вперёд);
+ *   `null` для пустого батча. В desc-режиме всегда `null`.
+ * - `next_before_id` — desc-режим (основной для страницы): минимальный `id` батча
+ *   (курсор `before_id` — догрузка более старых); `null`, если старее нет или батч пуст.
+ *   В asc-режиме всегда `null`.
+ * - `has_more` — есть ли ещё письма в запрошенном направлении.
  */
 export interface MailListResponse {
   messages: MailMessage[];
   next_since_id: number | null;
+  next_before_id: number | null;
   has_more: boolean;
 }
 

@@ -1,8 +1,6 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import type { PropsWithChildren } from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MailPage } from '@/pages/MailPage';
 import { ApiError } from '@/lib/api';
 import type { MailFeedResult } from '@/features/mail/hooks';
@@ -12,7 +10,7 @@ const feed = vi.hoisted(() => ({ value: null as unknown }));
 
 vi.mock('@/features/mail/hooks', () => ({
   useMailFeed: () => feed.value,
-  // MailMessageCard использует useReplyMail — мокаем как no-op мутацию.
+  // MailDetail → MailReplyForm использует useReplyMail — мокаем как no-op мутацию.
   useReplyMail: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
@@ -20,8 +18,32 @@ vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 import { toast } from 'sonner';
 
-function wrapper({ children }: PropsWithChildren) {
-  return <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;
+// Управляемый IntersectionObserver: захватываем колбэк sentinel-эффекта, чтобы
+// детерминированно эмулировать пересечение (догрузку) без реального скролла.
+let ioCallback: IntersectionObserverCallback | null = null;
+const ioObserve = vi.fn();
+const ioDisconnect = vi.fn();
+
+class MockIntersectionObserver {
+  constructor(cb: IntersectionObserverCallback) {
+    ioCallback = cb;
+  }
+  observe = ioObserve;
+  disconnect = ioDisconnect;
+  unobserve = vi.fn();
+  takeRecords = vi.fn();
+  root = null;
+  rootMargin = '';
+  thresholds = [];
+}
+
+function triggerIntersection(): void {
+  act(() => {
+    ioCallback?.(
+      [{ isIntersecting: true } as IntersectionObserverEntry],
+      {} as IntersectionObserver,
+    );
+  });
 }
 
 function makeMessage(id: number): MailMessage {
@@ -49,16 +71,22 @@ function baseFeed(overrides: Partial<MailFeedResult> = {}): MailFeedResult {
     error: null,
     hasMore: false,
     isFetchingMore: false,
-    isRefreshing: false,
+    isReloading: false,
     loadMore: vi.fn(),
     reload: vi.fn(),
     ...overrides,
   };
 }
 
-describe('MailPage states', () => {
+describe('MailPage master-detail', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    ioCallback = null;
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it('shows "Сервис почт не настроен" on 503 without toast spam', () => {
@@ -66,10 +94,9 @@ describe('MailPage states', () => {
       phase: 'not_configured',
       error: new ApiError(503, 'mail_not_configured', 'not configured'),
     });
-    render(<MailPage />, { wrapper });
+    render(<MailPage />);
 
     expect(screen.getByText('Сервис почт не настроен')).toBeInTheDocument();
-    // Никакого toast-спама в состоянии «не настроено».
     expect(toast.error).not.toHaveBeenCalled();
   });
 
@@ -78,7 +105,7 @@ describe('MailPage states', () => {
       phase: 'error',
       error: new ApiError(502, 'mail_unavailable', 'unavailable'),
     });
-    render(<MailPage />, { wrapper });
+    render(<MailPage />);
 
     expect(screen.getByText('Почтовый сервис временно недоступен')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Повторить/ })).toBeInTheDocument();
@@ -86,25 +113,56 @@ describe('MailPage states', () => {
 
   it('shows empty state when the feed is ready and has no messages', () => {
     feed.value = baseFeed({ phase: 'ready', messages: [] });
-    render(<MailPage />, { wrapper });
+    render(<MailPage />);
 
     expect(screen.getByText('Писем пока нет')).toBeInTheDocument();
   });
 
-  it('renders "Загрузить ещё" when hasMore and triggers loadMore on click', async () => {
+  it('auto-selects the newest message (first in desc feed) into the detail panel', () => {
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
+    render(<MailPage />);
+
+    // Деталь показывает самое свежее письмо (id=2) заголовком темы.
+    expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
+    // Inline-reply отрисован под телом (форма ответа доступна).
+    expect(screen.getByLabelText('Сообщение')).toBeInTheDocument();
+  });
+
+  it('switches the detail when another list item is clicked', async () => {
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
+    render(<MailPage />);
+
+    expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
+
+    // Клик по элементу списка письма 1 (кликаем по его теме внутри кнопки).
+    await userEvent.setup().click(screen.getByText('Письмо 1'));
+
+    expect(screen.getByRole('heading', { name: 'Письмо 1' })).toBeInTheDocument();
+  });
+
+  it('does not render a "Загрузить ещё" button (infinite scroll only)', () => {
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)], hasMore: true });
+    render(<MailPage />);
+
+    expect(screen.queryByRole('button', { name: 'Загрузить ещё' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Загрузить ещё')).not.toBeInTheDocument();
+  });
+
+  it('loads older messages when the sentinel intersects the viewport', () => {
     const loadMore = vi.fn();
     feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)], hasMore: true, loadMore });
-    render(<MailPage />, { wrapper });
+    render(<MailPage />);
 
-    const button = screen.getByRole('button', { name: 'Загрузить ещё' });
-    await userEvent.setup().click(button);
+    // Эффект подписал IntersectionObserver на sentinel.
+    expect(ioObserve).toHaveBeenCalled();
+    triggerIntersection();
     expect(loadMore).toHaveBeenCalledTimes(1);
   });
 
-  it('hides "Загрузить ещё" when hasMore is false', () => {
-    feed.value = baseFeed({ messages: [makeMessage(1)], hasMore: false });
-    render(<MailPage />, { wrapper });
+  it('renders the adaptive "Назад" button in the detail panel', () => {
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
+    render(<MailPage />);
 
-    expect(screen.queryByRole('button', { name: 'Загрузить ещё' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Назад' })).toBeInTheDocument();
   });
 });

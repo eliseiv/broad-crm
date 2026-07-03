@@ -5,29 +5,62 @@ const apiMock = vi.hoisted(() => ({ apiRequest: vi.fn() }));
 
 vi.mock('@/lib/api', () => apiMock);
 
-describe('mail api client', () => {
+/** Разбирает query-строку первого вызова apiRequest в объект пар. */
+function firstCallQuery(): URLSearchParams {
+  const path = apiMock.apiRequest.mock.calls[0][0] as string;
+  return new URLSearchParams(path.split('?')[1] ?? '');
+}
+
+describe('mail api client (ADR-013 desc/before_id)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    apiMock.apiRequest.mockResolvedValue({ messages: [], next_since_id: null, has_more: false });
+    apiMock.apiRequest.mockResolvedValue({
+      messages: [],
+      next_since_id: null,
+      next_before_id: null,
+      has_more: false,
+    });
   });
 
-  it('omits since_id on the first page and uses the default limit', async () => {
+  it('defaults to order=desc with limit=20 and no cursor on the first page', async () => {
     await listMail();
-    const path = apiMock.apiRequest.mock.calls[0][0] as string;
-    expect(path).not.toContain('since_id');
-    expect(path).toContain(`limit=${MAIL_PAGE_LIMIT}`);
+    const qs = firstCallQuery();
+    expect(qs.get('order')).toBe('desc');
+    expect(qs.get('limit')).toBe(String(MAIL_PAGE_LIMIT));
+    expect(qs.get('limit')).toBe('20');
+    expect(qs.has('before_id')).toBe(false);
+    expect(qs.has('since_id')).toBe(false);
   });
 
-  it('omits since_id when it is 0 (keyset from start of window)', async () => {
-    await listMail(0);
-    expect(apiMock.apiRequest.mock.calls[0][0]).not.toContain('since_id');
+  it('sends before_id only in desc mode (older-page cursor)', async () => {
+    await listMail({ order: 'desc', beforeId: 1042, limit: 20 });
+    const qs = firstCallQuery();
+    expect(qs.get('order')).toBe('desc');
+    expect(qs.get('before_id')).toBe('1042');
+    expect(qs.has('since_id')).toBe(false);
   });
 
-  it('sends since_id and limit for forward pagination', async () => {
-    await listMail(1042, 25);
-    const path = apiMock.apiRequest.mock.calls[0][0] as string;
-    expect(path).toContain('since_id=1042');
-    expect(path).toContain('limit=25');
+  it('never sends since_id in desc mode even if sinceId is passed', async () => {
+    await listMail({ order: 'desc', sinceId: 500 });
+    const qs = firstCallQuery();
+    expect(qs.get('order')).toBe('desc');
+    expect(qs.has('since_id')).toBe(false);
+    expect(qs.has('before_id')).toBe(false);
+  });
+
+  it('sends since_id only in asc mode and never before_id', async () => {
+    await listMail({ order: 'asc', sinceId: 1042, beforeId: 7, limit: 25 });
+    const qs = firstCallQuery();
+    expect(qs.get('order')).toBe('asc');
+    expect(qs.get('since_id')).toBe('1042');
+    expect(qs.get('limit')).toBe('25');
+    expect(qs.has('before_id')).toBe(false);
+  });
+
+  it('forwards the abort signal to apiRequest', async () => {
+    const controller = new AbortController();
+    await listMail({}, controller.signal);
+    expect(apiMock.apiRequest.mock.calls[0][1]).toEqual({ signal: controller.signal });
   });
 
   it('POSTs the reply payload to the message reply endpoint', async () => {

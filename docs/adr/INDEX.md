@@ -16,3 +16,4 @@ Architecture Decision Records. Каждое значимое решение — 
 | [ADR-010](ADR-010-ai-key-monitor-vnutri-backend.md) | Проверка AI-ключей внутри backend vs внешний воркер + Fernet-шифрование | accepted | 2026-07-01 |
 | [ADR-011](ADR-011-poryadok-blokov-server-side-dnd-kit.md) | Порядок блоков — server-side `position` + @dnd-kit, drag по задержке | accepted | 2026-07-01 |
 | [ADR-012](ADR-012-mail-read-through-proxy.md) | Модуль «Почты» — read-through-прокси без хранения (ключ на backend, HTML-изоляция sandbox-iframe) | accepted | 2026-07-03 |
+| [ADR-013](ADR-013-mail-newest-first-master-detail-inline-reply.md) | Почты — newest-first backward-пагинация, master-detail layout, inline-reply (расширяет ADR-012) | accepted | 2026-07-04 |

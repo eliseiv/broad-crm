@@ -7,13 +7,14 @@
 Страница **«Почты»** в CRM: просмотр писем, приходящих во внешний почтовый сервис `postapp.store`, и **ответ (reply)** на письмо. CRM работает как **read-through-прокси без хранения** (без БД, без миграций): backend синхронно проксирует запросы во внешний external-API, подставляя системный ключ `MAIL_API_KEY`, и возвращает данные фронту. Решение — [ADR-012](../../adr/ADR-012-mail-read-through-proxy.md); контракт CRM — [04-api.md#mail](../../04-api.md#mail).
 
 Функции Этапа 1:
-- Лента писем: список с адресами, темой, датой, тегами, телом (text/HTML), почтовым аккаунтом-получателем.
-- Пагинация «Загрузить ещё» (keyset вперёд по `since_id`).
-- Ответ на письмо (reply) через прокси к внешнему reply-эндпоинту.
+- Лента писем: **master-detail** (список слева ~30% / тело выбранного справа ~70%), с адресами, темой, датой, тегами, телом (text/HTML), почтовым аккаунтом-получателем. По умолчанию выбрано самое свежее письмо.
+- **Бесконечная лента newest-first** (`order=desc`): новейшие сверху, догрузка более старых при скролле по `before_id` (без кнопки «Загрузить ещё»). Backward-контракт внешнего API — mail-агрегатор ADR-0036; решение CRM — [ADR-013](../../adr/ADR-013-mail-newest-first-master-detail-inline-reply.md).
+- **Inline-ответ** (chat-like): `Textarea` + кнопка «Ответить» под телом письма (без модалки), через прокси к внешнему reply-эндпоинту.
+- Теги письма (`tags[]`) — цветными пилюлями по `tag.color`.
 
 ## Out of scope (Этап 1)
 
-- **Хранение писем в БД CRM** (синхронизация/индексация) — отклонено в [ADR-012](../../adr/ADR-012-mail-read-through-proxy.md); server-side поиск/фильтры/строгий глобальный «новые сверху» недоступны как следствие read-through + keyset-only внешнего API ([TD-024](../../100-known-tech-debt.md)).
+- **Хранение писем в БД CRM** (синхронизация/индексация) — отклонено в [ADR-012](../../adr/ADR-012-mail-read-through-proxy.md); server-side **поиск/фильтры** недоступны как следствие read-through + внешнего API без поиска ([TD-024](../../100-known-tech-debt.md)). Строгий глобальный «новые сверху» теперь **доступен** через backward-пагинацию (`order=desc`) — [ADR-013](../../adr/ADR-013-mail-newest-first-master-detail-inline-reply.md).
 - Поиск и фильтрация писем на сервере (внешний API их не предоставляет).
 - Составление нового письма «с нуля» (compose) — только reply на существующее.
 - Управление почтовыми аккаунтами / тегами из CRM (только чтение того, что отдаёт внешний сервис).
@@ -35,7 +36,7 @@
 
 Точные схемы, поля и коды — [04-api.md#mail](../../04-api.md#mail).
 
-- `GET /api/mail/messages?since_id=&limit=` → `MailListResponse{messages:[MailMessage], next_since_id, has_more}`. Прокси к внешнему `GET /api/external/messages`. `limit` 1..200 (default 50); `since_id` опционален (keyset вперёд).
+- `GET /api/mail/messages?order=&since_id=&before_id=&limit=` → `MailListResponse{messages:[MailMessage], next_since_id, next_before_id, has_more}`. Прокси к внешнему `GET /api/external/messages`. `order` ∈ {`asc`,`desc`} (default `desc`); `limit` 1..200 (default 50, страница шлёт 20); `since_id` — только при `asc`, `before_id` (`ge=1`) — только при `desc`. Взаимоисключение режимов → `400 validation_error`. Точные поля/маппинг курсоров — [04-api.md#mail](../../04-api.md#get-apimailmessages).
 - `POST /api/mail/messages/{id}/reply` тело `MailReplyRequest{to?, cc?, subject?, body}` → `MailReplyResponse{sent_id, smtp_message_id}`. Прокси к внешнему `POST /api/external/messages/{id}/reply`.
 
 ### Коды ошибок (нормативно)
@@ -67,10 +68,16 @@
 
 ## Пагинация (нормативно)
 
-- Внешний API — **keyset вперёд по `id ASC` от `since_id`** (возвращает письма с `id > since_id`), `limit` 1..200 (default 50), `next_since_id` = максимальный `id` в батче (`integer | null`: **`null` для пустого батча** — нет новых писем вперёд; backend отдаёт `int | None`, см. [04-api.md#mail](../../04-api.md#mail)), `has_more` — есть ли ещё. **Server-side фильтров/поиска нет.**
-- Первый запрос — без `since_id` (или `since_id=0`): фронт получает первый батч (до `limit` писем по возрастанию `id`) и отображает **новыми сверху в пределах батча** (сортировка по `id` DESC на клиенте).
-- «Загрузить ещё» — фронт шлёт `since_id = next_since_id` предыдущего ответа; показывать кнопку, пока `has_more=true`.
-- **Ограничение:** строгий глобальный порядок «новые сверху» по всей ленте и поиск/фильтры недоступны (keyset-only) — [TD-024](../../100-known-tech-debt.md). Ретенция внешнего сервиса ~30 дней — письма старше выпадают из ленты (у CRM хранилища нет).
+Внешний API (mail-агрегатор ADR-0036) поддерживает два режима; CRM-прокси проксирует оба, **страница «Почты» использует `desc`** (newest-first). Решение — [ADR-013](../../adr/ADR-013-mail-newest-first-master-detail-inline-reply.md), контракт — [04-api.md#mail](../../04-api.md#get-apimailmessages).
+
+- **desc (основной, newest-first):** `order=desc`. Без `before_id` → последние `limit` писем по `id DESC` (самые свежие). С `before_id` → письма `id < before_id` по `id DESC`. Ответ: `next_before_id` = `min(id)` батча (`int | null`: `null`, если старее нет или батч пуст), `has_more`. `next_since_id` в desc-режиме = `null`.
+  - Первый запрос страницы — `order=desc&limit=20` (без `before_id`) → новейшие 20.
+  - **Догрузка старых (бесконечная лента):** `order=desc&before_id=<next_before_id>&limit=20`, пока `has_more=true`. Триггер — `IntersectionObserver` на sentinel в конце списка (без кнопки «Загрузить ещё»). Дедуп по `id`.
+  - Даёт **строгий глобальный порядок «новые сверху»** по всей ленте.
+- **asc (совместимость):** `order=asc` (+опц. `since_id`) — keyset вперёд по `id ASC` от `since_id`; ответ `next_since_id` = `max(id)` батча (`int | null`, `null` для пустого батча), `next_before_id` = `null`. Прежнее поведение; страницей не используется.
+- **Взаимоисключение:** `before_id` при `order=asc` или `since_id` при `order=desc` → `400 validation_error` (CRM валидирует локально; внешний `400` также маппится в `400`).
+- **Опциональный фоновый poll новых (v1, отложен — [TD-025](../../100-known-tech-debt.md)):** периодически (`env.pollIntervalMs`, неагрессивно — внешний rate-limit 120 req/min) `order=desc&limit=20` без `before_id`; письма с `id > текущего max` — prepend вверх с дедупом по `id`, порядок newest-first не нарушается. На 2026-07-04 **не реализован** (свежие письма подтягиваются перезагрузкой ленты); может быть включён как v1-опция.
+- **Ограничение (остаток):** server-side **поиск/фильтры** недоступны (внешний API их не предоставляет) — [TD-024](../../100-known-tech-debt.md). Ретенция внешнего сервиса ~30 дней — письма старше выпадают из ленты (у CRM хранилища нет). Newest-first-часть TD-024 снята backward-пагинацией.
 
 ## Поведение при `mail_enabled=false`
 
@@ -82,8 +89,8 @@
 Слои и стек — как у существующих модулей ([modules/ai-keys](../ai-keys/README.md), [modules/servers](../servers/README.md)), но **без репозитория/модели/миграции** (хранилища нет). Образцы исходящего HTTP-клиента с секретом — `app/infra/ai_provider.py`, `app/infra/prometheus.py`; конфиг — `app/config.py`; ошибки — `app/errors.py`; зависимость `CurrentUser` (JWT) — как в существующих роутерах; регистрация роутера — `app/api/router.py`.
 
 1. **Настройки** (`config.py`): `mail_api_base: str = "https://postapp.store"`, `mail_api_key: str = ""` (секрет), `mail_api_timeout_sec: int = 10`. Свойство `mail_enabled: bool` = `bool(mail_api_key)`.
-2. **Клиент** (`infra/mail_client.py`): `httpx` с таймаутом `mail_api_timeout_sec`, заголовок `X-API-Key`, ограниченные ретраи на транзиентные ошибки с **разной идемпотентностью для GET и POST** (см. [Архитектура — идемпотентность ретраев](#архитектура-read-through-прокси)): `list_messages` ретраит все транзиентные (connect/read-timeout/`5xx`); `reply` ретраит **только** ошибки соединения (`ConnectError`/`ConnectTimeout`), **не** read-timeout/`5xx` — во избежание двойной отправки письма. Методы: `list_messages(since_id, limit)`, `reply(message_id, payload)`. Секрет не логируется.
-3. **Сервис** (`services/mail_service.py`): гейт `mail_enabled` (иначе `mail_not_configured`), валидация `limit` (1..200) и тела reply, вызов клиента, маппинг статусов внешнего сервиса → коды CRM ([коды ошибок](#коды-ошибок-нормативно)), нормализация в Pydantic-схемы.
+2. **Клиент** (`infra/mail_client.py`): `httpx` с таймаутом `mail_api_timeout_sec`, заголовок `X-API-Key`, ограниченные ретраи на транзиентные ошибки с **разной идемпотентностью для GET и POST** (см. [Архитектура — идемпотентность ретраев](#архитектура-read-through-прокси)): `list_messages` ретраит все транзиентные (connect/read-timeout/`5xx`); `reply` ретраит **только** ошибки соединения (`ConnectError`/`ConnectTimeout`), **не** read-timeout/`5xx` — во избежание двойной отправки письма. Методы: `list_messages(order, since_id, before_id, limit)` (передаёт `order` во внешний API **всегда явно**; `since_id` только при `asc`, `before_id` только при `desc`), `reply(message_id, payload)`. Секрет не логируется.
+3. **Сервис** (`services/mail_service.py`): гейт `mail_enabled` (иначе `mail_not_configured`), валидация `limit` (1..200), **валидация взаимоисключения режимов** (`before_id` только при `order=desc`, `since_id` только при `order=asc` — иначе `400 validation_error`, до вызова внешнего API) и тела reply, вызов клиента, маппинг статусов внешнего сервиса → коды CRM ([коды ошибок](#коды-ошибок-нормативно); внешний `400` взаимоисключения → `400 validation_error`), нормализация в Pydantic-схемы (`next_since_id`/`next_before_id` — оба `int | None`, заполнен курсор запрошенного режима, второй `null`).
 4. **Роутер** (`api/mail.py`, под JWT): `GET /api/mail/messages`, `POST /api/mail/messages/{id}/reply`. Регистрация в `app/api/router.py`.
 5. **Схемы** (`schemas/mail.py`): `MailMessage`, `MailAccount`, `MailTag`, `MailListResponse`, `MailReplyRequest`, `MailReplyResponse` — строго по [04-api.md#mail](../../04-api.md#mail).
 6. **Ошибки** (`errors.py`): фабрики `mail_unavailable` (`502`), `mail_message_not_found` (`404`), `mail_not_configured` (`503`).
@@ -96,16 +103,22 @@
 
 ### Навигация
 
-- Добавить в общий `AppLayout` третью вкладку **«Почты»** (`NavLink`, маршрут `/mail`) рядом с «Серверы» / «ИИ - ключи». Активная вкладка подсвечивается ([08-design-system.md](../../08-design-system.md#навигация-верхние-вкладки-applayout)).
+- Вкладка **«Почты»** (`NavLink`, маршрут `/mail`) — **ПЕРВАЯ** в ряду вкладок `AppLayout` (порядок: **Почты → Серверы → ИИ - ключи**). Активная вкладка подсвечивается ([08-design-system.md](../../08-design-system.md#навигация-верхние-вкладки-applayout)).
+- **Дефолтный маршрут после логина — `/mail`** (index-роут `/` → `Navigate to="/mail" replace`; редирект после успешного входа — на `/mail`, ранее `/servers`).
 - Маршрут `/mail` — защищённый (внутри `AppLayout` под auth-guard). Роутинг — `App.tsx`, [02-tech-stack.md](../../02-tech-stack.md#frontend).
 
-### Страница `MailPage`
+### Страница `MailPage` (master-detail)
 
-- **Лента писем:** список элементов `MailListItem` (или `MailCard`) в порядке `id` DESC в пределах загруженных батчей. Каждый элемент: `from_name`/`from_addr`, `subject` (или «(без темы)» при `null`), `internal_date` (относительное/абсолютное время), теги (`Badge` с `color`), почтовый аккаунт-получатель (`mail_account.email`/`display_name`).
-- **Просмотр тела:** по клику — раскрытие/панель с телом. `body_html` → **sandbox-iframe** (`srcDoc` + `sandbox`, без `allow-scripts`/`allow-same-origin`, [изоляция HTML](#изоляция-html-тела-нормативно)); иначе `body_text` (моношрифт, перенос строк). Пометки `body_truncated`/`body_present` — по [изоляции HTML](#изоляция-html-тела-нормативно).
-- **Reply:** форма ответа (примитив **Textarea** для `body`; опционально поля `to`/`cc`/`subject` с префилом из письма). Отправка → `POST /api/mail/messages/{id}/reply`. Успех → toast «Ответ отправлен». Ошибки — по кодам ниже.
-- **Пагинация:** кнопка **«Загрузить ещё»** видна, пока `has_more=true`; шлёт `since_id = next_since_id`; новые батчи мержатся, порядок отображения — новые сверху ([пагинация](#пагинация-нормативно)).
-- **Данные и polling:** feature-слой `features/mail` (`api.ts`, `hooks.ts`) на TanStack Query, по образцу `features/servers`/`features/ai-keys`; интервал обновления — `env.pollIntervalMs` (не агрессивно, учитывать внешний rate-limit). Типы — в `types/api.ts`.
+Двухпанельный layout: **список слева (~30%)**, **тело выбранного письма справа (~70%)**. UI-детали, адаптив и словарь — [08-design-system.md](../../08-design-system.md#страница-почты).
+
+- **Список (`MailListItem`):** порядок `id` DESC глобально (backward-лента, `order=desc`). Каждый элемент: `from_name`/`from_addr`, `subject` (или «(без темы)» при `null`), `internal_date` (относительное время), **теги** (`Badge` по `tags[]`, фон/акцент из `tag.color`), аккаунт-получатель (`mail_account.email`/`display_name`). Активный элемент подсвечен.
+- **Выбор:** по умолчанию выбрано и показано **самое свежее** письмо (первое в ленте). Клик по элементу → показ его тела в правой панели.
+- **Правая панель (деталь):** шапка (отправитель, тема, дата, теги-пилюли) + тело. `body_html` → **sandbox-iframe** (`srcDoc` + `sandbox`, без `allow-scripts`/`allow-same-origin`, [изоляция HTML](#изоляция-html-тела-нормативно)); иначе `body_text` (моношрифт, `white-space: pre-wrap`). Пометки `body_truncated`/`body_present` — по [изоляции HTML](#изоляция-html-тела-нормативно). Тело скроллится внутри своего контейнера; значимый контент не обрезается.
+- **Inline-reply (chat-like):** под телом — многострочный **`Textarea`** (`body`, обязателен) + кнопка **«Ответить»** рядом. Поля `to`/`cc`/`subject` — предзаполнены из письма и свёрнуты за раскрытием **«Расширенно»** (по умолчанию скрыты). Отправка → `POST /api/mail/messages/{id}/reply`. Успех → toast «Ответ отправлен» + **очистка поля**. Прежняя модалка `ReplyModal` **удалена/заменена**. Ошибки — по кодам ниже.
+- **Бесконечная лента:** первый запрос `order=desc&limit=20` (новейшие 20). Догрузка более старых при скролле вниз — `order=desc&before_id=<next_before_id>&limit=20` через `IntersectionObserver` на sentinel; **без кнопки «Загрузить ещё»**. Индикатор загрузки внизу списка; остановка при `has_more=false`; дедуп по `id` ([пагинация](#пагинация-нормативно)). Опционально (v1, отложено — [TD-025](../../100-known-tech-debt.md)) — фоновый poll новых (prepend `id > max`); на 2026-07-04 не реализован, свежие письма подтягиваются перезагрузкой ленты, см. [пагинация](#пагинация-нормативно).
+- **Пустое состояние:** нет писем → в левой панели подсказка «Писем пока нет», правая панель — заглушка/пусто.
+- **Адаптив (узкие вьюпорты):** одноколоночный режим — список на всю ширину; выбор письма → full-width деталь с кнопкой «Назад» к списку. Значимый контент (тело, значения) **не скрывается и не обрезается** (CLAUDE.md); тело скроллится.
+- **Данные и polling:** feature-слой `features/mail` (`api.ts`, `hooks.ts`) на TanStack Query (`useInfiniteQuery` для ленты), по образцу `features/servers`/`features/ai-keys`; интервал фонового poll — `env.pollIntervalMs` (не агрессивно, внешний rate-limit 120 req/min). Типы — в `types/api.ts`.
 
 ### Новый UI-примитив `Textarea`
 
@@ -113,7 +126,7 @@
 
 ### Состояния UI
 
-- **loading** (skeleton списка), **empty** (нет писем — подсказка), **error** (`502 mail_unavailable` → «Почтовый сервис временно недоступен» + повтор), **не настроено** (`503 mail_not_configured` → «Сервис почт не настроен», без ленты/reply), **reply отправляется** (loading на кнопке), **reply ошибка** (`404` → «Письмо не найдено»; `422`/`400` → подсветка/сообщение; общая → toast). Строки — словарь [08-design-system.md](../../08-design-system.md#локализация-страницы-почты).
+- **loading** (skeleton списка), **empty** (нет писем — подсказка, правая панель пуста), **error** (`502 mail_unavailable` → «Почтовый сервис временно недоступен» + повтор), **не настроено** (`503 mail_not_configured` → «Сервис почт не настроен», без ленты/reply), **догрузка** (индикатор внизу списка при подгрузке старых), **reply отправляется** (loading на кнопке «Ответить»), **reply ошибка** (`404` → «Письмо не найдено»; `422`/`400` → подсветка/сообщение; общая → toast). Строки — словарь [08-design-system.md](../../08-design-system.md#локализация-страницы-почты).
 
 ## DoD
 
@@ -121,12 +134,14 @@
 - [ ] Read-through без хранения: нет таблиц/моделей/миграций под почту.
 - [ ] `MAIL_API_KEY` только в заголовке `X-API-Key` исходящего запроса; отсутствует в ответах CRM/логах/SPA/URL; `mail_enabled` гейтит оба эндпоинта (`503 mail_not_configured`).
 - [ ] Маппинг ошибок внешнего сервиса → коды CRM (`502 mail_unavailable` / `404 mail_message_not_found` / `422` / `400`); фабрики добавлены в `app/errors.py`.
-- [ ] Границы `limit` 1..200 (default 50); пагинация keyset вперёд по `since_id`, `next_since_id`/`has_more` пробрасываются.
-- [ ] Frontend: вкладка «Почты» (`/mail`), `MailPage` с лентой, reply (примитив `Textarea`), «Загрузить ещё», все состояния UI, русские строки из словаря.
-- [ ] `body_html` рендерится **только** в sandbox-iframe (без `allow-scripts`/`allow-same-origin`); `body_text`/`body_truncated`/`body_present` обрабатываются; DOMPurify не добавлен.
+- [ ] Границы `limit` 1..200 (default 50); режимы `order=desc`/`asc`, курсоры `before_id`/`next_before_id` (desc) и `since_id`/`next_since_id` (asc) пробрасываются; взаимоисключение режимов → `400`.
+- [x] Frontend: вкладка «Почты» **первая** (`/mail`), дефолтный маршрут после логина → `/mail`; `MailPage` master-detail (список ~30% / тело ~70%), авто-выбор самого свежего письма, inline-reply (`Textarea` + «Ответить», без `ReplyModal`), бесконечная лента (`IntersectionObserver`, без «Загрузить ещё»), теги-пилюли, адаптив (стек на узких), все состояния UI, русские строки из словаря. — выполнено 2026-07-04 ([ADR-013](../../adr/ADR-013-mail-newest-first-master-detail-inline-reply.md)).
+- [x] `body_html` рендерится **только** в sandbox-iframe (без `allow-scripts`/`allow-same-origin`); `body_text`/`body_truncated`/`body_present` обрабатываются; DOMPurify не добавлен. — выполнено 2026-07-04 (`MailDetail.tsx`).
 - [ ] Lint/type-check/format проходят (backend и frontend).
 
 ## Changelog
 
+- 2026-07-04: **frontend-часть завершена** ([ADR-013](../../adr/ADR-013-mail-newest-first-master-detail-inline-reply.md); frontend + reviewer approve, qa 94/94 зелёные, CI-гейты pass, production_ready). Реализовано: вкладка «Почты» первая + дефолтный `/mail` (`AppLayout.tsx`, `App.tsx`, `LoginPage.tsx`); `MailPage` master-detail ~32/68 с авто-выбором самого свежего; inline-reply (`MailReplyForm`) вместо удалённой модалки `ReplyModal`; удалён `MailMessageCard`; бесконечная лента `order=desc` (`useInfiniteQuery` + `IntersectionObserver`, без «Загрузить ещё», дедуп по `id`); теги-пилюли (`MailTags`); примитив `Textarea`; типы `types/api.ts` (`MailOrder`, `next_before_id`). Фоновый poll новых — **отложенная v1-опция** ([ADR-013](../../adr/ADR-013-mail-newest-first-master-detail-inline-reply.md), [TD-025](../../100-known-tech-debt.md)): свежие письма подтягиваются перезагрузкой ленты (reload), не автоматическим prepend. DoD-пункты frontend и sandbox-iframe закрыты; backend-часть — вне этой поставки. Расхождений docs↔реализация не выявлено.
+- 2026-07-04: расширение под backward-пагинацию и переработку UX (architect, [ADR-013](../../adr/ADR-013-mail-newest-first-master-detail-inline-reply.md), внешний контракт mail-агрегатор ADR-0036): (A) `GET /api/mail/messages` — параметры `order` (default `desc`)/`before_id`, поле ответа `next_before_id` (`int|null`), взаимоисключение режимов → `400`; клиент `list_messages(order, since_id, before_id, limit)`; (B) UX-переработка: вкладка «Почты» первая + дефолтный `/mail`; master-detail (список ~30% / тело ~70%, авто-выбор свежего); inline-reply вместо `ReplyModal`; бесконечная лента newest-first (`IntersectionObserver`, без «Загрузить ещё»); теги-пилюли. Инварианты [ADR-012](../../adr/ADR-012-mail-read-through-proxy.md) сохранены. Newest-first-часть [TD-024](../../100-known-tech-debt.md) снята.
 - 2026-07-03: уточнения по ревью реализации (architect, docs↔код): (1) `next_since_id` зафиксирован как `integer | null` (`null` для пустого батча) — синхронизация с [04-api.md#mail](../../04-api.md#mail) и `int | None` в `schemas/mail.py`; (2) идемпотентность ретраев `mail_client.py` — `reply` (POST) ретраит только `ConnectError`/`ConnectTimeout`, не read-timeout/`5xx` (защита от двойной отправки); `list_messages` (GET) ретраит все транзиентные; (3) лейбл ленты «Получено на:» vs «Кому» (только reply `to`) — [08-design-system.md](../../08-design-system.md#локализация-страницы-почты).
 - 2026-07-03: спецификация создана (architect). Read-through-прокси без хранения, ключ почты только на backend, HTML-изоляция sandbox-iframe — [ADR-012](../../adr/ADR-012-mail-read-through-proxy.md); ограничение (нет server-side поиска/фильтров/newest-first) — [TD-024](../../100-known-tech-debt.md).

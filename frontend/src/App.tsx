@@ -17,8 +17,8 @@ export function App() {
           <Route path="/mail" element={<MailPage />} />
         </Route>
       </Route>
-      <Route path="/" element={<Navigate to="/servers" replace />} />
-      <Route path="*" element={<Navigate to="/servers" replace />} />
+      <Route path="/" element={<Navigate to="/mail" replace />} />
+      <Route path="*" element={<Navigate to="/mail" replace />} />
     </Routes>
   );
 }

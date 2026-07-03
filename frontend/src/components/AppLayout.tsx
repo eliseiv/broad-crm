@@ -6,9 +6,9 @@ import { cn } from '@/lib/cn';
 import { useAuthStore } from '@/store/auth';
 
 const TABS: { to: string; label: string }[] = [
+  { to: '/mail', label: 'Почты' },
   { to: '/servers', label: 'Серверы' },
   { to: '/ai-keys', label: 'ИИ - ключи' },
-  { to: '/mail', label: 'Почты' },
 ];
 
 /**
