@@ -303,6 +303,12 @@ async def test_api_key_not_logged_on_failure(monkeypatch: pytest.MonkeyPatch) ->
 
     _install(monkeypatch, httpx.MockTransport(handler))
 
+    # Модульный логгер mail_client мог быть закеширован ранее (cache_logger_on_first_use)
+    # на устаревший список процессоров — тогда capture_logs() не перехватит событие.
+    # Пересобираем свежий proxy на текущий (сброшенный autouse-фикстурой) конфиг, чтобы
+    # тест был устойчив к порядку выполнения в полном наборе.
+    monkeypatch.setattr(mod, "logger", structlog.get_logger(mod.__name__))
+
     with structlog.testing.capture_logs() as logs, pytest.raises(MailUnavailable):
         await _client().list_messages(since_id=None, limit=50)
 
