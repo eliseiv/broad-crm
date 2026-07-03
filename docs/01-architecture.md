@@ -58,6 +58,7 @@ flowchart TB
 - **monitoring** — клиент Prometheus HTTP API, маппинг PromQL → метрики карточки. **Устойчивость read-path:** короткий TTL-кэш + single-flight для `GET /api/servers`, ограничение конкурентности исходящих PromQL (семафор) и ретраи на транзиентные ошибки — чтобы periodic polling и несколько вкладок не усиливали нагрузку на Prometheus и не вызывали массовую деградацию (см. [modules/monitoring](modules/monitoring/README.md#устойчивость-read-path-нормативно)).
 - **provisioning** — оркестрация Ansible, запись file_sd, управление `provision_status`.
 - **notifier** — фоновая asyncio-задача Telegram-уведомлений об эскалации нагрузки/доступности; переиспользует `monitoring` и пороги зон ([ADR-009](adr/ADR-009-in-backend-notifier-vs-alertmanager.md), [modules/notifier](modules/notifier/README.md)). Опционален.
+- **mail** — read-through-прокси к внешнему почтовому сервису `postapp.store` (лента писем + reply). Без БД/хранения: синхронно проксирует `/api/mail/*`, подставляя секрет `MAIL_API_KEY` в заголовок `X-API-Key` ([ADR-012](adr/ADR-012-mail-read-through-proxy.md), [modules/mail](modules/mail/README.md)). Требует исходящий HTTPS-egress backend → `postapp.store`.
 
 ### PostgreSQL
 Реестр серверов и статус провижининга. Метрики НЕ хранятся ([ADR-003](adr/ADR-003-prometheus-istochnik-metrik.md)).

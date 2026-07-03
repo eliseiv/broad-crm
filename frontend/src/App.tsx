@@ -2,6 +2,7 @@ import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from '@/components/AppLayout';
 import { AiKeysPage } from '@/pages/AiKeysPage';
 import { LoginPage } from '@/pages/LoginPage';
+import { MailPage } from '@/pages/MailPage';
 import { ServersPage } from '@/pages/ServersPage';
 import { ProtectedRoute } from '@/routes/ProtectedRoute';
 
@@ -13,6 +14,7 @@ export function App() {
         <Route element={<AppLayout />}>
           <Route path="/servers" element={<ServersPage />} />
           <Route path="/ai-keys" element={<AiKeysPage />} />
+          <Route path="/mail" element={<MailPage />} />
         </Route>
       </Route>
       <Route path="/" element={<Navigate to="/servers" replace />} />

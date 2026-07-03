@@ -172,6 +172,72 @@ export interface AiKeyStatusResponse {
   last_checked_at: string | null;
 }
 
+// --- Mail (04-api.md «Mail», modules/mail) ---
+
+/** Почтовый аккаунт-получатель (04-api.md, MailAccount). */
+export interface MailAccount {
+  id: number;
+  email: string;
+  display_name: string | null;
+}
+
+/** Тег письма (04-api.md, MailTag). `color` — HEX для бейджа. */
+export interface MailTag {
+  id: number;
+  name: string;
+  color: string;
+}
+
+/**
+ * Письмо ленты «Почты» (04-api.md, MailMessage). Read-through-прокси: поля
+ * приходят из внешнего сервиса как есть; `body_html` рендерится ТОЛЬКО в
+ * sandbox-iframe (modules/mail «Изоляция HTML-тела»).
+ */
+export interface MailMessage {
+  id: number;
+  subject: string | null;
+  internal_date: string;
+  from_addr: string;
+  from_name: string | null;
+  to_addrs: string;
+  cc_addrs: string | null;
+  mail_account: MailAccount;
+  body_text: string;
+  body_html: string | null;
+  body_present: boolean;
+  body_truncated: boolean;
+  tags: MailTag[];
+}
+
+/**
+ * Ответ GET /api/mail/messages (04-api.md, MailListResponse). Keyset вперёд:
+ * `next_since_id` — максимальный `id` в батче (курсор для «Загрузить ещё»);
+ * `null` для пустого батча — нет новых писем вперёд.
+ * `has_more` — есть ли ещё письма вперёд.
+ */
+export interface MailListResponse {
+  messages: MailMessage[];
+  next_since_id: number | null;
+  has_more: boolean;
+}
+
+/**
+ * Тело POST /api/mail/messages/{id}/reply (04-api.md, MailReplyRequest).
+ * `body` обязательный непустой; `to`/`cc`/`subject` опциональны.
+ */
+export interface MailReplyRequest {
+  to?: string[];
+  cc?: string[] | null;
+  subject?: string;
+  body: string;
+}
+
+/** Ответ POST /api/mail/messages/{id}/reply (04-api.md, MailReplyResponse). */
+export interface MailReplyResponse {
+  sent_id: number;
+  smtp_message_id: string;
+}
+
 /** Единый формат ошибки API (04-api.md). */
 export interface ApiErrorBody {
   error: {

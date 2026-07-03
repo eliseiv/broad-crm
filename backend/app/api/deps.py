@@ -12,6 +12,7 @@ from app.config import Settings, get_settings
 from app.db import get_session, get_sessionmaker
 from app.errors import unauthorized
 from app.infra.jwt import TokenError, decode_access_token
+from app.infra.mail_client import get_mail_client
 from app.infra.prometheus import get_prometheus_client
 from app.infra.rate_limit import get_login_rate_limiter
 from app.infra.telegram import TelegramClient
@@ -20,6 +21,7 @@ from app.repositories.server_repository import ServerRepository
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.ai_key_service import AiKeyService
 from app.services.auth_service import AuthService
+from app.services.mail_service import MailService
 from app.services.monitoring_service import MonitoringService
 from app.services.provisioning_service import ProvisioningService
 from app.services.server_service import ServerService
@@ -100,6 +102,11 @@ def get_ai_key_service(
     return AiKeyService(repository=AiKeyRepository(session), monitor=monitor)
 
 
+def get_mail_service(settings: SettingsDep) -> MailService:
+    """Сервис почты (read-through-прокси к postapp.store; клиент из настроек)."""
+    return MailService(client=get_mail_client(), settings=settings)
+
+
 def get_client_ip(request: Request) -> str:
     """Реальный IP клиента для rate-limit входа (05-security.md).
 
@@ -126,4 +133,5 @@ def get_client_ip(request: Request) -> str:
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 ServerServiceDep = Annotated[ServerService, Depends(get_server_service)]
 AiKeyServiceDep = Annotated[AiKeyService, Depends(get_ai_key_service)]
+MailServiceDep = Annotated[MailService, Depends(get_mail_service)]
 ClientIp = Annotated[str, Depends(get_client_ip)]

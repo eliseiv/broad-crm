@@ -109,6 +109,45 @@ def provisioning_unavailable() -> AppError:
     )
 
 
+def validation_error(message: str = "Невалидные данные запроса", details: Any = None) -> AppError:
+    """Структурная/диапазонная ошибка параметров запроса (400 validation_error).
+
+    Для ручной валидации в сервисах (напр. `limit` вне 1..200 в модуле почты), когда
+    нужен контроль прецеденции над другими проверками. Автоматические ошибки формы
+    тела/пути формирует обработчик RequestValidationError (тот же код).
+    """
+    return AppError(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        code="validation_error",
+        message=message,
+        details=details,
+    )
+
+
+def mail_unavailable() -> AppError:
+    return AppError(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        code="mail_unavailable",
+        message="Почтовый сервис временно недоступен",
+    )
+
+
+def mail_message_not_found() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="mail_message_not_found",
+        message="Письмо не найдено",
+    )
+
+
+def mail_not_configured() -> AppError:
+    return AppError(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        code="mail_not_configured",
+        message="Сервис почт не настроен",
+    )
+
+
 def _error_body(code: str, message: str, details: Any = None) -> dict[str, Any]:
     return {"error": {"code": code, "message": message, "details": details}}
 

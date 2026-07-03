@@ -29,6 +29,8 @@ flowchart TB
 
 > **Монитор AI-ключей** также не отдельный сервис: фоновая asyncio-задача внутри `backend` ([ADR-010](adr/ADR-010-ai-key-monitor-vnutri-backend.md), [modules/ai-keys](modules/ai-keys/README.md)). Стартует всегда; требует исходящий HTTPS к `api.openai.com` и `api.anthropic.com` (`GET /v1/models`) — backend должен иметь egress в интернет. Telegram-алерты о ключах используют тот же `TELEGRAM_*`-гейт.
 
+> **Модуль «Почты»** — read-through-прокси без хранения ([ADR-012](adr/ADR-012-mail-read-through-proxy.md), [modules/mail](modules/mail/README.md)): `backend` синхронно проксирует `/api/mail/*` во внешний сервис `postapp.store` (HTTPS), подставляя секрет `MAIL_API_KEY` в заголовок `X-API-Key`. Требует **исходящий HTTPS egress backend → `postapp.store`** (`MAIL_API_BASE`, default `https://postapp.store`). БД под почту нет. Фронт наружу не ходит — только `/api/mail/*`. Учитывать внешний rate-limit 120 запросов/мин на IP. Пусто `MAIL_API_KEY` → почта не настроена (`503 mail_not_configured`).
+
 ## Состав сервисов
 
 | Сервис | Образ | Порт (наружу) | Назначение |
@@ -151,6 +153,9 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `OPENAI_API_BASE` | `https://api.openai.com/v1` | Базовый URL OpenAI API (проверка ключа) |
 | `ANTHROPIC_API_BASE` | `https://api.anthropic.com/v1` | Базовый URL Anthropic API (проверка ключа) |
 | `ANTHROPIC_API_VERSION` | `2023-06-01` | Значение заголовка `anthropic-version` |
+| `MAIL_API_BASE` | `https://postapp.store` | Базовый URL внешнего почтового сервиса (модуль «Почты», read-through-прокси — [modules/mail](modules/mail/README.md), [ADR-012](adr/ADR-012-mail-read-through-proxy.md)) |
+| `MAIL_API_KEY` | `<external api key>` | **Секрет** (только env): ключ внешнего почтового API. Подставляется backend в заголовок `X-API-Key`; не в ответах/логах/SPA/URL. Пусто → почта не настроена (`mail_enabled=false`, эндпоинты `/api/mail/*` → `503 mail_not_configured`) |
+| `MAIL_API_TIMEOUT_SEC` | `10` | Таймаут HTTP-запроса backend → `postapp.store` |
 | `EXPORTER_PORT` | `9100` | Порт node_exporter по умолчанию |
 | `SCRAPE_SOURCE_IP` | `37.27.192.211` | Публичный IP CRM-сервера, с которого Prometheus достукивается до remote-целей (SNAT). Передаётся в плейбук как `scrape_source_ip` → открытие `9100` на цели ТОЛЬКО для этого IP. **Пусто → плейбук firewall не трогает** (для self-host не задавать: источник = docker-подсеть, см. [09-provisioning.md](09-provisioning.md#сетевая-доступность-node_exporter-9100)) |
 | `FILE_SD_DIR` | `/etc/prometheus/targets` | Каталог file_sd (общий volume) |

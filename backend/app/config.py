@@ -73,6 +73,21 @@ class Settings(BaseSettings):
     anthropic_api_base: str = "https://api.anthropic.com/v1"
     anthropic_api_version: str = "2023-06-01"
 
+    # --- Модуль «Почты» (read-through-прокси, modules/mail, ADR-012) ---
+    # Backend проксирует /api/mail/* во внешний сервис postapp.store, подставляя
+    # MAIL_API_KEY в заголовок X-API-Key. Ключ — только из env, не в БД/логах/ответах.
+    mail_api_base: str = "https://postapp.store"
+    mail_api_key: str = ""
+    mail_api_timeout_sec: int = 10
+
+    @property
+    def mail_enabled(self) -> bool:
+        """Почта активна только при заданном MAIL_API_KEY (modules/mail).
+
+        Иначе оба эндпоинта /api/mail/* → 503 mail_not_configured.
+        """
+        return bool(self.mail_api_key)
+
     # --- Провижининг / node_exporter ---
     exporter_port: int = 9100
     file_sd_dir: str = "/etc/prometheus/targets"

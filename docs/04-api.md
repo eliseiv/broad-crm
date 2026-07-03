@@ -27,12 +27,15 @@
 | 401 | `unauthorized` | Отсутствует/просрочен/невалиден JWT |
 | 404 | `server_not_found` | Сервера с таким `id` нет |
 | 404 | `ai_key_not_found` | AI-ключа с таким `id` нет |
+| 404 | `mail_message_not_found` | Письма с таким `id` нет (проброс от внешнего сервиса при reply) |
 | 409 | `server_conflict` | Сервер с таким `ip` уже существует |
 | 422 | `unprocessable` | Семантически некорректные данные (например, невалидный IP) |
 | 429 | `rate_limited` | Превышен лимит попыток входа |
 | 500 | `internal_error` | Непредвиденная ошибка |
 | 502 | `prometheus_unavailable` | Prometheus недоступен/таймаут при запросе метрик |
+| 502 | `mail_unavailable` | Внешний почтовый сервис недоступен/таймаут/`5xx` ([Mail](#mail)) |
 | 503 | `provisioning_unavailable` | Невозможно запустить фоновую задачу провижининга |
+| 503 | `mail_not_configured` | Почта не настроена (`MAIL_API_KEY` пуст) ([Mail](#mail)) |
 
 `validation_error.details` — массив `{ "field": "ip", "message": "..." }`.
 
@@ -326,6 +329,116 @@ Backend отдаёт **единый плоский список** (без сек
 **Response 204** (без тела).
 
 **Ошибки:** `401`, `404 ai_key_not_found`.
+
+---
+
+## Mail
+
+Страница «Почты» — **read-through-прокси** к внешнему почтовому сервису `postapp.store`, **без хранения** в CRM. Backend подставляет системный ключ `MAIL_API_KEY` в заголовок `X-API-Key` исходящего запроса; ключ никогда не возвращается и не логируется. Модуль — [modules/mail](modules/mail/README.md), решение — [ADR-012](adr/ADR-012-mail-read-through-proxy.md). Все эндпоинты требуют JWT. Внешний контракт (поля DTO) проксируется 1:1 в нормативные схемы ниже.
+
+### Коды ошибок модуля
+
+| HTTP | `code` | Когда |
+|------|--------|-------|
+| `404` | `mail_message_not_found` | Письмо не найдено (проброс `404` от внешнего сервиса при reply) |
+| `502` | `mail_unavailable` | Внешний сервис `postapp.store` недоступен/таймаут/вернул `5xx` (исчерпаны ретраи) |
+| `503` | `mail_not_configured` | Почта не настроена (`MAIL_API_KEY` пуст → `mail_enabled=false`); оба эндпоинта |
+
+Фабрики `mail_unavailable`, `mail_message_not_found`, `mail_not_configured` добавляются в `app/errors.py` (рядом с `prometheus_unavailable`). Тело ошибки внешнего сервиса в ответ CRM дословно не пробрасывается (только нормативный `code` + рус. `message`).
+
+### Схема `MailMessage`
+
+```json
+{
+  "id": 1042,
+  "subject": "Отчёт за июнь",
+  "internal_date": "2026-07-02T09:15:00Z",
+  "from_addr": "sender@example.com",
+  "from_name": "Иван Петров",
+  "to_addrs": "inbox@postapp.store",
+  "cc_addrs": "copy@example.com",
+  "mail_account": { "id": 3, "email": "inbox@postapp.store", "display_name": "Входящие" },
+  "body_text": "Здравствуйте, во вложении отчёт...",
+  "body_html": "<p>Здравствуйте, во вложении отчёт...</p>",
+  "body_present": true,
+  "body_truncated": false,
+  "tags": [ { "id": 7, "name": "важное", "color": "#EF4444" } ]
+}
+```
+
+| Поле | Тип | Примечание |
+|------|-----|-----------|
+| `id` | integer | ID письма во внешнем сервисе (ключ пагинации) |
+| `subject` | string \| null | Тема; `null` — без темы |
+| `internal_date` | datetime (ISO 8601 UTC) | Время письма |
+| `from_addr` | string | Адрес отправителя |
+| `from_name` | string \| null | Имя отправителя |
+| `to_addrs` | string | Получатели (строка адресов, как отдаёт внешний сервис) |
+| `cc_addrs` | string \| null | Копия |
+| `mail_account` | `MailAccount` | Почтовый аккаунт-получатель (см. ниже) |
+| `body_text` | string | Текстовое тело |
+| `body_html` | string \| null | HTML-тело (рендерится **только** в sandbox-iframe — [modules/mail](modules/mail/README.md#изоляция-html-тела-нормативно)) |
+| `body_present` | boolean | Тело доступно |
+| `body_truncated` | boolean | Тело обрезано внешним сервисом |
+| `tags` | `MailTag[]` | Теги письма |
+
+`MailAccount = { id: integer, email: string, display_name: string | null }`.
+`MailTag = { id: integer, name: string, color: string }` (`color` — HEX, для `Badge`).
+
+### GET `/api/mail/messages`
+Лента писем (прокси к внешнему `GET /api/external/messages`). Требует JWT.
+
+**Query**
+| Параметр | Тип | Правила |
+|----------|-----|---------|
+| `since_id` | integer? | опц., keyset вперёд: возвращаются письма с `id > since_id`. Не задан → с начала доступного окна (ретенция внешнего сервиса ~30 дней) |
+| `limit` | integer? | опц., `1..200`, default `50`. Вне диапазона → `400 validation_error` |
+
+**Response 200** — схема `MailListResponse`:
+```json
+{
+  "messages": [ /* MailMessage[] */ ],
+  "next_since_id": 1042,
+  "has_more": true
+}
+```
+- `next_since_id` — `integer | null`: максимальный `id` в батче (для следующего запроса `since_id`); **`null` для пустого батча** (нет новых писем вперёд — `messages` пуст, курсор не сдвигается). Backend реализован как `int | None` (безопасный супертип). Синхронизировано с keyset-уточнением в [modules/mail](modules/mail/README.md#пагинация-нормативно).
+- `has_more` — есть ли ещё письма вперёд.
+- **Пагинация — keyset вперёд по `id ASC`; server-side фильтров/поиска нет.** Frontend отображает батч новыми сверху (`id` DESC) и грузит дальше по `next_since_id` («Загрузить ещё»), пока `has_more=true`. Строгий глобальный newest-first и поиск недоступны — [TD-024](100-known-tech-debt.md).
+
+**Ошибки:** `401 unauthorized`, `400 validation_error` (`limit` вне 1..200), `502 mail_unavailable`, `503 mail_not_configured`.
+
+### POST `/api/mail/messages/{id}/reply`
+Ответ на письмо (прокси к внешнему `POST /api/external/messages/{id}/reply`). Требует JWT.
+
+**Request** — схема `MailReplyRequest`:
+```json
+{
+  "to": ["sender@example.com"],
+  "cc": null,
+  "subject": "Re: Отчёт за июнь",
+  "body": "Спасибо, получил."
+}
+```
+| Поле | Тип | Правила |
+|------|-----|---------|
+| `to` | string[]? | опц., адреса получателей (по умолчанию — отправитель исходного письма, определяет внешний сервис) |
+| `cc` | string[] \| null? | опц., копия |
+| `subject` | string? | опц., тема ответа |
+| `body` | string | required, непустой — текст ответа |
+
+**Response 200** — схема `MailReplyResponse`:
+```json
+{ "sent_id": 5099, "smtp_message_id": "<abc123@postapp.store>" }
+```
+| Поле | Тип | Примечание |
+|------|-----|-----------|
+| `sent_id` | integer | ID отправленного письма |
+| `smtp_message_id` | string | SMTP Message-ID |
+
+**Ошибки:** `401 unauthorized`, `400 validation_error` (битое тело), `422 unprocessable` (пустой `body` / семантически некорректное тело), `404 mail_message_not_found` (письмо не найдено — проброс от внешнего), `502 mail_unavailable`, `503 mail_not_configured`.
+
+> Нормативный контракт внешнего reply-эндпоинта фиксирует architect mail-агрегатора; CRM проксирует его в схемы `MailReplyRequest`/`MailReplyResponse` выше. При расхождении — синхронизация через architect.
 
 ---
 

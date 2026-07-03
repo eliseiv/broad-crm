@@ -15,3 +15,4 @@ Architecture Decision Records. Каждое значимое решение — 
 | [ADR-009](ADR-009-in-backend-notifier-vs-alertmanager.md) | In-backend Telegram-нотификатор vs Alertmanager | accepted | 2026-06-30 |
 | [ADR-010](ADR-010-ai-key-monitor-vnutri-backend.md) | Проверка AI-ключей внутри backend vs внешний воркер + Fernet-шифрование | accepted | 2026-07-01 |
 | [ADR-011](ADR-011-poryadok-blokov-server-side-dnd-kit.md) | Порядок блоков — server-side `position` + @dnd-kit, drag по задержке | accepted | 2026-07-01 |
+| [ADR-012](ADR-012-mail-read-through-proxy.md) | Модуль «Почты» — read-through-прокси без хранения (ключ на backend, HTML-изоляция sandbox-iframe) | accepted | 2026-07-03 |

@@ -4,7 +4,7 @@
 
 ## О проекте
 
-CRM-система мониторинга backend-сервисов и серверов. **Этап 1** — страница «Серверы»: список карточек серверов с кастомными SVG-спидометрами (CPU / RAM / SSD), двухшаговый вход администратора, добавление сервера с автоматическим провижинингом (Ansible → node_exporter → Prometheus); плюс страница «ИИ - ключи» — реестр API-ключей AI-провайдеров (OpenAI/Anthropic) с шифрованием, маской и автоматической проверкой валидности + Telegram-алерты ([modules/ai-keys](modules/ai-keys/README.md)).
+CRM-система мониторинга backend-сервисов и серверов. **Этап 1** — страница «Серверы»: список карточек серверов с кастомными SVG-спидометрами (CPU / RAM / SSD), двухшаговый вход администратора, добавление сервера с автоматическим провижинингом (Ansible → node_exporter → Prometheus); плюс страница «ИИ - ключи» — реестр API-ключей AI-провайдеров (OpenAI/Anthropic) с шифрованием, маской и автоматической проверкой валидности + Telegram-алерты ([modules/ai-keys](modules/ai-keys/README.md)); плюс страница «Почты» — лента писем из внешнего сервиса `postapp.store` и ответ (reply) через read-through-прокси без хранения ([modules/mail](modules/mail/README.md), [ADR-012](adr/ADR-012-mail-read-through-proxy.md)).
 
 ## Карта документации
 
@@ -34,6 +34,7 @@ CRM-система мониторинга backend-сервисов и серве
 | Provisioning (Ansible) | [modules/provisioning/README.md](modules/provisioning/README.md) | backend, devops |
 | Notifier (Telegram-уведомления) | [modules/notifier/README.md](modules/notifier/README.md) | backend |
 | AI Keys (реестр ключей + проверка + алерты) | [modules/ai-keys/README.md](modules/ai-keys/README.md) | backend, frontend |
+| Mail (Почты — read-through-прокси + reply) | [modules/mail/README.md](modules/mail/README.md) | backend, frontend |
 | UI (страница «Серверы», спидометры) | [modules/ui/README.md](modules/ui/README.md) | frontend |
 
 ## Статусы модулей
@@ -46,6 +47,7 @@ CRM-система мониторинга backend-сервисов и серве
 | provisioning | `spec-ready` | Не реализован — спецификация готова |
 | notifier | `spec-ready` | Не реализован — спецификация готова |
 | ai-keys | `spec-ready` | Не реализован — спецификация готова |
+| mail | `spec-ready` | Не реализован — спецификация готова |
 | ui | `spec-ready` | Не реализован — спецификация готова |
 
 ## Глоссарий
