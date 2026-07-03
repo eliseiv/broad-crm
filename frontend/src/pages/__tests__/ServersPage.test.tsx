@@ -93,6 +93,9 @@ describe('ServersPage', () => {
     expect(screen.getByText('Server 01')).toBeInTheDocument();
     expect(document.querySelector('.md\\:grid-cols-2')).toBeInTheDocument();
     expect(document.querySelector('.xl\\:grid-cols-3')).toBeInTheDocument();
+    // Ручной кнопки «Обновить» на странице больше нет (ADR-013 смежная правка):
+    // данные обновляются штатным polling/refetch TanStack Query.
+    expect(screen.queryByRole('button', { name: /обновить/i })).not.toBeInTheDocument();
   });
 
   it('renders non-auth error and calls refetch', async () => {

@@ -50,6 +50,54 @@ describe('MailDetail body isolation & notices', () => {
     expect(screen.queryByTitle('Тело письма')).not.toBeInTheDocument();
   });
 
+  it('injects the unified grey background (#161A22) before the html body and uses bg-surface-2 on the iframe', () => {
+    render(<MailDetail message={makeMessage({ body_html: '<p>Привет</p>' })} onBack={vi.fn()} />);
+
+    const iframe = screen.getByTitle('Тело письма') as HTMLIFrameElement;
+    const srcdoc = iframe.getAttribute('srcdoc') ?? '';
+    expect(srcdoc).toContain('#161A22');
+    // Инъекция серого фона стоит ПЕРЕД телом письма (08-design-system.md «Единый серый фон»).
+    expect(srcdoc.indexOf('#161A22')).toBeLessThan(srcdoc.indexOf('<p>Привет</p>'));
+    expect(iframe.className).toContain('bg-surface-2');
+  });
+
+  it('renders body_text on the same grey surface (pre bg-surface-2)', () => {
+    render(<MailDetail message={makeMessage({ body_html: null })} onBack={vi.fn()} />);
+
+    const pre = screen.getByText('Текст письма');
+    expect(pre.tagName).toBe('PRE');
+    expect(pre.className).toContain('bg-surface-2');
+  });
+
+  it('shows "Получено на: {display_name} <{email}>" fully (break-words, not truncate)', () => {
+    render(<MailDetail message={makeMessage()} onBack={vi.fn()} />);
+
+    const receivedLine = screen.getByText('<inbox@postapp.store>').closest('p');
+    expect(receivedLine).not.toBeNull();
+    expect(receivedLine).toHaveTextContent('Получено на: Входящие <inbox@postapp.store>');
+    // Значимый контент не обрезается (CLAUDE.md): перенос, а не усечение.
+    expect(receivedLine?.className).toContain('break-words');
+    expect(receivedLine?.className).not.toContain('truncate');
+  });
+
+  it('renders only the email without empty angle brackets when display_name is empty', () => {
+    render(
+      <MailDetail
+        message={makeMessage({
+          mail_account: { id: 3, email: 'inbox@postapp.store', display_name: null },
+        })}
+        onBack={vi.fn()}
+      />,
+    );
+
+    const receivedLine = screen.getByText('inbox@postapp.store').closest('p');
+    expect(receivedLine).not.toBeNull();
+    expect(receivedLine).toHaveTextContent('Получено на: inbox@postapp.store');
+    // Без пустых угловых скобок при пустом display_name.
+    expect(receivedLine?.textContent).not.toContain('<');
+    expect(receivedLine?.textContent).not.toContain('>');
+  });
+
   it('shows a notice when body is truncated', () => {
     render(<MailDetail message={makeMessage({ body_truncated: true })} onBack={vi.fn()} />);
 

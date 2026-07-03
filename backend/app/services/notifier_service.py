@@ -1,10 +1,13 @@
 """Telegram-нотификатор: фоновый опрос online-серверов и алерты при эскалации.
 
-Фоновая asyncio-задача внутри backend-процесса (ADR-009). State — in-memory
-(рестарт сбрасывает, TD-019). Алерт только при ПОВЫШЕНИИ зоны нагрузки или
-online→offline; деэскалация/восстановление — молча. Полная семантика переходов —
-modules/notifier (State-машина). Пороги зон переиспользуются из
-`app.domain.thresholds` (usage_to_zone) через MonitoringService — не дублируются.
+Фоновая asyncio-задача внутри backend-процесса (ADR-009). State персистится в БД
+(`notifier_server_state`, ADR-014) — читается из БД каждую итерацию (источник истины,
+переживает рестарт/деплой, TD-019 закрыт). Алерт только при ПОВЫШЕНИИ зоны нагрузки
+или online→offline; деэскалация/восстановление — молча, но персистятся. Отсутствие
+строки (`prev is None`) трактуется как здоровый baseline (online + green×3) →
+alert-on-first-elevated. Полная семантика переходов — modules/notifier (State-машина).
+Пороги зон переиспользуются из `app.domain.thresholds` (usage_to_zone) через
+MonitoringService — не дублируются.
 """
 
 from __future__ import annotations
@@ -12,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
-from typing import Literal
+from typing import Literal, cast
 
 from app.db import get_sessionmaker
 from app.domain.notifications import (
@@ -25,6 +28,10 @@ from app.domain.notifications import (
 from app.domain.thresholds import Zone
 from app.infra.telegram import TelegramClient
 from app.logging import get_logger
+from app.models.notifier_server_state import NotifierServerState
+from app.repositories.notifier_server_state_repository import (
+    NotifierServerStateRepository,
+)
 from app.repositories.server_repository import ServerRepository
 from app.services.monitoring_service import (
     InstanceMetrics,
@@ -58,6 +65,13 @@ class Alert:
     text: str
 
 
+# Здоровый baseline при отсутствии персистнутой строки (prev is None): online +
+# все зоны green (ADR-014, alert-on-first-elevated). Разделяемый read-only объект —
+# ServerAlertState заморожен и его zones не мутируется.
+_GREEN_BASELINE_ZONES: dict[str, Zone] = {"cpu": "green", "ram": "green", "ssd": "green"}
+_HEALTHY_BASELINE = ServerAlertState(online=True, zones=_GREEN_BASELINE_ZONES)
+
+
 def _rank(zone: Zone | None) -> int:
     """Ранг зоны; базовая зона None ≡ green (rank 0) при сравнении эскалации."""
     return _ZONE_RANK[zone] if zone is not None else 0
@@ -73,21 +87,25 @@ def evaluate(
     """Чистая функция перехода state-машины (modules/notifier).
 
     Возвращает новое состояние и список алертов (тип + текст) для отправки.
-    Алерт только при `rank(cur) > rank(base)` (эскалация зоны) и при online→offline;
-    деэскалация и восстановление offline→online — молча. Тестируется qa без сети/БД.
+    Отсутствие базы (`prev is None`) трактуется как здоровый baseline
+    (online + green×3, ADR-014): сервер, впервые увиденный уже в yellow/red/offline,
+    получает ровно один catch-up-алерт (alert-on-first-elevated). Алерт только при
+    `rank(cur) > rank(base)` (эскалация зоны) и при online→offline; деэскалация и
+    восстановление offline→online — молча. Тестируется qa без сети/БД.
     """
+    base_state = prev if prev is not None else _HEALTHY_BASELINE
+
     # --- offline (up == 0): метрики не оцениваются, zones сбрасываются ---
     if not im.online:
         alerts: list[Alert] = []
-        if prev is not None and prev.online:
-            # online → offline: одно срочное сообщение.
+        if base_state.online:
+            # online → offline (в т.ч. baseline online → offline): срочное сообщение.
             alerts.append(Alert("offline", build_offline(name, ip)))
         return ServerAlertState(online=False, zones=None), alerts
 
-    # --- online, но метрики недоступны: зоны не оцениваются, state сохраняется ---
+    # --- online, но метрики недоступны: зоны не оцениваются, zone_* пишутся NULL ---
     if im.metrics is None:
-        zones = prev.zones if prev is not None else None
-        return ServerAlertState(online=True, zones=zones), []
+        return ServerAlertState(online=True, zones=None), []
 
     # --- online + есть метрики ---
     metrics_map = {"cpu": im.metrics.cpu, "ram": im.metrics.ram, "ssd": im.metrics.ssd}
@@ -97,13 +115,9 @@ def evaluate(
         cur_zones[key] = zone if zone is not None else "green"
     new_state = ServerAlertState(online=True, zones=cur_zones)
 
-    # Первая встреча online — фиксируем зоны как базу, алертов нет.
-    if prev is None:
-        return new_state, []
-
     # База сравнения: возврат offline→online ⇒ green по всем (rank 0) ⇒ переалерт;
-    # online→online ⇒ предыдущие зоны (None-зона трактуется как green в _rank).
-    base: dict[str, Zone] = {} if not prev.online else (prev.zones or {})
+    # online→online ⇒ зоны базы (None-зона трактуется как green в _rank).
+    base: dict[str, Zone] = {} if not base_state.online else (base_state.zones or {})
 
     warning_items: list[MetricItem] = []
     critical_items: list[MetricItem] = []
@@ -128,8 +142,35 @@ def evaluate(
     return new_state, alerts
 
 
+def _row_to_state(row: NotifierServerState) -> ServerAlertState:
+    """Строка `notifier_server_state` → логическая форма ServerAlertState.
+
+    Offline ⇒ zones=None. Online ⇒ зоны из non-NULL колонок; любая NULL-зона
+    опускается (≡ отсутствует, трактуется как green при сравнении). Пустой набор
+    зон (online без метрик) ⇒ zones=None. Значения из БД гарантированы CHECK'ом.
+    """
+    if not row.online:
+        return ServerAlertState(online=False, zones=None)
+    zones: dict[str, Zone] = {}
+    raw = {"cpu": row.zone_cpu, "ram": row.zone_ram, "ssd": row.zone_ssd}
+    for key, value in raw.items():
+        if value is not None:
+            zones[key] = cast(Zone, value)
+    return ServerAlertState(online=True, zones=zones or None)
+
+
+def _state_to_columns(state: ServerAlertState) -> tuple[Zone | None, Zone | None, Zone | None]:
+    """ServerAlertState → (zone_cpu, zone_ram, zone_ssd) для UPSERT.
+
+    zones=None (offline / online без метрик) ⇒ все NULL.
+    """
+    if state.zones is None:
+        return None, None, None
+    return (state.zones.get("cpu"), state.zones.get("ram"), state.zones.get("ssd"))
+
+
 class NotifierService:
-    """Держит in-memory state и выполняет цикл опроса (опрос → sleep)."""
+    """Читает состояние из БД, выполняет цикл опроса (опрос → sleep) и персистит."""
 
     def __init__(
         self,
@@ -141,27 +182,29 @@ class NotifierService:
         self._telegram = telegram
         self._monitoring = monitoring
         self._poll_interval_sec = poll_interval_sec
-        self._state: dict[uuid.UUID, ServerAlertState] = {}
 
     async def poll_once(self) -> None:
         """Одна итерация опроса (modules/notifier «Итерация опроса»).
 
-        Сессия БД открывается коротко и закрывается до запроса к Prometheus.
-        `PrometheusUnavailable` → итерация пропускается, state не изменяется.
-        Серверы, исчезнувшие из реестра online, удаляются из state молча.
+        Короткая сессия читает `list_online()` + персистнутое состояние из БД
+        (источник истины, ADR-014) и закрывается до запроса к Prometheus.
+        `PrometheusUnavailable` → итерация пропускается, состояние в БД НЕ трогается.
+        После отправки алертов новое состояние UPSERT'ится отдельной короткой сессией.
         """
         sessionmaker = get_sessionmaker()
         async with sessionmaker() as session:
-            repo = ServerRepository(session)
-            servers = await repo.list_online()
+            server_repo = ServerRepository(session)
+            servers = await server_repo.list_online()
             snapshot = {
                 server.id: (server.name, str(server.ip), server.instance) for server in servers
             }
+            state_repo = NotifierServerStateRepository(session)
+            rows = await state_repo.load_states(list(snapshot.keys()))
+            prev_states = {sid: _row_to_state(row) for sid, row in rows.items()}
         # Сессия БД закрыта — далее только Prometheus/Telegram.
 
         if not snapshot:
-            # Реестр online пуст — все прежние серверы исчезли, state очищается.
-            self._state = {}
+            # Реестр online пуст — опрашивать нечего; строки состояния сохраняются.
             return
 
         instances = [instance for (_, _, instance) in snapshot.values()]
@@ -169,23 +212,36 @@ class NotifierService:
             metrics_by_instance = await self._monitoring.fetch_for_instances(instances)
         except PrometheusUnavailable:
             logger.warning("notifier_prometheus_unavailable")
-            return  # state НЕ трогаем
+            return  # состояние в БД НЕ трогаем
 
-        new_state: dict[uuid.UUID, ServerAlertState] = {}
+        to_persist: list[tuple[uuid.UUID, ServerAlertState]] = []
         for server_id, (name, ip, instance) in snapshot.items():
-            prev = self._state.get(server_id)
+            prev = prev_states.get(server_id)
             im = metrics_by_instance.get(instance)
             if im is None:
-                # Instance отсутствует в ответе — не оцениваем, сохраняем прежний state.
-                if prev is not None:
-                    new_state[server_id] = prev
+                # Instance отсутствует в ответе — не оцениваем, строку не трогаем.
                 continue
             state, alerts = evaluate(prev, im, name=name, ip=ip)
-            new_state[server_id] = state
+            to_persist.append((server_id, state))
             for alert in alerts:
                 await self._telegram.send_message(alert.text)
-        # Серверы вне snapshot выпали из реестра → не попадают в new_state (очистка).
-        self._state = new_state
+
+        if not to_persist:
+            return
+        # UPSERT состояния — отдельной короткой сессией, независимо от результата
+        # доставки в Telegram (best-effort доставка не влияет на состояние).
+        async with sessionmaker() as session:
+            state_repo = NotifierServerStateRepository(session)
+            for server_id, state in to_persist:
+                zone_cpu, zone_ram, zone_ssd = _state_to_columns(state)
+                await state_repo.upsert(
+                    server_id,
+                    online=state.online,
+                    zone_cpu=zone_cpu,
+                    zone_ram=zone_ram,
+                    zone_ssd=zone_ssd,
+                )
+            await session.commit()
 
     async def run(self) -> None:
         """Бесконечный цикл: опрос → sleep. Ошибка итерации логируется, цикл живёт."""

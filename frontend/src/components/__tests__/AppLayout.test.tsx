@@ -18,6 +18,7 @@ function renderAt(initial: string) {
   return render(
     <Routes>
       <Route element={<AppLayout />}>
+        <Route path="/mail" element={<div>Контент почт</div>} />
         <Route path="/servers" element={<div>Контент серверов</div>} />
         <Route path="/ai-keys" element={<div>Контент ключей</div>} />
       </Route>
@@ -69,6 +70,32 @@ describe('AppLayout', () => {
 
     expect(screen.getByText('Контент ключей')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'ИИ - ключи' }).className).toContain('text-accent');
+  });
+
+  it('renders /mail full-bleed: <main> is w-full without the max-width container', () => {
+    renderAt('/mail');
+    const main = document.querySelector('main');
+    expect(main).not.toBeNull();
+    // Full-bleed (08-design-system.md, ADR-013 поправка): без mx-auto/max-w/паддингов контейнера.
+    expect(main?.className).toContain('w-full');
+    expect(main?.className).not.toContain('max-w-[1400px]');
+    expect(main?.className).not.toContain('mx-auto');
+    expect(main?.className).not.toContain('px-6');
+  });
+
+  it('constrains /servers and /ai-keys in the centered max-width container', () => {
+    const { unmount } = renderAt('/servers');
+    const serversMain = document.querySelector('main');
+    expect(serversMain?.className).toContain('mx-auto');
+    expect(serversMain?.className).toContain('max-w-[1400px]');
+    expect(serversMain?.className).toContain('px-6');
+    expect(serversMain?.className).toContain('py-8');
+    unmount();
+
+    renderAt('/ai-keys');
+    const keysMain = document.querySelector('main');
+    expect(keysMain?.className).toContain('mx-auto');
+    expect(keysMain?.className).toContain('max-w-[1400px]');
   });
 
   it('shows the username and clears session on logout', async () => {

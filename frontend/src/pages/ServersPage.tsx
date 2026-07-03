@@ -52,27 +52,17 @@ export function ServersPage() {
 
   return (
     <>
-      <div className="mb-6 flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold text-text-primary">Серверы</h1>
-          <p className="mt-1 text-[13px] text-text-secondary">
-            {isLoading
-              ? 'Загрузка…'
-              : `${servers.length} ${pluralServers(servers.length)} под мониторингом`}
-          </p>
-        </div>
-        {!isLoading && !isError && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void refetch()}
-            loading={isFetching}
-            aria-label="Обновить список"
-          >
-            <RefreshCw className="h-4 w-4" />
-            Обновить
-          </Button>
-        )}
+      {/*
+        Без ручной кнопки «Обновить» (08-design-system.md «Страница Серверы», ADR-013
+        смежная правка): данные обновляются штатным polling/refetch TanStack Query.
+      */}
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold text-text-primary">Серверы</h1>
+        <p className="mt-1 text-[13px] text-text-secondary">
+          {isLoading
+            ? 'Загрузка…'
+            : `${servers.length} ${pluralServers(servers.length)} под мониторингом`}
+        </p>
       </div>
 
       {isLoading && (

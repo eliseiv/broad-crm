@@ -46,7 +46,7 @@ function triggerIntersection(): void {
   });
 }
 
-function makeMessage(id: number): MailMessage {
+function makeMessage(id: number, tags: MailMessage['tags'] = []): MailMessage {
   return {
     id,
     subject: `Письмо ${id}`,
@@ -60,9 +60,11 @@ function makeMessage(id: number): MailMessage {
     body_html: null,
     body_present: true,
     body_truncated: false,
-    tags: [],
+    tags,
   };
 }
+
+const tag: MailMessage['tags'][number] = { id: 5, name: 'важное', color: '#EF4444' };
 
 function baseFeed(overrides: Partial<MailFeedResult> = {}): MailFeedResult {
   return {
@@ -164,5 +166,85 @@ describe('MailPage master-detail', () => {
     render(<MailPage />);
 
     expect(screen.getByRole('button', { name: 'Назад' })).toBeInTheDocument();
+  });
+});
+
+describe('MailPage "Только с тегами" filter', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ioCallback = null;
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('toggles aria-pressed on the filter button', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
+    render(<MailPage />);
+
+    const toggle = screen.getByRole('button', { name: /Только с тегами/ });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+
+    await user.click(toggle);
+    expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  });
+
+  it('client-side filters the list to messages with non-empty tags', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2, [tag]), makeMessage(1)] });
+    render(<MailPage />);
+
+    // До фильтра оба письма в списке.
+    expect(screen.getByText('Письмо 1')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Только с тегами/ }));
+
+    // Письмо без тегов (id=1) скрыто; тегированное (id=2) остаётся видимым в детали.
+    expect(screen.queryByText('Письмо 1')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
+  });
+
+  it('shows the empty-filter notice when no loaded message has tags and nothing more to load', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)], hasMore: false });
+    render(<MailPage />);
+
+    await user.click(screen.getByRole('button', { name: /Только с тегами/ }));
+
+    expect(screen.getByText('Нет писем с тегами среди загруженных')).toBeInTheDocument();
+  });
+
+  it('keeps the selected message in the detail panel even when the filter hides it from the list', async () => {
+    const user = userEvent.setup();
+    // id=2 — самое свежее (авто-выбор), без тегов; id=1 — тегированное.
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1, [tag])] });
+    render(<MailPage />);
+
+    // Авто-выбор — самое свежее письмо (id=2).
+    expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /Только с тегами/ }));
+
+    // Правая панель сохранила выбор id=2, хотя список скрыл его; в списке теперь id=1.
+    expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
+    expect(screen.getByText('Письмо 1')).toBeInTheDocument();
+  });
+
+  it('keeps loading older messages while the filter is active and hasMore is true', async () => {
+    const user = userEvent.setup();
+    const loadMore = vi.fn();
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)], hasMore: true, loadMore });
+    render(<MailPage />);
+
+    await user.click(screen.getByRole('button', { name: /Только с тегами/ }));
+
+    // Финальная заглушка НЕ показывается, пока есть ещё старые письма.
+    expect(screen.queryByText('Нет писем с тегами среди загруженных')).not.toBeInTheDocument();
+    // Sentinel продолжает догрузку старых батчей даже при активном фильтре.
+    triggerIntersection();
+    expect(loadMore).toHaveBeenCalled();
   });
 });

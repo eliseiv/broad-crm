@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, Inbox, Mail, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Inbox, Mail, RefreshCw, Tag } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Spinner } from '@/components/ui/Spinner';
 import { MailDetail } from '@/components/MailDetail';
@@ -56,6 +56,10 @@ export function MailPage() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Узкие вьюпорты: показываем деталь письма поверх списка (одна колонка).
   const [mobileDetail, setMobileDetail] = useState(false);
+  // Клиентский фильтр «Только с тегами» (server-side фильтров нет — TD-024). Тумблер
+  // фильтрует уже загруженный набор по непустому tags[]; догрузка старых по скроллу
+  // и авто-выбор не ломаются (08-design-system.md «Фильтр Только с тегами»).
+  const [onlyTagged, setOnlyTagged] = useState(false);
 
   // Авто-выбор самого свежего письма (первое в desc-ленте) при первой загрузке.
   useEffect(() => {
@@ -70,6 +74,13 @@ export function MailPage() {
   const selected = useMemo(
     () => messages.find((m) => m.id === selectedId) ?? null,
     [messages, selectedId],
+  );
+
+  // Отфильтрованное представление поверх загруженного набора (выбор берётся из полного
+  // messages, поэтому скрытие выбранного фильтром не сбрасывает правую панель).
+  const visibleMessages = useMemo(
+    () => (onlyTagged ? messages.filter((m) => m.tags.length > 0) : messages),
+    [messages, onlyTagged],
   );
 
   const handleSelect = (id: number) => {
@@ -157,25 +168,47 @@ export function MailPage() {
       {/* Левая панель — список (~30%). На узких скрыта, когда открыта деталь. */}
       <div
         className={cn(
-          'min-h-0 flex-col overflow-y-auto border-border-subtle md:flex md:w-[32%] md:flex-none md:border-r',
+          'min-h-0 flex-col border-border-subtle md:flex md:w-[32%] md:flex-none md:border-r',
           mobileDetail ? 'hidden' : 'flex',
         )}
       >
-        {messages.map((message) => (
-          <MailListItem
-            key={message.id}
-            message={message}
-            isActive={message.id === selectedId}
-            onSelect={handleSelect}
-          />
-        ))}
-        <div ref={sentinelRef} aria-hidden="true" className="h-px shrink-0" />
-        {isFetchingMore && (
-          <div className="flex shrink-0 items-center justify-center gap-2 py-4 text-[12px] text-text-secondary">
-            <Spinner className="text-text-secondary" />
-            Загрузка…
-          </div>
-        )}
+        {/* Тулбар: тумблер клиентского фильтра «Только с тегами» (aria-pressed). */}
+        <div className="shrink-0 border-b border-border-subtle px-3 py-2">
+          <Button
+            variant={onlyTagged ? 'primary' : 'ghost'}
+            size="sm"
+            aria-pressed={onlyTagged}
+            onClick={() => setOnlyTagged((v) => !v)}
+          >
+            <Tag className="h-4 w-4" />
+            Только с тегами
+          </Button>
+        </div>
+
+        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          {visibleMessages.map((message) => (
+            <MailListItem
+              key={message.id}
+              message={message}
+              isActive={message.id === selectedId}
+              onSelect={handleSelect}
+            />
+          ))}
+          {onlyTagged && visibleMessages.length === 0 && !hasMore && !isFetchingMore && (
+            <p className="px-4 py-6 text-center text-[13px] text-text-secondary">
+              Нет писем с тегами среди загруженных
+            </p>
+          )}
+          {/* Sentinel: пока hasMore, короткий отфильтрованный список держит его видимым и
+              догрузка старых батчей продолжается автоматически, наполняя фильтр. */}
+          <div ref={sentinelRef} aria-hidden="true" className="h-px shrink-0" />
+          {isFetchingMore && (
+            <div className="flex shrink-0 items-center justify-center gap-2 py-4 text-[12px] text-text-secondary">
+              <Spinner className="text-text-secondary" />
+              Загрузка…
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Правая панель — деталь (~70%). На узких скрыта, пока не выбрано письмо. */}

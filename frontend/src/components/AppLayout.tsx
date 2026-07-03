@@ -1,5 +1,5 @@
 import { LogOut, ServerCog } from 'lucide-react';
-import { NavLink, Outlet, useNavigate } from 'react-router-dom';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
@@ -17,9 +17,15 @@ const TABS: { to: string; label: string }[] = [
  */
 export function AppLayout() {
   const navigate = useNavigate();
+  const location = useLocation();
   const queryClient = useQueryClient();
   const username = useAuthStore((s) => s.username);
   const clearSession = useAuthStore((s) => s.clearSession);
+
+  // Full-bleed layout для /mail: список примыкает вплотную к sticky-хэдеру, без внешнего
+  // max-w-контейнера и верхних паддингов (08-design-system.md «Full-bleed layout», ADR-013
+  // поправка). Прочие маршруты («Серверы»/«ИИ-ключи») — прежний ограниченный контейнер.
+  const isFullBleed = location.pathname.startsWith('/mail');
 
   const handleLogout = () => {
     clearSession();
@@ -70,7 +76,7 @@ export function AppLayout() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1400px] px-6 py-8">
+      <main className={isFullBleed ? 'w-full' : 'mx-auto max-w-[1400px] px-6 py-8'}>
         <Outlet />
       </main>
     </div>

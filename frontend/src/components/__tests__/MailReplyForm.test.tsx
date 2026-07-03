@@ -55,10 +55,8 @@ describe('MailReplyForm (inline reply, ADR-013)', () => {
     await user.type(body, 'Спасибо, получил.');
     await user.click(screen.getByRole('button', { name: 'Ответить' }));
 
-    expect(mutation.mutate).toHaveBeenCalledWith(
-      expect.objectContaining({ body: 'Спасибо, получил.' }),
-      expect.any(Object),
-    );
+    // Payload — строго { body } (ADR-013 поправка: to/cc/subject больше не передаются).
+    expect(mutation.mutate).toHaveBeenCalledWith({ body: 'Спасибо, получил.' }, expect.any(Object));
     expect(toast.success).toHaveBeenCalledWith('Ответ отправлен');
     // Поле очищено после успешной отправки.
     expect(screen.getByLabelText('Сообщение')).toHaveValue('');
@@ -105,15 +103,40 @@ describe('MailReplyForm (inline reply, ADR-013)', () => {
     expect(toast.error).toHaveBeenCalledWith('Почтовый сервис временно недоступен');
   });
 
-  it('prefills to=from_addr and subject=Re:<subject> when "Расширенно" is expanded', async () => {
+  it('maps a 400 to the body validation error without a toast', async () => {
     const user = userEvent.setup();
-    render(
-      <MailReplyForm message={makeMessage({ subject: 'Отчёт', from_addr: 'boss@example.com' })} />,
+    mutation.mutate.mockImplementation((_payload, options) =>
+      options.onError(new ApiError(400, 'bad_request', 'bad body')),
     );
+    render(<MailReplyForm message={makeMessage()} />);
 
-    await user.click(screen.getByRole('button', { name: /Расширенно/ }));
+    await user.type(screen.getByLabelText('Сообщение'), 'ответ');
+    await user.click(screen.getByRole('button', { name: 'Ответить' }));
 
-    expect(screen.getByLabelText('Кому')).toHaveValue('boss@example.com');
-    expect(screen.getByLabelText('Тема')).toHaveValue('Re: Отчёт');
+    expect(screen.getByLabelText('Сообщение')).toHaveAttribute('aria-invalid', 'true');
+    expect(screen.getByText('Введите текст сообщения')).toBeInTheDocument();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  it('keeps the send button disabled for a whitespace-only body (body is required)', async () => {
+    const user = userEvent.setup();
+    render(<MailReplyForm message={makeMessage()} />);
+
+    await user.type(screen.getByLabelText('Сообщение'), '   ');
+
+    expect(screen.getByRole('button', { name: 'Ответить' })).toBeDisabled();
+    expect(mutation.mutate).not.toHaveBeenCalled();
+  });
+
+  it('renders only a Textarea and the "Ответить" button (no advanced to/cc/subject fields)', () => {
+    render(<MailReplyForm message={makeMessage()} />);
+
+    expect(screen.getByLabelText('Сообщение')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Ответить' })).toBeInTheDocument();
+    // Блок «Расширенно» и поля to/cc/subject удалены (ADR-013 поправка).
+    expect(screen.queryByRole('button', { name: /Расширенно/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Кому')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Копия')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Тема')).not.toBeInTheDocument();
   });
 });

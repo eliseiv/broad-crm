@@ -12,9 +12,21 @@ function absoluteDate(iso: string): string {
 }
 
 /**
+ * Обёртка srcDoc для sandbox-iframe: инъекция базового серого фона `--surface-2` (#161A22)
+ * ПЕРЕД телом письма, чтобы HTML-письмо рендерилось на том же сером, что и текстовые
+ * (08-design-system.md «Единый серый фон тела», ADR-013 поправка). Sandbox НЕ ослабляется
+ * (без allow-scripts/allow-same-origin — ADR-012). Best-effort: письмо с собственным
+ * background может перекрыть серый.
+ */
+function buildHtmlSrcDoc(bodyHtml: string): string {
+  return `<style>html,body{background:#161A22;color:#E6E9EF;margin:0;padding:12px}</style>${bodyHtml}`;
+}
+
+/**
  * Тело письма. `body_html` (недоверенный HTML третьих лиц) рендерится ТОЛЬКО в
  * sandbox-iframe без `allow-scripts`/`allow-same-origin` (ADR-012, modules/mail
  * «Изоляция HTML-тела»). Иначе — `body_text` моношрифтом с переносами. DOMPurify не нужен.
+ * Единый серый фон `--surface-2` для text и html (08-design-system.md «Деталь письма»).
  * Возвращает flex-1-контейнер: тело скроллится внутри себя, страница по вертикали не едет.
  */
 function MailBody({ message }: { message: MailMessage }) {
@@ -30,14 +42,14 @@ function MailBody({ message }: { message: MailMessage }) {
   const hasHtml = Boolean(html && html.trim());
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 px-4 py-4">
+    <div className="flex min-h-0 flex-1 flex-col gap-2 bg-surface-2 px-4 py-4">
       {hasHtml ? (
         <iframe
           title="Тело письма"
-          srcDoc={html ?? ''}
+          srcDoc={buildHtmlSrcDoc(html ?? '')}
           sandbox=""
           referrerPolicy="no-referrer"
-          className="min-h-0 w-full flex-1 rounded-lg border border-border-subtle bg-white"
+          className="min-h-0 w-full flex-1 rounded-lg border border-border-subtle bg-surface-2"
         />
       ) : (
         <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-subtle bg-surface-2 p-3 font-mono text-[13px] text-text-primary">
@@ -59,7 +71,7 @@ interface MailDetailProps {
 
 /** Правая панель master-detail: шапка + тело + inline-reply (08-design-system.md). */
 export function MailDetail({ message, onBack }: MailDetailProps) {
-  const accountLabel = message.mail_account.display_name || message.mail_account.email;
+  const { email, display_name: displayName } = message.mail_account;
   const subject = message.subject ?? '(без темы)';
 
   return (
@@ -103,8 +115,16 @@ export function MailDetail({ message, onBack }: MailDetailProps) {
           <MailTags tags={message.tags} />
         </div>
 
-        <p className="mt-2 text-[12px] text-text-secondary">
-          Получено на: <span className="text-text-primary">{accountLabel}</span>
+        {/*
+          «Получено на: {display_name} <{email}>» — оба значения видны полностью
+          (08-design-system.md; правило CLAUDE.md — значимый контент не обрезать). Длинный
+          адрес переносится (break-words), НЕ truncate. При пустом display_name — только email.
+        */}
+        <p className="mt-2 break-words text-[12px] text-text-secondary">
+          Получено на: {displayName && <span className="text-text-primary">{displayName} </span>}
+          <span className="font-mono text-text-secondary">
+            {displayName ? `<${email}>` : email}
+          </span>
         </p>
       </header>
 
