@@ -35,11 +35,15 @@
 ### Метод
 
 ```
-MonitoringService.fetch_for_instances(instances: list[str]) -> dict[str, InstanceMetrics]
+MonitoringService.fetch_for_instances(instances: list[str], window_sec: int | None = None) -> dict[str, InstanceMetrics]
 ```
 
 - `instances` — список `"<ip>:<exporter_port>"` (см. `Server.instance` в [modules/servers](../servers/README.md)).
 - Возвращает словарь `instance -> InstanceMetrics`. Бросает `PrometheusUnavailable` при устойчивой недоступности самого Prometheus (случай «а» из таблицы [«Доступность метрик»](../../04-api.md#доступность-метрик-up0--отсутствие-данных-vs-prometheus-down), после исчерпания ретраев). Случай «б» (`up==0` / частичный валидный ответ) исключения НЕ даёт.
+- **`window_sec` (режим max-over-window, [ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md)):**
+  - `None` (**default**) — **мгновенные** запросы ([02-promql.md](02-promql.md)). Это путь **UI/read-path** (`GET /api/servers`, `GET /api/servers/{id}/metrics`) — поведение и контракт карт **не меняются**.
+  - `int` (секунды) — CPU/RAM/SSD `usage_percent` берётся как `max_over_time(<usage_expr>[window_sec:step])` ([«Notifier: max-over-window»](02-promql.md#notifier-max-over-window-только-для-оценки-зоны-алертов)); `zone` = `usage_to_zone(max)`. Этот путь вызывает **только** [notifier](../notifier/README.md) с `window_sec = NOTIFIER_METRIC_WINDOW_SEC`. Поля `online` (мгновенный `up`), `uptime_seconds`, `detail` сохраняют **мгновенную** семантику независимо от `window_sec` — окно применяется **лишь** к `usage_percent` метрик нагрузки.
+  - Тип возврата, маппинг, `usage_to_zone` и **пороги идентичны** в обоих режимах — различается только источник числа `usage_percent` для CPU/RAM/SSD.
 
 ### Типы
 
@@ -63,7 +67,7 @@ Metric = { usage_percent: float | None, zone: Zone, detail: {value, total, unit}
 
 ### Семантика кэша (нормативно — важно для шаринга)
 
-TTL-кэш ключуется по **набору instances**: `key = tuple(sorted(instances))`. Шаринг кэшированного результата между вызовами происходит **только при полном совпадении набора** instances. Следствие: агрегат UI (`GET /api/servers` — все online-серверы) и опрос notifier (его собственный набор online-instances) в общем случае имеют **разные ключи**, поэтому **общего попадания в один кэш-элемент между ботом и UI нет** — это разные кэш-записи и, как правило, отдельные исходящие PromQL. Защита от лавины обеспечивается **общим семафором конкуренции** `_MAX_CONCURRENT_QUERIES` (рекомендация 4), а не общим кэш-элементом. Single-flight схлопывает только параллельные вызовы с **идентичным** ключом.
+TTL-кэш ключуется по **набору instances и окну**: `key = (tuple(sorted(instances)), window_sec)` ([ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md)). Шаринг кэшированного результата между вызовами происходит **только при полном совпадении набора** instances **и** одинаковом `window_sec`. Мгновенный результат UI (`window_sec=None`) и windowed-результат нотификатора (`window_sec=W`) **не смешиваются** даже при совпадении набора instances — это разные кэш-записи. Следствие: агрегат UI (`GET /api/servers` — все online-серверы) и опрос notifier (его собственный набор online-instances) в общем случае имеют **разные ключи**, поэтому **общего попадания в один кэш-элемент между ботом и UI нет** — это разные кэш-записи и, как правило, отдельные исходящие PromQL. Защита от лавины обеспечивается **общим семафором конкуренции** `_MAX_CONCURRENT_QUERIES` (рекомендация 4), а не общим кэш-элементом. Single-flight схлопывает только параллельные вызовы с **идентичным** ключом.
 
 ## DoD
 - [ ] PromQL и маппинг соответствуют [02-promql.md](02-promql.md).
@@ -72,3 +76,4 @@ TTL-кэш ключуется по **набору instances**: `key = tuple(sort
 
 ## Changelog
 - 2026-06-28: спецификация создана (architect, bootstrap).
+- 2026-07-06: добавлен опциональный `window_sec` в `fetch_for_instances` — режим max-over-window для оценки зоны нотификатором ([ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md)); кэш-ключ расширен `window_sec`. UI/read-path (`window_sec=None`) и пороги — **без изменений**.

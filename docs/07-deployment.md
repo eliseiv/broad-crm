@@ -148,6 +148,7 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `TELEGRAM_BOT_TOKEN` | `123456:ABC-DEF...` | Токен Telegram-бота. **Секрет** (только env). Пусто → нотификатор не запускается ([modules/notifier](modules/notifier/README.md#опциональность-активация)) |
 | `TELEGRAM_CHAT_ID` | `-1001234567890` | ID Telegram-группы для алертов. Пусто → нотификатор не запускается. Нотификатор активен **только если заданы оба** (`TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID`) |
 | `NOTIFIER_POLL_INTERVAL_SEC` | `60` | Интервал опроса серверов нотификатором (с). Алерты — только при эскалации зоны/потере доступности ([modules/notifier](modules/notifier/README.md)) |
+| `NOTIFIER_METRIC_WINDOW_SEC` | `90` | Окно `max_over_time` для оценки зоны CPU/RAM/SSD нотификатором (с). Нормативно **≥ `NOTIFIER_POLL_INTERVAL_SEC`** (ловит транзиентные всплески между опросами; при `<` поднимается до poll_interval + warning). UI-карты не затрагивает ([ADR-016](adr/ADR-016-notifier-max-over-window-zone.md)) |
 | `AI_KEY_CHECK_INTERVAL_SEC` | `900` | Интервал проверки AI-ключей (с). Монитор стартует всегда; Telegram-алерты гейтятся `TELEGRAM_*` ([modules/ai-keys](modules/ai-keys/README.md)) |
 | `AI_PROVIDER_TIMEOUT_SEC` | `10` | Таймаут HTTP-запроса к AI-провайдеру (`GET /v1/models`) |
 | `OPENAI_API_BASE` | `https://api.openai.com/v1` | Базовый URL OpenAI API (проверка ключа) |

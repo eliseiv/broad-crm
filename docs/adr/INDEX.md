@@ -19,3 +19,4 @@ Architecture Decision Records. Каждое значимое решение — 
 | [ADR-013](ADR-013-mail-newest-first-master-detail-inline-reply.md) | Почты — newest-first backward-пагинация, master-detail layout, inline-reply (расширяет ADR-012) | accepted | 2026-07-04 |
 | [ADR-014](ADR-014-persist-notifier-state-alert-on-first-elevated.md) | Персистентность состояния нотификатора в БД + alert-on-first-elevated (закрывает TD-019) | accepted | 2026-07-04 |
 | [ADR-015](ADR-015-csp-img-src-remote-mail-images.md) | CSP `img-src` — разрешение удалённых (https) изображений писем (расширяет ADR-012, XSS-инвариант не ослаблен) | accepted | 2026-07-06 |
+| [ADR-016](ADR-016-notifier-max-over-window-zone.md) | Нотификатор оценивает зону по `max_over_time` за окно опроса (ловит транзиентные всплески между опросами; UI-карточки — по-прежнему мгновенное значение; усиливает ADR-014) | accepted | 2026-07-06 |

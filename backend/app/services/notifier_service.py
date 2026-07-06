@@ -178,10 +178,14 @@ class NotifierService:
         telegram: TelegramClient,
         monitoring: MonitoringService,
         poll_interval_sec: int,
+        metric_window_sec: int,
     ) -> None:
         self._telegram = telegram
         self._monitoring = monitoring
         self._poll_interval_sec = poll_interval_sec
+        # Окно max-over-window для оценки зоны CPU/RAM/SSD (ADR-016). Уже
+        # скламплено к poll_interval в config (notifier_metric_window_effective_sec).
+        self._metric_window_sec = metric_window_sec
 
     async def poll_once(self) -> None:
         """Одна итерация опроса (modules/notifier «Итерация опроса»).
@@ -209,7 +213,11 @@ class NotifierService:
 
         instances = [instance for (_, _, instance) in snapshot.values()]
         try:
-            metrics_by_instance = await self._monitoring.fetch_for_instances(instances)
+            # Windowed-режим (ADR-016): зона CPU/RAM/SSD по максимуму за окно
+            # опроса; online/uptime/detail остаются мгновенными.
+            metrics_by_instance = await self._monitoring.fetch_for_instances(
+                instances, window_sec=self._metric_window_sec
+            )
         except PrometheusUnavailable:
             logger.warning("notifier_prometheus_unavailable")
             return  # состояние в БД НЕ трогаем

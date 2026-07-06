@@ -51,30 +51,56 @@ def _instance_matcher(instances: list[str]) -> str:
     return f'instance=~"{pattern}"'
 
 
-def _build_queries(matcher: str) -> dict[str, str]:
-    """Полный набор PromQL-запросов (02-promql.md) с подставленным селектором."""
+# Разрешение subquery max_over_time (≈ scrape-интервал, 02-promql.md, ADR-016).
+_SUBQUERY_STEP = "15s"
+
+
+def _max_over_window(usage_expr: str, window_sec: int) -> str:
+    """Обёртка max_over_time за окно опроса нотификатора (ADR-016, 02-promql.md).
+
+    `usage_expr` — инстант-вектор usage %, поэтому берётся subquery
+    `[<window_sec>s:<step>]`. Применяется ТОЛЬКО к usage CPU/RAM/SSD в windowed-
+    режиме; online/uptime/detail всегда мгновенные и не оборачиваются.
+    """
+    return f"max_over_time(({usage_expr})[{window_sec}s:{_SUBQUERY_STEP}])"
+
+
+def _build_queries(matcher: str, window_sec: int | None = None) -> dict[str, str]:
+    """Полный набор PromQL-запросов (02-promql.md) с подставленным селектором.
+
+    `window_sec is None` (UI/read-path) → мгновенные usage-запросы. `window_sec`
+    задан (notifier) → usage CPU/RAM/SSD оборачивается в max_over_time за окно
+    (ADR-016); online/uptime/detail (cores/GB) остаются мгновенными.
+    """
     ssd_sel = f'{matcher},mountpoint="/",fstype!~"tmpfs|overlay"'
+    cpu_usage = (
+        f"100 - (avg by(instance)"
+        f'(rate(node_cpu_seconds_total{{{matcher},mode="idle"}}[1m])) * 100)'
+    )
+    ram_usage = (
+        f"(1 - node_memory_MemAvailable_bytes{{{matcher}}}"
+        f" / node_memory_MemTotal_bytes{{{matcher}}}) * 100"
+    )
+    ssd_usage = (
+        f"(1 - node_filesystem_avail_bytes{{{ssd_sel}}}"
+        f" / node_filesystem_size_bytes{{{ssd_sel}}}) * 100"
+    )
+    if window_sec is not None:
+        cpu_usage = _max_over_window(cpu_usage, window_sec)
+        ram_usage = _max_over_window(ram_usage, window_sec)
+        ssd_usage = _max_over_window(ssd_usage, window_sec)
     return {
         "up": f"up{{{matcher}}}",
         "uptime": (f"node_time_seconds{{{matcher}}} - node_boot_time_seconds{{{matcher}}}"),
-        "cpu_usage": (
-            f"100 - (avg by(instance)"
-            f'(rate(node_cpu_seconds_total{{{matcher},mode="idle"}}[1m])) * 100)'
-        ),
+        "cpu_usage": cpu_usage,
         "cpu_cores": (f'count by(instance)(node_cpu_seconds_total{{{matcher},mode="idle"}})'),
-        "ram_usage": (
-            f"(1 - node_memory_MemAvailable_bytes{{{matcher}}}"
-            f" / node_memory_MemTotal_bytes{{{matcher}}}) * 100"
-        ),
+        "ram_usage": ram_usage,
         "ram_total": f"node_memory_MemTotal_bytes{{{matcher}}}",
         "ram_used": (
             f"node_memory_MemTotal_bytes{{{matcher}}}"
             f" - node_memory_MemAvailable_bytes{{{matcher}}}"
         ),
-        "ssd_usage": (
-            f"(1 - node_filesystem_avail_bytes{{{ssd_sel}}}"
-            f" / node_filesystem_size_bytes{{{ssd_sel}}}) * 100"
-        ),
+        "ssd_usage": ssd_usage,
         "ssd_total": f"node_filesystem_size_bytes{{{ssd_sel}}}",
         "ssd_used": (
             f"node_filesystem_size_bytes{{{ssd_sel}}}"
@@ -174,8 +200,10 @@ def _build_metrics(maps: dict[str, dict[str, float]], instance: str) -> ServerMe
 
 
 # --- Short-lived TTL-кэш + single-flight для read-path (общие на процесс) ---
-# Ключ = tuple(sorted(instances)). Кэшируется только успешный результат.
-_CacheKey = tuple[str, ...]
+# Ключ = (tuple(sorted(instances)), window_sec): windowed-результат нотификатора
+# и мгновенный результат UI не смешиваются даже при совпадении набора instances
+# (ADR-016). Кэшируется только успешный результат.
+_CacheKey = tuple[tuple[str, ...], int | None]
 _cache: dict[_CacheKey, tuple[float, dict[str, InstanceMetrics]]] = {}
 _inflight: dict[_CacheKey, asyncio.Future[dict[str, InstanceMetrics]]] = {}
 _state_lock = asyncio.Lock()
@@ -198,8 +226,17 @@ class MonitoringService:
     def __init__(self, client: PrometheusClient) -> None:
         self._client = client
 
-    async def fetch_for_instances(self, instances: list[str]) -> dict[str, InstanceMetrics]:
+    async def fetch_for_instances(
+        self, instances: list[str], window_sec: int | None = None
+    ) -> dict[str, InstanceMetrics]:
         """Батч-запрос метрик для набора instance с TTL-кэшем и single-flight.
+
+        `window_sec is None` (default) — мгновенные запросы (UI/read-path,
+        `GET /api/servers`, `/metrics`) — поведение и контракт не меняются.
+        `window_sec` задан (notifier, ADR-016) — usage CPU/RAM/SSD берётся как
+        max_over_time за окно; online/uptime/detail остаются мгновенными; зона =
+        usage_to_zone(max). Ключ кэша включает window_sec — windowed и instant
+        результаты не смешиваются.
 
         Свежий кэш возвращается без запросов к Prometheus. При промахе
         одновременные вызовы с тем же ключом ждут один общий запрос (single-flight).
@@ -209,17 +246,17 @@ class MonitoringService:
         if not instances:
             return {}
 
-        key: _CacheKey = tuple(sorted(instances))
+        key: _CacheKey = (tuple(sorted(instances)), window_sec)
         ttl = get_settings().metrics_cache_ttl_sec
 
         cached = _cache_get(key, ttl)
         if cached is not None:
             return cached
 
-        return await self._fetch_single_flight(key, instances, ttl)
+        return await self._fetch_single_flight(key, instances, ttl, window_sec)
 
     async def _fetch_single_flight(
-        self, key: _CacheKey, instances: list[str], ttl: float
+        self, key: _CacheKey, instances: list[str], ttl: float, window_sec: int | None
     ) -> dict[str, InstanceMetrics]:
         """Single-flight: один общий запрос на ключ, остальные ждут его результат."""
         async with _state_lock:
@@ -239,7 +276,7 @@ class MonitoringService:
             return await future
 
         try:
-            result = await self._execute_batch(instances)
+            result = await self._execute_batch(instances, window_sec)
         except BaseException as exc:
             async with _state_lock:
                 _inflight.pop(key, None)
@@ -259,9 +296,15 @@ class MonitoringService:
         async with _PROM_SEMAPHORE:
             return await self._client.query(promql)
 
-    async def _execute_batch(self, instances: list[str]) -> dict[str, InstanceMetrics]:
-        """Выполняет батч PromQL (с ограничением конкурентности) и маппит в схему."""
-        queries = _build_queries(_instance_matcher(instances))
+    async def _execute_batch(
+        self, instances: list[str], window_sec: int | None = None
+    ) -> dict[str, InstanceMetrics]:
+        """Выполняет батч PromQL (с ограничением конкурентности) и маппит в схему.
+
+        `window_sec` задан → usage CPU/RAM/SSD берётся как max_over_time за окно
+        (ADR-016); online/uptime/detail остаются мгновенными.
+        """
+        queries = _build_queries(_instance_matcher(instances), window_sec)
         keys = list(queries.keys())
         results = await asyncio.gather(*(self._guarded_query(queries[k]) for k in keys))
         raw = dict(zip(keys, results, strict=True))

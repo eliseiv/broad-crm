@@ -12,6 +12,10 @@ from functools import lru_cache
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.logging import get_logger
+
+logger = get_logger(__name__)
+
 
 class AppEnv(str, Enum):
     """Окружение приложения. На production отключается /api/docs (см. 05-security.md)."""
@@ -58,6 +62,13 @@ class Settings(BaseSettings):
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     notifier_poll_interval_sec: int = 60
+    # Окно max_over_time для оценки зоны CPU/RAM/SSD нотификатором (ADR-016).
+    # Нормативно >= notifier_poll_interval_sec; при задании меньше — эффективное
+    # окно поднимается до poll_interval с warning-логом (см. model_post_init).
+    # UI/read-path не затрагивает (window_sec=None), окно применяется только у бота.
+    notifier_metric_window_sec: int = 90
+    # Эффективное окно после клампа к poll_interval; используется нотификатором.
+    notifier_metric_window_effective_sec: int = Field(default=0, exclude=True)
 
     @property
     def notifier_enabled(self) -> bool:
@@ -128,6 +139,18 @@ class Settings(BaseSettings):
 
     def model_post_init(self, __context: object) -> None:
         object.__setattr__(self, "jwt_expires_seconds", self.jwt_expires_min * 60)
+        # Клампуем окно нотификатора к poll_interval (ADR-016): окно < интервала
+        # опроса оставляет «слепые» зазоры между окнами → дефект не устраняется.
+        effective_window = self.notifier_metric_window_sec
+        if effective_window < self.notifier_poll_interval_sec:
+            logger.warning(
+                "notifier_metric_window_clamped",
+                configured_sec=self.notifier_metric_window_sec,
+                poll_interval_sec=self.notifier_poll_interval_sec,
+                effective_sec=self.notifier_poll_interval_sec,
+            )
+            effective_window = self.notifier_poll_interval_sec
+        object.__setattr__(self, "notifier_metric_window_effective_sec", effective_window)
 
 
 @lru_cache(maxsize=1)

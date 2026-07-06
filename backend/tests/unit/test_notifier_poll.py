@@ -116,9 +116,15 @@ class _FakeMonitoring:
         self.result: dict[str, InstanceMetrics] = {}
         self.raise_unavailable = False
         self.calls: list[list[str]] = []
+        # Окна, с которыми нотификатор вызвал fetch_for_instances (ADR-016):
+        # ожидается effective metric_window_sec, а не None (windowed-режим).
+        self.window_calls: list[int | None] = []
 
-    async def fetch_for_instances(self, instances: list[str]) -> dict[str, InstanceMetrics]:
+    async def fetch_for_instances(
+        self, instances: list[str], window_sec: int | None = None
+    ) -> dict[str, InstanceMetrics]:
         self.calls.append(list(instances))
+        self.window_calls.append(window_sec)
         if self.raise_unavailable:
             raise PrometheusUnavailable("prom down")
         return self.result
@@ -143,8 +149,21 @@ def patched_db(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeStateRepo.upsert_calls = []
 
 
-def _make_service(monitoring: _FakeMonitoring, telegram: _FakeTelegram) -> NotifierService:
-    return NotifierService(telegram=telegram, monitoring=monitoring, poll_interval_sec=1)  # type: ignore[arg-type]
+_METRIC_WINDOW_SEC = 90
+
+
+def _make_service(
+    monitoring: _FakeMonitoring,
+    telegram: _FakeTelegram,
+    *,
+    metric_window_sec: int = _METRIC_WINDOW_SEC,
+) -> NotifierService:
+    return NotifierService(
+        telegram=telegram,  # type: ignore[arg-type]
+        monitoring=monitoring,  # type: ignore[arg-type]
+        poll_interval_sec=1,
+        metric_window_sec=metric_window_sec,
+    )
 
 
 def _seed_state(sid: uuid.UUID, *, online: bool, cpu: str, ram: str, ssd: str) -> None:
@@ -217,6 +236,32 @@ async def test_instance_matching_and_alert_on_escalation_upserts(patched_db: Non
     assert 'Сервер "web"' in tg.sent[0]
     # Новое состояние UPSERT'нуто в notifier_server_state.
     assert _FakeStateRepo.upsert_calls == [sid]
+    assert _FakeStateRepo.store[sid].zone_cpu == "red"
+
+
+async def test_notifier_fetches_with_effective_window_max_over_window_zone(
+    patched_db: None,
+) -> None:
+    # ADR-016: нотификатор оценивает зону по max-за-окно — вызывает
+    # fetch_for_instances с window_sec=metric_window_sec (не None/instant).
+    # Зона red из max-за-окно результата продолжает эскалировать/персистить (ADR-014).
+    sid = uuid.uuid4()
+    inst = "10.0.0.4:9100"
+    _FakeServerRepo.servers = [_FakeServer(sid, "spike", "10.0.0.4", inst)]
+    _seed_state(sid, online=True, cpu="green", ram="green", ssd="green")
+    mon = _FakeMonitoring()
+    mon.result = {inst: _online(cpu="red")}  # max-за-окно CPU в red-зоне
+    tg = _FakeTelegram()
+    svc = _make_service(mon, tg, metric_window_sec=120)
+
+    await svc.poll_once()
+
+    # Windowed-режим: окно передано, а не мгновенный запрос (None).
+    assert mon.window_calls == [120]
+    assert mon.calls == [[inst]]
+    # Зона max-за-окно продолжает работать сквозь evaluate/персист (ADR-014).
+    assert len(tg.sent) == 1
+    assert "🔴🔴🔴СРОЧНО🔴🔴🔴" in tg.sent[0]
     assert _FakeStateRepo.store[sid].zone_cpu == "red"
 
 
