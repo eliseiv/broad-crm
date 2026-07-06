@@ -22,12 +22,15 @@ export function AppLayout() {
   const username = useAuthStore((s) => s.username);
   const clearSession = useAuthStore((s) => s.clearSession);
 
-  // Full-bleed layout для /mail: список примыкает вплотную к shrink-0-хэдеру, без внешнего
-  // max-w-контейнера и верхних паддингов (08-design-system.md «Full-bleed layout», ADR-013
-  // поправка). Прочие маршруты («Серверы»/«ИИ-ключи») — полноширинный скролл-контейнер
-  // `<main>` (скроллбар у края окна), а ширину 1400px держит внутренний `<div>`-обёртка:
-  // скролл-контейнер и контейнер ширины РАЗДЕЛЕНЫ (08-design-system.md «Разделение
-  // скролл-контейнера и контейнера ширины»).
+  // Два режима shell по маршруту (08-design-system.md «Full-bleed layout»):
+  //  • /mail (full-bleed) — модель фиксированной высоты: shell `h-screen overflow-hidden`,
+  //    хэдер `shrink-0`, `<main>` `flex-1 min-h-0 w-full overflow-hidden`, `<Outlet/>` напрямую.
+  //    Страница сама не скроллится, скролл — внутри панелей master-detail.
+  //  • не-mail (/servers, /ai-keys) — ОБЫЧНЫЙ поток документа: shell `min-h-screen`
+  //    (без h-screen/overflow-hidden), хэдер `sticky top-0`, `<main>` — простой контейнер
+  //    (НЕ скролл-контейнер), ширину 1400px держит внутренний `<div>`-обёртка. Скроллит `body`
+  //    нативно (скроллбар у края окна); влезает — скроллбара нет. Это устраняет контейнерный/
+  //    фантомный скролл `<main>` (overflow-y-auto), который давал «панель скролла».
   const isFullBleed = location.pathname.startsWith('/mail');
 
   const handleLogout = () => {
@@ -37,8 +40,18 @@ export function AppLayout() {
   };
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-bg-base">
-      <header className="shrink-0 border-b border-border-subtle bg-bg-base/80 backdrop-blur-md">
+    <div
+      className={cn(
+        'flex flex-col bg-bg-base',
+        isFullBleed ? 'h-screen overflow-hidden' : 'min-h-screen',
+      )}
+    >
+      <header
+        className={cn(
+          'border-b border-border-subtle bg-bg-base/80 backdrop-blur-md',
+          isFullBleed ? 'shrink-0' : 'sticky top-0 z-30',
+        )}
+      >
         <div className="mx-auto flex max-w-[1400px] items-center justify-between px-6 py-3">
           <div className="flex items-center gap-6">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
@@ -79,17 +92,17 @@ export function AppLayout() {
         </div>
       </header>
 
-      <main
-        className={cn('flex-1 min-h-0 w-full', isFullBleed ? 'overflow-hidden' : 'overflow-y-auto')}
-      >
-        {isFullBleed ? (
+      {isFullBleed ? (
+        <main className="w-full min-h-0 flex-1 overflow-hidden">
           <Outlet />
-        ) : (
+        </main>
+      ) : (
+        <main>
           <div className="mx-auto max-w-[1400px] px-6 py-8">
             <Outlet />
           </div>
-        )}
-      </main>
+        </main>
+      )}
     </div>
   );
 }
