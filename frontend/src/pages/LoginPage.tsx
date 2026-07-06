@@ -24,7 +24,7 @@ export function LoginPage() {
   const passwordRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (isAuthenticated) navigate('/mail', { replace: true });
+    if (isAuthenticated) navigate('/dashboard', { replace: true });
   }, [isAuthenticated, navigate]);
 
   useEffect(() => {
@@ -63,7 +63,7 @@ export function LoginPage() {
     loginMutation.mutate(
       { username: username.trim(), password },
       {
-        onSuccess: () => navigate('/mail', { replace: true }),
+        onSuccess: () => navigate('/dashboard', { replace: true }),
         onError: (err) => {
           if (err instanceof ApiError && err.status === 429) {
             setFormError('Слишком много попыток входа. Попробуйте позже.');

@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import type { ChangeEvent } from 'react';
 import { AlertTriangle, Inbox, Mail, RefreshCw, Tag } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { MailDetail } from '@/components/MailDetail';
 import { MailListItem } from '@/components/MailListItem';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { useMailFeed } from '@/features/mail/hooks';
+import { useMailFeed, useMailMailboxes, useMailTeams } from '@/features/mail/hooks';
 
 /**
  * Высота двухпанельного блока: наследуется от flex-fill `<main>` (`flex-1 min-h-0`) —
@@ -54,18 +56,57 @@ function CenteredState({
 }
 
 export function MailPage() {
+  // Серверный фильтр ленты (взаимоисключающи почта↔команда). Входит в queryKey ленты:
+  // смена фильтра ре-запрашивает ленту, сбрасывает пагинацию и авто-выбор — ADR-017.
+  const [mailAccountId, setMailAccountId] = useState<number | undefined>(undefined);
+  const [groupId, setGroupId] = useState<number | undefined>(undefined);
+
   const { messages, phase, error, hasMore, isFetchingMore, isReloading, loadMore, reload } =
-    useMailFeed();
+    useMailFeed({ mailAccountId, groupId });
+  const mailboxesQuery = useMailMailboxes();
+  const teamsQuery = useMailTeams();
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Узкие вьюпорты: показываем деталь письма поверх списка (одна колонка).
   const [mobileDetail, setMobileDetail] = useState(false);
-  // Клиентский фильтр «Только с тегами» (server-side фильтров нет — TD-024). Тумблер
-  // фильтрует уже загруженный набор по непустому tags[]; догрузка старых по скроллу
-  // и авто-выбор не ломаются (08-design-system.md «Фильтр Только с тегами»).
+  // Клиентский фильтр «С тегами» поверх серверного набора (теги внешний API не фильтрует).
+  // Тумблер фильтрует уже загруженный набор по непустому tags[]; догрузка старых по скроллу
+  // и авто-выбор не ломаются (08-design-system.md «Фильтры ленты»).
   const [onlyTagged, setOnlyTagged] = useState(false);
 
-  // Авто-выбор самого свежего письма (первое в desc-ленте) при первой загрузке.
+  // Опции дропдаунов. «Все почты»/«Все команды» — первая опция (сброс серверного фильтра).
+  const mailboxOptions = useMemo(() => {
+    const boxes = mailboxesQuery.data?.mailboxes ?? [];
+    return [
+      { value: '', label: 'Все почты' },
+      ...boxes.map((mb) => ({
+        value: String(mb.id),
+        label: mb.display_name ? `${mb.display_name} ${mb.email}` : mb.email,
+      })),
+    ];
+  }, [mailboxesQuery.data]);
+
+  const teamOptions = useMemo(() => {
+    const teams = teamsQuery.data?.teams ?? [];
+    return [
+      { value: '', label: 'Все команды' },
+      ...teams.map((t) => ({ value: String(t.id), label: t.name })),
+    ];
+  }, [teamsQuery.data]);
+
+  // Взаимоисключение: выбор почты сбрасывает команду и наоборот (консистентно с backend 400).
+  const handleMailboxChange = (e: ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value;
+    setMailAccountId(v ? Number(v) : undefined);
+    if (v) setGroupId(undefined);
+  };
+  const handleTeamChange = (e: ChangeEvent<HTMLSelectElement>) => {
+    const v = e.target.value;
+    setGroupId(v ? Number(v) : undefined);
+    if (v) setMailAccountId(undefined);
+  };
+
+  // Авто-выбор самого свежего письма (первое в desc-ленте) при первой загрузке / смене фильтра.
   useEffect(() => {
     if (messages.length === 0) {
       if (selectedId !== null) setSelectedId(null);
@@ -152,20 +193,9 @@ export function MailPage() {
     );
   }
 
-  // phase === 'ready'
-  if (messages.length === 0) {
-    return shell(
-      <div className="flex h-full flex-col md:flex-row">
-        <div className="flex flex-1 items-center justify-center border-border-subtle p-6 md:w-[32%] md:flex-none md:border-r">
-          <div className="flex flex-col items-center gap-3 text-center">
-            <Inbox className="h-9 w-9 text-text-tertiary" aria-hidden="true" />
-            <p className="text-sm font-semibold text-text-primary">Писем пока нет</p>
-          </div>
-        </div>
-        <div className="hidden flex-1 md:block" />
-      </div>,
-    );
-  }
+  // phase === 'ready'. Тулбар фильтров показывается всегда (в т.ч. при пустом результате
+  // серверного фильтра — чтобы фильтр можно было сбросить).
+  const isEmpty = messages.length === 0;
 
   return shell(
     <div className="flex h-full min-h-0 flex-col md:flex-row">
@@ -176,41 +206,65 @@ export function MailPage() {
           mobileDetail ? 'hidden' : 'flex',
         )}
       >
-        {/* Тулбар: тумблер клиентского фильтра «Только с тегами» (aria-pressed). */}
-        <div className="shrink-0 border-b border-border-subtle px-3 py-2">
+        {/* Тулбар: клиентский «С тегами» + серверные дропдауны «Почта»/«Команда». */}
+        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border-subtle px-3 py-2">
           <Button
             variant={onlyTagged ? 'primary' : 'ghost'}
             size="sm"
             aria-pressed={onlyTagged}
             onClick={() => setOnlyTagged((v) => !v)}
           >
-            <Tag className="h-4 w-4" />
-            Только с тегами
+            <Tag className="h-4 w-4" />С тегами
           </Button>
+          <div className="w-40">
+            <Select
+              aria-label="Почта"
+              options={mailboxOptions}
+              value={mailAccountId != null ? String(mailAccountId) : ''}
+              onChange={handleMailboxChange}
+            />
+          </div>
+          <div className="w-40">
+            <Select
+              aria-label="Команда"
+              options={teamOptions}
+              value={groupId != null ? String(groupId) : ''}
+              onChange={handleTeamChange}
+            />
+          </div>
         </div>
 
         <div className="scrollbar-none flex min-h-0 flex-1 flex-col overflow-y-auto">
-          {visibleMessages.map((message) => (
-            <MailListItem
-              key={message.id}
-              message={message}
-              isActive={message.id === selectedId}
-              onSelect={handleSelect}
-            />
-          ))}
-          {onlyTagged && visibleMessages.length === 0 && !hasMore && !isFetchingMore && (
-            <p className="px-4 py-6 text-center text-[13px] text-text-secondary">
-              Нет писем с тегами среди загруженных
-            </p>
-          )}
-          {/* Sentinel: пока hasMore, короткий отфильтрованный список держит его видимым и
-              догрузка старых батчей продолжается автоматически, наполняя фильтр. */}
-          <div ref={sentinelRef} aria-hidden="true" className="h-px shrink-0" />
-          {isFetchingMore && (
-            <div className="flex shrink-0 items-center justify-center gap-2 py-4 text-[12px] text-text-secondary">
-              <Spinner className="text-text-secondary" />
-              Загрузка…
+          {isEmpty ? (
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 px-4 py-10 text-center">
+              <Inbox className="h-9 w-9 text-text-tertiary" aria-hidden="true" />
+              <p className="text-sm font-semibold text-text-primary">Писем пока нет</p>
             </div>
+          ) : (
+            <>
+              {visibleMessages.map((message) => (
+                <MailListItem
+                  key={message.id}
+                  message={message}
+                  isActive={message.id === selectedId}
+                  onSelect={handleSelect}
+                />
+              ))}
+              {onlyTagged && visibleMessages.length === 0 && !hasMore && !isFetchingMore && (
+                <p className="px-4 py-6 text-center text-[13px] text-text-secondary">
+                  Нет писем с тегами среди загруженных
+                </p>
+              )}
+              {/* Sentinel: пока hasMore, короткий отфильтрованный список держит его видимым и
+                  догрузка старых батчей продолжается автоматически, наполняя фильтр. */}
+              <div ref={sentinelRef} aria-hidden="true" className="h-px shrink-0" />
+              {isFetchingMore && (
+                <div className="flex shrink-0 items-center justify-center gap-2 py-4 text-[12px] text-text-secondary">
+                  <Spinner className="text-text-secondary" />
+                  Загрузка…
+                </div>
+              )}
+            </>
           )}
         </div>
       </div>
@@ -222,7 +276,7 @@ export function MailPage() {
         ) : (
           <CenteredState
             icon={<Mail className="h-9 w-9 text-text-tertiary" aria-hidden="true" />}
-            title="Выберите письмо"
+            title={isEmpty ? 'Писем пока нет' : 'Выберите письмо'}
           />
         )}
       </div>

@@ -18,6 +18,13 @@ vi.mock('@/features/auth/hooks', () => ({
   }),
 }));
 
+// Дефолтный маршрут после логина — /dashboard (ADR-017): проверяем целевой путь редиректов.
+const navigate = vi.hoisted(() => vi.fn());
+vi.mock('react-router-dom', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-router-dom')>();
+  return { ...actual, useNavigate: () => navigate };
+});
+
 function wrapper({ children }: PropsWithChildren) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
@@ -63,5 +70,27 @@ describe('LoginPage', () => {
       expect.any(Object),
     );
     expect(screen.getByRole('alert')).toHaveTextContent('Неверный логин или пароль');
+  });
+
+  it('redirects to /dashboard after a successful login', async () => {
+    const user = userEvent.setup();
+    authHooks.mutate.mockImplementation((_payload, options) => options.onSuccess());
+
+    render(<LoginPage />, { wrapper });
+
+    await user.type(screen.getByLabelText('Логин'), 'admin');
+    await user.click(screen.getByRole('button', { name: /далее/i }));
+    await user.type(screen.getByLabelText('Пароль'), 'secret');
+    await user.click(screen.getByRole('button', { name: /войти/i }));
+
+    expect(navigate).toHaveBeenCalledWith('/dashboard', { replace: true });
+  });
+
+  it('redirects an already-authenticated user to /dashboard on mount', () => {
+    useAuthStore.getState().setSession('jwt-token', 'admin');
+
+    render(<LoginPage />, { wrapper });
+
+    expect(navigate).toHaveBeenCalledWith('/dashboard', { replace: true });
   });
 });

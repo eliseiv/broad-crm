@@ -20,3 +20,4 @@ Architecture Decision Records. Каждое значимое решение — 
 | [ADR-014](ADR-014-persist-notifier-state-alert-on-first-elevated.md) | Персистентность состояния нотификатора в БД + alert-on-first-elevated (закрывает TD-019) | accepted | 2026-07-04 |
 | [ADR-015](ADR-015-csp-img-src-remote-mail-images.md) | CSP `img-src` — разрешение удалённых (https) изображений писем (расширяет ADR-012, XSS-инвариант не ослаблен) | accepted | 2026-07-06 |
 | [ADR-016](ADR-016-notifier-max-over-window-zone.md) | Нотификатор оценивает зону по `max_over_time` за окно опроса (ловит транзиентные всплески между опросами; UI-карточки — по-прежнему мгновенное значение; усиливает ADR-014) | accepted | 2026-07-06 |
+| [ADR-017](ADR-017-dashboard-client-aggregation-mail-server-filters.md) | Страница «Дашборд» (клиентская агрегация счётчиков, без backend-агрегатора) + серверные фильтры «Почт» по ящику/команде (external ADR-0037; частично снимает TD-024) | accepted | 2026-07-06 |

@@ -93,12 +93,52 @@ class MailReplyResponse(BaseModel):
     smtp_message_id: str
 
 
+class MailTeam(BaseModel):
+    """Команда (`groups` внешнего сервиса, external ADR-0037; 04-api.md#mail).
+
+    Команда ≠ тег (`MailTag`): теги остаются отдельной сущностью письма.
+    """
+
+    id: int
+    name: str
+
+
+class MailMailbox(BaseModel):
+    """Почтовый ящик внешнего сервиса (external ADR-0037; 04-api.md#mail).
+
+    `id` используется как `mail_account_id` в фильтре GET /api/mail/messages;
+    привязка к команде — через `group_id`; `is_active` — статус ящика.
+    """
+
+    id: int
+    email: str
+    display_name: str | None
+    group_id: int | None
+    is_active: bool
+
+
+class MailTeamsResponse(BaseModel):
+    """Ответ 200 GET /api/mail/teams (04-api.md#mail). Список может быть пустым."""
+
+    teams: list[MailTeam]
+
+
+class MailMailboxesResponse(BaseModel):
+    """Ответ 200 GET /api/mail/mailboxes (04-api.md#mail). Список может быть пустым."""
+
+    mailboxes: list[MailMailbox]
+
+
 __all__ = [
     "MailAccount",
     "MailListResponse",
+    "MailMailbox",
+    "MailMailboxesResponse",
     "MailMessage",
     "MailOrder",
     "MailReplyRequest",
     "MailReplyResponse",
     "MailTag",
+    "MailTeam",
+    "MailTeamsResponse",
 ]

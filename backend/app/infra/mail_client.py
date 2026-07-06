@@ -30,6 +30,8 @@ _BACKOFF_DELAYS_SEC = (0.2, 0.5)
 _RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 _EXTERNAL_MESSAGES_PATH = "/api/external/messages"
+_EXTERNAL_TEAMS_PATH = "/api/external/teams"
+_EXTERNAL_MAILBOXES_PATH = "/api/external/mailboxes"
 _API_KEY_HEADER = "X-API-Key"
 
 
@@ -69,12 +71,16 @@ class MailClient:
         since_id: int | None,
         before_id: int | None,
         limit: int,
+        mail_account_id: int | None,
+        group_id: int | None,
     ) -> dict[str, Any]:
-        """Лента писем: GET /api/external/messages (04-api.md#mail, ADR-013).
+        """Лента писем: GET /api/external/messages (04-api.md#mail, ADR-013/ADR-017).
 
         `order` (`asc`/`desc`) передаётся во внешний API **всегда явно** (не полагаемся
         на внешний default). `since_id` — только при `order=asc` (keyset вперёд по
         `id ASC`); `before_id` — только при `order=desc` (backward по `id DESC`).
+        Серверные фильтры `mail_account_id`/`group_id` (external ADR-0037) —
+        взаимоисключающи (проверено в сервисе до вызова): пробрасывается лишь заданный.
         Идемпотентен — ретраится на транзиентных ошибках.
         """
         params: dict[str, Any] = {"order": order, "limit": limit}
@@ -82,7 +88,25 @@ class MailClient:
             params["since_id"] = since_id
         elif order == "desc" and before_id is not None:
             params["before_id"] = before_id
+        if mail_account_id is not None:
+            params["mail_account_id"] = mail_account_id
+        elif group_id is not None:
+            params["group_id"] = group_id
         return await self._request("GET", _EXTERNAL_MESSAGES_PATH, params=params, idempotent=True)
+
+    async def list_teams(self) -> dict[str, Any]:
+        """Список команд: GET /api/external/teams (04-api.md#mail, ADR-017).
+
+        GET, идемпотентен — ретраится на транзиентных ошибках, как `list_messages`.
+        """
+        return await self._request("GET", _EXTERNAL_TEAMS_PATH, idempotent=True)
+
+    async def list_mailboxes(self) -> dict[str, Any]:
+        """Список почтовых ящиков: GET /api/external/mailboxes (04-api.md#mail, ADR-017).
+
+        GET, идемпотентен — ретраится на транзиентных ошибках, как `list_messages`.
+        """
+        return await self._request("GET", _EXTERNAL_MAILBOXES_PATH, idempotent=True)
 
     async def reply(self, message_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         """Ответ на письмо: POST /api/external/messages/{id}/reply.

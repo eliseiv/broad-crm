@@ -246,6 +246,38 @@ export interface MailReplyResponse {
   smtp_message_id: string;
 }
 
+/**
+ * Команда внешнего почтового сервиса (04-api.md, MailTeam; external ADR-0037).
+ * Это `groups` внешнего сервиса. Команда ≠ тег (MailTag).
+ */
+export interface MailTeam {
+  id: number;
+  name: string;
+}
+
+/** Ответ GET /api/mail/teams (04-api.md, MailTeamsResponse). */
+export interface MailTeamsResponse {
+  teams: MailTeam[];
+}
+
+/**
+ * Почтовый ящик внешнего сервиса (04-api.md, MailMailbox; external ADR-0037).
+ * `id` используется как `mail_account_id` в серверном фильтре ленты;
+ * привязка к команде — через `group_id`; `is_active` — статус ящика (для дашборда).
+ */
+export interface MailMailbox {
+  id: number;
+  email: string;
+  display_name: string | null;
+  group_id: number | null;
+  is_active: boolean;
+}
+
+/** Ответ GET /api/mail/mailboxes (04-api.md, MailMailboxesResponse). */
+export interface MailMailboxesResponse {
+  mailboxes: MailMailbox[];
+}
+
 /** Единый формат ошибки API (04-api.md). */
 export interface ApiErrorBody {
   error: {

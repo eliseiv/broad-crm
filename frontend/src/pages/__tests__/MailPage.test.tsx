@@ -7,11 +7,34 @@ import type { MailFeedResult } from '@/features/mail/hooks';
 import type { MailMessage } from '@/types/api';
 
 const feed = vi.hoisted(() => ({ value: null as unknown }));
+// Справочники дропдаунов «Почта»/«Команда» (серверные фильтры, ADR-017) — управляемы
+// из тестов; по умолчанию отдают по одной опции, чтобы тулбар был полнофункционален.
+const mailboxes = vi.hoisted(() => ({
+  value: {
+    data: {
+      mailboxes: [
+        {
+          id: 7,
+          email: 'inbox@postapp.store',
+          display_name: 'Входящие',
+          group_id: 3,
+          is_active: true,
+        },
+      ],
+    },
+  } as unknown,
+}));
+const teams = vi.hoisted(() => ({
+  value: { data: { teams: [{ id: 3, name: 'Продажи' }] } } as unknown,
+}));
 
 vi.mock('@/features/mail/hooks', () => ({
   useMailFeed: () => feed.value,
   // MailDetail → MailReplyForm использует useReplyMail — мокаем как no-op мутацию.
   useReplyMail: () => ({ mutate: vi.fn(), isPending: false }),
+  // Дропдауны серверных фильтров тянут справочники ящиков/команд (ADR-017).
+  useMailMailboxes: () => mailboxes.value,
+  useMailTeams: () => teams.value,
 }));
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -117,7 +140,8 @@ describe('MailPage master-detail', () => {
     feed.value = baseFeed({ phase: 'ready', messages: [] });
     render(<MailPage />);
 
-    expect(screen.getByText('Писем пока нет')).toBeInTheDocument();
+    // Пустая лента: подпись и в списке (левая панель), и в заглушке детали (правая).
+    expect(screen.getAllByText('Писем пока нет')).toHaveLength(2);
   });
 
   it('auto-selects the newest message (first in desc feed) into the detail panel', () => {
@@ -169,7 +193,7 @@ describe('MailPage master-detail', () => {
   });
 });
 
-describe('MailPage "Только с тегами" filter', () => {
+describe('MailPage "С тегами" filter', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     ioCallback = null;
@@ -185,7 +209,7 @@ describe('MailPage "Только с тегами" filter', () => {
     feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
     render(<MailPage />);
 
-    const toggle = screen.getByRole('button', { name: /Только с тегами/ });
+    const toggle = screen.getByRole('button', { name: /С тегами/ });
     expect(toggle).toHaveAttribute('aria-pressed', 'false');
 
     await user.click(toggle);
@@ -200,7 +224,7 @@ describe('MailPage "Только с тегами" filter', () => {
     // До фильтра оба письма в списке.
     expect(screen.getByText('Письмо 1')).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /Только с тегами/ }));
+    await user.click(screen.getByRole('button', { name: /С тегами/ }));
 
     // Письмо без тегов (id=1) скрыто; тегированное (id=2) остаётся видимым в детали.
     expect(screen.queryByText('Письмо 1')).not.toBeInTheDocument();
@@ -212,7 +236,7 @@ describe('MailPage "Только с тегами" filter', () => {
     feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)], hasMore: false });
     render(<MailPage />);
 
-    await user.click(screen.getByRole('button', { name: /Только с тегами/ }));
+    await user.click(screen.getByRole('button', { name: /С тегами/ }));
 
     expect(screen.getByText('Нет писем с тегами среди загруженных')).toBeInTheDocument();
   });
@@ -226,7 +250,7 @@ describe('MailPage "Только с тегами" filter', () => {
     // Авто-выбор — самое свежее письмо (id=2).
     expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: /Только с тегами/ }));
+    await user.click(screen.getByRole('button', { name: /С тегами/ }));
 
     // Правая панель сохранила выбор id=2, хотя список скрыл его; в списке теперь id=1.
     expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
@@ -239,13 +263,100 @@ describe('MailPage "Только с тегами" filter', () => {
     feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)], hasMore: true, loadMore });
     render(<MailPage />);
 
-    await user.click(screen.getByRole('button', { name: /Только с тегами/ }));
+    await user.click(screen.getByRole('button', { name: /С тегами/ }));
 
     // Финальная заглушка НЕ показывается, пока есть ещё старые письма.
     expect(screen.queryByText('Нет писем с тегами среди загруженных')).not.toBeInTheDocument();
     // Sentinel продолжает догрузку старых батчей даже при активном фильтре.
     triggerIntersection();
     expect(loadMore).toHaveBeenCalled();
+  });
+});
+
+// Серверные фильтры «Почта»/«Команда» (дропдауны, ADR-017, 08-design-system.md
+// «Фильтры ленты»). Тумблер «С тегами» — клиентский; дропдауны — серверные, взаимоисключающи.
+describe('MailPage server filters (Почта/Команда dropdowns)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ioCallback = null;
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function getMailboxSelect(): HTMLSelectElement {
+    return screen.getByLabelText('Почта') as HTMLSelectElement;
+  }
+  function getTeamSelect(): HTMLSelectElement {
+    return screen.getByLabelText('Команда') as HTMLSelectElement;
+  }
+
+  it('renders both server-filter dropdowns with reset-first option', () => {
+    feed.value = baseFeed({ messages: [makeMessage(2)] });
+    render(<MailPage />);
+
+    // Первая опция каждого дропдауна — сброс фильтра (08-design-system.md).
+    expect(screen.getByRole('option', { name: 'Все почты' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Все команды' })).toBeInTheDocument();
+    // Опции справочников: ящик (display_name + email) и команда (name).
+    expect(
+      screen.getByRole('option', { name: 'Входящие inbox@postapp.store' }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Продажи' })).toBeInTheDocument();
+  });
+
+  it('shows the filter toolbar even when the server-filtered feed is empty', () => {
+    // Пустой результат серверного фильтра — тулбар остаётся, чтобы фильтр можно сбросить.
+    feed.value = baseFeed({ phase: 'ready', messages: [] });
+    render(<MailPage />);
+
+    expect(screen.getAllByText('Писем пока нет').length).toBeGreaterThan(0);
+    expect(screen.getByRole('button', { name: /С тегами/ })).toBeInTheDocument();
+    expect(getMailboxSelect()).toBeInTheDocument();
+    expect(getTeamSelect()).toBeInTheDocument();
+  });
+
+  it('selecting a mailbox sets it and resets the team dropdown (mutual exclusion)', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2)] });
+    render(<MailPage />);
+
+    // Сначала выбираем команду.
+    await user.selectOptions(getTeamSelect(), '3');
+    expect(getTeamSelect().value).toBe('3');
+
+    // Затем выбираем почтовый ящик — команда сбрасывается в «Все команды».
+    await user.selectOptions(getMailboxSelect(), '7');
+    expect(getMailboxSelect().value).toBe('7');
+    expect(getTeamSelect().value).toBe('');
+  });
+
+  it('selecting a team sets it and resets the mailbox dropdown (mutual exclusion)', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2)] });
+    render(<MailPage />);
+
+    await user.selectOptions(getMailboxSelect(), '7');
+    expect(getMailboxSelect().value).toBe('7');
+
+    await user.selectOptions(getTeamSelect(), '3');
+    expect(getTeamSelect().value).toBe('3');
+    expect(getMailboxSelect().value).toBe('');
+  });
+
+  it('resetting a dropdown to "Все …" clears the server filter', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2)] });
+    render(<MailPage />);
+
+    await user.selectOptions(getMailboxSelect(), '7');
+    expect(getMailboxSelect().value).toBe('7');
+
+    await user.selectOptions(getMailboxSelect(), '');
+    expect(getMailboxSelect().value).toBe('');
+    expect(getTeamSelect().value).toBe('');
   });
 });
 

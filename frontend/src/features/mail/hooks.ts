@@ -1,10 +1,29 @@
 import { useMemo } from 'react';
-import { useInfiniteQuery, useMutation } from '@tanstack/react-query';
-import { listMail, MAIL_PAGE_LIMIT, replyMail } from '@/features/mail/api';
+import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
+import {
+  listMail,
+  listMailboxes,
+  listTeams,
+  MAIL_PAGE_LIMIT,
+  replyMail,
+} from '@/features/mail/api';
+import { env } from '@/lib/env';
 import { ApiError } from '@/lib/api';
 import type { MailMessage, MailReplyRequest, MailReplyResponse } from '@/types/api';
 
 export const mailFeedKey = ['mail', 'feed'] as const;
+export const mailTeamsKey = ['mail', 'teams'] as const;
+export const mailMailboxesKey = ['mail', 'mailboxes'] as const;
+
+/**
+ * Серверный фильтр ленты (взаимоисключающи — задан максимум один; в UI выбор одного
+ * сбрасывает другой). Часть queryKey ленты: смена фильтра ре-запрашивает ленту
+ * (сброс пагинации + авто-выбор свежего письма) — ADR-017, 08-design-system.md.
+ */
+export interface MailFeedFilter {
+  mailAccountId?: number;
+  groupId?: number;
+}
 
 /**
  * Фаза ленты для UI: loading — начальная загрузка; ready — лента получена;
@@ -43,11 +62,19 @@ export interface MailFeedResult {
  * useInfiniteQuery не даёт безопасного prepend без риска регрессии порядка/выбора письма.
  * Свежие письма подтягиваются при перезагрузке ленты (reload). См. summary отчёта frontend.
  */
-export function useMailFeed(): MailFeedResult {
+export function useMailFeed(filter: MailFeedFilter = {}): MailFeedResult {
+  const { mailAccountId, groupId } = filter;
   const query = useInfiniteQuery({
-    queryKey: mailFeedKey,
+    // Фильтр входит в queryKey → его смена запускает новый запрос ленты (сброс пагинации).
+    queryKey: [
+      ...mailFeedKey,
+      { mail_account_id: mailAccountId ?? null, group_id: groupId ?? null },
+    ] as const,
     queryFn: ({ pageParam, signal }) =>
-      listMail({ order: 'desc', beforeId: pageParam, limit: MAIL_PAGE_LIMIT }, signal),
+      listMail(
+        { order: 'desc', beforeId: pageParam, limit: MAIL_PAGE_LIMIT, mailAccountId, groupId },
+        signal,
+      ),
     initialPageParam: undefined as number | undefined,
     getNextPageParam: (lastPage) =>
       lastPage.has_more ? (lastPage.next_before_id ?? undefined) : undefined,
@@ -96,5 +123,36 @@ export function useMailFeed(): MailFeedResult {
 export function useReplyMail(messageId: number) {
   return useMutation<MailReplyResponse, unknown, MailReplyRequest>({
     mutationFn: (payload) => replyMail(messageId, payload),
+  });
+}
+
+/**
+ * Справочник команд для дропдауна «Команда» (серверный фильтр) — GET /api/mail/teams.
+ * Также используется вне «Почт»; polling как у списков servers/ai-keys.
+ */
+export function useMailTeams() {
+  return useQuery({
+    queryKey: mailTeamsKey,
+    queryFn: ({ signal }) => listTeams(signal),
+    refetchInterval: env.pollIntervalMs,
+    refetchIntervalInBackground: false,
+    staleTime: env.pollIntervalMs,
+    retry: false,
+  });
+}
+
+/**
+ * Справочник почтовых ящиков — GET /api/mail/mailboxes. Источник дропдауна «Почта»
+ * (серверный фильтр) и счётчиков карточки «Почты» на «Дашборде» (клиентский подсчёт
+ * is_active). Polling как у списков servers/ai-keys.
+ */
+export function useMailMailboxes() {
+  return useQuery({
+    queryKey: mailMailboxesKey,
+    queryFn: ({ signal }) => listMailboxes(signal),
+    refetchInterval: env.pollIntervalMs,
+    refetchIntervalInBackground: false,
+    staleTime: env.pollIntervalMs,
+    retry: false,
   });
 }

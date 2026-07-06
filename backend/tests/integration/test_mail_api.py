@@ -44,6 +44,18 @@ _DESC_LIST: dict[str, Any] = {"messages": [_MESSAGE], "next_before_id": 1001, "h
 # Внешний ответ asc-режима: несёт `next_since_id` (обратная совместимость).
 _ASC_LIST: dict[str, Any] = {"messages": [_MESSAGE], "next_since_id": 1042, "has_more": True}
 _VALID_REPLY = {"sent_id": 5099, "smtp_message_id": "<abc123@postapp.store>"}
+_TEAMS: dict[str, Any] = {"teams": [{"id": 3, "name": "Продажи"}]}
+_MAILBOXES: dict[str, Any] = {
+    "mailboxes": [
+        {
+            "id": 7,
+            "email": "inbox@postapp.store",
+            "display_name": "Входящие",
+            "group_id": 3,
+            "is_active": True,
+        }
+    ]
+}
 
 
 class Recorder:
@@ -425,3 +437,238 @@ async def test_endpoints_require_jwt_401(monkeypatch: pytest.MonkeyPatch) -> Non
     assert replied.status_code == 401
     assert replied.json()["error"]["code"] == "unauthorized"
     assert recorder.requests == []  # без JWT внешний сервис не вызывается
+
+
+# ---------------------- серверные фильтры messages по ящику/команде (ADR-017)
+async def test_list_forwards_mail_account_id_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body=_DESC_LIST)
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/messages", params={"mail_account_id": 7})
+
+    assert response.status_code == 200
+    outgoing = recorder.requests[0]
+    assert outgoing.url.params.get("mail_account_id") == "7"
+    assert "group_id" not in outgoing.url.params  # взаимоисключающе
+
+
+async def test_list_forwards_group_id_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body=_DESC_LIST)
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/messages", params={"group_id": 3})
+
+    assert response.status_code == 200
+    outgoing = recorder.requests[0]
+    assert outgoing.url.params.get("group_id") == "3"
+    assert "mail_account_id" not in outgoing.url.params
+
+
+async def test_list_both_filters_returns_400_field_filter_no_external(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """mail_account_id И group_id → 400 validation_error (field=filter) ЛОКАЛЬНО,
+    внешний сервис не вызывается (04-api.md#mail, ADR-017)."""
+    recorder = Recorder(json_body=_DESC_LIST)
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get(
+            "/api/mail/messages", params={"mail_account_id": 7, "group_id": 3}
+        )
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["error"]["code"] == "validation_error"
+    assert body["error"]["details"][0]["field"] == "filter"
+    assert recorder.requests == []  # локальная валидация — до внешнего вызова
+
+
+async def test_list_external_400_filter_maps_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Внешний 400 (рассинхрон взаимоисключения фильтров) → 400 validation_error."""
+    recorder = Recorder(status_code=400, json_body={"detail": EXTERNAL_SECRET_MARKER})
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/messages", params={"mail_account_id": 7})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "validation_error"
+    assert EXTERNAL_SECRET_MARKER not in response.text
+
+
+async def test_list_unknown_filter_id_returns_empty_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Несуществующий/чужой/non-canonical id → внешний сервис отдаёт пустую страницу
+    (200, не 404); CRM проксирует как обычный 200 (04-api.md#mail, ADR-017)."""
+    recorder = Recorder(json_body={"messages": [], "next_before_id": None, "has_more": False})
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/messages", params={"mail_account_id": 999999})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["messages"] == []
+    assert body["has_more"] is False
+    assert recorder.requests[0].url.params.get("mail_account_id") == "999999"
+
+
+@pytest.mark.parametrize("param", ["mail_account_id", "group_id"])
+async def test_list_filter_below_one_returns_400(
+    monkeypatch: pytest.MonkeyPatch, param: str
+) -> None:
+    """mail_account_id/group_id < 1 → 400 validation_error (Query ge=1), без внешнего вызова."""
+    recorder = Recorder(json_body=_DESC_LIST)
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/messages", params={param: 0})
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "validation_error"
+    assert recorder.requests == []
+
+
+# ------------------------------------------------------- GET /api/mail/teams (ADR-017)
+async def test_teams_success_and_api_key_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body=_TEAMS)
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/teams")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["teams"][0] == {"id": 3, "name": "Продажи"}
+    outgoing = recorder.requests[0]
+    assert outgoing.url.path == "/api/external/teams"
+    assert outgoing.headers.get("x-api-key") == MAIL_KEY
+    assert MAIL_KEY not in response.text
+
+
+async def test_teams_empty_is_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body={"teams": []})
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/teams")
+
+    assert response.status_code == 200
+    assert response.json()["teams"] == []
+
+
+async def test_teams_returns_503_when_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body=_TEAMS)
+    app = _build_app(monkeypatch, recorder, enabled=False)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/teams")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "mail_not_configured"
+    assert recorder.requests == []
+
+
+async def test_teams_external_5xx_maps_502_no_leak(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(status_code=500, json_body={"detail": EXTERNAL_SECRET_MARKER})
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/teams")
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "mail_unavailable"
+    assert EXTERNAL_SECRET_MARKER not in response.text
+
+
+async def test_teams_requires_jwt_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body=_TEAMS)
+    app = _build_app(monkeypatch, recorder, with_auth=False)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/teams")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+    assert recorder.requests == []
+
+
+# -------------------------------------------------- GET /api/mail/mailboxes (ADR-017)
+async def test_mailboxes_success_full_fields(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body=_MAILBOXES)
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/mailboxes")
+
+    assert response.status_code == 200
+    mb = response.json()["mailboxes"][0]
+    assert mb == {
+        "id": 7,
+        "email": "inbox@postapp.store",
+        "display_name": "Входящие",
+        "group_id": 3,
+        "is_active": True,
+    }
+    outgoing = recorder.requests[0]
+    assert outgoing.url.path == "/api/external/mailboxes"
+    assert outgoing.headers.get("x-api-key") == MAIL_KEY
+    assert MAIL_KEY not in response.text
+
+
+async def test_mailboxes_nullable_fields_and_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(
+        json_body={
+            "mailboxes": [
+                {
+                    "id": 9,
+                    "email": "team@postapp.store",
+                    "display_name": None,
+                    "group_id": None,
+                    "is_active": False,
+                }
+            ]
+        }
+    )
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/mailboxes")
+
+    assert response.status_code == 200
+    mb = response.json()["mailboxes"][0]
+    assert mb["display_name"] is None
+    assert mb["group_id"] is None
+    assert mb["is_active"] is False
+
+
+async def test_mailboxes_empty_is_valid(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body={"mailboxes": []})
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/mailboxes")
+
+    assert response.status_code == 200
+    assert response.json()["mailboxes"] == []
+
+
+async def test_mailboxes_returns_503_when_not_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body=_MAILBOXES)
+    app = _build_app(monkeypatch, recorder, enabled=False)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/mailboxes")
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "mail_not_configured"
+    assert recorder.requests == []
+
+
+async def test_mailboxes_external_5xx_maps_502_no_leak(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(status_code=503, json_body={"detail": EXTERNAL_SECRET_MARKER})
+    app = _build_app(monkeypatch, recorder)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/mailboxes")
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "mail_unavailable"
+    assert EXTERNAL_SECRET_MARKER not in response.text
+
+
+async def test_mailboxes_requires_jwt_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    recorder = Recorder(json_body=_MAILBOXES)
+    app = _build_app(monkeypatch, recorder, with_auth=False)
+    async with _client(app) as client:
+        response = await client.get("/api/mail/mailboxes")
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+    assert recorder.requests == []

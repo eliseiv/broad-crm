@@ -1,12 +1,14 @@
-"""Unit-тесты сервиса почты `app/services/mail_service.py` (04-api.md#mail, ADR-013).
+"""Unit-тесты сервиса почты `app/services/mail_service.py` (04-api.md#mail, ADR-013/ADR-017).
 
 Клиент (httpx-граница к postapp.store) замокан `FakeMailClient` — реальных запросов
 наружу нет. Проверяются: гейт `mail_enabled` ДО валидации `limit` (503 mail_not_configured);
 диапазон `limit` 1..200 (400 validation_error); взаимоисключение режимов пагинации
-(`since_id` при desc / `before_id` при asc → 400 ДО внешнего вызова); проброс `order`/
-курсоров во внешний клиент; нормализация курсоров (незапрошенный курсор → null); непустой
-`body` reply (422 unprocessable); маппинг исключений клиента в коды CRM (404/422/502; внешний
-400 на list → 400 validation_error); несовместимое тело внешнего ответа → 502.
+(`since_id` при desc / `before_id` при asc → 400 ДО внешнего вызова); взаимоисключение
+серверных фильтров `mail_account_id`/`group_id` (оба → 400 `field=filter` ЛОКАЛЬНО, без
+внешнего вызова); проброс `order`/курсоров/фильтров во внешний клиент; нормализация курсоров
+(незапрошенный курсор → null); справочники teams/mailboxes (503-гейт, успех, маппинг любой
+ошибки клиента в 502); непустой `body` reply (422 unprocessable); маппинг исключений клиента
+в коды CRM (404/422/502; внешний 400 на list → 400 validation_error); несовместимое тело → 502.
 """
 
 from __future__ import annotations
@@ -40,14 +42,30 @@ _DESC_LIST: dict[str, Any] = {"messages": [_MESSAGE], "next_before_id": 1001, "h
 # Внешний ответ asc-режима: несёт `next_since_id` (курсор keyset вперёд).
 _ASC_LIST: dict[str, Any] = {"messages": [_MESSAGE], "next_since_id": 1042, "has_more": True}
 _VALID_REPLY: dict[str, Any] = {"sent_id": 5099, "smtp_message_id": "<abc123@postapp.store>"}
+_TEAMS: dict[str, Any] = {"teams": [{"id": 3, "name": "Продажи"}]}
+_MAILBOXES: dict[str, Any] = {
+    "mailboxes": [
+        {
+            "id": 7,
+            "email": "inbox@postapp.store",
+            "display_name": "Входящие",
+            "group_id": 3,
+            "is_active": True,
+        }
+    ]
+}
+
+# Полный набор аргументов вызова list_messages — эталон для сравнения list_calls.
+_NO_FILTER = {"mail_account_id": None, "group_id": None}
 
 
 class FakeMailClient:
     """Замена MailClient: возвращает заготовку либо бросает заданное исключение.
 
-    Сигнатура `list_messages` повторяет реальный клиент (все аргументы keyword-only),
-    вызовы фиксируются целиком — чтобы проверить проброс `order`/курсоров и что при
-    локальной ошибке валидации внешний сервис не вызывается.
+    Сигнатура `list_messages` повторяет реальный клиент (все аргументы keyword-only,
+    включая серверные фильтры `mail_account_id`/`group_id` — ADR-017); вызовы фиксируются
+    целиком — чтобы проверить проброс `order`/курсоров/фильтров и что при локальной ошибке
+    валидации внешний сервис не вызывается. teams/mailboxes — идемпотентные GET-справочники.
     """
 
     def __init__(
@@ -55,15 +73,25 @@ class FakeMailClient:
         *,
         list_result: dict[str, Any] | None = None,
         reply_result: dict[str, Any] | None = None,
+        teams_result: dict[str, Any] | None = None,
+        mailboxes_result: dict[str, Any] | None = None,
         list_exc: Exception | None = None,
         reply_exc: Exception | None = None,
+        teams_exc: Exception | None = None,
+        mailboxes_exc: Exception | None = None,
     ) -> None:
         self._list_result = list_result
         self._reply_result = reply_result
+        self._teams_result = teams_result
+        self._mailboxes_result = mailboxes_result
         self._list_exc = list_exc
         self._reply_exc = reply_exc
+        self._teams_exc = teams_exc
+        self._mailboxes_exc = mailboxes_exc
         self.list_calls: list[dict[str, Any]] = []
         self.reply_calls: list[tuple[int, dict[str, Any]]] = []
+        self.teams_calls = 0
+        self.mailboxes_calls = 0
 
     async def list_messages(
         self,
@@ -72,9 +100,18 @@ class FakeMailClient:
         since_id: int | None,
         before_id: int | None,
         limit: int,
+        mail_account_id: int | None,
+        group_id: int | None,
     ) -> dict[str, Any]:
         self.list_calls.append(
-            {"order": order, "since_id": since_id, "before_id": before_id, "limit": limit}
+            {
+                "order": order,
+                "since_id": since_id,
+                "before_id": before_id,
+                "limit": limit,
+                "mail_account_id": mail_account_id,
+                "group_id": group_id,
+            }
         )
         if self._list_exc is not None:
             raise self._list_exc
@@ -87,6 +124,20 @@ class FakeMailClient:
             raise self._reply_exc
         assert self._reply_result is not None
         return self._reply_result
+
+    async def list_teams(self) -> dict[str, Any]:
+        self.teams_calls += 1
+        if self._teams_exc is not None:
+            raise self._teams_exc
+        assert self._teams_result is not None
+        return self._teams_result
+
+    async def list_mailboxes(self) -> dict[str, Any]:
+        self.mailboxes_calls += 1
+        if self._mailboxes_exc is not None:
+            raise self._mailboxes_exc
+        assert self._mailboxes_result is not None
+        return self._mailboxes_result
 
 
 def _settings(*, mail_api_key: str) -> Settings:
@@ -104,9 +155,16 @@ async def _list(
     since_id: int | None = None,
     before_id: int | None = None,
     limit: int = 50,
+    mail_account_id: int | None = None,
+    group_id: int | None = None,
 ) -> Any:
     return await service.list_messages(
-        order=order, since_id=since_id, before_id=before_id, limit=limit
+        order=order,
+        since_id=since_id,
+        before_id=before_id,
+        limit=limit,
+        mail_account_id=mail_account_id,
+        group_id=group_id,
     )
 
 
@@ -131,6 +189,26 @@ async def test_reply_disabled_returns_503_not_configured() -> None:
     assert exc.value.status_code == 503
     assert exc.value.code == "mail_not_configured"
     assert client.reply_calls == []
+
+
+async def test_teams_disabled_returns_503_not_configured() -> None:
+    client = FakeMailClient(teams_result=_TEAMS)
+    with pytest.raises(AppError) as exc:
+        await _service(client, enabled=False).list_teams()
+
+    assert exc.value.status_code == 503
+    assert exc.value.code == "mail_not_configured"
+    assert client.teams_calls == 0  # гейт до внешнего вызова
+
+
+async def test_mailboxes_disabled_returns_503_not_configured() -> None:
+    client = FakeMailClient(mailboxes_result=_MAILBOXES)
+    with pytest.raises(AppError) as exc:
+        await _service(client, enabled=False).list_mailboxes()
+
+    assert exc.value.status_code == 503
+    assert exc.value.code == "mail_not_configured"
+    assert client.mailboxes_calls == 0
 
 
 async def test_gate_precedes_limit_validation() -> None:
@@ -162,7 +240,7 @@ async def test_list_limit_boundaries_ok(limit: int) -> None:
 
     assert result.next_before_id == 1001
     assert client.list_calls == [
-        {"order": "desc", "since_id": None, "before_id": None, "limit": limit}
+        {"order": "desc", "since_id": None, "before_id": None, "limit": limit, **_NO_FILTER}
     ]
 
 
@@ -174,7 +252,7 @@ async def test_list_desc_default_forwards_order_and_nulls_since_cursor() -> None
     result = await _list(_service(client, enabled=True))
 
     assert client.list_calls == [
-        {"order": "desc", "since_id": None, "before_id": None, "limit": 50}
+        {"order": "desc", "since_id": None, "before_id": None, "limit": 50, **_NO_FILTER}
     ]
     assert result.next_since_id is None
     assert result.next_before_id == 1001
@@ -189,7 +267,7 @@ async def test_list_desc_with_before_id_passes_through_and_forces_since_null() -
     result = await _list(_service(client, enabled=True), before_id=1001)
 
     assert client.list_calls == [
-        {"order": "desc", "since_id": None, "before_id": 1001, "limit": 50}
+        {"order": "desc", "since_id": None, "before_id": 1001, "limit": 50, **_NO_FILTER}
     ]
     assert result.next_since_id is None
     assert result.next_before_id == 1001
@@ -211,7 +289,9 @@ async def test_list_asc_with_since_id_passes_through_and_forces_before_null() ->
     client = FakeMailClient(list_result=_ASC_LIST)
     result = await _list(_service(client, enabled=True), order="asc", since_id=1000)
 
-    assert client.list_calls == [{"order": "asc", "since_id": 1000, "before_id": None, "limit": 50}]
+    assert client.list_calls == [
+        {"order": "asc", "since_id": 1000, "before_id": None, "limit": 50, **_NO_FILTER}
+    ]
     assert result.next_before_id is None
     assert result.next_since_id == 1042
     assert result.has_more is True
@@ -227,7 +307,65 @@ async def test_list_asc_null_next_since_id_empty_batch_is_valid() -> None:
     assert result.has_more is False
 
 
-# ---------------------------------------- нормализация курсоров (незапрошенный → null)
+# --------------------------------------- серверные фильтры mail_account_id/group_id
+async def test_list_forwards_mail_account_id_to_client() -> None:
+    client = FakeMailClient(list_result=_DESC_LIST)
+    await _list(_service(client, enabled=True), mail_account_id=7)
+
+    assert client.list_calls == [
+        {
+            "order": "desc",
+            "since_id": None,
+            "before_id": None,
+            "limit": 50,
+            "mail_account_id": 7,
+            "group_id": None,
+        }
+    ]
+
+
+async def test_list_forwards_group_id_to_client() -> None:
+    client = FakeMailClient(list_result=_DESC_LIST)
+    await _list(_service(client, enabled=True), group_id=3)
+
+    assert client.list_calls == [
+        {
+            "order": "desc",
+            "since_id": None,
+            "before_id": None,
+            "limit": 50,
+            "mail_account_id": None,
+            "group_id": 3,
+        }
+    ]
+
+
+async def test_list_both_filters_returns_400_field_filter_before_external() -> None:
+    """mail_account_id И group_id одновременно → 400 validation_error (field=filter)
+    ЛОКАЛЬНО, ДО внешнего вызова (04-api.md#mail, ADR-017)."""
+    client = FakeMailClient(list_result=_DESC_LIST)
+    with pytest.raises(AppError) as exc:
+        await _list(_service(client, enabled=True), mail_account_id=7, group_id=3)
+
+    assert exc.value.status_code == 400
+    assert exc.value.code == "validation_error"
+    assert exc.value.details[0]["field"] == "filter"
+    assert client.list_calls == []  # внешний сервис не вызывался
+
+
+async def test_list_filter_validation_precedes_pagination_and_limit() -> None:
+    """Оба фильтра + валидный запрос: локальная валидация фильтров срабатывает и
+    внешний вызов не происходит (пустой список нельзя вернуть без валидации)."""
+    client = FakeMailClient(list_result=_DESC_LIST)
+    with pytest.raises(AppError) as exc:
+        await _list(_service(client, enabled=True), mail_account_id=1, group_id=2, before_id=100)
+
+    assert exc.value.status_code == 400
+    assert exc.value.details[0]["field"] == "filter"
+    assert client.list_calls == []
+
+
+# ---------------------------------------------------- нормализация курсоров (незапрошенный → null)
 async def test_list_desc_normalizes_stray_since_cursor_from_external() -> None:
     """Даже если внешний API вернул оба курсора, desc-режим форсит next_since_id=null."""
     client = FakeMailClient(
@@ -322,6 +460,115 @@ async def test_list_other_client_error_maps_to_502(client_exc: Exception) -> Non
     client = FakeMailClient(list_exc=client_exc)
     with pytest.raises(AppError) as exc:
         await _list(_service(client, enabled=True))
+
+    assert exc.value.status_code == 502
+    assert exc.value.code == "mail_unavailable"
+
+
+# --------------------------------------------------------------- teams (ADR-017)
+async def test_list_teams_success_returns_schema() -> None:
+    client = FakeMailClient(teams_result=_TEAMS)
+    result = await _service(client, enabled=True).list_teams()
+
+    assert client.teams_calls == 1
+    assert len(result.teams) == 1
+    assert result.teams[0].id == 3
+    assert result.teams[0].name == "Продажи"
+
+
+async def test_list_teams_empty_is_valid() -> None:
+    client = FakeMailClient(teams_result={"teams": []})
+    result = await _service(client, enabled=True).list_teams()
+
+    assert result.teams == []
+
+
+@pytest.mark.parametrize(
+    "client_exc",
+    [MailUnavailable("down"), MailRejected(400), MailMessageNotFound("404")],
+)
+async def test_list_teams_any_client_error_maps_to_502(client_exc: Exception) -> None:
+    """teams допускает только 502/503: любая ошибка клиента (в т.ч. неожиданный 404/400)
+    сводится к 502 (04-api.md#mail)."""
+    client = FakeMailClient(teams_exc=client_exc)
+    with pytest.raises(AppError) as exc:
+        await _service(client, enabled=True).list_teams()
+
+    assert exc.value.status_code == 502
+    assert exc.value.code == "mail_unavailable"
+
+
+async def test_list_teams_incompatible_body_maps_to_502() -> None:
+    client = FakeMailClient(teams_result={"unexpected": "shape"})
+    with pytest.raises(AppError) as exc:
+        await _service(client, enabled=True).list_teams()
+
+    assert exc.value.status_code == 502
+    assert exc.value.code == "mail_unavailable"
+
+
+# --------------------------------------------------------------- mailboxes (ADR-017)
+async def test_list_mailboxes_success_returns_schema() -> None:
+    client = FakeMailClient(mailboxes_result=_MAILBOXES)
+    result = await _service(client, enabled=True).list_mailboxes()
+
+    assert client.mailboxes_calls == 1
+    assert len(result.mailboxes) == 1
+    mb = result.mailboxes[0]
+    assert mb.id == 7
+    assert mb.email == "inbox@postapp.store"
+    assert mb.display_name == "Входящие"
+    assert mb.group_id == 3
+    assert mb.is_active is True
+
+
+async def test_list_mailboxes_empty_is_valid() -> None:
+    client = FakeMailClient(mailboxes_result={"mailboxes": []})
+    result = await _service(client, enabled=True).list_mailboxes()
+
+    assert result.mailboxes == []
+
+
+async def test_list_mailboxes_nullable_fields_accepted() -> None:
+    """display_name и group_id допускают null (04-api.md#mail)."""
+    client = FakeMailClient(
+        mailboxes_result={
+            "mailboxes": [
+                {
+                    "id": 9,
+                    "email": "team@postapp.store",
+                    "display_name": None,
+                    "group_id": None,
+                    "is_active": False,
+                }
+            ]
+        }
+    )
+    result = await _service(client, enabled=True).list_mailboxes()
+
+    mb = result.mailboxes[0]
+    assert mb.display_name is None
+    assert mb.group_id is None
+    assert mb.is_active is False
+
+
+@pytest.mark.parametrize(
+    "client_exc",
+    [MailUnavailable("down"), MailRejected(400), MailMessageNotFound("404")],
+)
+async def test_list_mailboxes_any_client_error_maps_to_502(client_exc: Exception) -> None:
+    client = FakeMailClient(mailboxes_exc=client_exc)
+    with pytest.raises(AppError) as exc:
+        await _service(client, enabled=True).list_mailboxes()
+
+    assert exc.value.status_code == 502
+    assert exc.value.code == "mail_unavailable"
+
+
+async def test_list_mailboxes_incompatible_body_maps_to_502() -> None:
+    client = FakeMailClient(mailboxes_result={"mailboxes": [{"id": 1}]})
+    with pytest.raises(AppError) as exc:
+        await _service(client, enabled=True).list_mailboxes()
 
     assert exc.value.status_code == 502
     assert exc.value.code == "mail_unavailable"

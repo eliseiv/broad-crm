@@ -57,6 +57,28 @@ describe('mail api client (ADR-013 desc/before_id)', () => {
     expect(qs.has('before_id')).toBe(false);
   });
 
+  it('forwards mail_account_id filter and never group_id when both passed (mutual exclusion)', async () => {
+    // Вызывающий гарантирует максимум один фильтр; при обоих — приоритет mail_account_id (ADR-017).
+    await listMail({ mailAccountId: 7, groupId: 3 });
+    const qs = firstCallQuery();
+    expect(qs.get('mail_account_id')).toBe('7');
+    expect(qs.has('group_id')).toBe(false);
+  });
+
+  it('forwards group_id filter when only groupId is passed', async () => {
+    await listMail({ groupId: 3 });
+    const qs = firstCallQuery();
+    expect(qs.get('group_id')).toBe('3');
+    expect(qs.has('mail_account_id')).toBe(false);
+  });
+
+  it('omits both server filters when neither is passed', async () => {
+    await listMail();
+    const qs = firstCallQuery();
+    expect(qs.has('mail_account_id')).toBe(false);
+    expect(qs.has('group_id')).toBe(false);
+  });
+
   it('forwards the abort signal to apiRequest', async () => {
     const controller = new AbortController();
     await listMail({}, controller.signal);

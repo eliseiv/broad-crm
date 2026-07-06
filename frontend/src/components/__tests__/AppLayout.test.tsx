@@ -18,6 +18,7 @@ function renderAt(initial: string) {
   return render(
     <Routes>
       <Route element={<AppLayout />}>
+        <Route path="/dashboard" element={<div>Контент дашборда</div>} />
         <Route path="/mail" element={<div>Контент почт</div>} />
         <Route path="/servers" element={<div>Контент серверов</div>} />
         <Route path="/ai-keys" element={<div>Контент ключей</div>} />
@@ -33,10 +34,28 @@ describe('AppLayout', () => {
     useAuthStore.getState().setSession('jwt-token', 'admin');
   });
 
-  it('renders both navigation tabs', () => {
+  it('renders all navigation tabs including Дашборд', () => {
     renderAt('/servers');
+    expect(screen.getByRole('link', { name: 'Дашборд' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Почты' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Серверы' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'ИИ - ключи' })).toBeInTheDocument();
+  });
+
+  it('orders tabs with Дашборд first (ADR-017)', () => {
+    renderAt('/servers');
+    const tabNames = screen
+      .getAllByRole('link')
+      .map((el) => el.textContent?.trim())
+      .filter((name): name is string => Boolean(name));
+    // Порядок: Дашборд → Почты → Серверы → ИИ - ключи (08-design-system.md «Навигация»).
+    expect(tabNames).toEqual(['Дашборд', 'Почты', 'Серверы', 'ИИ - ключи']);
+  });
+
+  it('marks the Дашборд tab active on /dashboard', () => {
+    renderAt('/dashboard');
+    expect(screen.getByRole('link', { name: 'Дашборд' }).className).toContain('text-accent');
+    expect(screen.getByRole('link', { name: 'Почты' }).className).toContain('text-text-secondary');
   });
 
   it('marks the current route tab active', () => {
@@ -180,6 +199,30 @@ describe('AppLayout', () => {
     const keysHeader = document.querySelector('header');
     expect(keysHeader?.classList.contains('sticky')).toBe(true);
     expect(keysHeader?.classList.contains('top-0')).toBe(true);
+  });
+
+  it('/dashboard goes through the non-full-bleed branch like /servers (ADR-017)', () => {
+    // Дашборд — не-full-bleed: обычный поток документа (min-h-screen shell, sticky header),
+    // <main> — простой контейнер, ширину держит внутренний <div> max-w-[1400px]. НЕ как /mail.
+    renderAt('/dashboard');
+    const shell = getShell();
+    expect(shell?.classList.contains('min-h-screen')).toBe(true);
+    expect(shell?.classList.contains('h-screen')).toBe(false);
+    expect(shell?.classList.contains('overflow-hidden')).toBe(false);
+
+    const header = document.querySelector('header');
+    expect(header?.classList.contains('sticky')).toBe(true);
+    expect(header?.classList.contains('top-0')).toBe(true);
+    expect(header?.classList.contains('shrink-0')).toBe(false);
+
+    // <main> — не full-bleed скролл-контейнер; контент обёрнут в div.max-w-[1400px].
+    const main = document.querySelector('main');
+    expect(main?.classList.contains('w-full')).toBe(false);
+    expect(main?.classList.contains('overflow-hidden')).toBe(false);
+    const wrapper = screen.getByText('Контент дашборда').parentElement;
+    expect(wrapper?.tagName).toBe('DIV');
+    expect(wrapper?.classList.contains('max-w-[1400px]')).toBe(true);
+    expect(wrapper?.parentElement?.tagName).toBe('MAIN');
   });
 
   it('regression: non-mail <main> is not a scroll container and /mail <main> stays overflow-hidden', () => {

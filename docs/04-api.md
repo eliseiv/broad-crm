@@ -395,8 +395,12 @@ Backend отдаёт **единый плоский список** (без сек
 | `since_id` | integer? | опц., **только при `order=asc`**: keyset вперёд, возвращаются письма с `id > since_id`. При `order=desc` передан → `400 validation_error` |
 | `before_id` | integer? | опц., `ge=1`, **только при `order=desc`**: backward, возвращаются письма с `id < before_id` по `id DESC`. Не задан (при `order=desc`) → последние `limit` писем (самые свежие). При `order=asc` передан → `400 validation_error` |
 | `limit` | integer? | опц., `1..200`, default `50`. Вне диапазона → `400 validation_error`. Страница «Почты» шлёт `limit=20` |
+| `mail_account_id` | integer? | опц., `ge=1`. Серверный фильтр по почтовому ящику (external ADR-0037). **Взаимоисключающ с `group_id`** (оба заданы → `400 validation_error`, `details[].field="filter"`). Пробрасывается во внешний API |
+| `group_id` | integer? | опц., `ge=1`. Серверный фильтр по команде (`groups`, external ADR-0037). **Взаимоисключающ с `mail_account_id`**. Пробрасывается во внешний API |
 
 > **Проброс во внешний API (нормативно).** CRM всегда передаёт `order` во внешний `GET /api/external/messages` **явно** (не полагается на внешний default `asc`). CRM default `order=desc` отличается от внешнего default `asc` осознанно — отражает основной сценарий страницы (newest-first); frontend всё равно шлёт `order=desc` явно. `since_id`/`next_since_id` — маппинг asc-режима 1:1; `before_id`/`next_before_id` — маппинг desc-режима 1:1.
+>
+> **Серверные фильтры `mail_account_id`/`group_id` (нормативно, external ADR-0037).** Опциональны и **взаимоисключающи**: оба переданы → `400 validation_error` (CRM валидирует локально до вызова внешнего API, `details:[{field:"filter", message:"…"}]`; внешний `400` взаимоисключения также маппится в `400`). Работают **совместно** с любым режимом пагинации (`order`/`since_id`/`before_id`/`limit`) — фильтр применяется на стороне внешнего сервиса ко **всему** набору, курсоры не меняются. **Несуществующий / чужой / non-canonical `id`** (ящика или команды) → внешний сервис возвращает **пустую страницу** (`messages:[]`), а не `404`; CRM проксирует её как обычный `200`. Даёт серверную фильтрацию ленты по ящику **или** команде (частично снимает [TD-024](100-known-tech-debt.md) — [ADR-017](adr/ADR-017-dashboard-client-aggregation-mail-server-filters.md)).
 
 **Response 200** — схема `MailListResponse` (единая для обоих режимов; заполнен курсор запрошенного режима, второй — `null`):
 ```json
@@ -419,7 +423,7 @@ Backend отдаёт **единый плоский список** (без сек
 - **asc (совместимость):** `order=asc` (+опц. `since_id`) — keyset вперёд по `id ASC`, как прежде.
 - **Server-side фильтров/поиска нет** (внешний API их не предоставляет) — остаток [TD-024](100-known-tech-debt.md); newest-first backward-пагинацией снят.
 
-**Ошибки:** `401 unauthorized`, `400 validation_error` (`limit` вне 1..200; взаимоисключение режимов: `before_id` при `order=asc` ИЛИ `since_id` при `order=desc`; внешний `400` взаимоисключения также → `400`), `502 mail_unavailable`, `503 mail_not_configured`.
+**Ошибки:** `401 unauthorized`, `400 validation_error` (`limit` вне 1..200; взаимоисключение режимов: `before_id` при `order=asc` ИЛИ `since_id` при `order=desc`; **взаимоисключение фильтров:** `mail_account_id` И `group_id` одновременно, `field="filter"`; внешний `400` взаимоисключения также → `400`), `502 mail_unavailable`, `503 mail_not_configured`.
 
 ### POST `/api/mail/messages/{id}/reply`
 Ответ на письмо (прокси к внешнему `POST /api/external/messages/{id}/reply`). Требует JWT.
@@ -452,6 +456,75 @@ Backend отдаёт **единый плоский список** (без сек
 **Ошибки:** `401 unauthorized`, `400 validation_error` (битое тело), `422 unprocessable` (пустой `body` / семантически некорректное тело), `404 mail_message_not_found` (письмо не найдено — проброс от внешнего), `502 mail_unavailable`, `503 mail_not_configured`.
 
 > Нормативный контракт внешнего reply-эндпоинта фиксирует architect mail-агрегатора; CRM проксирует его в схемы `MailReplyRequest`/`MailReplyResponse` выше. При расхождении — синхронизация через architect.
+
+### Схема `MailTeam`
+
+Команда — это `groups` внешнего сервиса (external ADR-0037). **Команда ≠ тег** (`MailTag`): теги остаются отдельной сущностью письма.
+
+```json
+{ "id": 3, "name": "Продажи" }
+```
+| Поле | Тип | Примечание |
+|------|-----|-----------|
+| `id` | integer | ID команды (`group`) во внешнем сервисе |
+| `name` | string | Название команды |
+
+### Схема `MailMailbox`
+
+Почтовый ящик внешнего сервиса (external ADR-0037). Привязка к команде — через `group_id`; `is_active` — статус ящика.
+
+```json
+{ "id": 7, "email": "inbox@postapp.store", "display_name": "Входящие", "group_id": 3, "is_active": true }
+```
+| Поле | Тип | Примечание |
+|------|-----|-----------|
+| `id` | integer | ID почтового ящика во внешнем сервисе (используется как `mail_account_id` в фильтре `GET /api/mail/messages`) |
+| `email` | string | Адрес ящика |
+| `display_name` | string \| null | Отображаемое имя; `null` — нет |
+| `group_id` | integer \| null | ID команды (`MailTeam.id`), к которой привязан ящик; `null` — не привязан |
+| `is_active` | boolean | Активен ли ящик (используется дашбордом для подсчёта Активные/Неактивные) |
+
+### GET `/api/mail/teams`
+Список команд (прокси к внешнему `GET /api/external/teams`). Требует JWT. Без параметров.
+
+**Response 200** — схема `MailTeamsResponse`:
+```json
+{ "teams": [ { "id": 3, "name": "Продажи" } ] }
+```
+| Поле | Тип | Примечание |
+|------|-----|-----------|
+| `teams` | `MailTeam[]` | Список команд (может быть пустым) |
+
+**Ошибки:** `401 unauthorized`, `502 mail_unavailable`, `503 mail_not_configured`.
+
+### GET `/api/mail/mailboxes`
+Список почтовых ящиков (прокси к внешнему `GET /api/external/mailboxes`). Требует JWT. Без параметров. Используется дропдауном «Почта» на странице «Почты» и карточкой «Почты» на «Дашборде» (клиентский подсчёт `is_active`).
+
+**Response 200** — схема `MailMailboxesResponse`:
+```json
+{ "mailboxes": [ { "id": 7, "email": "inbox@postapp.store", "display_name": "Входящие", "group_id": 3, "is_active": true } ] }
+```
+| Поле | Тип | Примечание |
+|------|-----|-----------|
+| `mailboxes` | `MailMailbox[]` | Список ящиков (может быть пустым) |
+
+**Ошибки:** `401 unauthorized`, `502 mail_unavailable`, `503 mail_not_configured`.
+
+> Оба эндпоинта — read-through-прокси без хранения (нет БД/моделей/миграций), `MAIL_API_KEY` только в заголовке `X-API-Key` исходящего запроса; `mail_enabled=false` → `503 mail_not_configured`; недоступность внешнего сервиса → `502 mail_unavailable`. Решение — [ADR-017](adr/ADR-017-dashboard-client-aggregation-mail-server-filters.md); внешний контракт — mail-агрегатор ADR-0037. Схемы `MailTeam`/`MailMailbox` проксируются 1:1 из external DTO.
+
+---
+
+## Dashboard
+
+Страница «Дашборд» **не имеет собственных backend-эндпоинтов**. Счётчики собираются **на фронте** (клиентская агрегация) из существующих list-эндпоинтов — отдельный backend-агрегатор не вводится ([ADR-017](adr/ADR-017-dashboard-client-aggregation-mail-server-filters.md), NFR-1):
+
+| Блок дашборда | Источник | Счётчики |
+|---------------|----------|----------|
+| **«Почты»** → `/mail` | `GET /api/mail/mailboxes` | Активные = `mailboxes` с `is_active=true`; Неактивные = `is_active=false` |
+| **«Серверы»** → `/servers` | `GET /api/servers` | online = `items` с `online=true`; offline = `online=false` |
+| **«ИИ-ключи»** → `/ai-keys` | `GET /api/ai-keys` | Активные = `check_status='working'`; Неактивные = `check_status='error'`; опц. «проверяется» = `check_status='pending'` |
+
+Композиция/состояния карточек — [08-design-system.md · Страница «Дашборд»](08-design-system.md#страница-дашборд).
 
 ---
 

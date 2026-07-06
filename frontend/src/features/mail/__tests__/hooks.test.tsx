@@ -2,17 +2,25 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useMailFeed } from '@/features/mail/hooks';
+import { useMailFeed, useMailMailboxes, useMailTeams } from '@/features/mail/hooks';
 import { ApiError } from '@/lib/api';
 import type { MailListResponse, MailMessage } from '@/types/api';
 
 const api = vi.hoisted(() => ({
   listMail: vi.fn(),
   replyMail: vi.fn(),
+  listTeams: vi.fn(),
+  listMailboxes: vi.fn(),
   MAIL_PAGE_LIMIT: 20,
 }));
 
 vi.mock('@/features/mail/api', () => api);
+
+// polling-хуки читают env.pollIntervalMs — фиксируем большой интервал, чтобы фоновый refetch
+// справочников не срабатывал в тестах.
+vi.mock('@/lib/env', () => ({
+  env: { apiBaseUrl: '', pollIntervalMs: 999_999, statusPollIntervalMs: 2500 },
+}));
 
 function makeMessage(id: number): MailMessage {
   return {
@@ -119,5 +127,94 @@ describe('useMailFeed (ADR-013 infinite desc feed)', () => {
     const { result } = renderHook(() => useMailFeed(), { wrapper: makeWrapper() });
 
     await waitFor(() => expect(result.current.phase).toBe('error'));
+  });
+
+  it('forwards mail_account_id server filter to listMail', async () => {
+    api.listMail.mockResolvedValueOnce(page([makeMessage(2)], null, false));
+    const { result } = renderHook(() => useMailFeed({ mailAccountId: 7 }), {
+      wrapper: makeWrapper(),
+    });
+
+    await waitFor(() => expect(result.current.phase).toBe('ready'));
+    expect(api.listMail.mock.calls[0][0]).toEqual({
+      order: 'desc',
+      beforeId: undefined,
+      limit: 20,
+      mailAccountId: 7,
+      groupId: undefined,
+    });
+  });
+
+  it('forwards group_id server filter to listMail', async () => {
+    api.listMail.mockResolvedValueOnce(page([makeMessage(2)], null, false));
+    const { result } = renderHook(() => useMailFeed({ groupId: 3 }), { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(result.current.phase).toBe('ready'));
+    expect(api.listMail.mock.calls[0][0]).toEqual({
+      order: 'desc',
+      beforeId: undefined,
+      limit: 20,
+      mailAccountId: undefined,
+      groupId: 3,
+    });
+  });
+
+  it('re-requests the feed when the server filter changes (filter is part of queryKey)', async () => {
+    // Смена фильтра = новый queryKey → новый запрос ленты с новым фильтром (ADR-017).
+    api.listMail.mockResolvedValue(page([makeMessage(2)], null, false));
+    const { result, rerender } = renderHook(
+      ({ groupId }: { groupId?: number }) => useMailFeed({ groupId }),
+      { wrapper: makeWrapper(), initialProps: { groupId: undefined as number | undefined } },
+    );
+    await waitFor(() => expect(result.current.phase).toBe('ready'));
+    expect(api.listMail).toHaveBeenCalledTimes(1);
+
+    rerender({ groupId: 3 });
+
+    // Новый ключ запускает отдельный запрос ленты с фильтром group_id=3.
+    await waitFor(() => expect(api.listMail).toHaveBeenCalledTimes(2));
+    expect(api.listMail.mock.calls[1][0]).toMatchObject({ groupId: 3, mailAccountId: undefined });
+  });
+});
+
+describe('useMailTeams / useMailMailboxes (ADR-017 справочники фильтров)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('useMailTeams fetches the teams reference', async () => {
+    api.listTeams.mockResolvedValueOnce({ teams: [{ id: 3, name: 'Продажи' }] });
+    const { result } = renderHook(() => useMailTeams(), { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.teams).toEqual([{ id: 3, name: 'Продажи' }]);
+    expect(api.listTeams).toHaveBeenCalledTimes(1);
+  });
+
+  it('useMailMailboxes fetches the mailboxes reference', async () => {
+    const mailboxes = [
+      {
+        id: 7,
+        email: 'inbox@postapp.store',
+        display_name: 'Входящие',
+        group_id: 3,
+        is_active: true,
+      },
+    ];
+    api.listMailboxes.mockResolvedValueOnce({ mailboxes });
+    const { result } = renderHook(() => useMailMailboxes(), { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(result.current.data?.mailboxes).toEqual(mailboxes);
+    expect(api.listMailboxes).toHaveBeenCalledTimes(1);
+  });
+
+  it('useMailMailboxes surfaces a 503 error (dashboard "not configured" branch)', async () => {
+    api.listMailboxes.mockRejectedValueOnce(new ApiError(503, 'mail_not_configured', 'x'));
+    const { result } = renderHook(() => useMailMailboxes(), { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(result.current.isError).toBe(true));
+    expect(result.current.error).toBeInstanceOf(ApiError);
+    expect((result.current.error as ApiError).status).toBe(503);
   });
 });
