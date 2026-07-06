@@ -99,11 +99,17 @@ function SectionCard({
   );
 }
 
-/** Ряд счётчиков (Badge-тона + моночисло, текст дублирует цвет — a11y). */
+/**
+ * Ряд счётчиков (Badge-тона + моночисло, текст дублирует цвет — a11y).
+ * Нормативно (08-design-system.md «Статус-строка карточки»): строка центрируется
+ * по горизонтали (justify-center); активный счётчик (`green`) виден всегда, включая `0`,
+ * вторичные (red/neutral) при значении `0` не рендерятся и не смещают центрирование.
+ */
 function Counters({ counters }: { counters: Counter[] }) {
+  const visible = counters.filter((c) => c.tone === 'green' || c.value > 0);
   return (
-    <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
-      {counters.map((c) => (
+    <div className="flex flex-wrap items-center justify-center gap-x-6 gap-y-2">
+      {visible.map((c) => (
         <Badge key={c.label} tone={c.tone}>
           <span>{c.label}</span>
           <span className="font-mono text-lg font-bold text-text-primary">{c.value}</span>
@@ -204,8 +210,8 @@ function ServersCard() {
 function AiKeysCard() {
   const { data, isLoading, isError, refetch, isFetching } = useAiKeys();
   const items = data?.items ?? [];
-  const pending = items.filter((k) => k.check_status === 'pending').length;
 
+  // Вторичные (Не работает/Проверяется) скрываются при 0 внутри Counters (нормативно).
   const counters: Counter[] = [
     {
       label: 'Работает',
@@ -217,8 +223,12 @@ function AiKeysCard() {
       value: items.filter((k) => k.check_status === 'error').length,
       tone: 'red',
     },
+    {
+      label: 'Проверяется',
+      value: items.filter((k) => k.check_status === 'pending').length,
+      tone: 'neutral',
+    },
   ];
-  if (pending > 0) counters.push({ label: 'Проверяется', value: pending, tone: 'neutral' });
 
   return (
     <SectionCard title="ИИ - ключи" to="/ai-keys" icon={<KeyRound className="h-5 w-5" />}>

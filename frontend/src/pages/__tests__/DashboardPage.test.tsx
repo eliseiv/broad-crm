@@ -164,11 +164,14 @@ describe('DashboardPage', () => {
     expect(within(card('ИИ - ключи')).queryByText('Проверяется')).not.toBeInTheDocument();
   });
 
-  it('empty source renders zero counters, card stays clickable', async () => {
+  it('empty source renders only the active zero counter, card stays clickable', async () => {
     render(<DashboardPage />); // setAllSuccess → пустые списки
     const c = within(card('Серверы'));
-    // 0 / 0 — обе группы показывают ноль.
-    expect(c.getAllByText('0')).toHaveLength(2);
+    // Активный счётчик виден всегда и показывает 0; неактивный при 0 скрыт (нормативно).
+    expect(c.getByText('В сети')).toBeInTheDocument();
+    expect(c.queryByText('Не в сети')).not.toBeInTheDocument();
+    // Единственный отображаемый ноль — активного счётчика.
+    expect(c.getAllByText('0')).toHaveLength(1);
 
     await userEvent.setup().click(card('Серверы'));
     expect(navigate).toHaveBeenCalledWith('/servers');
@@ -239,5 +242,100 @@ describe('DashboardPage', () => {
 
     expect(refetch).toHaveBeenCalledTimes(1);
     expect(navigate).not.toHaveBeenCalled();
+  });
+
+  // — Скрытие нулевых вторичных счётчиков + центрирование (08-design-system.md
+  //   «Блоки (Этап 1)» / «Статус-строка карточки», уточнение 2026-07-06).
+
+  it('hides zero secondary counter — servers 4/0 shows only В сети', () => {
+    servers.value = queryResult({
+      data: {
+        items: [server('a', true), server('b', true), server('c', true), server('d', true)],
+      },
+    });
+    render(<DashboardPage />);
+
+    const c = within(card('Серверы'));
+    expect(c.getByText('В сети')).toBeInTheDocument();
+    expect(c.getByText('4')).toBeInTheDocument();
+    // Не в сети = 0 → вторичный счётчик не рендерится.
+    expect(c.queryByText('Не в сети')).not.toBeInTheDocument();
+  });
+
+  it('hides zero secondary counters — ai-keys 1/0/0 shows only Работает', () => {
+    aiKeys.value = queryResult({ data: { items: [aiKey('1', 'working')] } });
+    render(<DashboardPage />);
+
+    const c = within(card('ИИ - ключи'));
+    expect(c.getByText('Работает')).toBeInTheDocument();
+    expect(c.getByText('1')).toBeInTheDocument();
+    // Не работает = 0 и Проверяется = 0 → оба вторичных счётчика скрыты.
+    expect(c.queryByText('Не работает')).not.toBeInTheDocument();
+    expect(c.queryByText('Проверяется')).not.toBeInTheDocument();
+  });
+
+  it('keeps both counters when active and inactive are > 0 — mail 124/9', () => {
+    const active = Array.from({ length: 124 }, (_, i) => mailbox(i + 1, true));
+    const inactive = Array.from({ length: 9 }, (_, i) => mailbox(1000 + i, false));
+    mail.value = queryResult({ data: { mailboxes: [...active, ...inactive] } });
+    render(<DashboardPage />);
+
+    const c = within(card('Почты'));
+    expect(c.getByText('Активные')).toBeInTheDocument();
+    expect(c.getByText('124')).toBeInTheDocument();
+    expect(c.getByText('Неактивные')).toBeInTheDocument();
+    expect(c.getByText('9')).toBeInTheDocument();
+  });
+
+  it('active green counter renders always, including 0 (ai-keys empty)', () => {
+    render(<DashboardPage />); // aiKeys → пустой список
+    const c = within(card('ИИ - ключи'));
+    expect(c.getByText('Работает')).toBeInTheDocument();
+    expect(c.getByText('0')).toBeInTheDocument();
+    expect(c.queryByText('Не работает')).not.toBeInTheDocument();
+    expect(c.queryByText('Проверяется')).not.toBeInTheDocument();
+  });
+
+  it('renders secondary counters with correct tones when > 0', () => {
+    mail.value = queryResult({ data: { mailboxes: [mailbox(1, true), mailbox(2, false)] } });
+    servers.value = queryResult({ data: { items: [server('a', true), server('b', false)] } });
+    aiKeys.value = queryResult({
+      data: { items: [aiKey('1', 'working'), aiKey('2', 'error'), aiKey('3', 'pending')] },
+    });
+    render(<DashboardPage />);
+
+    const mailC = within(card('Почты'));
+    expect(mailC.getByText('Активные').closest('.text-status-green')).not.toBeNull();
+    expect(mailC.getByText('Неактивные').closest('.text-status-red')).not.toBeNull();
+
+    const srvC = within(card('Серверы'));
+    expect(srvC.getByText('В сети').closest('.text-status-green')).not.toBeNull();
+    expect(srvC.getByText('Не в сети').closest('.text-status-red')).not.toBeNull();
+
+    const aiC = within(card('ИИ - ключи'));
+    expect(aiC.getByText('Работает').closest('.text-status-green')).not.toBeNull();
+    expect(aiC.getByText('Не работает').closest('.text-status-red')).not.toBeNull();
+    // «Проверяется» — семантически нейтральный тон.
+    expect(aiC.getByText('Проверяется').closest('.text-text-secondary')).not.toBeNull();
+  });
+
+  it('status row is horizontally centered (justify-center) in both scenarios', () => {
+    // Сценарий «только активный» (всё зелёное): серверы 2/0.
+    servers.value = queryResult({
+      data: { items: [server('a', true), server('b', true)] },
+    });
+    // Сценарий «активный + неактивный»: почты 2/1.
+    mail.value = queryResult({
+      data: { mailboxes: [mailbox(1, true), mailbox(2, true), mailbox(3, false)] },
+    });
+    render(<DashboardPage />);
+
+    // Только активный счётчик — строка центрирована.
+    expect(within(card('Серверы')).getByText('В сети').closest('.justify-center')).not.toBeNull();
+
+    // Группа активный + неактивный — центрирована как группа.
+    const mailC = within(card('Почты'));
+    expect(mailC.getByText('Активные').closest('.justify-center')).not.toBeNull();
+    expect(mailC.getByText('Неактивные').closest('.justify-center')).not.toBeNull();
   });
 });
