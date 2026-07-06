@@ -129,3 +129,27 @@ describe('MailDetail body isolation & notices', () => {
     expect(onBack).toHaveBeenCalledTimes(1);
   });
 });
+
+// Скрытие полосы прокрутки (08-design-system.md «Скрытие полосы прокрутки», раздел «Где
+// применяется» → MAIL — тело письма). jsdom не мерит геометрию полосы — проверяем НАЛИЧИЕ класса
+// scrollbar-none и СОХРАНЕНИЕ overflow-класса (прокрутка тела не отменяется). sandbox-iframe тела
+// НЕ трогаем — у него собственный документ.
+describe('MailDetail scrollbar hiding (scrollbar-none on the body_text <pre>)', () => {
+  it('applies scrollbar-none to the body_text <pre> while keeping overflow-auto (scroll preserved)', () => {
+    render(<MailDetail message={makeMessage({ body_html: null })} onBack={vi.fn()} />);
+
+    const pre = screen.getByText('Текст письма');
+    expect(pre.tagName).toBe('PRE');
+    expect(pre.classList.contains('scrollbar-none')).toBe(true);
+    // Прокрутка сохранена: <pre> остаётся overflow-auto и НЕ становится overflow-hidden.
+    expect(pre.classList.contains('overflow-auto')).toBe(true);
+    expect(pre.classList.contains('overflow-hidden')).toBe(false);
+  });
+
+  it('does NOT apply scrollbar-none to the sandbox iframe of the html body (own document)', () => {
+    render(<MailDetail message={makeMessage({ body_html: '<p>Привет</p>' })} onBack={vi.fn()} />);
+
+    const iframe = screen.getByTitle('Тело письма') as HTMLIFrameElement;
+    expect(iframe.classList.contains('scrollbar-none')).toBe(false);
+  });
+});

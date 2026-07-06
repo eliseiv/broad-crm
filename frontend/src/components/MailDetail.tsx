@@ -52,7 +52,7 @@ function MailBody({ message }: { message: MailMessage }) {
           className="min-h-0 w-full flex-1 rounded-lg border border-border-subtle bg-surface-2"
         />
       ) : (
-        <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-subtle bg-surface-2 p-3 font-mono text-[13px] text-text-primary">
+        <pre className="scrollbar-none min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-subtle bg-surface-2 p-3 font-mono text-[13px] text-text-primary">
           {message.body_text}
         </pre>
       )}

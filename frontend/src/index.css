@@ -34,6 +34,24 @@
     height: 100%;
   }
 
+  /*
+   * Скрытие полосы прокрутки ДОКУМЕНТА (08-design-system.md «Скрытие полосы прокрутки»,
+   * вариант A). Servers/AI-keys скроллятся нативным скроллом body (обычный поток документа) —
+   * визуально скрываем только полосу, прокрутка body ПОЛНОСТЬЮ сохранена (нет overflow:hidden).
+   * Кроссбраузерно: Firefox (scrollbar-width), legacy Edge/IE (-ms-overflow-style), WebKit
+   * (::-webkit-scrollbar). /mail не body-скроллит (h-screen), login не скроллит — «жертв» нет.
+   */
+  html,
+  body {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* legacy Edge/IE */
+  }
+
+  html::-webkit-scrollbar,
+  body::-webkit-scrollbar {
+    display: none; /* Chrome/Safari/WebKit */
+  }
+
   body {
     margin: 0;
     background-color: var(--bg-base);
@@ -59,6 +77,21 @@
 @layer utilities {
   .text-balance {
     text-wrap: balance;
+  }
+
+  /*
+   * Утилита скрытия полосы прокрутки на скролл-контейнерах (08-design-system.md
+   * «Утилита scrollbar-none»). Прячет ТОЛЬКО визуальную полосу — прокрутка задаётся
+   * отдельно (overflow-y:auto/overflow-auto на контейнере) и полностью сохраняется
+   * (колёсико/тач/клавиатура/программно). НЕ содержит overflow:hidden. Кроссбраузерно.
+   */
+  .scrollbar-none {
+    scrollbar-width: none; /* Firefox */
+    -ms-overflow-style: none; /* legacy Edge/IE */
+  }
+
+  .scrollbar-none::-webkit-scrollbar {
+    display: none; /* Chrome/Safari/WebKit */
   }
 
   /* Skeleton-мерцание поверхностей */

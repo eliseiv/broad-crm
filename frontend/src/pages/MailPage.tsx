@@ -189,7 +189,7 @@ export function MailPage() {
           </Button>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        <div className="scrollbar-none flex min-h-0 flex-1 flex-col overflow-y-auto">
           {visibleMessages.map((message) => (
             <MailListItem
               key={message.id}

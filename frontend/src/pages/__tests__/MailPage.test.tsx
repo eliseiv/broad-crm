@@ -248,3 +248,44 @@ describe('MailPage "Только с тегами" filter', () => {
     expect(loadMore).toHaveBeenCalled();
   });
 });
+
+// Скрытие полосы прокрутки (08-design-system.md «Скрытие полосы прокрутки», раздел «Где
+// применяется» → MAIL — список писем). jsdom НЕ вычисляет computed scrollbar-width — проверяем
+// НАЛИЧИЕ класса scrollbar-none и СОХРАНЕНИЕ overflow-класса (прокрутка не отменяется).
+describe('MailPage scrollbar hiding (scrollbar-none on the list scroll container)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ioCallback = null;
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  // Скролл-контейнер списка — единственный div с overflow-y-auto (у <pre> тела — overflow-auto,
+  // у карточки-обёртки — overflow-hidden). Так он однозначно отделяется от прочих scrollbar-none.
+  function getListScrollContainer(): HTMLElement | null {
+    return document.querySelector<HTMLElement>('.overflow-y-auto');
+  }
+
+  it('applies scrollbar-none to the list scroll container', () => {
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
+    render(<MailPage />);
+
+    const list = getListScrollContainer();
+    expect(list).not.toBeNull();
+    expect(list?.classList.contains('scrollbar-none')).toBe(true);
+  });
+
+  it('keeps overflow-y-auto on the list container (scroll preserved, not overflow-hidden)', () => {
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
+    render(<MailPage />);
+
+    const list = getListScrollContainer();
+    expect(list).not.toBeNull();
+    // Прокрутка сохранена: контейнер остаётся overflow-y-auto и НЕ становится overflow-hidden.
+    expect(list?.classList.contains('overflow-y-auto')).toBe(true);
+    expect(list?.classList.contains('overflow-hidden')).toBe(false);
+  });
+});
