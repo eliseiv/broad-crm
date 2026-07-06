@@ -18,3 +18,4 @@ Architecture Decision Records. Каждое значимое решение — 
 | [ADR-012](ADR-012-mail-read-through-proxy.md) | Модуль «Почты» — read-through-прокси без хранения (ключ на backend, HTML-изоляция sandbox-iframe) | accepted | 2026-07-03 |
 | [ADR-013](ADR-013-mail-newest-first-master-detail-inline-reply.md) | Почты — newest-first backward-пагинация, master-detail layout, inline-reply (расширяет ADR-012) | accepted | 2026-07-04 |
 | [ADR-014](ADR-014-persist-notifier-state-alert-on-first-elevated.md) | Персистентность состояния нотификатора в БД + alert-on-first-elevated (закрывает TD-019) | accepted | 2026-07-04 |
+| [ADR-015](ADR-015-csp-img-src-remote-mail-images.md) | CSP `img-src` — разрешение удалённых (https) изображений писем (расширяет ADR-012, XSS-инвариант не ослаблен) | accepted | 2026-07-06 |

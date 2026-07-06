@@ -34,8 +34,8 @@ export function AppLayout() {
   };
 
   return (
-    <div className="min-h-screen bg-bg-base">
-      <header className="sticky top-0 z-30 border-b border-border-subtle bg-bg-base/80 backdrop-blur-md">
+    <div className="flex h-screen flex-col overflow-hidden bg-bg-base">
+      <header className="shrink-0 border-b border-border-subtle bg-bg-base/80 backdrop-blur-md">
         <div className="mx-auto flex max-w-[1400px] items-center justify-between px-6 py-3">
           <div className="flex items-center gap-6">
             <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
@@ -76,7 +76,14 @@ export function AppLayout() {
         </div>
       </header>
 
-      <main className={isFullBleed ? 'w-full' : 'mx-auto max-w-[1400px] px-6 py-8'}>
+      <main
+        className={cn(
+          'flex-1 min-h-0',
+          isFullBleed
+            ? 'w-full overflow-hidden'
+            : 'mx-auto max-w-[1400px] overflow-y-auto px-6 py-8',
+        )}
+      >
         <Outlet />
       </main>
     </div>

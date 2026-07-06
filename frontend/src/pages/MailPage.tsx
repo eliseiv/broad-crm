@@ -8,8 +8,12 @@ import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useMailFeed } from '@/features/mail/hooks';
 
-/** Высота двухпанельного блока: занимает вьюпорт минус шапка/паддинги AppLayout. */
-const PANEL_HEIGHT = 'h-[calc(100vh-9rem)] min-h-[480px]';
+/**
+ * Высота двухпанельного блока: наследуется от flex-fill `<main>` (`flex-1 min-h-0`) —
+ * панель заполняет остаток вьюпорта под хэдером БЕЗ магического `calc` (08-design-system.md
+ * «Full-bleed layout» — flex-fill). Внутренний скролл — в панелях master-detail.
+ */
+const PANEL_HEIGHT = 'h-full';
 
 /** Skeleton-строки списка при начальной загрузке (левая панель). */
 function ListSkeleton() {
