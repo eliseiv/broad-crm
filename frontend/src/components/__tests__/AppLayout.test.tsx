@@ -72,30 +72,80 @@ describe('AppLayout', () => {
     expect(screen.getByRole('link', { name: 'ИИ - ключи' }).className).toContain('text-accent');
   });
 
-  it('renders /mail full-bleed: <main> is w-full without the max-width container', () => {
+  it('renders /mail full-bleed: <main> is w-full/overflow-hidden and Outlet renders directly', () => {
     renderAt('/mail');
     const main = document.querySelector('main');
     expect(main).not.toBeNull();
-    // Full-bleed (08-design-system.md, ADR-013 поправка): без mx-auto/max-w/паддингов контейнера.
+    // Full-bleed (08-design-system.md «Full-bleed layout», ADR-013 поправка):
+    // <main> — полноширинный overflow-hidden без mx-auto/max-w/паддингов контейнера.
     expect(main?.className).toContain('w-full');
+    expect(main?.className).toContain('overflow-hidden');
     expect(main?.className).not.toContain('max-w-[1400px]');
     expect(main?.className).not.toContain('mx-auto');
     expect(main?.className).not.toContain('px-6');
+    expect(main?.className).not.toContain('py-8');
+    // Outlet рендерится НАПРЯМУЮ в <main> (нет внутреннего max-w-div-обёртки).
+    const content = screen.getByText('Контент почт');
+    expect(content.parentElement?.tagName).toBe('MAIN');
   });
 
-  it('constrains /servers and /ai-keys in the centered max-width container', () => {
+  it('/servers and /ai-keys: <main> is a full-width scroll container without max-width', () => {
+    // Скролл-контейнер <main> — полноширинный (скроллбар у края окна), БЕЗ ограничения ширины
+    // (08-design-system.md «Разделение скролл-контейнера и контейнера ширины», баг «панель скролла»).
     const { unmount } = renderAt('/servers');
     const serversMain = document.querySelector('main');
-    expect(serversMain?.className).toContain('mx-auto');
-    expect(serversMain?.className).toContain('max-w-[1400px]');
-    expect(serversMain?.className).toContain('px-6');
-    expect(serversMain?.className).toContain('py-8');
+    expect(serversMain?.className).toContain('overflow-y-auto');
+    expect(serversMain?.className).toContain('w-full');
+    expect(serversMain?.className).toContain('flex-1');
+    expect(serversMain?.className).toContain('min-h-0');
+    expect(serversMain?.className).not.toContain('max-w-[1400px]');
+    expect(serversMain?.className).not.toContain('mx-auto');
     unmount();
 
     renderAt('/ai-keys');
     const keysMain = document.querySelector('main');
-    expect(keysMain?.className).toContain('mx-auto');
-    expect(keysMain?.className).toContain('max-w-[1400px]');
+    expect(keysMain?.className).toContain('overflow-y-auto');
+    expect(keysMain?.className).toContain('w-full');
+    expect(keysMain?.className).not.toContain('max-w-[1400px]');
+  });
+
+  it('/servers and /ai-keys: width is constrained by the inner max-width wrapper, not <main>', () => {
+    // Ширину 1400px держит ВНУТРЕННИЙ <div>-обёртка вокруг <Outlet/>, а не сам <main>.
+    const { unmount } = renderAt('/servers');
+    const serversWrapper = screen.getByText('Контент серверов').parentElement;
+    expect(serversWrapper?.tagName).toBe('DIV');
+    expect(serversWrapper?.className).toContain('mx-auto');
+    expect(serversWrapper?.className).toContain('max-w-[1400px]');
+    expect(serversWrapper?.className).toContain('px-6');
+    expect(serversWrapper?.className).toContain('py-8');
+    // Обёртка лежит непосредственно внутри <main>.
+    expect(serversWrapper?.parentElement?.tagName).toBe('MAIN');
+    unmount();
+
+    renderAt('/ai-keys');
+    const keysWrapper = screen.getByText('Контент ключей').parentElement;
+    expect(keysWrapper?.className).toContain('mx-auto');
+    expect(keysWrapper?.className).toContain('max-w-[1400px]');
+    expect(keysWrapper?.className).toContain('px-6');
+    expect(keysWrapper?.className).toContain('py-8');
+  });
+
+  it('regression: /servers and /ai-keys content width is scroll-independent and identical', () => {
+    // Оба бага не возвращаются: скролл-контейнер полноширинный без max-w, а ширину контента
+    // на /servers и /ai-keys задаёт один и тот же внутренний max-w-div → ширина одинакова
+    // независимо от наличия скролла (08-design-system.md §418).
+    const { unmount } = renderAt('/servers');
+    const serversMain = document.querySelector('main');
+    const serversWrapperCls = screen.getByText('Контент серверов').parentElement?.className;
+    expect(serversMain?.className).not.toContain('max-w-[1400px]');
+    unmount();
+
+    renderAt('/ai-keys');
+    const keysMain = document.querySelector('main');
+    const keysWrapperCls = screen.getByText('Контент ключей').parentElement?.className;
+    expect(keysMain?.className).not.toContain('max-w-[1400px]');
+    // Классы контейнера ширины идентичны на обоих маршрутах.
+    expect(keysWrapperCls).toBe(serversWrapperCls);
   });
 
   it('shows the username and clears session on logout', async () => {

@@ -22,9 +22,12 @@ export function AppLayout() {
   const username = useAuthStore((s) => s.username);
   const clearSession = useAuthStore((s) => s.clearSession);
 
-  // Full-bleed layout для /mail: список примыкает вплотную к sticky-хэдеру, без внешнего
+  // Full-bleed layout для /mail: список примыкает вплотную к shrink-0-хэдеру, без внешнего
   // max-w-контейнера и верхних паддингов (08-design-system.md «Full-bleed layout», ADR-013
-  // поправка). Прочие маршруты («Серверы»/«ИИ-ключи») — прежний ограниченный контейнер.
+  // поправка). Прочие маршруты («Серверы»/«ИИ-ключи») — полноширинный скролл-контейнер
+  // `<main>` (скроллбар у края окна), а ширину 1400px держит внутренний `<div>`-обёртка:
+  // скролл-контейнер и контейнер ширины РАЗДЕЛЕНЫ (08-design-system.md «Разделение
+  // скролл-контейнера и контейнера ширины»).
   const isFullBleed = location.pathname.startsWith('/mail');
 
   const handleLogout = () => {
@@ -77,14 +80,15 @@ export function AppLayout() {
       </header>
 
       <main
-        className={cn(
-          'flex-1 min-h-0',
-          isFullBleed
-            ? 'w-full overflow-hidden'
-            : 'mx-auto max-w-[1400px] overflow-y-auto px-6 py-8',
-        )}
+        className={cn('flex-1 min-h-0 w-full', isFullBleed ? 'overflow-hidden' : 'overflow-y-auto')}
       >
-        <Outlet />
+        {isFullBleed ? (
+          <Outlet />
+        ) : (
+          <div className="mx-auto max-w-[1400px] px-6 py-8">
+            <Outlet />
+          </div>
+        )}
       </main>
     </div>
   );
