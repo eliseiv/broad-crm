@@ -3,15 +3,20 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
+import { useIsAdmin, useMe } from '@/features/auth/hooks';
 import { useAuthStore } from '@/store/auth';
 
-const TABS: { to: string; label: string }[] = [
-  { to: '/dashboard', label: 'Дашборд' },
-  { to: '/mail', label: 'Почты' },
-  { to: '/servers', label: 'Серверы' },
-  { to: '/ai-keys', label: 'ИИ - ключи' },
-  { to: '/proxies', label: 'Прокси' },
-  { to: '/backends', label: 'Бэки' },
+/**
+ * Ресурсные вкладки. `page` — ключ каталога прав (GET /api/permissions/catalog),
+ * по которому гейтится видимость (view). 08-design-system.md «Навигация».
+ */
+const TABS: { to: string; label: string; page: string }[] = [
+  { to: '/dashboard', label: 'Дашборд', page: 'dashboard' },
+  { to: '/mail', label: 'Почты', page: 'mail' },
+  { to: '/servers', label: 'Серверы', page: 'servers' },
+  { to: '/ai-keys', label: 'ИИ - ключи', page: 'ai-keys' },
+  { to: '/proxies', label: 'Прокси', page: 'proxies' },
+  { to: '/backends', label: 'Бэки', page: 'backends' },
 ];
 
 /**
@@ -24,6 +29,19 @@ export function AppLayout() {
   const queryClient = useQueryClient();
   const username = useAuthStore((s) => s.username);
   const clearSession = useAuthStore((s) => s.clearSession);
+  const isSuperadmin = useAuthStore((s) => s.isSuperadmin);
+  const permissions = useAuthStore((s) => s.permissions);
+  const isAdmin = useIsAdmin();
+
+  // Обновляем права принципала при входе на защищённые страницы (ADR-021:
+  // права могут меняться без пере-логина). Наполняет стор → гейтинг реактивен.
+  useMe();
+
+  // UI-гейтинг вкладок по правам (08-design-system.md «Гейтинг навигации»).
+  // Ресурсная/dashboard/mail вкладка видна ⇔ view ∈ permissions[page] (или супер-админ).
+  // Вкладка «Пользователи» — только is_superadmin || role=="admin".
+  const canView = (page: string) => isSuperadmin || Boolean(permissions?.[page]?.includes('view'));
+  const visibleTabs = TABS.filter((tab) => canView(tab.page));
 
   // Два режима shell по маршруту (08-design-system.md «Full-bleed layout»):
   //  • /mail (full-bleed) — модель фиксированной высоты: shell `h-screen overflow-hidden`,
@@ -61,7 +79,7 @@ export function AppLayout() {
               <ServerCog className="h-[18px] w-[18px]" aria-hidden="true" />
             </span>
             <nav className="flex items-center gap-1" aria-label="Основная навигация">
-              {TABS.map((tab) => (
+              {visibleTabs.map((tab) => (
                 <NavLink
                   key={tab.to}
                   to={tab.to}
@@ -79,6 +97,24 @@ export function AppLayout() {
                   {tab.label}
                 </NavLink>
               ))}
+              {/* Седьмая вкладка «Пользователи» — admin-only (08-design-system.md). */}
+              {isAdmin && (
+                <NavLink
+                  to="/users"
+                  className={({ isActive }) =>
+                    cn(
+                      'relative rounded-md px-3 py-2 text-[14px] font-medium transition-colors',
+                      'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                      'after:absolute after:inset-x-3 after:-bottom-[13px] after:h-0.5 after:rounded-full after:transition-colors',
+                      isActive
+                        ? 'text-accent after:bg-accent'
+                        : 'text-text-secondary after:bg-transparent hover:text-text-primary',
+                    )
+                  }
+                >
+                  Пользователи
+                </NavLink>
+              )}
             </nav>
           </div>
           <div className="flex items-center gap-3">

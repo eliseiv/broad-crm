@@ -8,12 +8,17 @@ import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Modal } from '@/components/ui/Modal';
 import { ApiError } from '@/lib/api';
+import { cn } from '@/lib/cn';
 import { formatRelativeTime } from '@/lib/format';
 import { proxiesKey, useDeleteProxy, useProxyStatus } from '@/features/proxies/hooks';
 import type { Proxy, ProxyCheckStatus, ProxyType } from '@/types/api';
 
 interface ProxyCardProps {
   proxy: Proxy;
+  /** Право редактирования (клик по карточке → edit). RBAC-гейтинг. По умолчанию true. */
+  canEdit?: boolean;
+  /** Право удаления (кнопки «Удалить»). RBAC-гейтинг. По умолчанию true. */
+  canDelete?: boolean;
 }
 
 /** Локализованное имя типа прокси (08-design-system.md, словарь). */
@@ -23,7 +28,7 @@ const TYPE_LABEL: Record<ProxyType, string> = {
   socks5: 'SOCKS5',
 };
 
-export function ProxyCard({ proxy }: ProxyCardProps) {
+export function ProxyCard({ proxy, canEdit = true, canDelete = true }: ProxyCardProps) {
   const queryClient = useQueryClient();
   const statusQuery = useProxyStatus(proxy.id, proxy.check_status);
   const deleteMutation = useDeleteProxy();
@@ -70,13 +75,17 @@ export function ProxyCard({ proxy }: ProxyCardProps) {
   return (
     <>
       <Card
-        interactive
-        role="button"
-        tabIndex={0}
-        aria-label={`Изменить прокси ${proxy.name}`}
-        onClick={() => setEditOpen(true)}
-        onKeyDown={onCardKeyDown}
-        className={`flex h-full cursor-pointer flex-col gap-4 p-4 sm:p-5 ${isError ? 'border-status-red/70' : ''}`}
+        interactive={canEdit}
+        role={canEdit ? 'button' : undefined}
+        tabIndex={canEdit ? 0 : undefined}
+        aria-label={canEdit ? `Изменить прокси ${proxy.name}` : undefined}
+        onClick={canEdit ? () => setEditOpen(true) : undefined}
+        onKeyDown={canEdit ? onCardKeyDown : undefined}
+        className={cn(
+          'flex h-full flex-col gap-4 p-4 sm:p-5',
+          canEdit && 'cursor-pointer',
+          isError && 'border-status-red/70',
+        )}
       >
         {/* Шапка: иконка + имя + статус-бейдж */}
         <div className="flex items-start justify-between gap-2">
@@ -102,20 +111,22 @@ export function ProxyCard({ proxy }: ProxyCardProps) {
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onPointerDown={stopForDelete}
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfirmOpen(true);
-              }}
-              aria-label={`Удалить прокси ${proxy.name}`}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-3 hover:text-status-red focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            >
-              <Trash2 className="h-4 w-4" aria-hidden="true" />
-            </button>
-          </div>
+          {canDelete && (
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                onPointerDown={stopForDelete}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmOpen(true);
+                }}
+                aria-label={`Удалить прокси ${proxy.name}`}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-3 hover:text-status-red focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Адрес (host:port, моношрифт) */}
@@ -157,7 +168,7 @@ export function ProxyCard({ proxy }: ProxyCardProps) {
           ) : (
             <span className="text-[13px] text-text-tertiary">Ожидание первой проверки…</span>
           )}
-          {isError && (
+          {isError && canDelete && (
             <Button
               variant="danger"
               size="sm"

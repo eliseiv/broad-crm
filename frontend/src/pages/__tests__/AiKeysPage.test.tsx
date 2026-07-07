@@ -3,6 +3,7 @@ import { render, screen } from '@testing-library/react';
 import type { PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AiKeysPage } from '@/pages/AiKeysPage';
+import { loginSuperadmin } from '@/test/authTestUtils';
 import type { AiKey } from '@/types/api';
 
 const aiKeysHook = vi.hoisted(() => ({
@@ -49,6 +50,7 @@ function makeKey(overrides: Partial<AiKey> & Pick<AiKey, 'id'>): AiKey {
 describe('AiKeysPage grouping', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    loginSuperadmin();
     aiKeysHook.value = {
       data: undefined,
       isLoading: false,

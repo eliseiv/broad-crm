@@ -17,6 +17,7 @@ from app.api import deps
 from app.errors import server_not_found, unprocessable
 from app.models.server import ProvisionStatus
 from app.schemas.server import ServerSummaryResponse, ServerUpdateRequest
+from conftest import make_principal
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -59,7 +60,7 @@ def _build_app(fake_service: FakeServersService, *, with_auth: bool) -> FastAPI:
 
     app = create_app(get_settings())
     if with_auth:
-        app.dependency_overrides[deps.get_current_user] = lambda: "admin"
+        app.dependency_overrides[deps.get_current_principal] = lambda: make_principal()
     app.dependency_overrides[deps.get_server_service] = lambda: fake_service
     return app
 

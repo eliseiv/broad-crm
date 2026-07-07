@@ -52,6 +52,54 @@ def unauthorized() -> AppError:
     )
 
 
+def forbidden() -> AppError:
+    return AppError(
+        status_code=status.HTTP_403_FORBIDDEN,
+        code="forbidden",
+        message="Недостаточно прав",
+    )
+
+
+def user_not_found() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="user_not_found",
+        message="Пользователь не найден",
+    )
+
+
+def role_not_found() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="role_not_found",
+        message="Роль не найдена",
+    )
+
+
+def username_taken() -> AppError:
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="username_taken",
+        message="Пользователь с таким именем уже существует",
+    )
+
+
+def role_name_taken() -> AppError:
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="role_name_taken",
+        message="Роль с таким именем уже существует",
+    )
+
+
+def role_in_use() -> AppError:
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="role_in_use",
+        message="Роль назначена пользователям — удаление запрещено",
+    )
+
+
 def server_not_found() -> AppError:
     return AppError(
         status_code=status.HTTP_404_NOT_FOUND,

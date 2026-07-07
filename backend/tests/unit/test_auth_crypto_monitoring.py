@@ -19,6 +19,7 @@ from app.services.monitoring_service import (
     _cpu_detail,
     _instance_matcher,
 )
+from conftest import RbacFakeDb
 
 
 @pytest.fixture(autouse=True)
@@ -27,62 +28,69 @@ def clear_monitoring_cache() -> None:
     monitoring_module._inflight.clear()
 
 
-def test_auth_valid_and_invalid_credentials_expected_statuses(
+async def test_auth_valid_and_invalid_credentials_expected_statuses(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     settings = get_settings()
     service = AuthService(
         settings=settings,
         rate_limiter=InMemoryRateLimiter(max_attempts=10, window_sec=300),
+        user_repository=RbacFakeDb().user_repo,
     )
 
-    token = service.login(username="admin", password="secret", client_ip="10.0.0.1")
+    token = await service.login(username="admin", password="secret", client_ip="10.0.0.1")
 
     assert token.token_type == "bearer"
-    assert decode_access_token(token.access_token) == "admin"
+    # ADR-021: decode_access_token возвращает AccessTokenClaims, а не голый str.
+    assert decode_access_token(token.access_token).sub == "admin"
 
     for username, password in [("admin", "bad"), ("missing", "secret")]:
         with pytest.raises(AppError) as exc:
-            service.login(username=username, password=password, client_ip="10.0.0.2")
+            await service.login(username=username, password=password, client_ip="10.0.0.2")
         assert exc.value.status_code == 401
         assert exc.value.code == "invalid_credentials"
         assert exc.value.message == "Неверный логин или пароль"
 
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[bytes, bytes]] = []
 
-    def spy_compare(left: str, right: str) -> bool:
+    def spy_compare(left: bytes, right: bytes) -> bool:
         calls.append((left, right))
         return left == right
 
     monkeypatch.setattr("app.services.auth_service.secrets.compare_digest", spy_compare)
     with pytest.raises(AppError):
-        service.login(username="missing", password="bad", client_ip="10.0.0.3")
+        await service.login(username="missing", password="bad", client_ip="10.0.0.3")
 
-    assert calls == [("missing", "admin"), ("bad", "secret")]
+    # Оба сравнения супер-админа выполняются всегда (constant-time, без раннего возврата);
+    # сравниваются UTF-8 БАЙТЫ (ADR-021 Cyrillic login — secrets.compare_digest на не-ASCII
+    # str бросает TypeError, поэтому обе стороны кодируются в bytes).
+    assert calls == [(b"missing", b"admin"), (b"bad", b"secret")]
 
 
-def test_auth_rate_limit_returns_429() -> None:
+async def test_auth_rate_limit_returns_429() -> None:
     service = AuthService(
         settings=get_settings(),
         rate_limiter=InMemoryRateLimiter(max_attempts=2, window_sec=300),
+        user_repository=RbacFakeDb().user_repo,
     )
 
     for _ in range(2):
         with pytest.raises(AppError):
-            service.login(username="admin", password="bad", client_ip="10.0.0.9")
+            await service.login(username="admin", password="bad", client_ip="10.0.0.9")
 
     with pytest.raises(AppError) as exc:
-        service.login(username="admin", password="secret", client_ip="10.0.0.9")
+        await service.login(username="admin", password="secret", client_ip="10.0.0.9")
 
     assert exc.value.status_code == 429
     assert exc.value.code == "rate_limited"
 
 
 def test_jwt_missing_invalid_and_expired_tokens_are_rejected() -> None:
-    token, expires_in = issue_access_token("admin")
+    # ADR-021: issue_access_token — keyword-only sub/role/superadmin/uid.
+    token, expires_in = issue_access_token(sub="admin", role="admin", superadmin=True)
 
     assert expires_in == 86400
-    assert decode_access_token(token) == "admin"
+    assert decode_access_token(token).sub == "admin"
 
     with pytest.raises(TokenError):
         decode_access_token("")

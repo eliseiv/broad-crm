@@ -12,7 +12,14 @@ interface ModalProps {
   footer?: ReactNode;
   /** Блокировать закрытие по Esc/overlay (во время отправки). */
   dismissible?: boolean;
+  /** Ширина контента: 'md' (по умолчанию) или 'lg' (широкие формы, напр. матрица прав). */
+  size?: 'md' | 'lg';
 }
+
+const SIZE_CLASS: Record<'md' | 'lg', string> = {
+  md: 'max-w-md',
+  lg: 'max-w-2xl',
+};
 
 export function Modal({
   open,
@@ -22,6 +29,7 @@ export function Modal({
   children,
   footer,
   dismissible = true,
+  size = 'md',
 }: ModalProps) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -37,7 +45,8 @@ export function Modal({
           onPointerDownOutside={(e) => !dismissible && e.preventDefault()}
           onInteractOutside={(e) => !dismissible && e.preventDefault()}
           className={cn(
-            'fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2',
+            'fixed left-1/2 top-1/2 z-50 w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2',
+            SIZE_CLASS[size],
             'rounded-card border border-border-strong bg-surface-1 p-6 shadow-card',
             'data-[state=open]:animate-content-in focus:outline-none',
           )}

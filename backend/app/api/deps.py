@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import uuid
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from typing import Annotated
 
 from fastapi import Depends, Request
@@ -10,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db import get_session, get_sessionmaker
-from app.errors import unauthorized
+from app.domain.permissions import full_catalog_permissions
+from app.errors import forbidden, unauthorized
 from app.infra.jwt import TokenError, decode_access_token
 from app.infra.mail_client import get_mail_client
 from app.infra.prometheus import get_prometheus_client
@@ -19,7 +23,9 @@ from app.infra.telegram import TelegramClient
 from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.backend_repository import BackendRepository
 from app.repositories.proxy_repository import ProxyRepository
+from app.repositories.role_repository import RoleRepository
 from app.repositories.server_repository import ServerRepository
+from app.repositories.user_repository import UserRepository
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.ai_key_service import AiKeyService
 from app.services.auth_service import AuthService
@@ -30,7 +36,9 @@ from app.services.monitoring_service import MonitoringService
 from app.services.provisioning_service import ProvisioningService
 from app.services.proxy_monitor_service import ProxyMonitorService
 from app.services.proxy_service import ProxyService
+from app.services.role_service import RoleService
 from app.services.server_service import ServerService
+from app.services.user_service import UserService
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -44,24 +52,112 @@ DbSession = Annotated[AsyncSession, Depends(get_session)]
 SettingsDep = Annotated[Settings, Depends(get_settings_dep)]
 
 
-async def get_current_user(
+@dataclass(frozen=True)
+class Principal:
+    """Аутентифицированный принципал с актуальными правами (ADR-021, enforcement).
+
+    Права загружаются из БД на каждый запрос: правки роли применяются без пере-логина.
+    Супер-админ (`.env`) — `is_superadmin=True`, `permissions` = полный каталог.
+    """
+
+    username: str
+    role: str
+    permissions: dict[str, list[str]]
+    is_superadmin: bool
+
+
+async def get_current_principal(
+    session: DbSession,
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
-) -> str:
-    """Валидирует Bearer-JWT, возвращает username. Иначе 401 unauthorized."""
+) -> Principal:
+    """Декодит JWT и формирует принципал (свежая загрузка прав из БД, ADR-021).
+
+    Супер-админ → полный каталог. БД-пользователь → права роли по `uid`; если
+    пользователь не найден ИЛИ `is_active=false` → 401 (JWT аннулируется без
+    пере-логина). Легаси-токен (без role/superadmin/uid) → 401.
+    """
     if credentials is None or not credentials.credentials:
         raise unauthorized()
     try:
-        return decode_access_token(credentials.credentials)
+        claims = decode_access_token(credentials.credentials)
     except TokenError as exc:
         raise unauthorized() from exc
 
+    if claims.superadmin:
+        return Principal(
+            username=claims.sub,
+            role="admin",
+            permissions=full_catalog_permissions(),
+            is_superadmin=True,
+        )
 
-CurrentUser = Annotated[str, Depends(get_current_user)]
+    if claims.uid is None:
+        raise unauthorized()
+    try:
+        user_id = uuid.UUID(claims.uid)
+    except ValueError as exc:
+        raise unauthorized() from exc
+
+    user = await UserRepository(session).get_by_id(user_id)
+    if user is None or not user.is_active:
+        raise unauthorized()
+
+    return Principal(
+        username=user.username,
+        role=user.role.name,
+        permissions=dict(user.role.permissions),
+        is_superadmin=False,
+    )
 
 
-def get_auth_service(settings: SettingsDep) -> AuthService:
-    """Сервис аутентификации."""
-    return AuthService(settings=settings, rate_limiter=get_login_rate_limiter())
+PrincipalDep = Annotated[Principal, Depends(get_current_principal)]
+
+
+def require(page: str, action: str) -> Callable[[Principal], Awaitable[Principal]]:
+    """Фабрика зависимости RBAC: пропускает супер-админа или `action ∈ perms[page]`.
+
+    Иначе → 403 forbidden. Применяется ко всем ресурсным эндпоинтам вместо прежнего
+    «любой аутентифицированный» (маппинг метод→действие — 04-api.md#rbac-и-enforcement-прав).
+    """
+
+    async def _require(principal: PrincipalDep) -> Principal:
+        if principal.is_superadmin or action in principal.permissions.get(page, []):
+            return principal
+        raise forbidden()
+
+    return _require
+
+
+async def require_admin(principal: PrincipalDep) -> Principal:
+    """Гейт Users/Roles/Permissions API: супер-админ ИЛИ роль `admin`, иначе 403."""
+    if principal.is_superadmin or principal.role == "admin":
+        return principal
+    raise forbidden()
+
+
+RequireAdmin = Annotated[Principal, Depends(require_admin)]
+
+
+def get_auth_service(session: DbSession, settings: SettingsDep) -> AuthService:
+    """Сервис аутентификации (супер-админ из .env ИЛИ БД-пользователь)."""
+    return AuthService(
+        settings=settings,
+        rate_limiter=get_login_rate_limiter(),
+        user_repository=UserRepository(session),
+    )
+
+
+def get_user_service(session: DbSession) -> UserService:
+    """Сервис реестра пользователей (require_admin, ADR-021)."""
+    return UserService(
+        users=UserRepository(session),
+        roles=RoleRepository(session),
+    )
+
+
+def get_role_service(session: DbSession) -> RoleService:
+    """Сервис реестра ролей (require_admin, ADR-021)."""
+    return RoleService(repository=RoleRepository(session))
 
 
 def get_provisioning_service(settings: SettingsDep) -> ProvisioningService:
@@ -179,6 +275,8 @@ def get_client_ip(request: Request) -> str:
 
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
+UserServiceDep = Annotated[UserService, Depends(get_user_service)]
+RoleServiceDep = Annotated[RoleService, Depends(get_role_service)]
 ServerServiceDep = Annotated[ServerService, Depends(get_server_service)]
 AiKeyServiceDep = Annotated[AiKeyService, Depends(get_ai_key_service)]
 ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]

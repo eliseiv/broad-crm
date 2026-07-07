@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 import pytest
 from app.api import deps
+from conftest import make_principal
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -111,7 +112,7 @@ def _build_app(
     _install(monkeypatch, recorder)
     app = create_app(get_settings())
     if with_auth:
-        app.dependency_overrides[deps.get_current_user] = lambda: "admin"
+        app.dependency_overrides[deps.get_current_principal] = lambda: make_principal()
     return app
 
 

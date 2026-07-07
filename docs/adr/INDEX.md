@@ -11,7 +11,7 @@ Architecture Decision Records. Каждое значимое решение — 
 | [ADR-005](ADR-005-custom-gauge-vs-grafana-embed.md) | Кастомные SVG-спидометры vs Grafana embed | accepted | 2026-06-28 |
 | [ADR-006](ADR-006-async-provisioning-bez-brokera.md) | Асинхронный провижининг без брокера сообщений | accepted | 2026-06-28 |
 | [ADR-007](ADR-007-shifrovanie-fernet.md) | Шифрование SSH-паролей через Fernet | accepted | 2026-06-28 |
-| [ADR-008](ADR-008-admin-iz-env.md) | Учётка администратора только из `.env` | accepted | 2026-06-28 |
+| [ADR-008](ADR-008-admin-iz-env.md) | Учётка администратора только из `.env` (амендмент — супер-админ поверх RBAC, [ADR-021](ADR-021-rbac-users-roles.md)) | accepted | 2026-06-28 |
 | [ADR-009](ADR-009-in-backend-notifier-vs-alertmanager.md) | In-backend Telegram-нотификатор vs Alertmanager | accepted | 2026-06-30 |
 | [ADR-010](ADR-010-ai-key-monitor-vnutri-backend.md) | Проверка AI-ключей внутри backend vs внешний воркер + Fernet-шифрование | accepted | 2026-07-01 |
 | [ADR-011](ADR-011-poryadok-blokov-server-side-dnd-kit.md) | Порядок блоков — server-side `position` + @dnd-kit, drag по задержке | accepted | 2026-07-01 |
@@ -24,3 +24,4 @@ Architecture Decision Records. Каждое значимое решение — 
 | [ADR-018](ADR-018-notifier-windowed-offline-recovery-alert-log.md) | Нотификатор: windowed offline-детект (`min_over_time` для `up`) + recovery-уведомления (`offline→online`) + durable-лог отправленных алертов (`notifier_alert_log`); расширяет ADR-016/ADR-014, пороги не меняются | accepted | 2026-07-07 |
 | [ADR-019](ADR-019-proxies-availability-monitor.md) | Страница «Прокси» — реестр HTTP/SOCKS-прокси + отдельный in-backend монитор доступности (по образцу AI-ключей ADR-010, статус в БД) + Fernet-шифрование пароля + отдельные поля ввода + Telegram-алерты | accepted | 2026-07-07 |
 | [ADR-020](ADR-020-backends-healthcheck-monitor.md) | Страница «Бэки» — реестр сервисов (Код/Название/Домен, `code` UNIQUE) + отдельный in-backend монитор healthcheck `GET https://{домен}/health` (по образцу прокси ADR-019, статус в БД, без секрета/Fernet) + Telegram-алерты | accepted | 2026-07-07 |
+| [ADR-021](ADR-021-rbac-users-roles.md) | Пользователи + роли + RBAC на все страницы (каталог прав на сервере, `users`/`roles` в БД, bcrypt-хэш паролей, `.env`-админ → несменяемый супер-админ вне БД, JWT `role`/`uid`/`superadmin`, enforcement `require(page,action)`/`403 forbidden`, свежая загрузка прав из БД; амендмент ADR-008) | accepted | 2026-07-07 |

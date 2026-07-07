@@ -18,6 +18,7 @@ from app.api import deps
 from app.errors import proxy_not_found
 from app.models.proxy import ProxyStatus, ProxyType
 from app.schemas.proxy import ProxyListItem, ProxyListResponse, ProxyStatusResponse
+from conftest import make_principal
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -96,7 +97,7 @@ def _build_app(fake_service: FakeProxyService, *, with_auth: bool) -> FastAPI:
 
     app = create_app(get_settings())
     if with_auth:
-        app.dependency_overrides[deps.get_current_user] = lambda: "admin"
+        app.dependency_overrides[deps.get_current_principal] = lambda: make_principal()
     app.dependency_overrides[deps.get_proxy_service] = lambda: fake_service
     return app
 

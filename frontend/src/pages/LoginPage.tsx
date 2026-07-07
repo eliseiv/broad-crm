@@ -24,7 +24,9 @@ export function LoginPage() {
   const passwordRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (isAuthenticated) navigate('/dashboard', { replace: true });
+    // Permission-aware дефолт: index `/` резолвит целевой раздел по правам
+    // (08-design-system.md «Дефолтный маршрут после логина»).
+    if (isAuthenticated) navigate('/', { replace: true });
   }, [isAuthenticated, navigate]);
 
   useEffect(() => {
@@ -63,7 +65,7 @@ export function LoginPage() {
     loginMutation.mutate(
       { username: username.trim(), password },
       {
-        onSuccess: () => navigate('/dashboard', { replace: true }),
+        onSuccess: () => navigate('/', { replace: true }),
         onError: (err) => {
           if (err instanceof ApiError && err.status === 429) {
             setFormError('Слишком много попыток входа. Попробуйте позже.');

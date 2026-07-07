@@ -28,7 +28,7 @@ CRM-система мониторинга backend-сервисов и серве
 
 | Модуль | Документ | Ответственный исполнитель |
 |--------|----------|---------------------------|
-| Auth (двухшаговый вход + JWT) | [modules/auth/README.md](modules/auth/README.md) | backend, frontend |
+| Auth (двухшаговый вход + JWT + RBAC: пользователи/роли/права) | [modules/auth/README.md](modules/auth/README.md) | backend, frontend |
 | Servers (реестр + CRUD) | [modules/servers/README.md](modules/servers/README.md) | backend |
 | Monitoring (Prometheus, PromQL) | [modules/monitoring/README.md](modules/monitoring/README.md) | backend |
 | Provisioning (Ansible) | [modules/provisioning/README.md](modules/provisioning/README.md) | backend, devops |
@@ -43,7 +43,7 @@ CRM-система мониторинга backend-сервисов и серве
 
 | Модуль | Статус | DoD |
 |--------|--------|-----|
-| auth | `spec-ready` | Не реализован — спецификация готова |
+| auth | `implemented` | Реализован (Спринт 3, [ADR-021](adr/ADR-021-rbac-users-roles.md)): двухшаговый вход + JWT, RBAC (пользователи/роли/права на все страницы), enforcement `require(page,action)`/`require_admin`/`403 forbidden`, bcrypt-хэш паролей БД-пользователей, Users/Roles/Permissions API, страница `/users`, миграция 0008, тесты |
 | servers | `spec-ready` | Не реализован — спецификация готова |
 | monitoring | `spec-ready` | Не реализован — спецификация готова |
 | provisioning | `spec-ready` | Не реализован — спецификация готова |
@@ -66,5 +66,5 @@ CRM-система мониторинга backend-сервисов и серве
 
 1. **Простота превыше всего.** Монолитный backend, без брокеров сообщений на Этапе 1.
 2. **Prometheus — единственный источник истины для метрик.** В БД метрики не дублируются.
-3. **Безопасность с первого дня.** SSH-пароли шифруются, админ-учётка только в `.env`, API под JWT.
+3. **Безопасность с первого дня.** SSH-пароли шифруются, супер-админ — только в `.env` (bootstrap), API под JWT; с Спринта 3 — RBAC (роли/права на все страницы, enforcement на сервере `403`, bcrypt-хэш паролей БД-пользователей — [ADR-021](adr/ADR-021-rbac-users-roles.md)).
 4. **Тёмная enterprise-эстетика** (Linear / Vercel / Grafana / Datadog), не «типовой ИИ-сайт».

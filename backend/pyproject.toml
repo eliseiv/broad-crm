@@ -13,6 +13,7 @@ dependencies = [
     "alembic>=1.14,<1.15",
     "pyjwt>=2.10,<3.0",
     "cryptography>=43,<44",
+    "bcrypt>=4.2,<4.3",
     "ansible-runner>=2.4,<2.5",
     "ansible-core>=2.17,<2.18",
     "httpx[socks]>=0.27,<0.28",

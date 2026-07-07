@@ -134,7 +134,9 @@ describe('AddBackendModal — edit', () => {
   it('prefills fields and closes without request when nothing changed', async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
-    render(<AddBackendModal mode="edit" backend={makeBackend()} open onOpenChange={onOpenChange} />);
+    render(
+      <AddBackendModal mode="edit" backend={makeBackend()} open onOpenChange={onOpenChange} />,
+    );
 
     const dialog = within(screen.getByRole('dialog'));
     expect((dialog.getByLabelText('Код') as HTMLInputElement).value).toBe('api-eu');

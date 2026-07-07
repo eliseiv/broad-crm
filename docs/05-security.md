@@ -1,11 +1,16 @@
 # 05 · Безопасность
 
-## Аутентификация администратора
+## Аутентификация (логин и выпуск JWT)
 
-- Единственная учётная запись Этапа 1 хранится в `.env`: `ADMIN_USER`, `ADMIN_PASSWORD`. В БД админ НЕ хранится ([ADR-008](adr/ADR-008-admin-iz-env.md)).
+С Спринта 3 система **многопользовательская** с ролями и RBAC ([ADR-021](adr/ADR-021-rbac-users-roles.md)); `.env`-учётка становится несменяемым **супер-админом (bootstrap)** ([ADR-008](adr/ADR-008-admin-iz-env.md) с амендментом). Порядок проверки при `POST /api/auth/login`:
+
+1. **Сначала супер-админ (`.env`).** Логин/пароль сравниваются constant-time с `ADMIN_USER`/`ADMIN_PASSWORD`. В БД супер-админ НЕ хранится. Успех → JWT: `sub=ADMIN_USER`, `role="admin"`, `superadmin=true` (без `uid`).
+2. **Иначе БД-пользователь.** Ищется `users.username`; проверяется `verify_password` (bcrypt) и `is_active=true`. Успех → JWT: `sub=username`, `uid=users.id`, `role=role.name`, `superadmin=false`.
+3. Неудача любой ветки → единое `401 invalid_credentials`.
+
 - Двухшаговый UI-вход; backend проверяет креды единым запросом `POST /api/auth/login` ([ADR-002](adr/ADR-002-dvuhshagovyy-auth.md)).
-- Сравнение пароля — **constant-time** (`hmac.compare_digest` / `secrets.compare_digest`) для логина и пароля, чтобы исключить timing-атаки.
-- Сообщение об ошибке входа одинаково для неверного логина и неверного пароля (`invalid_credentials`) — не раскрывает существование пользователя.
+- Сравнение кредов **супер-админа** — **constant-time** (`secrets.compare_digest`) для логина и пароля, чтобы исключить timing-атаки. Пароли **БД-пользователей** проверяются bcrypt (`verify_password`, [«Хэширование паролей»](#хэширование-паролей-bcrypt)).
+- Сообщение об ошибке входа одинаково для неверного логина и неверного пароля и для несуществующего/деактивированного пользователя (`invalid_credentials`) — не раскрывает существование пользователя.
 - Защита от перебора: rate-limit на `/api/auth/login` (по IP, по умолчанию 10 попыток / 5 мин, далее `429`). Реализация — in-memory счётчик на Этапе 1 (один воркер), вынос в Redis — будущий этап ([TD-005](100-known-tech-debt.md)).
 - **Определение реального IP клиента за reverse-proxy** (нормативно): backend берёт IP в порядке `X-Real-IP` → первый адрес из `X-Forwarded-For` → `request.client.host`. Поэтому nginx ОБЯЗАН проставлять эти заголовки для `location /api` (см. [07-deployment.md](07-deployment.md#reverse-proxy-nginx-требования)). Без корректного проброса rate-limit считал бы все запросы с одного IP (адрес прокси) и блокировал всех. Доверять `X-Forwarded-For`/`X-Real-IP` допустимо, только когда backend доступен исключительно через доверенный прокси (как в нашей топологии — backend не публикуется наружу).
 
@@ -18,13 +23,55 @@
 |----------|----------|
 | Алгоритм | `HS256` (симметричный, `JWT_SECRET` из `.env`) |
 | TTL | `JWT_EXPIRES_MIN`, по умолчанию **1440 мин (24 часа)** |
-| Claims | `sub` (=username), `iat`, `exp`, `type:"access"` |
+| Claims | `sub` (=username), `role`, `superadmin` (bool), `uid` (uuid — только у БД-пользователя), `iat`, `exp`, `type:"access"` ([ADR-021](adr/ADR-021-rbac-users-roles.md#4-auth-поток-см-modulesauth-05-securitymd)) |
 | Передача | заголовок `Authorization: Bearer <token>` |
+
+**Claim'ы RBAC (побуквенно, [ADR-021](adr/ADR-021-rbac-users-roles.md)):** `sub` — username; `role` — имя роли (`"admin"` у супер-админа); `superadmin` — `true` у `.env`-супер-админа, `false` у БД-пользователя; `uid` — `users.id` (присутствует **только** у БД-пользователя, отсутствует у супер-админа). Токен без `superadmin=true` и без `uid` (легаси до Спринта 3) → `401` (повторный вход). Права в токен **не кладутся** — грузятся из БД на каждый запрос (см. [«RBAC»](#rbac--роли-права-и-enforcement)).
 
 - Выбор HS256 (а не RS256) — один сервис, симметричный ключ проще; обоснование в [ADR-002](adr/ADR-002-dvuhshagovyy-auth.md). При появлении нескольких сервисов-валидаторов — пересмотр на RS256.
 - **TTL access-токена — 1440 мин (24 часа).** По запросу пользователя срок жизни увеличен с 60 мин до 24 ч, чтобы снизить частоту релогина (админ-панель, одна учётка). Осознанный trade-off: более длинное окно валидности украденного токена. Компенсируется тем, что токен хранится только в памяти SPA (не в `localStorage`), CSP/no-referrer снижают риск XSS-кражи, а refresh-токенов нет (по истечении 24 ч — повторный вход). Значение — env-параметр `JWT_EXPIRES_MIN`, при необходимости ужесточается без изменения кода.
 - Refresh-токенов на Этапе 1 нет: по истечении TTL — повторный вход. Хранение access-токена на фронте — **в памяти (Zustand)**, не в `localStorage` (снижает риск XSS-кражи). Допустимо `sessionStorage` для переживания перезагрузки — решение фронта, зафиксировано в [modules/auth](modules/auth/README.md).
 - Все эндпоинты, кроме `/api/auth/login` и `/api/health`, требуют валидный JWT → иначе `401 unauthorized`.
+
+## RBAC — роли, права и enforcement
+
+Многопользовательский режим с правами на все страницы — [ADR-021](adr/ADR-021-rbac-users-roles.md); модель — [03-data-model.md](03-data-model.md#таблицы-roles-и-users-rbac); API — [04-api.md](04-api.md#rbac-и-enforcement-прав). **RBAC обеспечивается на сервере (`403 forbidden`); UI-гейтинг — только UX.**
+
+### Каталог прав (канон на сервере)
+
+Единственный источник — константа `app/domain/permissions.py::CATALOG`. Страница → допустимые действия:
+
+| Страница | Действия |
+|----------|----------|
+| `dashboard` | `view` |
+| `servers` / `ai-keys` / `proxies` / `backends` | `view`, `create`, `edit`, `delete` |
+| `mail` | `view` |
+
+- Страница **«Пользователи» в каталог не входит** — управление пользователями/ролями гейтится `require_admin` (`is_superadmin || role=="admin"`).
+- Формат прав роли (`roles.permissions`, jsonb): `{ "<page>": ["<action>", ...] }`. Валиден ⇔ каждый ключ — известная страница (кроме `users`), каждое действие ∈ `CATALOG[page]`, без дублей → иначе `422 unprocessable`.
+- Каталог отдаётся UI через `GET /api/permissions/catalog` (`require_admin`).
+
+### Enforcement (свежая загрузка прав из БД)
+
+`get_current_principal` декодирует JWT и **на каждый запрос** формирует `Principal(username, role, permissions, is_superadmin)`:
+
+- `superadmin=true` → полный доступ (`permissions` = полный каталог, все `require(...)` и `require_admin` проходят).
+- иначе по `uid` грузятся `users`+`roles`; если пользователь не найден **или** `is_active=false` → `401 unauthorized` (действующий JWT аннулируется **без пере-логина**). Иначе `permissions = roles.permissions`.
+
+Свежая загрузка → **правки прав роли применяются мгновенно** (без отзыва токена; refresh-токенов нет). Стоимость — один SELECT на защищённый запрос БД-пользователя (приемлемо при NFR-1).
+
+- Фабрика `require(page, action)` → `403 forbidden`, если не супер-админ и `action ∉ permissions[page]`. Применена ко **всем** ресурсным эндпоинтам (маппинг метод→действие — [04-api.md](04-api.md#rbac-и-enforcement-прав)).
+- Фабрика `require_admin` → `403 forbidden`, если не (`is_superadmin || role=="admin"`). Гейтит Users/Roles/Permissions API.
+- `forbidden()` — новая фабрика в `app/errors.py` (403, `code="forbidden"`, message «Недостаточно прав»).
+
+## Хэширование паролей (bcrypt)
+
+Пароли **БД-пользователей** ([03-data-model.md](03-data-model.md#таблицы-roles-и-users-rbac), [ADR-021](adr/ADR-021-rbac-users-roles.md)):
+
+- Библиотека — **`bcrypt`** напрямую (без `passlib`), новая зависимость ([02-tech-stack.md](02-tech-stack.md#backend)). Модуль `app/infra/passwords.py`: `hash_password(plain) -> str`, `verify_password(plain, hashed) -> bool`. Cost — дефолт bcrypt (12 раундов, `bcrypt.gensalt()`).
+- В БД хранится **только** `users.password_hash`. **Plaintext-пароль никогда** не хранится, не логируется (structlog-фильтр секретов), не возвращается ни в одном ответе API (в схемах `User*` поля `password` нет на выход).
+- Политика пароля: 8–128 символов (валидация Pydantic). **Известное поведение bcrypt:** значимы только первые 72 **байта** (для кириллицы в UTF-8 — ~36 символов); это документированное ограничение bcrypt, принято осознанно (не дефект).
+- Пароль **супер-админа** (`.env`) bcrypt НЕ хэшируется — сравнение plaintext constant-time ([ADR-008](adr/ADR-008-admin-iz-env.md) амендмент); опция `ADMIN_PASSWORD_HASH` ([Q-SEC-1](99-open-questions.md)) для супер-админа не вводится.
 
 ## Защита SSH-кредов целевых серверов
 
@@ -132,7 +179,8 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 
 | Секрет | Источник | Примечание |
 |--------|----------|-----------|
-| `ADMIN_USER` / `ADMIN_PASSWORD` | `.env` | Не в БД, не в репо |
+| `ADMIN_USER` / `ADMIN_PASSWORD` | `.env` | Супер-админ (bootstrap); не в БД, не в репо ([ADR-008](adr/ADR-008-admin-iz-env.md)+[ADR-021](adr/ADR-021-rbac-users-roles.md)) |
+| Пароли БД-пользователей | БД (`users.password_hash`) | bcrypt-хэш at-rest; plaintext не в env/логах/ответах ([ADR-021](adr/ADR-021-rbac-users-roles.md)) |
 | `JWT_SECRET` | `.env` | ≥ 32 байта случайных |
 | `FERNET_KEY` | `.env` | base64 32 байта |
 | `POSTGRES_PASSWORD` | `.env` | — |
@@ -157,15 +205,21 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 | Утечка паролей прокси из БД / логов / API | Fernet at-rest (`password_encrypted`), пароль/URL не в ответах/логах, в API только `has_password` ([modules/proxies](modules/proxies/README.md)) |
 | Утечка секретов в логи | маскирование, `no_log` в Ansible |
 | Доступ к Prometheus/Grafana извне | не публикуются наружу |
-| User enumeration на входе | единое сообщение об ошибке, шаг 1 без запроса |
+| User enumeration на входе | единое сообщение об ошибке, шаг 1 без запроса; та же ошибка для несуществующего/деактивированного БД-пользователя |
+| Обход UI-гейтинга прямым запросом к API | RBAC на сервере (`403 forbidden`); UI-скрытие — только UX ([ADR-021](adr/ADR-021-rbac-users-roles.md)) |
+| Эскалация привилегий через устаревший токен после смены роли | права грузятся из БД на каждый запрос; деактивация/смена роли применяется без пере-логина ([ADR-021](adr/ADR-021-rbac-users-roles.md)) |
+| Утечка паролей пользователей из БД/логов/API | bcrypt-хэш at-rest (`users.password_hash`); plaintext не хранится/не логируется/не в ответах ([ADR-021](adr/ADR-021-rbac-users-roles.md)) |
+| Lockout (потеря доступа через данные) | супер-админ вне БД — вход работает даже при пустой/битой таблице ролей ([ADR-008](adr/ADR-008-admin-iz-env.md) амендмент) |
 | MITM при первом SSH | принятый риск Этапа 1 ([TD-007](100-known-tech-debt.md)) |
 | SSRF/инъекции в IP-поле | строгая валидация `inet`, без выполнения произвольных команд по вводу |
 | Утечка `MAIL_API_KEY` в SPA/логи/URL | ключ только на backend, в заголовке `X-API-Key`; не в ответах/логах/SPA; фронт наружу не ходит ([modules/mail](modules/mail/README.md)) |
 | XSS/кража JWT через HTML-тело письма | рендер только в sandbox-iframe (без `allow-scripts`/`allow-same-origin`), CSP SPA; скрипты письма не исполняются. `img-src ... https:` ([ADR-015](adr/ADR-015-csp-img-src-remote-mail-images.md)) разрешает только пассивные `<img>` — XSS-инвариант не ослаблен ([ADR-012](adr/ADR-012-mail-read-through-proxy.md)) |
 | Трекинг-пиксели в письме (отправитель узнаёт факт открытия) | принятый компромисс remote-картинок ([ADR-015](adr/ADR-015-csp-img-src-remote-mail-images.md)) — стандартно для почтовых клиентов; referrer не утекает (`Referrer-Policy: no-referrer` + `referrerPolicy=no-referrer` на iframe), только `https:` (не `http:`); анти-трекинг-прокси отложён |
 
-## Вне scope безопасности Этапа 1
+## Вне scope безопасности
 
 - Многофакторная аутентификация, OAuth/SSO.
-- RBAC (одна роль — админ).
-- Аудит-лог действий ([TD-001](100-known-tech-debt.md)).
+- ~~RBAC (одна роль — админ)~~ — **реализован** в Спринте 3 ([ADR-021](adr/ADR-021-rbac-users-roles.md)): роли + права на все страницы, серверный enforcement, bcrypt-хэш паролей БД-пользователей, `.env`-супер-админ как bootstrap.
+- Аудит-лог действий пользователей ([TD-001](100-known-tech-debt.md)).
+- UI-смена пароля супер-админа (`.env`) — by design только через `.env`/деплой; UI-управление паролями есть для БД-пользователей ([TD-009](100-known-tech-debt.md)).
+- Refresh-токены, отзыв конкретного токена, история сессий.

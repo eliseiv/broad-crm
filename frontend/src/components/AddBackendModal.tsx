@@ -96,10 +96,17 @@ function mapApiError(err: unknown, setErrors: (u: (prev: Errors) => Errors) => v
  * Обёртка ремоунтит внутренний диалог по ключу mode+id+open → чистый сброс формы
  * без эффекта (паттерн AddProxyModal/AddServerModal).
  */
-export function AddBackendModal({ open, onOpenChange, mode = 'add', backend }: AddBackendModalProps) {
+export function AddBackendModal({
+  open,
+  onOpenChange,
+  mode = 'add',
+  backend,
+}: AddBackendModalProps) {
   const key = `${mode}-${backend?.id ?? 'new'}-${open ? 'open' : 'closed'}`;
   if (mode === 'edit' && backend) {
-    return <EditBackendDialog key={key} open={open} onOpenChange={onOpenChange} backend={backend} />;
+    return (
+      <EditBackendDialog key={key} open={open} onOpenChange={onOpenChange} backend={backend} />
+    );
   }
   return <AddBackendDialog key={key} open={open} onOpenChange={onOpenChange} />;
 }
@@ -152,7 +159,9 @@ function AddBackendDialog({
       open={open}
       onOpenChange={(next) => !isSubmitting && onOpenChange(next)}
       title={checking ? 'Бэк добавлен' : 'Добавить бэк'}
-      description={checking ? undefined : 'Доступность проверяется автоматически по https://{домен}/health.'}
+      description={
+        checking ? undefined : 'Доступность проверяется автоматически по https://{домен}/health.'
+      }
       dismissible={!isSubmitting}
       footer={
         checking ? (
@@ -184,7 +193,12 @@ function AddBackendDialog({
           </p>
         </div>
       ) : (
-        <form id="add-backend-form" onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>
+        <form
+          id="add-backend-form"
+          onSubmit={handleSubmit}
+          className="flex flex-col gap-4"
+          noValidate
+        >
           <Input
             label="Код"
             placeholder="api-eu"
@@ -302,7 +316,12 @@ function EditBackendDialog({
         </>
       }
     >
-      <form id="edit-backend-form" onSubmit={handleSubmit} className="flex flex-col gap-4" noValidate>
+      <form
+        id="edit-backend-form"
+        onSubmit={handleSubmit}
+        className="flex flex-col gap-4"
+        noValidate
+      >
         <Input
           label="Код"
           placeholder="api-eu"

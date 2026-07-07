@@ -5,6 +5,7 @@ import type { PropsWithChildren } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppLayout } from '@/components/AppLayout';
+import { loginSuperadmin } from '@/test/authTestUtils';
 import { useAuthStore } from '@/store/auth';
 
 function renderAt(initial: string) {
@@ -31,7 +32,8 @@ function renderAt(initial: string) {
 describe('AppLayout', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useAuthStore.getState().setSession('jwt-token', 'admin');
+    // ADR-021: вкладки гейтятся по правам — супер-админ видит все вкладки.
+    loginSuperadmin();
   });
 
   it('renders all navigation tabs including Дашборд', () => {
@@ -52,9 +54,18 @@ describe('AppLayout', () => {
       .getAllByRole('link')
       .map((el) => el.textContent?.trim())
       .filter((name): name is string => Boolean(name));
-    // Порядок: Дашборд → Почты → Серверы → ИИ - ключи → Прокси → Бэки (08-design-system.md
-    // «Навигация»; вкладка «Прокси» — после «ИИ - ключи», ADR-019; «Бэки» — шестая, ADR-020).
-    expect(tabNames).toEqual(['Дашборд', 'Почты', 'Серверы', 'ИИ - ключи', 'Прокси', 'Бэки']);
+    // Порядок: Дашборд → Почты → Серверы → ИИ - ключи → Прокси → Бэки → Пользователи
+    // (08-design-system.md «Навигация»; «Прокси» — после «ИИ - ключи», ADR-019; «Бэки» —
+    // шестая, ADR-020; «Пользователи» — седьмая admin-only вкладка, ADR-021).
+    expect(tabNames).toEqual([
+      'Дашборд',
+      'Почты',
+      'Серверы',
+      'ИИ - ключи',
+      'Прокси',
+      'Бэки',
+      'Пользователи',
+    ]);
   });
 
   it('marks the Дашборд tab active on /dashboard', () => {

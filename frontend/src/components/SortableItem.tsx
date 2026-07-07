@@ -7,6 +7,8 @@ import { cn } from '@/lib/cn';
 interface SortableItemProps {
   id: string;
   children: ReactNode;
+  /** Отключить перетаскивание (нет права edit — RBAC-гейтинг). */
+  disabled?: boolean;
 }
 
 function usePrefersReducedMotion(): boolean {
@@ -28,9 +30,12 @@ function usePrefersReducedMotion(): boolean {
  * drag. Кнопка «Удалить» гасит pointer/click (stopPropagation) внутри карточки.
  * 08-design-system.md «Перестановка карточек».
  */
-export function SortableItem({ id, children }: SortableItemProps) {
+export function SortableItem({ id, children, disabled = false }: SortableItemProps) {
   const reducedMotion = usePrefersReducedMotion();
-  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id });
+  const { listeners, setNodeRef, transform, transition, isDragging } = useSortable({
+    id,
+    disabled,
+  });
 
   const style: React.CSSProperties = {
     transform: CSS.Transform.toString(transform),

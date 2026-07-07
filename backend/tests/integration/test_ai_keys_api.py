@@ -21,6 +21,7 @@ from app.schemas.ai_key import (
     AiKeyListResponse,
     AiKeyStatusResponse,
 )
+from conftest import make_principal
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -93,7 +94,7 @@ def _build_app(fake_service: FakeAiKeyService, *, with_auth: bool) -> FastAPI:
 
     app = create_app(get_settings())
     if with_auth:
-        app.dependency_overrides[deps.get_current_user] = lambda: "admin"
+        app.dependency_overrides[deps.get_current_principal] = lambda: make_principal()
     app.dependency_overrides[deps.get_ai_key_service] = lambda: fake_service
     return app
 

@@ -5,8 +5,10 @@ from app.models.base import Base
 from app.models.notifier_alert_log import NotifierAlertLog
 from app.models.notifier_server_state import NotifierServerState
 from app.models.proxy import Proxy, ProxyStatus, ProxyType
+from app.models.role import Role
 from app.models.server import ProvisionStatus, Server
 from app.models.service_backend import Backend, BackendStatus
+from app.models.user import User
 
 __all__ = [
     "AiKey",
@@ -21,5 +23,7 @@ __all__ = [
     "Proxy",
     "ProxyStatus",
     "ProxyType",
+    "Role",
     "Server",
+    "User",
 ]

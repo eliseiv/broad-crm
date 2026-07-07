@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, RefreshCw, ShieldAlert } from 'lucide-react';
 import { toast } from 'sonner';
 import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -11,6 +11,7 @@ import { AiKeyCardSkeleton } from '@/components/AiKeyCardSkeleton';
 import { SortableItem } from '@/components/SortableItem';
 import { Button } from '@/components/ui/Button';
 import { ApiError } from '@/lib/api';
+import { useCan } from '@/features/auth/hooks';
 import { useAiKeys, useReorderAiKeys } from '@/features/ai-keys/hooks';
 import type { AiKey, AiProvider } from '@/types/api';
 
@@ -26,13 +27,21 @@ export function AiKeysPage() {
   const [addOpen, setAddOpen] = useState(false);
   const [addProvider, setAddProvider] = useState<AiProvider | undefined>(undefined);
 
+  // RBAC-гейтинг действий (08-design-system.md «Гейтинг навигации и действий»).
+  const canCreate = useCan('ai-keys', 'create');
+  const canEdit = useCan('ai-keys', 'edit');
+  const canDelete = useCan('ai-keys', 'delete');
+
   const isAuthError = error instanceof ApiError && error.status === 401;
+  // 403 (RBAC): показываем «Недостаточно прав» вместо generic (08-design-system.md
+  // «Обработка 403»); message от apiRequest не затираем.
+  const forbiddenMessage = error instanceof ApiError && error.status === 403 ? error.message : null;
 
   useEffect(() => {
     if (isError && !isAuthError) {
-      toast.error('Не удалось выполнить запрос. Повторите попытку');
+      toast.error(forbiddenMessage ?? 'Не удалось выполнить запрос. Повторите попытку');
     }
-  }, [isError, isAuthError]);
+  }, [isError, isAuthError, forbiddenMessage]);
 
   const keys = useMemo(() => data?.items ?? [], [data?.items]);
 
@@ -83,7 +92,14 @@ export function AiKeysPage() {
         </div>
       )}
 
-      {isError && !isAuthError && (
+      {isError && forbiddenMessage && (
+        <div className="flex flex-col items-center justify-center gap-3 rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">
+          <ShieldAlert className="h-10 w-10 text-text-tertiary" aria-hidden="true" />
+          <p className="text-base font-semibold text-text-primary">{forbiddenMessage}</p>
+        </div>
+      )}
+
+      {isError && !isAuthError && !forbiddenMessage && (
         <div className="flex flex-col items-center justify-center gap-4 rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">
           <AlertTriangle className="h-10 w-10 text-status-red" aria-hidden="true" />
           <div>
@@ -99,13 +115,19 @@ export function AiKeysPage() {
         </div>
       )}
 
-      {isEmpty && (
+      {isEmpty && canCreate && (
         <div className="mx-auto max-w-md">
           <AddAiKeyCard onClick={() => openAdd(undefined)} />
           <div className="mt-4 text-center">
             <p className="text-sm font-medium text-text-primary">Пока нет ключей</p>
             <p className="mt-1 text-[13px] text-text-secondary">Добавьте первый AI-ключ</p>
           </div>
+        </div>
+      )}
+
+      {isEmpty && !canCreate && (
+        <div className="mx-auto max-w-md rounded-card border border-dashed border-border-strong bg-surface-1/40 px-6 py-12 text-center">
+          <p className="text-sm font-medium text-text-primary">Список ИИ-ключей пуст</p>
         </div>
       )}
 
@@ -119,6 +141,9 @@ export function AiKeysPage() {
                 label={PROVIDER_LABEL[provider]}
                 keys={grouped[provider]}
                 onAdd={() => openAdd(provider)}
+                canCreate={canCreate}
+                canEdit={canEdit}
+                canDelete={canDelete}
               />
             ) : null,
           )}
@@ -135,6 +160,9 @@ interface AiKeySectionProps {
   label: string;
   keys: AiKey[];
   onAdd: () => void;
+  canCreate: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
 }
 
 /**
@@ -142,7 +170,15 @@ interface AiKeySectionProps {
  * ТОЛЬКО внутри секции — между провайдерами карточки не перемещаются, 04-api.md,
  * 08-design-system.md). onDragEnd → оптимистичный reorder + PATCH /api/ai-keys/order.
  */
-function AiKeySection({ provider, label, keys, onAdd }: AiKeySectionProps) {
+function AiKeySection({
+  provider,
+  label,
+  keys,
+  onAdd,
+  canCreate,
+  canEdit,
+  canDelete,
+}: AiKeySectionProps) {
   const reorderMutation = useReorderAiKeys();
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
@@ -170,12 +206,12 @@ function AiKeySection({ provider, label, keys, onAdd }: AiKeySectionProps) {
         <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
           <SortableContext items={ids} strategy={rectSortingStrategy}>
             {keys.map((aiKey) => (
-              <SortableItem key={aiKey.id} id={aiKey.id}>
-                <AiKeyCard aiKey={aiKey} />
+              <SortableItem key={aiKey.id} id={aiKey.id} disabled={!canEdit}>
+                <AiKeyCard aiKey={aiKey} canEdit={canEdit} canDelete={canDelete} />
               </SortableItem>
             ))}
           </SortableContext>
-          <AddAiKeyCard onClick={onAdd} />
+          {canCreate && <AddAiKeyCard onClick={onAdd} />}
         </div>
       </DndContext>
     </section>

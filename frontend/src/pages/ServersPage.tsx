@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, RefreshCw, ShieldAlert } from 'lucide-react';
 import { toast } from 'sonner';
 import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -11,12 +11,18 @@ import { ServerCardSkeleton } from '@/components/ServerCardSkeleton';
 import { SortableItem } from '@/components/SortableItem';
 import { Button } from '@/components/ui/Button';
 import { ApiError } from '@/lib/api';
+import { useCan } from '@/features/auth/hooks';
 import { useReorderServers, useServers } from '@/features/servers/hooks';
 
 export function ServersPage() {
   const { data, isLoading, isError, error, refetch, isFetching } = useServers();
   const [addOpen, setAddOpen] = useState(false);
   const reorderMutation = useReorderServers();
+
+  // RBAC-гейтинг действий (08-design-system.md «Гейтинг навигации и действий»).
+  const canCreate = useCan('servers', 'create');
+  const canEdit = useCan('servers', 'edit');
+  const canDelete = useCan('servers', 'delete');
 
   // PointerSensor: короткий клик (<200 мс) → edit; зажатие + движение → drag
   // (08-design-system.md, 02-tech-stack.md).
@@ -25,12 +31,15 @@ export function ServersPage() {
   );
 
   const isAuthError = error instanceof ApiError && error.status === 401;
+  // 403 (RBAC): показываем «Недостаточно прав» вместо generic (08-design-system.md
+  // «Обработка 403»); message от apiRequest не затираем.
+  const forbiddenMessage = error instanceof ApiError && error.status === 403 ? error.message : null;
 
   useEffect(() => {
     if (isError && !isAuthError) {
-      toast.error('Не удалось выполнить запрос. Повторите попытку');
+      toast.error(forbiddenMessage ?? 'Не удалось выполнить запрос. Повторите попытку');
     }
-  }, [isError, isAuthError]);
+  }, [isError, isAuthError, forbiddenMessage]);
 
   // Порядок отрисовки — по position (стабильная сортировка сохраняет тай-брейк
   // из ответа GET, 04-api.md: position ASC, created_at DESC, id).
@@ -73,7 +82,14 @@ export function ServersPage() {
         </div>
       )}
 
-      {isError && !isAuthError && (
+      {isError && forbiddenMessage && (
+        <div className="flex flex-col items-center justify-center gap-3 rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">
+          <ShieldAlert className="h-10 w-10 text-text-tertiary" aria-hidden="true" />
+          <p className="text-base font-semibold text-text-primary">{forbiddenMessage}</p>
+        </div>
+      )}
+
+      {isError && !isAuthError && !forbiddenMessage && (
         <div className="flex flex-col items-center justify-center gap-4 rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">
           <AlertTriangle className="h-10 w-10 text-status-red" aria-hidden="true" />
           <div>
@@ -91,7 +107,7 @@ export function ServersPage() {
         </div>
       )}
 
-      {isEmpty && (
+      {isEmpty && canCreate && (
         <div className="mx-auto max-w-md">
           <AddServerCard onClick={() => setAddOpen(true)} />
           <div className="mt-4 text-center">
@@ -103,17 +119,23 @@ export function ServersPage() {
         </div>
       )}
 
+      {isEmpty && !canCreate && (
+        <div className="mx-auto max-w-md rounded-card border border-dashed border-border-strong bg-surface-1/40 px-6 py-12 text-center">
+          <p className="text-sm font-medium text-text-primary">Список серверов пуст</p>
+        </div>
+      )}
+
       {!isLoading && !isError && servers.length > 0 && (
         <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
             <SortableContext items={serverIds} strategy={rectSortingStrategy}>
               {servers.map((server) => (
-                <SortableItem key={server.id} id={server.id}>
-                  <ServerCard server={server} />
+                <SortableItem key={server.id} id={server.id} disabled={!canEdit}>
+                  <ServerCard server={server} canEdit={canEdit} canDelete={canDelete} />
                 </SortableItem>
               ))}
             </SortableContext>
-            <AddServerCard onClick={() => setAddOpen(true)} />
+            {canCreate && <AddServerCard onClick={() => setAddOpen(true)} />}
           </div>
         </DndContext>
       )}

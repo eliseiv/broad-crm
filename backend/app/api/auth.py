@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.deps import AuthServiceDep, ClientIp, CurrentUser
+from app.api.deps import AuthServiceDep, ClientIp, PrincipalDep
 from app.schemas.auth import LoginRequest, MeResponse, TokenResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -14,11 +14,18 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 async def login(
     payload: LoginRequest, service: AuthServiceDep, client_ip: ClientIp
 ) -> TokenResponse:
-    """Проверяет креды админа и выдаёт JWT (HS256, TTL 24ч (1440 мин))."""
-    return service.login(username=payload.username, password=payload.password, client_ip=client_ip)
+    """Проверяет креды (супер-админ .env ИЛИ БД-пользователь) и выдаёт JWT (24 ч)."""
+    return await service.login(
+        username=payload.username, password=payload.password, client_ip=client_ip
+    )
 
 
 @router.get("/me", response_model=MeResponse)
-async def me(current_user: CurrentUser) -> MeResponse:
-    """Возвращает профиль текущей сессии (валидирует JWT)."""
-    return MeResponse(username=current_user)
+async def me(principal: PrincipalDep) -> MeResponse:
+    """Профиль текущей сессии + права принципала для UI-гейтинга (ADR-021)."""
+    return MeResponse(
+        username=principal.username,
+        role=principal.role,
+        is_superadmin=principal.is_superadmin,
+        permissions=principal.permissions,
+    )

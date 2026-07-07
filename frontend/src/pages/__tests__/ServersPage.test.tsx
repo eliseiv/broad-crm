@@ -5,7 +5,7 @@ import type { PropsWithChildren } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServersPage } from '@/pages/ServersPage';
-import { useAuthStore } from '@/store/auth';
+import { loginAs, loginSuperadmin } from '@/test/authTestUtils';
 import type { Server } from '@/types/api';
 
 const serversHook = vi.hoisted(() => ({
@@ -65,7 +65,7 @@ function server(): Server {
 describe('ServersPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useAuthStore.getState().setSession('jwt-token', 'admin');
+    loginSuperadmin();
     serversHook.value = {
       data: undefined,
       isLoading: false,
@@ -123,5 +123,31 @@ describe('ServersPage', () => {
     // Логаут вынесен в AppLayout — ServersPage его больше не отрисовывает.
     expect(screen.queryByRole('button', { name: /выйти/i })).not.toBeInTheDocument();
     expect(screen.getByText('Пока нет серверов')).toBeInTheDocument();
+  });
+
+  it('read-only user (no create) sees «Список серверов пуст» without the add hint (ADR-021)', () => {
+    loginAs({ isSuperadmin: false, role: 'Наблюдатель', permissions: { servers: ['view'] } });
+    serversHook.value = { ...serversHook.value, data: { items: [] } };
+
+    render(<ServersPage />, { wrapper });
+
+    expect(screen.getByText('Список серверов пуст')).toBeInTheDocument();
+    // Add-hint показывается ТОЛЬКО при праве create.
+    expect(screen.queryByText('Пока нет серверов')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Добавьте первый сервер, чтобы начать мониторинг'),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText('Добавить')).not.toBeInTheDocument();
+  });
+
+  it('read-only user (no create) sees the list without the add-server card', () => {
+    loginAs({ isSuperadmin: false, role: 'Наблюдатель', permissions: { servers: ['view'] } });
+    serversHook.value = { ...serversHook.value, data: { items: [server()] } };
+
+    render(<ServersPage />, { wrapper });
+
+    expect(screen.getByText('Server 01')).toBeInTheDocument();
+    // Кнопка/карточка «Добавить» скрыта по правам (canCreate=false).
+    expect(screen.queryByText('Добавить')).not.toBeInTheDocument();
   });
 });

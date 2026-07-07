@@ -16,6 +16,7 @@ from app.schemas.server import (
     ServerMetricsResponse,
     ServerStatusResponse,
 )
+from conftest import make_principal
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -121,7 +122,7 @@ def app(fake_service: FakeServersService) -> FastAPI:
     from app.main import create_app
 
     app = create_app(get_settings())
-    app.dependency_overrides[deps.get_current_user] = lambda: "admin"
+    app.dependency_overrides[deps.get_current_principal] = lambda: make_principal()
     app.dependency_overrides[deps.get_server_service] = lambda: fake_service
     return app
 

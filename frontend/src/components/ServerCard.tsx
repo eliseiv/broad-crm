@@ -9,12 +9,17 @@ import { Card } from '@/components/ui/Card';
 import { MetricSubCard } from '@/components/MetricSubCard';
 import { Modal } from '@/components/ui/Modal';
 import { ApiError } from '@/lib/api';
+import { cn } from '@/lib/cn';
 import { formatRelativeTime, formatUptime } from '@/lib/format';
 import { serversKey, useDeleteServer, useServerStatus } from '@/features/servers/hooks';
 import type { ProvisionStatus, Server } from '@/types/api';
 
 interface ServerCardProps {
   server: Server;
+  /** Право редактирования (клик по карточке → edit). RBAC-гейтинг. По умолчанию true. */
+  canEdit?: boolean;
+  /** Право удаления (кнопки «Удалить»). RBAC-гейтинг. По умолчанию true. */
+  canDelete?: boolean;
 }
 
 // Подпись в теле карточки во время провижининга.
@@ -29,7 +34,7 @@ const PROVISIONING_BADGE: Record<'pending' | 'installing', string> = {
   installing: 'Установка…',
 };
 
-export function ServerCard({ server }: ServerCardProps) {
+export function ServerCard({ server, canEdit = true, canDelete = true }: ServerCardProps) {
   const queryClient = useQueryClient();
   const statusQuery = useServerStatus(server.id, server.provision_status);
   const deleteMutation = useDeleteServer();
@@ -77,13 +82,17 @@ export function ServerCard({ server }: ServerCardProps) {
   return (
     <>
       <Card
-        interactive
-        role="button"
-        tabIndex={0}
-        aria-label={`Изменить сервер ${server.name}`}
-        onClick={() => setEditOpen(true)}
-        onKeyDown={onCardKeyDown}
-        className={`flex h-full cursor-pointer flex-col gap-4 p-4 sm:p-5 ${isError ? 'border-status-red/70' : ''}`}
+        interactive={canEdit}
+        role={canEdit ? 'button' : undefined}
+        tabIndex={canEdit ? 0 : undefined}
+        aria-label={canEdit ? `Изменить сервер ${server.name}` : undefined}
+        onClick={canEdit ? () => setEditOpen(true) : undefined}
+        onKeyDown={canEdit ? onCardKeyDown : undefined}
+        className={cn(
+          'flex h-full flex-col gap-4 p-4 sm:p-5',
+          canEdit && 'cursor-pointer',
+          isError && 'border-status-red/70',
+        )}
       >
         {/* Шапка */}
         <div className="flex items-start justify-between gap-2">
@@ -109,20 +118,22 @@ export function ServerCard({ server }: ServerCardProps) {
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onPointerDown={stopForDelete}
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfirmOpen(true);
-              }}
-              aria-label={`Удалить сервер ${server.name}`}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-3 hover:text-status-red focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            >
-              <Trash2 className="h-4 w-4" aria-hidden="true" />
-            </button>
-          </div>
+          {canDelete && (
+            <div className="flex shrink-0 items-center gap-1">
+              <button
+                type="button"
+                onPointerDown={stopForDelete}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmOpen(true);
+                }}
+                aria-label={`Удалить сервер ${server.name}`}
+                className="inline-flex h-8 w-8 items-center justify-center rounded-md text-text-tertiary transition-colors hover:bg-surface-3 hover:text-status-red focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Мета-строка: Аптайм + Обновлено (online) */}
@@ -159,19 +170,21 @@ export function ServerCard({ server }: ServerCardProps) {
             <AlertTriangle className="h-8 w-8 text-status-red" aria-hidden="true" />
             <p className="text-sm font-medium text-text-primary">Ошибка установки агента</p>
             {errorMessage && <p className="text-[13px] text-text-secondary">{errorMessage}</p>}
-            <Button
-              variant="danger"
-              size="sm"
-              loading={deleteMutation.isPending}
-              onPointerDown={stopForDelete}
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfirmOpen(true);
-              }}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Удалить
-            </Button>
+            {canDelete && (
+              <Button
+                variant="danger"
+                size="sm"
+                loading={deleteMutation.isPending}
+                onPointerDown={stopForDelete}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setConfirmOpen(true);
+                }}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Удалить
+              </Button>
+            )}
           </div>
         )}
 

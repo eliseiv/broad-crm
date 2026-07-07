@@ -4,6 +4,7 @@ import type { PropsWithChildren } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '@/App';
+import { loginSuperadmin } from '@/test/authTestUtils';
 import { useAuthStore } from '@/store/auth';
 
 // Страницы мокаем маркерами — тест про роутинг (дефолт/fallback → /dashboard, ADR-017),
@@ -27,7 +28,8 @@ function renderAt(path: string) {
 
 describe('App routing (ADR-017 default route /dashboard)', () => {
   beforeEach(() => {
-    useAuthStore.getState().setSession('jwt-token', 'admin');
+    // ADR-021: DefaultRoute резолвит /dashboard по dashboard:view/superadmin — задаём принципала.
+    loginSuperadmin();
   });
 
   it('redirects index "/" to /dashboard', () => {

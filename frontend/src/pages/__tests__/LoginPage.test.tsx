@@ -18,7 +18,8 @@ vi.mock('@/features/auth/hooks', () => ({
   }),
 }));
 
-// Дефолтный маршрут после логина — /dashboard (ADR-017): проверяем целевой путь редиректов.
+// Permission-aware дефолт (ADR-021): LoginPage редиректит на index `/`, а DefaultRoute
+// резолвит целевой раздел по правам. Проверяем, что цель редиректа — `/`, а не `/dashboard`.
 const navigate = vi.hoisted(() => vi.fn());
 vi.mock('react-router-dom', async (importOriginal) => {
   const actual = await importOriginal<typeof import('react-router-dom')>();
@@ -72,7 +73,7 @@ describe('LoginPage', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Неверный логин или пароль');
   });
 
-  it('redirects to /dashboard after a successful login', async () => {
+  it('redirects to / (permission-aware default) after a successful login', async () => {
     const user = userEvent.setup();
     authHooks.mutate.mockImplementation((_payload, options) => options.onSuccess());
 
@@ -83,14 +84,14 @@ describe('LoginPage', () => {
     await user.type(screen.getByLabelText('Пароль'), 'secret');
     await user.click(screen.getByRole('button', { name: /войти/i }));
 
-    expect(navigate).toHaveBeenCalledWith('/dashboard', { replace: true });
+    expect(navigate).toHaveBeenCalledWith('/', { replace: true });
   });
 
-  it('redirects an already-authenticated user to /dashboard on mount', () => {
+  it('redirects an already-authenticated user to / on mount', () => {
     useAuthStore.getState().setSession('jwt-token', 'admin');
 
     render(<LoginPage />, { wrapper });
 
-    expect(navigate).toHaveBeenCalledWith('/dashboard', { replace: true });
+    expect(navigate).toHaveBeenCalledWith('/', { replace: true });
   });
 });

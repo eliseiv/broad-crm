@@ -53,8 +53,17 @@ export interface LoginResponse {
   expires_in: number;
 }
 
+/**
+ * Ответ GET /api/auth/me (04-api.md, схема `MeResponse`). Профиль + права
+ * текущего принципала для UI-гейтинга. `role` для супер-админа — "admin".
+ * `permissions` — `{ "<page>": ["<action>", ...] }` (для супер-админа — полный каталог).
+ * Безопасность обеспечивает сервер (403); гейтинг — только UX.
+ */
 export interface MeResponse {
   username: string;
+  role: string;
+  is_superadmin: boolean;
+  permissions: PermissionsMap;
 }
 
 export interface CreateServerRequest {
@@ -417,6 +426,102 @@ export interface BackendStatusResponse {
   check_status: BackendCheckStatus;
   error_message: string | null;
   last_checked_at: string | null;
+}
+
+// --- RBAC: Permissions / Users / Roles (04-api.md «Permissions»/«Users»/«Roles», ADR-021) ---
+
+/** Матрица прав `{ "<page>": ["<action>", ...] }` (04-api.md). Ключи/действия — из каталога. */
+export type PermissionsMap = Record<string, string[]>;
+
+/** Страница каталога прав (04-api.md, `PermissionCatalogPage`). */
+export interface PermissionCatalogPage {
+  page: string;
+  actions: string[];
+}
+
+/**
+ * Ответ GET /api/permissions/catalog (04-api.md, `PermissionsCatalogResponse`).
+ * `pages` упорядочен — порядок = порядок строк матрицы прав в UI. Страница `users`
+ * в каталог не входит (гейтится require_admin, не матрицей).
+ */
+export interface PermissionsCatalogResponse {
+  pages: PermissionCatalogPage[];
+}
+
+/**
+ * Элемент списка пользователей (04-api.md, схема `UserListItem`). Пароль
+ * (`password`/`password_hash`) в ответах отсутствует всегда — только на вход.
+ */
+export interface UserListItem {
+  id: string;
+  username: string;
+  role_id: string;
+  /** Имя роли (денормализовано для UI-списка). */
+  role_name: string;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Ответ GET /api/users (04-api.md, схема `UserListResponse`). */
+export interface UserListResponse {
+  items: UserListItem[];
+}
+
+/**
+ * Тело POST /api/users (04-api.md, `UserCreateRequest`). `username` 1–64
+ * (кириллица допускается), `password` 8–128, `role_id` — существующая роль.
+ */
+export interface UserCreateRequest {
+  username: string;
+  password: string;
+  role_id: string;
+}
+
+/**
+ * Тело PATCH /api/users/{id} (04-api.md, `UserUpdateRequest`). `username`
+ * не редактируется. Все поля опциональны — передаются только изменяемые
+ * (exclude_unset). `password`: не передан → не менять; непустой (8–128) → сброс.
+ */
+export interface UserUpdateRequest {
+  role_id?: string;
+  is_active?: boolean;
+  password?: string;
+}
+
+/**
+ * Элемент списка ролей (04-api.md, схема `RoleListItem`). `admin` —
+ * зарезервированное имя (доступ к «Пользователям»).
+ */
+export interface RoleListItem {
+  id: string;
+  name: string;
+  permissions: PermissionsMap;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Ответ GET /api/roles (04-api.md, схема `RoleListResponse`). */
+export interface RoleListResponse {
+  items: RoleListItem[];
+}
+
+/**
+ * Тело POST /api/roles (04-api.md, `RoleCreateRequest`). `name` 1–64
+ * (уникально → 409 role_name_taken). `permissions` валидируется против каталога.
+ */
+export interface RoleCreateRequest {
+  name: string;
+  permissions: PermissionsMap;
+}
+
+/**
+ * Тело PATCH /api/roles/{id} (04-api.md, `RoleUpdateRequest`). Все поля
+ * опциональны. `permissions` (если передан) полностью заменяет матрицу прав.
+ */
+export interface RoleUpdateRequest {
+  name?: string;
+  permissions?: PermissionsMap;
 }
 
 /** Единый формат ошибки API (04-api.md). */

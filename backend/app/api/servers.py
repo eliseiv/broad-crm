@@ -1,13 +1,13 @@
-"""Роутер реестра серверов (04-api.md#servers). Все эндпоинты требуют JWT."""
+"""Роутер реестра серверов (04-api.md#servers). RBAC-гейт require(servers, ...)."""
 
 from __future__ import annotations
 
 import uuid
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Response, status
+from fastapi import APIRouter, Depends, Query, Response, status
 
-from app.api.deps import CurrentUser, ServerServiceDep
+from app.api.deps import Principal, ServerServiceDep, require
 from app.models.server import ProvisionStatus
 from app.schemas.server import (
     ServerCreatedResponse,
@@ -24,11 +24,16 @@ router = APIRouter(prefix="/servers", tags=["servers"])
 
 StatusFilter = Annotated[ProvisionStatus | None, Query()]
 
+ViewDep = Annotated[Principal, Depends(require("servers", "view"))]
+CreateDep = Annotated[Principal, Depends(require("servers", "create"))]
+EditDep = Annotated[Principal, Depends(require("servers", "edit"))]
+DeleteDep = Annotated[Principal, Depends(require("servers", "delete"))]
+
 
 @router.get("", response_model=ServerListResponse)
 async def list_servers(
     service: ServerServiceDep,
-    _user: CurrentUser,
+    _p: ViewDep,
     status_filter: StatusFilter = None,
 ) -> ServerListResponse:
     """Список серверов с метриками (position ASC, created_at DESC, id).
@@ -41,7 +46,7 @@ async def list_servers(
 
 @router.post("", response_model=ServerCreatedResponse, status_code=status.HTTP_202_ACCEPTED)
 async def create_server(
-    payload: ServerCreateRequest, service: ServerServiceDep, _user: CurrentUser
+    payload: ServerCreateRequest, service: ServerServiceDep, _p: CreateDep
 ) -> ServerCreatedResponse:
     """Создаёт сервер и запускает асинхронный провижининг (202)."""
     return await service.create_server(payload)
@@ -49,7 +54,7 @@ async def create_server(
 
 @router.patch("/order", status_code=status.HTTP_204_NO_CONTENT)
 async def reorder_servers(
-    payload: ServerOrderRequest, service: ServerServiceDep, _user: CurrentUser
+    payload: ServerOrderRequest, service: ServerServiceDep, _p: EditDep
 ) -> Response:
     """Перестановка серверов (полный упорядоченный список id, position=0..N-1)."""
     await service.reorder_servers(payload.ids)
@@ -61,7 +66,7 @@ async def update_server(
     server_id: uuid.UUID,
     payload: ServerUpdateRequest,
     service: ServerServiceDep,
-    _user: CurrentUser,
+    _p: EditDep,
 ) -> ServerSummaryResponse:
     """Редактирование сервера — меняет только `name` (200)."""
     return await service.update_server(server_id, payload)
@@ -69,7 +74,7 @@ async def update_server(
 
 @router.get("/{server_id}/metrics", response_model=ServerMetricsResponse)
 async def get_server_metrics(
-    server_id: uuid.UUID, service: ServerServiceDep, _user: CurrentUser
+    server_id: uuid.UUID, service: ServerServiceDep, _p: ViewDep
 ) -> ServerMetricsResponse:
     """Текущие метрики одного сервера; Prometheus недоступен → 502."""
     return await service.get_metrics(server_id)
@@ -77,16 +82,14 @@ async def get_server_metrics(
 
 @router.get("/{server_id}/status", response_model=ServerStatusResponse)
 async def get_server_status(
-    server_id: uuid.UUID, service: ServerServiceDep, _user: CurrentUser
+    server_id: uuid.UUID, service: ServerServiceDep, _p: ViewDep
 ) -> ServerStatusResponse:
     """Лёгкий статус провижининга для прогресс-индикатора."""
     return await service.get_status(server_id)
 
 
 @router.delete("/{server_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_server(
-    server_id: uuid.UUID, service: ServerServiceDep, _user: CurrentUser
-) -> Response:
+async def delete_server(server_id: uuid.UUID, service: ServerServiceDep, _p: DeleteDep) -> Response:
     """Удаляет сервер из мониторинга (file_sd + запись)."""
     await service.delete_server(server_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

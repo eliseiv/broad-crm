@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import { ProxiesPage } from '@/pages/ProxiesPage';
 import { ApiError } from '@/lib/api';
-import { useAuthStore } from '@/store/auth';
+import { loginSuperadmin } from '@/test/authTestUtils';
 import type { Proxy } from '@/types/api';
 
 const proxiesHook = vi.hoisted(() => ({
@@ -22,8 +22,9 @@ const proxiesHook = vi.hoisted(() => ({
 }));
 
 vi.mock('@/features/proxies/hooks', async () => {
-  const actual =
-    await vi.importActual<typeof import('@/features/proxies/hooks')>('@/features/proxies/hooks');
+  const actual = await vi.importActual<typeof import('@/features/proxies/hooks')>(
+    '@/features/proxies/hooks',
+  );
   return {
     ...actual,
     useProxies: () => proxiesHook.value,
@@ -72,7 +73,7 @@ function proxy(overrides: Partial<Proxy> = {}): Proxy {
 describe('ProxiesPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useAuthStore.getState().setSession('jwt-token', 'admin');
+    loginSuperadmin();
     proxiesHook.value = {
       data: undefined,
       isLoading: false,

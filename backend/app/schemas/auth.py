@@ -21,6 +21,13 @@ class TokenResponse(BaseModel):
 
 
 class MeResponse(BaseModel):
-    """Ответ 200 GET /api/auth/me."""
+    """Ответ 200 GET /api/auth/me (профиль + права принципала, ADR-021).
+
+    `permissions` — производное для UI-гейтинга (для супер-админа — полный каталог).
+    Безопасность обеспечивается сервером (403), UI-гейтинг — только UX.
+    """
 
     username: str
+    role: str
+    is_superadmin: bool
+    permissions: dict[str, list[str]]

@@ -83,6 +83,19 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     throw new ApiError(401, 'unauthorized', 'Сессия истекла. Войдите снова.');
   }
 
+  // 403 (недостаточно прав, RBAC): сессию НЕ сбрасываем (в отличие от 401) —
+  // пробрасываем ApiError для toast «Недостаточно прав» (08-design-system.md,
+  // 04-api.md forbidden). Фолбэк-сообщение, если тело отсутствует.
+  if (res.status === 403) {
+    const err = await parseError(res);
+    throw new ApiError(
+      403,
+      err.code === 'internal_error' ? 'forbidden' : err.code,
+      err.message === 'Произошла ошибка. Попробуйте ещё раз.' ? 'Недостаточно прав' : err.message,
+      err.details,
+    );
+  }
+
   if (!res.ok) {
     throw await parseError(res);
   }

@@ -2,7 +2,7 @@
 
 ## Принцип
 
-В PostgreSQL хранится **реестр серверов + статус провижининга**, **реестр AI-ключей + статус проверки**, **реестр прокси + статус доступности** ([ADR-019](adr/ADR-019-proxies-availability-monitor.md)), **персистентное состояние Telegram-нотификатора per-server** ([ADR-014](adr/ADR-014-persist-notifier-state-alert-on-first-elevated.md)) и **append-only durable-лог отправленных серверных алертов** ([ADR-018](adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). Метрики (CPU/RAM/SSD/uptime/up) НЕ дублируются в БД как временной ряд — источник истины Prometheus ([ADR-003](adr/ADR-003-prometheus-istochnik-metrik.md)); нотификатор хранит лишь **последнюю наблюдённую зону** (green/yellow/red) и флаг доступности для дедупа алертов между итерациями/рестартами, а не сами значения метрик. Учётная запись администратора в БД НЕ хранится — только в `.env` ([ADR-008](adr/ADR-008-admin-iz-env.md)).
+В PostgreSQL хранится **реестр серверов + статус провижининга**, **реестр AI-ключей + статус проверки**, **реестр прокси + статус доступности** ([ADR-019](adr/ADR-019-proxies-availability-monitor.md)), **персистентное состояние Telegram-нотификатора per-server** ([ADR-014](adr/ADR-014-persist-notifier-state-alert-on-first-elevated.md)) и **append-only durable-лог отправленных серверных алертов** ([ADR-018](adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). Метрики (CPU/RAM/SSD/uptime/up) НЕ дублируются в БД как временной ряд — источник истины Prometheus ([ADR-003](adr/ADR-003-prometheus-istochnik-metrik.md)); нотификатор хранит лишь **последнюю наблюдённую зону** (green/yellow/red) и флаг доступности для дедупа алертов между итерациями/рестартами, а не сами значения метрик. С Спринта 3 в БД хранится **реестр пользователей и ролей** для RBAC (`users`/`roles`, [ADR-021](adr/ADR-021-rbac-users-roles.md)). **Супер-админ (`.env`-учётка) в БД НЕ хранится** — он bootstrap вне БД ([ADR-008](adr/ADR-008-admin-iz-env.md) с амендментом [ADR-021](adr/ADR-021-rbac-users-roles.md)); в таблице `users` только дополнительные пользователи.
 
 ## ER-диаграмма
 
@@ -424,6 +424,115 @@ CREATE INDEX ix_backends_position ON backends (position);
 **`upgrade()`** — создать таблицу `backends` (DDL выше) + уникальный индекс `uq_backends_code` + индекс `ix_backends_position`. Backfill не выполняется (таблица стартует пустой).
 
 **`downgrade()`** — `DROP TABLE backends` (индексы снимаются вместе с таблицей).
+
+---
+
+## Таблицы `roles` и `users` (RBAC)
+
+Реестр ролей и пользователей для многопользовательского режима с правами на все страницы. Модуль — [modules/auth](modules/auth/README.md), API — [04-api.md](04-api.md#users), [04-api.md](04-api.md#roles), решение — [ADR-021](adr/ADR-021-rbac-users-roles.md). **Супер-админ (`.env`) сюда НЕ пишется** — он bootstrap вне БД ([ADR-008](adr/ADR-008-admin-iz-env.md) + амендмент). В таблице `users` — только дополнительные пользователи.
+
+```mermaid
+erDiagram
+    ROLES {
+        uuid id PK
+        text name
+        jsonb permissions
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    USERS {
+        uuid id PK
+        text username
+        text password_hash
+        uuid role_id FK
+        boolean is_active
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    ROLES ||--o{ USERS : "1:N (ON DELETE RESTRICT)"
+```
+
+`users.role_id → roles.id` с **`ON DELETE RESTRICT`**: роль, назначенную хотя бы одному пользователю, удалить нельзя (→ `409 role_in_use`, [04-api.md](04-api.md#delete-apirolesid)).
+
+### Таблица `roles`
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `id` | `uuid` | PK, `DEFAULT gen_random_uuid()` | Идентификатор роли. |
+| `name` | `text` | `NOT NULL`, `UNIQUE`, 1–64 симв. | Имя роли (напр. «Оператор»). Уникально — дубликат → `409 role_name_taken`. `admin` — зарезервированное имя (гейт страницы «Пользователи», см. ниже). |
+| `permissions` | `jsonb` | `NOT NULL`, `DEFAULT '{}'` | Права: `{ "<page>": ["<action>", ...], ... }`. Валидируются против каталога прав на уровне приложения ([ADR-021](adr/ADR-021-rbac-users-roles.md#1-каталог-прав-канон-на-сервере)). |
+| `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
+| `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
+
+> **`permissions` (jsonb) — формат и валидация.** Объект «страница → массив действий». Допустимые страницы/действия — только из каталога ([ADR-021](adr/ADR-021-rbac-users-roles.md#1-каталог-прав-канон-на-сервере)): `dashboard:[view]`; `servers`/`ai-keys`/`proxies`/`backends:[view,create,edit,delete]`; `mail:[view]`. Ключ `users` **запрещён** (страница вне матрицы). Валидация — на уровне схемы/сервиса (`app/domain/permissions.py::CATALOG`), не в БД: неизвестная страница/действие, дубликат → `422 unprocessable`. DB хранит любой валидный jsonb; каноничность обеспечивает приложение (по образцу «свободного» инварианта `backends.domain`).
+>
+> **Роль `admin` — зарезервированное имя.** Наличие у пользователя роли с `name == 'admin'` даёт доступ к странице «Пользователи»/Roles API (`require_admin`, [ADR-021](adr/ADR-021-rbac-users-roles.md#5-enforcement-сервер--единственная-граница-безопасности)). Роль `admin` сидится миграцией с полными правами по каталогу. Ресурсные страницы для admin-пользователей гейтятся её `permissions` как обычно; страница «Пользователи» — по имени роли.
+
+### Таблица `users`
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `id` | `uuid` | PK, `DEFAULT gen_random_uuid()` | Идентификатор пользователя. Кладётся в JWT как `uid` ([ADR-021](adr/ADR-021-rbac-users-roles.md#4-auth-поток-см-modulesauth-05-securitymd)). |
+| `username` | `text` | `NOT NULL`, `UNIQUE`, CHECK (см. ниже) | Логин. **Допускает кириллицу/юникод-буквы** («Админ», «Никита»). Уникален — дубликат → `409 username_taken`. |
+| `password_hash` | `text` | `NOT NULL` | bcrypt-хэш пароля ([05-security.md](05-security.md#хэширование-паролей-bcrypt)). Plaintext никогда не хранится/не логируется/не возвращается. |
+| `role_id` | `uuid` | `NOT NULL`, FK → `roles(id)` `ON DELETE RESTRICT` | Роль пользователя. Удаление назначенной роли запрещено (`409 role_in_use`). |
+| `is_active` | `boolean` | `NOT NULL`, `DEFAULT true` | Активен ли пользователь. `false` → вход запрещён, а действующий JWT аннулируется на следующем запросе (`401`, свежая загрузка из БД). |
+| `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
+| `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
+
+#### Правило `username` (кириллица-допускающее, нормативно)
+
+Полное правило набора символов — на уровне **Pydantic** (авторитетно), DB-CHECK — «свободный» инвариант (по образцу `backends.domain`), чтобы не зависеть от locale/collation Postgres:
+
+- **Pydantic-валидатор (авторитетный):** после `strip()` — длина 1–64; регэксп (Python `re`, юникод по умолчанию) — `^(?=.*[^\W\d_])[\w.\- ]{1,64}$`. То есть допускаются **юникод-буквы (любой алфавит, вкл. кириллицу), цифры, `_`, пробел, `.`, `-`**, и обязательна хотя бы одна буква. `\w` в Python-`re` для `str` юникодный → `Админ`, `Никита`, `user.01`, `Иван-Петров` валидны; `123`, `...`, `  ` — нет.
+- **DB-CHECK (свободный инвариант):** `char_length(username) BETWEEN 1 AND 64 AND username = btrim(username) AND username !~ '[[:cntrl:]]'` — длина, без ведущих/хвостовых пробелов, без control-символов. Кириллица проходит тривиально.
+
+#### DDL (концепт миграции)
+
+> Реализуется через Alembic. **Требование (нормативно):** миграция ОБЯЗАНА иметь рабочий `downgrade()` (`DROP TABLE users; DROP TABLE roles`), протестированный на откат — см. [07-deployment.md](07-deployment.md#откат-миграций-бд).
+
+```sql
+CREATE TABLE roles (
+    id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name         text NOT NULL UNIQUE CHECK (char_length(name) BETWEEN 1 AND 64),
+    permissions  jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE users (
+    id             uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    username       text NOT NULL UNIQUE
+                       CHECK (char_length(username) BETWEEN 1 AND 64
+                              AND username = btrim(username)
+                              AND username !~ '[[:cntrl:]]'),
+    password_hash  text NOT NULL,
+    role_id        uuid NOT NULL REFERENCES roles(id) ON DELETE RESTRICT,
+    is_active      boolean NOT NULL DEFAULT true,
+    created_at     timestamptz NOT NULL DEFAULT now(),
+    updated_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ix_users_role_id ON users (role_id);
+```
+
+### Индексы и обоснование
+- `UNIQUE(roles.name)` — детерминированный `409 role_name_taken`.
+- `UNIQUE(users.username)` — детерминированный `409 username_taken`.
+- `ix_users_role_id` — под проверку «роль назначена пользователям?» при `DELETE /api/roles/{id}` (`ON DELETE RESTRICT` даёт `409 role_in_use`) и загрузку прав. Отдельные индексы по `permissions`/`is_active` не нужны (объём — единицы строк, NFR-1).
+
+### Политика удаления
+
+- **Пользователь** — **hard delete** (`DELETE FROM users WHERE id = ...`). Soft-delete/аудит — будущий этап ([TD-001](100-known-tech-debt.md)).
+- **Роль** — hard delete, **только если не назначена ни одному пользователю** (`ON DELETE RESTRICT` → приложение возвращает `409 role_in_use`).
+
+## Миграция `0008_create_users_roles` (концепт)
+
+> Реализуется через Alembic. `down_revision = "0007_create_backends"` (текущая голова цепочки). **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат на одну ревизию — см. [07-deployment.md](07-deployment.md#откат-миграций-бд).
+
+**`upgrade()`** — создать таблицы `roles`, затем `users` (DDL выше) + индекс `ix_users_role_id`. **Сид:** вставить одну роль `admin` с полными правами по каталогу (`{"dashboard":["view"],"servers":["view","create","edit","delete"],"ai-keys":["view","create","edit","delete"],"proxies":["view","create","edit","delete"],"backends":["view","create","edit","delete"],"mail":["view"]}`), чтобы роль `admin` существовала и была назначаема из UI. Пользователи не сидятся (супер-админ — из `.env`).
+
+**`downgrade()`** — `DROP TABLE users;` затем `DROP TABLE roles;` (порядок из-за FK; индекс снимается вместе с `users`).
 
 ---
 

@@ -5,6 +5,7 @@ from app.api import deps
 from app.config import get_settings
 from app.infra.rate_limit import InMemoryRateLimiter
 from app.services.auth_service import AuthService
+from conftest import RbacFakeDb
 from httpx import ASGITransport, AsyncClient
 
 
@@ -16,6 +17,7 @@ async def test_login_me_and_auth_error_contracts() -> None:
     auth_service = AuthService(
         settings=get_settings(),
         rate_limiter=InMemoryRateLimiter(max_attempts=10, window_sec=300),
+        user_repository=RbacFakeDb().user_repo,
     )
     app.dependency_overrides[deps.get_auth_service] = lambda: auth_service
 
@@ -47,7 +49,13 @@ async def test_login_me_and_auth_error_contracts() -> None:
     assert ok.status_code == 200
     assert ok.json()["token_type"] == "bearer"
     assert me.status_code == 200
-    assert me.json() == {"username": "admin"}
+    # ADR-021: /me отдаёт профиль + права принципала (супер-админ → полный каталог).
+    me_body = me.json()
+    assert me_body["username"] == "admin"
+    assert me_body["role"] == "admin"
+    assert me_body["is_superadmin"] is True
+    assert me_body["permissions"]["servers"] == ["view", "create", "edit", "delete"]
+    assert "password" not in me.text
     assert no_token.status_code == 401
     assert no_token.json()["error"]["code"] == "unauthorized"
     assert bad_user.status_code == bad_password.status_code == 401
@@ -63,6 +71,7 @@ async def test_login_rate_limit_uses_real_ip_headers() -> None:
     auth_service = AuthService(
         settings=get_settings(),
         rate_limiter=InMemoryRateLimiter(max_attempts=2, window_sec=300),
+        user_repository=RbacFakeDb().user_repo,
     )
     app.dependency_overrides[deps.get_auth_service] = lambda: auth_service
 

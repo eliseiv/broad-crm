@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import { BackendsPage } from '@/pages/BackendsPage';
 import { ApiError } from '@/lib/api';
-import { useAuthStore } from '@/store/auth';
+import { loginSuperadmin } from '@/test/authTestUtils';
 import type { Backend } from '@/types/api';
 
 const backendsHook = vi.hoisted(() => ({
@@ -22,8 +22,9 @@ const backendsHook = vi.hoisted(() => ({
 }));
 
 vi.mock('@/features/backends/hooks', async () => {
-  const actual =
-    await vi.importActual<typeof import('@/features/backends/hooks')>('@/features/backends/hooks');
+  const actual = await vi.importActual<typeof import('@/features/backends/hooks')>(
+    '@/features/backends/hooks',
+  );
   return {
     ...actual,
     useBackends: () => backendsHook.value,
@@ -69,7 +70,7 @@ function backend(overrides: Partial<Backend> = {}): Backend {
 describe('BackendsPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    useAuthStore.getState().setSession('jwt-token', 'admin');
+    loginSuperadmin();
     backendsHook.value = {
       data: undefined,
       isLoading: false,
