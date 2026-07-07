@@ -4,6 +4,7 @@ import { AiKeysPage } from '@/pages/AiKeysPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { MailPage } from '@/pages/MailPage';
+import { ProxiesPage } from '@/pages/ProxiesPage';
 import { ServersPage } from '@/pages/ServersPage';
 import { ProtectedRoute } from '@/routes/ProtectedRoute';
 
@@ -16,6 +17,7 @@ export function App() {
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/servers" element={<ServersPage />} />
           <Route path="/ai-keys" element={<AiKeysPage />} />
+          <Route path="/proxies" element={<ProxiesPage />} />
           <Route path="/mail" element={<MailPage />} />
         </Route>
       </Route>

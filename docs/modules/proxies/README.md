@@ -1,6 +1,6 @@
 # Модуль `proxies` — Реестр HTTP/SOCKS-прокси с мониторингом доступности и Telegram-алертами
 
-Статус: `spec-ready` · Исполнитель: backend, frontend
+Статус: `implemented` (Спринт 1) · Исполнитель: backend, frontend
 
 ## Scope
 
@@ -195,20 +195,21 @@ Loading (skeleton), empty (только `AddProxyCard` + подсказка), pe
 
 ## DoD
 
-- [ ] Endpoints и коды ошибок соответствуют [04-api.md](../../04-api.md#proxies); пароль отсутствует в ответах/логах; `username` возвращается, `has_password` собирается из `password_encrypted`.
-- [ ] Пароль зашифрован Fernet (`FERNET_KEY`, `encrypt_secret`/`decrypt_secret`), `password_encrypted` = `NULL` при отсутствии пароля.
-- [ ] Проверка собирает URL `scheme://[user:pass@]host:port` в памяти и идёт через `httpx.AsyncClient(proxy=...)` к `PROXY_CHECK_URL`; `2xx/3xx` → working, таймаут/сеть/иное (после ретраев) → error; URL/пароль не логируются.
-- [ ] `httpx[socks]` добавлен в зависимости backend (SOCKS5 работает).
-- [ ] Матрица переходов и алерты соответствуют таблице; первая неуспешная проверка шлёт 🔴, recovery `error→working` шлёт 🟢; исхода `unknown` нет.
-- [ ] Формат обоих сообщений Telegram побайтово соответствует спецификации.
-- [ ] Монитор стартует всегда; Telegram-отправка гейтится `notifier_enabled`; `check_status` обновляется независимо от бота; переходы переживают рестарт.
-- [ ] Alembic-миграция `0006_create_proxies` (`down_revision="0005_create_notifier_alert_log"`) с рабочим `downgrade()`; колонка `position` + индекс `ix_proxies_position`.
-- [ ] `PATCH /api/proxies/{id}`: не переданный `password` = не менять; `null`/`""` = очистить; непустой = re-encrypt; re-check при смене `proxy_type`/`host`/`port`/`username`/`password`.
-- [ ] `PATCH /api/proxies/order`: перестановка единого списка; полная перестановка валидируется (иначе `422`); несуществующий `id` → `404`.
-- [ ] Frontend: вкладка «Прокси» в `AppLayout`, `ProxiesPage` (единый список), `ProxyCard`/`AddProxyCard`/`AddProxyModal` (add+edit), `Select` с тремя типами, drag-and-drop (клик=edit / зажатие=drag), все состояния UI, русские строки из словаря.
-- [ ] Coverage ≥90 % для функций проверки/перехода/билдеров сообщений ([06-testing-strategy.md](../../06-testing-strategy.md)).
-- [ ] Lint/type-check/format проходят (backend и frontend).
+- [x] Endpoints и коды ошибок соответствуют [04-api.md](../../04-api.md#proxies); пароль отсутствует в ответах/логах; `username` возвращается, `has_password` собирается из `password_encrypted`.
+- [x] Пароль зашифрован Fernet (`FERNET_KEY`, `encrypt_secret`/`decrypt_secret`), `password_encrypted` = `NULL` при отсутствии пароля.
+- [x] Проверка собирает URL `scheme://[user:pass@]host:port` в памяти и идёт через `httpx.AsyncClient(proxy=...)` к `PROXY_CHECK_URL`; `2xx/3xx` → working, таймаут/сеть/иное (после ретраев) → error; URL/пароль не логируются.
+- [x] `httpx[socks]` добавлен в зависимости backend (SOCKS5 работает).
+- [x] Матрица переходов и алерты соответствуют таблице; первая неуспешная проверка шлёт 🔴, recovery `error→working` шлёт 🟢; исхода `unknown` нет.
+- [x] Формат обоих сообщений Telegram побайтово соответствует спецификации.
+- [x] Монитор стартует всегда; Telegram-отправка гейтится `notifier_enabled`; `check_status` обновляется независимо от бота; переходы переживают рестарт.
+- [x] Alembic-миграция `0006_create_proxies` (`down_revision="0005_create_notifier_alert_log"`) с рабочим `downgrade()`; колонка `position` + индекс `ix_proxies_position`.
+- [x] `PATCH /api/proxies/{id}`: не переданный `password` = не менять; `null`/`""` = очистить; непустой = re-encrypt; re-check при смене `proxy_type`/`host`/`port`/`username`/`password`.
+- [x] `PATCH /api/proxies/order`: перестановка единого списка; полная перестановка валидируется (иначе `422`); несуществующий `id` → `404`.
+- [x] Frontend: вкладка «Прокси» в `AppLayout`, `ProxiesPage` (единый список), `ProxyCard`/`AddProxyCard`/`AddProxyModal` (add+edit), `Select` с тремя типами, drag-and-drop (клик=edit / зажатие=drag), все состояния UI, русские строки из словаря.
+- [x] Coverage ≥90 % для функций проверки/перехода/билдеров сообщений ([06-testing-strategy.md](../../06-testing-strategy.md)).
+- [x] Lint/type-check/format проходят (backend и frontend).
 
 ## Changelog
 
 - 2026-07-07: спецификация создана (architect). Решение об отдельном in-backend-мониторе доступности прокси (по образцу AI-ключей), Fernet для пароля, отдельных полях ввода и эталонном URL проверки — [ADR-019](../../adr/ADR-019-proxies-availability-monitor.md). Отложенные пункты — [TD-028](../../100-known-tech-debt.md). Требуется добавить зависимость `httpx[socks]` (backend/devops).
+- 2026-07-07: **Спринт 1 реализован** (backend + frontend + qa, все гейты зелёные, reviewer approve / production_ready). Закрыты все пункты DoD: модель + миграция `0006_create_proxies`, `ProxyMonitorService` (старт всегда, персистентный `check_status`), Telegram-алерты down 🔴 / recovery 🟢, CRUD API (`GET/POST/PATCH/DELETE /api/proxies`, `PATCH /api/proxies/order`, `GET /api/proxies/{id}/status`), страница `/proxies` (единый список, DnD, add/edit-модалка), `httpx[socks]`, тесты (coverage ≥90 % для проверки/перехода/билдеров). Статус модуля → `implemented`. Остаточный edge-case (алерт для прокси, удалённого в момент in-flight проверки) — [TD-028](../../100-known-tech-debt.md).

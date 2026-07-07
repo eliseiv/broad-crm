@@ -17,6 +17,7 @@ from app.infra.prometheus import get_prometheus_client
 from app.infra.rate_limit import get_login_rate_limiter
 from app.infra.telegram import TelegramClient
 from app.repositories.ai_key_repository import AiKeyRepository
+from app.repositories.proxy_repository import ProxyRepository
 from app.repositories.server_repository import ServerRepository
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.ai_key_service import AiKeyService
@@ -24,6 +25,8 @@ from app.services.auth_service import AuthService
 from app.services.mail_service import MailService
 from app.services.monitoring_service import MonitoringService
 from app.services.provisioning_service import ProvisioningService
+from app.services.proxy_monitor_service import ProxyMonitorService
+from app.services.proxy_service import ProxyService
 from app.services.server_service import ServerService
 
 _bearer = HTTPBearer(auto_error=False)
@@ -102,6 +105,27 @@ def get_ai_key_service(
     return AiKeyService(repository=AiKeyRepository(session), monitor=monitor)
 
 
+def get_proxy_monitor(settings: SettingsDep) -> ProxyMonitorService:
+    """Монитор прокси для немедленной проверки при create/edit (собственный
+    sessionmaker для фоновой задачи). Telegram — только при notifier_enabled."""
+    telegram = (
+        TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
+        if settings.notifier_enabled
+        else None
+    )
+    return ProxyMonitorService(
+        sessionmaker=get_sessionmaker(), telegram=telegram, settings=settings
+    )
+
+
+def get_proxy_service(
+    session: DbSession,
+    monitor: Annotated[ProxyMonitorService, Depends(get_proxy_monitor)],
+) -> ProxyService:
+    """Сервис реестра прокси."""
+    return ProxyService(repository=ProxyRepository(session), monitor=monitor)
+
+
 def get_mail_service(settings: SettingsDep) -> MailService:
     """Сервис почты (read-through-прокси к postapp.store; клиент из настроек)."""
     return MailService(client=get_mail_client(), settings=settings)
@@ -133,5 +157,6 @@ def get_client_ip(request: Request) -> str:
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 ServerServiceDep = Annotated[ServerService, Depends(get_server_service)]
 AiKeyServiceDep = Annotated[AiKeyService, Depends(get_ai_key_service)]
+ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]
 MailServiceDep = Annotated[MailService, Depends(get_mail_service)]
 ClientIp = Annotated[str, Depends(get_client_ip)]

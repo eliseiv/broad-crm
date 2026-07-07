@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     anthropic_api_base: str = "https://api.anthropic.com/v1"
     anthropic_api_version: str = "2023-06-01"
 
+    # --- Монитор доступности прокси (modules/proxies, ADR-019) ---
+    # Интервал периодической проверки всех прокси; монитор стартует всегда.
+    proxy_check_interval_sec: int = 60
+    # Таймаут HTTP-запроса через прокси к эталонному URL при проверке доступности.
+    proxy_check_timeout_sec: float = 10.0
+    # Эталонный URL проверки связности через прокси (лёгкий 204 No Content).
+    proxy_check_url: str = "https://www.gstatic.com/generate_204"
+
     # --- Модуль «Почты» (read-through-прокси, modules/mail, ADR-012) ---
     # Backend проксирует /api/mail/* во внешний сервис postapp.store, подставляя
     # MAIL_API_KEY в заголовок X-API-Key. Ключ — только из env, не в БД/логах/ответах.

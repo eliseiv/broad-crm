@@ -68,6 +68,21 @@ def build_key_recovery(name: str, last4: str | None) -> str:
     return f"{_RECOVERY_HEADER}\n{_key_block(name, last4)}\nКлюч снова работает"
 
 
+def _proxy_block(name: str, host: str, port: int) -> str:
+    """Блок идентификации прокси: имя в кавычках + `<host>:<port>`."""
+    return f'Прокси "{name}" {host}:{port}'
+
+
+def build_proxy_error(name: str, host: str, port: int, reason: str) -> str:
+    """🔴 Прокси не работает — переход `pending|working → error` (modules/proxies)."""
+    return f'{_CRITICAL_HEADER}\n{_proxy_block(name, host, port)}\nПрокси не работает: "{reason}"'
+
+
+def build_proxy_recovery(name: str, host: str, port: int) -> str:
+    """🟢 Прокси восстановлен — переход `error → working` (modules/proxies)."""
+    return f"{_RECOVERY_HEADER}\n{_proxy_block(name, host, port)}\nПрокси снова работает"
+
+
 __all__ = [
     "METRIC_LABELS",
     "MetricItem",
@@ -75,6 +90,8 @@ __all__ = [
     "build_key_error",
     "build_key_recovery",
     "build_offline",
+    "build_proxy_error",
+    "build_proxy_recovery",
     "build_recovered",
     "build_warning",
 ]

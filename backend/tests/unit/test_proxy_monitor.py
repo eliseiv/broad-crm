@@ -1,0 +1,373 @@
+"""Unit-тесты монитора прокси check_one/poll_once/_check_snapshot/run (modules/proxies).
+
+Репозиторий, сессия БД, расшифровка и проверка доступности — стабы (без сети/БД).
+Покрывают: обновление check_status при конклюзивном исходе независимо от Telegram;
+гейт Telegram (`telegram=None` → не отправляем, статус всё равно пишем); отправку
+🔴/🟢 при переходах; расшифровку пароля перед проверкой; сбой расшифровки → без
+обновления; устойчивость check_one к исключению; устойчивость run к ошибке итерации
+и отмене. Исхода `unknown` у прокси НЕТ.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import uuid
+
+import pytest
+from app.infra.proxy_check import ProxyCheckResult
+from app.models.proxy import ProxyStatus
+from app.services import proxy_monitor_service as mod
+from app.services.proxy_monitor_service import ProxyMonitorService
+
+
+class _FakeProxy:
+    def __init__(
+        self,
+        *,
+        status: str = ProxyStatus.pending.value,
+        password_encrypted: bytes | None = b"cipher",
+    ) -> None:
+        self.id = uuid.uuid4()
+        self.name = "DE Residential"
+        self.proxy_type = "socks5"
+        self.host = "proxy.example.com"
+        self.port = 1080
+        self.username = "user01"
+        self.password_encrypted = password_encrypted
+        self.check_status = status
+
+
+class _FakeRepo:
+    def __init__(self, proxy: _FakeProxy | None) -> None:
+        self.proxy = proxy
+        self.updates: list[tuple[uuid.UUID, str, str | None]] = []
+
+    async def get_by_id(self, proxy_id: uuid.UUID) -> _FakeProxy | None:
+        if self.proxy is not None and proxy_id == self.proxy.id:
+            return self.proxy
+        return None
+
+    async def list_all(self) -> list[_FakeProxy]:
+        return [self.proxy] if self.proxy is not None else []
+
+    async def update_check(
+        self,
+        proxy_id: uuid.UUID,
+        *,
+        status: str,
+        error_message: str | None,
+        last_checked_at: object,
+    ) -> None:
+        self.updates.append((proxy_id, status, error_message))
+
+
+class _FakeSession:
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+    async def commit(self) -> None:
+        return None
+
+
+class _FakeTelegram:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send_message(self, text: str) -> bool:
+        self.sent.append(text)
+        return True
+
+
+def _settings() -> object:
+    from app.config import get_settings
+
+    return get_settings()
+
+
+def _make_service(
+    monkeypatch: pytest.MonkeyPatch,
+    repo: _FakeRepo,
+    *,
+    telegram: _FakeTelegram | None,
+    outcome: ProxyCheckResult,
+    captured: dict[str, object] | None = None,
+) -> ProxyMonitorService:
+    monkeypatch.setattr(mod, "ProxyRepository", lambda _session: repo)
+    monkeypatch.setattr(mod, "decrypt_secret", lambda _enc: "decrypted-pass")
+
+    async def _fake_check_proxy(
+        proxy_type: str,
+        host: str,
+        port: int,
+        username: str | None,
+        password: str | None,
+    ) -> ProxyCheckResult:
+        if captured is not None:
+            captured["password"] = password
+            captured["username"] = username
+            captured["proxy_type"] = proxy_type
+        return outcome
+
+    monkeypatch.setattr(mod, "check_proxy", _fake_check_proxy)
+
+    return ProxyMonitorService(
+        sessionmaker=lambda: _FakeSession(),  # type: ignore[arg-type]
+        telegram=telegram,  # type: ignore[arg-type]
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+
+# ---------------------------------------------------------------- check_one
+async def test_check_one_working_updates_db_no_telegram_when_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy = _FakeProxy(status=ProxyStatus.pending.value)
+    repo = _FakeRepo(proxy)
+    svc = _make_service(monkeypatch, repo, telegram=None, outcome=ProxyCheckResult("working", None))
+
+    await svc.check_one(proxy.id)
+
+    # check_status обновлён в БД независимо от Telegram (бот отключён).
+    assert repo.updates == [(proxy.id, ProxyStatus.working.value, None)]
+
+
+async def test_check_one_decrypts_password_before_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy = _FakeProxy(status=ProxyStatus.working.value, password_encrypted=b"cipher")
+    repo = _FakeRepo(proxy)
+    captured: dict[str, object] = {}
+    svc = _make_service(
+        monkeypatch,
+        repo,
+        telegram=None,
+        outcome=ProxyCheckResult("working", None),
+        captured=captured,
+    )
+
+    await svc.check_one(proxy.id)
+
+    # Пароль расшифрован (decrypt_secret) и передан в проверку доступности.
+    assert captured["password"] == "decrypted-pass"
+    assert captured["username"] == "user01"
+
+
+async def test_check_one_no_password_passes_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    proxy = _FakeProxy(status=ProxyStatus.working.value, password_encrypted=None)
+    repo = _FakeRepo(proxy)
+    captured: dict[str, object] = {}
+    svc = _make_service(
+        monkeypatch,
+        repo,
+        telegram=None,
+        outcome=ProxyCheckResult("working", None),
+        captured=captured,
+    )
+
+    await svc.check_one(proxy.id)
+
+    assert captured["password"] is None
+
+
+async def test_check_one_decrypt_failure_skips_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.infra.crypto import CryptoError
+
+    proxy = _FakeProxy(status=ProxyStatus.working.value, password_encrypted=b"broken")
+    repo = _FakeRepo(proxy)
+
+    def _boom(_enc: bytes) -> str:
+        raise CryptoError("bad token")
+
+    monkeypatch.setattr(mod, "ProxyRepository", lambda _session: repo)
+    monkeypatch.setattr(mod, "decrypt_secret", _boom)
+
+    svc = ProxyMonitorService(
+        sessionmaker=lambda: _FakeSession(),  # type: ignore[arg-type]
+        telegram=None,
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    await svc.check_one(proxy.id)
+
+    # Расшифровка провалилась → БД не обновляется (проверка не выполнена).
+    assert repo.updates == []
+
+
+async def test_check_one_error_first_check_updates_and_alerts_red(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy = _FakeProxy(status=ProxyStatus.pending.value)
+    repo = _FakeRepo(proxy)
+    tg = _FakeTelegram()
+    svc = _make_service(
+        monkeypatch, repo, telegram=tg, outcome=ProxyCheckResult("error", "Прокси недоступен")
+    )
+
+    await svc.check_one(proxy.id)
+
+    assert repo.updates == [(proxy.id, ProxyStatus.error.value, "Прокси недоступен")]
+    assert len(tg.sent) == 1
+    assert "🔴🔴🔴СРОЧНО🔴🔴🔴" in tg.sent[0]
+    assert 'Прокси "DE Residential" proxy.example.com:1080' in tg.sent[0]
+    assert 'Прокси не работает: "Прокси недоступен"' in tg.sent[0]
+
+
+async def test_check_one_recovery_sends_green_alert(monkeypatch: pytest.MonkeyPatch) -> None:
+    proxy = _FakeProxy(status=ProxyStatus.error.value)
+    repo = _FakeRepo(proxy)
+    tg = _FakeTelegram()
+    svc = _make_service(monkeypatch, repo, telegram=tg, outcome=ProxyCheckResult("working", None))
+
+    await svc.check_one(proxy.id)
+
+    assert repo.updates == [(proxy.id, ProxyStatus.working.value, None)]
+    assert len(tg.sent) == 1
+    assert "🟢🟢🟢ВОССТАНОВЛЕНО🟢🟢🟢" in tg.sent[0]
+    assert "Прокси снова работает" in tg.sent[0]
+
+
+async def test_check_one_error_alert_suppressed_when_telegram_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    proxy = _FakeProxy(status=ProxyStatus.working.value)
+    repo = _FakeRepo(proxy)
+    svc = _make_service(
+        monkeypatch, repo, telegram=None, outcome=ProxyCheckResult("error", "Таймаут подключения")
+    )
+
+    await svc.check_one(proxy.id)
+
+    # Статус пишется, но отправлять некуда (бот отключён) — исключений нет.
+    assert repo.updates == [(proxy.id, ProxyStatus.error.value, "Таймаут подключения")]
+
+
+async def test_check_one_working_to_working_no_alert(monkeypatch: pytest.MonkeyPatch) -> None:
+    proxy = _FakeProxy(status=ProxyStatus.working.value)
+    repo = _FakeRepo(proxy)
+    tg = _FakeTelegram()
+    svc = _make_service(monkeypatch, repo, telegram=tg, outcome=ProxyCheckResult("working", None))
+
+    await svc.check_one(proxy.id)
+
+    assert repo.updates == [(proxy.id, ProxyStatus.working.value, None)]
+    assert tg.sent == []  # working→working молча
+
+
+async def test_check_one_missing_proxy_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _FakeRepo(None)
+    svc = _make_service(monkeypatch, repo, telegram=None, outcome=ProxyCheckResult("working", None))
+
+    await svc.check_one(uuid.uuid4())
+
+    assert repo.updates == []
+
+
+async def test_check_one_swallows_exception_and_logs(monkeypatch: pytest.MonkeyPatch) -> None:
+    events: list[str] = []
+
+    class _RecordingLogger:
+        def error(self, event: str, **_kw: object) -> None:
+            events.append(event)
+
+        def warning(self, event: str, **_kw: object) -> None:
+            events.append(event)
+
+        def info(self, event: str, **_kw: object) -> None:
+            events.append(event)
+
+    monkeypatch.setattr(mod, "logger", _RecordingLogger())
+
+    class _BoomSession:
+        async def __aenter__(self) -> _BoomSession:
+            raise RuntimeError("db down")
+
+        async def __aexit__(self, *exc: object) -> bool:
+            return False
+
+    svc = ProxyMonitorService(
+        sessionmaker=lambda: _BoomSession(),  # type: ignore[arg-type]
+        telegram=None,
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+
+    # Исключение внутри check_one логируется и НЕ всплывает наружу.
+    await svc.check_one(uuid.uuid4())
+
+    assert "proxy_check_one_failed" in events
+
+
+# ---------------------------------------------------------------- poll_once
+async def test_poll_once_empty_registry_noop(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo = _FakeRepo(None)
+    svc = _make_service(monkeypatch, repo, telegram=None, outcome=ProxyCheckResult("working", None))
+
+    await svc.poll_once()
+
+    assert repo.updates == []
+
+
+async def test_poll_once_checks_all_proxies_and_updates(monkeypatch: pytest.MonkeyPatch) -> None:
+    proxy = _FakeProxy(status=ProxyStatus.working.value)
+    repo = _FakeRepo(proxy)
+    tg = _FakeTelegram()
+    svc = _make_service(
+        monkeypatch, repo, telegram=tg, outcome=ProxyCheckResult("error", "Ошибка прокси")
+    )
+
+    await svc.poll_once()
+
+    assert repo.updates == [(proxy.id, ProxyStatus.error.value, "Ошибка прокси")]
+    assert len(tg.sent) == 1
+
+
+# ---------------------------------------------------------------- run()
+async def test_run_handles_cancel(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = ProxyMonitorService(
+        sessionmaker=lambda: _FakeSession(),  # type: ignore[arg-type]
+        telegram=None,
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+    calls: list[int] = []
+
+    async def fake_poll() -> None:
+        calls.append(1)
+
+    async def fake_sleep(_d: float) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(svc, "poll_once", fake_poll)
+    monkeypatch.setattr(mod.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await svc.run()
+
+    assert calls == [1]
+
+
+async def test_run_survives_iteration_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    svc = ProxyMonitorService(
+        sessionmaker=lambda: _FakeSession(),  # type: ignore[arg-type]
+        telegram=None,
+        settings=_settings(),  # type: ignore[arg-type]
+    )
+    state = {"n": 0}
+
+    async def fake_poll() -> None:
+        state["n"] += 1
+        if state["n"] == 1:
+            raise RuntimeError("boom")
+
+    async def fake_sleep(_d: float) -> None:
+        if state["n"] >= 2:
+            raise asyncio.CancelledError
+
+    monkeypatch.setattr(svc, "poll_once", fake_poll)
+    monkeypatch.setattr(mod.asyncio, "sleep", fake_sleep)
+
+    with pytest.raises(asyncio.CancelledError):
+        await svc.run()
+
+    assert state["n"] == 2  # пережил ошибку первой итерации, выполнил вторую

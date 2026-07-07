@@ -20,6 +20,7 @@ from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.monitoring_service import MonitoringService
 from app.services.notifier_service import NotifierService
 from app.services.provisioning_service import ProvisioningService
+from app.services.proxy_monitor_service import ProxyMonitorService
 
 logger = get_logger(__name__)
 
@@ -72,6 +73,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     )
     ai_key_monitor_task = asyncio.create_task(ai_key_monitor.run())
 
+    # Монитор доступности прокси (modules/proxies, ADR-019): стартует ВСЕГДА
+    # (не гейтится Telegram) — check_status для UI работает независимо от бота.
+    # Telegram-клиент передаётся только при notifier_enabled.
+    proxy_telegram = (
+        TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
+        if settings.notifier_enabled
+        else None
+    )
+    proxy_monitor = ProxyMonitorService(
+        sessionmaker=get_sessionmaker(),
+        telegram=proxy_telegram,
+        settings=settings,
+    )
+    proxy_monitor_task = asyncio.create_task(proxy_monitor.run())
+
     yield
 
     if notifier_task is not None:
@@ -82,6 +98,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     ai_key_monitor_task.cancel()
     with suppress(asyncio.CancelledError):
         await ai_key_monitor_task
+
+    proxy_monitor_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await proxy_monitor_task
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

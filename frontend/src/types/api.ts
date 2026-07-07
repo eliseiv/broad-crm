@@ -278,6 +278,84 @@ export interface MailMailboxesResponse {
   mailboxes: MailMailbox[];
 }
 
+// --- Proxies (04-api.md «Proxies», modules/proxies) ---
+
+/** Тип прокси (04-api.md, proxy_type). */
+export type ProxyType = 'http' | 'https' | 'socks5';
+
+/** Статус проверки доступности прокси (04-api.md, check_status). */
+export type ProxyCheckStatus = 'pending' | 'working' | 'error';
+
+/**
+ * Элемент списка прокси (04-api.md, схема `ProxyListItem`). Пароль не возвращается
+ * никогда — вместо него флаг `has_password`. `username` (логин) — не секрет.
+ */
+export interface Proxy {
+  id: string;
+  name: string;
+  proxy_type: ProxyType;
+  host: string;
+  port: number;
+  /** Логин прокси (не секрет); null — без авторизации. */
+  username: string | null;
+  /** Производное `password_encrypted IS NOT NULL`. Сам пароль не возвращается. */
+  has_password: boolean;
+  check_status: ProxyCheckStatus;
+  /** Рус. причина при check_status='error', иначе null. */
+  error_message: string | null;
+  /** Порядок карточки в едином списке (drag-and-drop). Меньше = выше. 04-api.md. */
+  position: number;
+  last_checked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Ответ GET /api/proxies (04-api.md, схема `ProxyListResponse`). */
+export interface ProxyListResponse {
+  items: Proxy[];
+}
+
+/**
+ * Тело POST /api/proxies (04-api.md, `ProxyCreateRequest`). `username`/`password`
+ * опциональны; отсутствие/пустое → без логина/пароля. Пароль шифруется, в ответе не возвращается.
+ */
+export interface CreateProxyRequest {
+  name: string;
+  proxy_type: ProxyType;
+  host: string;
+  port: number;
+  username?: string;
+  password?: string;
+}
+
+/**
+ * Тело PATCH /api/proxies/{id} (04-api.md, `ProxyUpdateRequest`). Все поля опциональны —
+ * передаются только изменяемые. Семантика пароля (нормативно): поле не передано → не менять;
+ * `null`/`""` → очистить (убрать пароль); непустая строка → заменить (re-encrypt).
+ * Для `username`: не передано → не менять; `null`/`""` → убрать логин; значение → установить.
+ */
+export interface UpdateProxyRequest {
+  name?: string;
+  proxy_type?: ProxyType;
+  host?: string;
+  port?: number;
+  username?: string | null;
+  password?: string | null;
+}
+
+/** Тело PATCH /api/proxies/order — полная перестановка единого списка (04-api.md). */
+export interface ReorderProxiesRequest {
+  ids: string[];
+}
+
+/** Лёгкий статус проверки прокси (04-api.md, `ProxyStatusResponse`). */
+export interface ProxyStatusResponse {
+  id: string;
+  check_status: ProxyCheckStatus;
+  error_message: string | null;
+  last_checked_at: string | null;
+}
+
 /** Единый формат ошибки API (04-api.md). */
 export interface ApiErrorBody {
   error: {

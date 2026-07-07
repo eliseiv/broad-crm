@@ -76,6 +76,14 @@ def ai_key_not_found() -> AppError:
     )
 
 
+def proxy_not_found() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="proxy_not_found",
+        message="Прокси не найден",
+    )
+
+
 def unprocessable(message: str, details: Any = None) -> AppError:
     return AppError(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -156,6 +164,10 @@ def _error_body(code: str, message: str, details: Any = None) -> dict[str, Any]:
 # семантически невалидно. По 04-api.md это 422 unprocessable, а не 400.
 _IP_VALUE_ERROR_TYPES = frozenset({"ip_any_address", "ip_v4_address", "ip_v6_address"})
 
+# Типы ошибок pydantic v2 для `port` вне диапазона 1..65535: значение присутствует,
+# но семантически недопустимо. По 04-api.md#proxies это 422 unprocessable, а не 400.
+_PORT_RANGE_ERROR_TYPES = frozenset({"greater_than_equal", "less_than_equal"})
+
 
 def _has_invalid_ip_error(errors: Sequence[Any]) -> bool:
     """True, если среди ошибок валидации есть семантически невалидный IP в поле `ip`."""
@@ -172,15 +184,25 @@ def _semantic_error_message(errors: Sequence[Any]) -> str | None:
     По 04-api.md это `422 unprocessable` (значение присутствует, но недопустимо),
     а не `400 validation_error`:
       - невалидный IP в поле `ip`;
-      - `provider` вне enum (тип `enum`) в поле `provider` (modules/ai-keys).
+      - `provider` вне enum (тип `enum`) в поле `provider` (modules/ai-keys);
+      - `proxy_type` вне enum в поле `proxy_type` (modules/proxies);
+      - `port` вне диапазона 1..65535 в поле `port` (modules/proxies).
     Структурные ошибки (отсутствует поле / неверная форма тела) → 400.
     """
     if _has_invalid_ip_error(errors):
         return "Невалидный IP-адрес"
     for err in errors:
         loc = err.get("loc", ())
-        if loc and loc[-1] == "provider" and err.get("type") == "enum":
+        if not loc:
+            continue
+        field = loc[-1]
+        err_type = err.get("type")
+        if field == "provider" and err_type == "enum":
             return "Недопустимый провайдер"
+        if field == "proxy_type" and err_type == "enum":
+            return "Недопустимый тип прокси"
+        if field == "port" and err_type in _PORT_RANGE_ERROR_TYPES:
+            return "Недопустимый порт"
     return None
 
 
