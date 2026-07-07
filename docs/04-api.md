@@ -479,7 +479,7 @@ Backend отдаёт **единый плоский список** (без сек
 - `name` — string (1–64), отображаемое имя.
 - `domain` — string (1–255), нормализованный домен (`host[:port]`, без схемы/пути). URL проверки — `https://{domain}/health`.
 - `position` — `integer`, порядок карточки в **едином списке** (drag-and-drop). Меньше = выше. Изменяется через `PATCH /api/backends/order`.
-- `check_status` ∈ {`pending`,`working`,`error`}. `error_message` — рус. причина при `error` (иначе `null`): «Таймаут подключения»/«Бэк недоступен»/«Ошибка бэка (HTTP N)».
+- `check_status` ∈ {`pending`,`working`,`error`}. `error_message` — рус. причина при `error` (иначе `null`): «Таймаут подключения»/«Бэк недоступен»/«Ошибка бэка (HTTP N)»/«Ошибка бэка».
 
 ### Схема `BackendListResponse`
 

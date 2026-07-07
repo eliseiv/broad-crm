@@ -82,6 +82,8 @@ def test_revision_chain_single_head_with_0006_on_top() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
     heads = script.get_heads()
 
-    assert heads == ["0006_create_proxies"]  # одна голова — цепочка линейна
+    # Голова цепочки — 0007_create_backends (добавлена поверх 0006 фичей «Бэки», ADR-020);
+    # цепочка остаётся линейной (одна голова). 0006 по-прежнему сидит поверх 0005.
+    assert heads == ["0007_create_backends"]  # одна голова — цепочка линейна
     rev = script.get_revision("0006_create_proxies")
     assert rev.down_revision == "0005_create_notifier_alert_log"  # 0006 сидит поверх 0005

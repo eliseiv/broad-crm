@@ -51,7 +51,7 @@ CRM-система мониторинга backend-сервисов и серве
 | ai-keys | `spec-ready` | Не реализован — спецификация готова |
 | mail | `spec-ready` | Не реализован — спецификация готова |
 | proxies | `implemented` | Реализован (Спринт 1) — модель+миграция 0006, монитор, Telegram-алерты, CRUD API, страница `/proxies`, тесты |
-| backends | `spec-ready` | Не реализован — спецификация готова ([ADR-020](adr/ADR-020-backends-healthcheck-monitor.md), миграция 0007) |
+| backends | `implemented` | Реализован (Спринт 2) — модель+миграция 0007, healthcheck-монитор `GET /health`, Telegram-алерты, CRUD API, страница `/backends`, тесты ([ADR-020](adr/ADR-020-backends-healthcheck-monitor.md)) |
 | ui | `spec-ready` | Не реализован — спецификация готова |
 
 ## Глоссарий

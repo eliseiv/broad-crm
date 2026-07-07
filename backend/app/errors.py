@@ -84,6 +84,22 @@ def proxy_not_found() -> AppError:
     )
 
 
+def backend_not_found() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="backend_not_found",
+        message="Бэк не найден",
+    )
+
+
+def backend_code_taken() -> AppError:
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="backend_code_taken",
+        message="Бэк с таким кодом уже существует",
+    )
+
+
 def unprocessable(message: str, details: Any = None) -> AppError:
     return AppError(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

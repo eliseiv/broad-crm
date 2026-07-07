@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { AppLayout } from '@/components/AppLayout';
 import { AiKeysPage } from '@/pages/AiKeysPage';
+import { BackendsPage } from '@/pages/BackendsPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { MailPage } from '@/pages/MailPage';
@@ -18,6 +19,7 @@ export function App() {
           <Route path="/servers" element={<ServersPage />} />
           <Route path="/ai-keys" element={<AiKeysPage />} />
           <Route path="/proxies" element={<ProxiesPage />} />
+          <Route path="/backends" element={<BackendsPage />} />
           <Route path="/mail" element={<MailPage />} />
         </Route>
       </Route>

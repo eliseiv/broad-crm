@@ -356,6 +356,69 @@ export interface ProxyStatusResponse {
   last_checked_at: string | null;
 }
 
+/** Статус проверки доступности бэка (04-api.md, check_status). */
+export type BackendCheckStatus = 'pending' | 'working' | 'error';
+
+/**
+ * Элемент списка бэков (04-api.md, схема `BackendListItem`). Секрета у сущности нет —
+ * все поля (`code`/`name`/`domain`) публичны и возвращаются как есть. `code` уникален.
+ */
+export interface Backend {
+  id: string;
+  /** Бизнес-код сервиса (1–64), уникален по реестру. */
+  code: string;
+  name: string;
+  /** Нормализованный домен (`host[:port]`, без схемы/пути). Проверка — `https://{domain}/health`. */
+  domain: string;
+  check_status: BackendCheckStatus;
+  /** Рус. причина при check_status='error', иначе null. */
+  error_message: string | null;
+  /** Порядок карточки в едином списке (drag-and-drop). Меньше = выше. 04-api.md. */
+  position: number;
+  last_checked_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Ответ GET /api/backends (04-api.md, схема `BackendListResponse`). */
+export interface BackendListResponse {
+  items: Backend[];
+}
+
+/**
+ * Тело POST /api/backends (04-api.md, `BackendCreateRequest`). `code` уникален —
+ * дубликат → 409 backend_code_taken. `domain` принимается с/без схемы, нормализуется на backend.
+ */
+export interface CreateBackendRequest {
+  code: string;
+  name: string;
+  domain: string;
+}
+
+/**
+ * Тело PATCH /api/backends/{id} (04-api.md, `BackendUpdateRequest`). Все поля опциональны —
+ * передаются только изменяемые (семантика exclude_unset). Смена `code` на занятый другим
+ * бэком → 409 backend_code_taken. Смена `domain` → повторная проверка (check_status='pending').
+ */
+export interface UpdateBackendRequest {
+  code?: string;
+  name?: string;
+  domain?: string;
+}
+
+/** Тело PATCH /api/backends/order — полная перестановка единого списка (04-api.md). */
+export interface ReorderBackendsRequest {
+  ids: string[];
+}
+
+/** Лёгкий статус проверки бэка (04-api.md, `BackendStatusResponse`). */
+export interface BackendStatusResponse {
+  id: string;
+  check_status: BackendCheckStatus;
+  error_message: string | null;
+  last_checked_at: string | null;
+}
+
 /** Единый формат ошибки API (04-api.md). */
 export interface ApiErrorBody {
   error: {

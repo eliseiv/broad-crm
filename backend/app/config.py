@@ -92,6 +92,12 @@ class Settings(BaseSettings):
     # Эталонный URL проверки связности через прокси (лёгкий 204 No Content).
     proxy_check_url: str = "https://www.gstatic.com/generate_204"
 
+    # --- Монитор доступности бэков (modules/backends, ADR-020) ---
+    # Интервал периодической проверки всех бэков; монитор стартует всегда.
+    backend_check_interval_sec: int = 60
+    # Таймаут HTTP-запроса GET https://{domain}/health при проверке доступности.
+    backend_check_timeout_sec: float = 10.0
+
     # --- Модуль «Почты» (read-through-прокси, modules/mail, ADR-012) ---
     # Backend проксирует /api/mail/* во внешний сервис postapp.store, подставляя
     # MAIL_API_KEY в заголовок X-API-Key. Ключ — только из env, не в БД/логах/ответах.

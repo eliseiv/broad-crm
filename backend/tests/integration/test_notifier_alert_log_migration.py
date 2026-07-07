@@ -73,11 +73,11 @@ def test_downgrade_0005_drops_notifier_alert_log_table(
 
 
 def test_revision_chain_0005_on_top_of_0004_single_head() -> None:
-    # 0005 сидит поверх 0004; голова цепочки — последняя ревизия (0006_create_proxies,
-    # добавлена поверх 0005 фичей «Прокси», ADR-019). Цепочка остаётся линейной
-    # (одна голова). Проверка головы 0006 продублирована в test_proxies_migration.
+    # 0005 сидит поверх 0004; голова цепочки — последняя ревизия (0007_create_backends,
+    # добавлена поверх 0006 фичей «Бэки», ADR-020). Цепочка остаётся линейной
+    # (одна голова). Проверка головы 0007 продублирована в test_backends_migration.
     script = ScriptDirectory.from_config(_alembic_config())
 
-    assert script.get_heads() == ["0006_create_proxies"]  # одна голова — цепочка линейна
+    assert script.get_heads() == ["0007_create_backends"]  # одна голова — цепочка линейна
     rev = script.get_revision("0005_create_notifier_alert_log")
     assert rev.down_revision == "0004_create_notifier_state"  # 0005 сидит поверх 0004

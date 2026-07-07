@@ -11,6 +11,7 @@ const TABS: { to: string; label: string }[] = [
   { to: '/servers', label: 'Серверы' },
   { to: '/ai-keys', label: 'ИИ - ключи' },
   { to: '/proxies', label: 'Прокси' },
+  { to: '/backends', label: 'Бэки' },
 ];
 
 /**

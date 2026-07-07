@@ -1,6 +1,6 @@
 # Модуль `backends` — Реестр бэков (сервисов) с healthcheck по домену и Telegram-алертами
 
-Статус: `spec-ready` (Спринт 1) · Исполнитель: backend, frontend
+Статус: `implemented` (Спринт 2) · Исполнитель: backend, frontend
 
 ## Scope
 
@@ -198,19 +198,21 @@ Loading (skeleton), empty (только `AddBackendCard` + подсказка), 
 
 ## DoD
 
-- [ ] Endpoints и коды ошибок соответствуют [04-api.md](../../04-api.md#backends); `code` уникален (дубль → `409 backend_code_taken`); прецеденция `400`/`422` → `409`.
-- [ ] Нормализация домена (с/без схемы, завершающий `/`, path → authority) и валидация формата (`422` на невалидном); в БД хранится «голый» `host[:port]`.
-- [ ] Проверка идёт `GET https://{domain}/health` (`follow_redirects=False`, `verify=True`); строго `2xx` → `working`; таймаут/сеть/не-2xx (после ретраев) → `error` с рус. причиной, содержащей код статуса при не-2xx.
-- [ ] Матрица переходов и алерты соответствуют таблице; первая неуспешная проверка шлёт 🔴, recovery `error→working` шлёт 🟢; исхода `unknown` нет.
-- [ ] Формат обоих сообщений Telegram побайтово соответствует спецификации (`build_backend_error`/`build_backend_recovery`, блок `Бэк "<name>" [<code>] <domain>`).
-- [ ] Монитор стартует всегда; Telegram-отправка гейтится `notifier_enabled`; `check_status` обновляется независимо от бота; переходы переживают рестарт.
-- [ ] Alembic-миграция `0007_create_backends` (`down_revision="0006_create_proxies"`) с рабочим `downgrade()`; `uq_backends_code` + `ix_backends_position`.
-- [ ] `PATCH /api/backends/{id}`: смена `code` проверяет уникальность (`409`); re-check только при смене `domain`; смена `code`/`name` статус не трогает.
-- [ ] `PATCH /api/backends/order`: перестановка единого списка; полная перестановка валидируется (иначе `422`); несуществующий `id` → `404 backend_not_found`.
-- [ ] Frontend: вкладка «Бэки» в `AppLayout`, `BackendsPage` (единый список), `BackendCard`/`AddBackendCard`/`AddBackendModal` (add+edit), `409` пофилдово, drag-and-drop (клик=edit / зажатие=drag), все состояния UI, русские строки из словаря.
-- [ ] Coverage ≥90 % для функций нормализации/проверки/перехода/билдеров сообщений ([06-testing-strategy.md](../../06-testing-strategy.md)).
-- [ ] Lint/type-check/format проходят (backend и frontend).
+- [x] Endpoints и коды ошибок соответствуют [04-api.md](../../04-api.md#backends); `code` уникален (дубль → `409 backend_code_taken`); прецеденция `400`/`422` → `409`.
+- [x] Нормализация домена (с/без схемы, завершающий `/`, path → authority) и валидация формата (`422` на невалидном); в БД хранится «голый» `host[:port]`.
+- [x] Проверка идёт `GET https://{domain}/health` (`follow_redirects=False`, `verify=True`); строго `2xx` → `working`; таймаут/сеть/не-2xx (после ретраев) → `error` с рус. причиной, содержащей код статуса при не-2xx.
+- [x] Матрица переходов и алерты соответствуют таблице; первая неуспешная проверка шлёт 🔴, recovery `error→working` шлёт 🟢; исхода `unknown` нет.
+- [x] Формат обоих сообщений Telegram побайтово соответствует спецификации (`build_backend_error`/`build_backend_recovery`, блок `Бэк "<name>" [<code>] <domain>`).
+- [x] Монитор стартует всегда; Telegram-отправка гейтится `notifier_enabled`; `check_status` обновляется независимо от бота; переходы переживают рестарт.
+- [x] Alembic-миграция `0007_create_backends` (`down_revision="0006_create_proxies"`) с рабочим `downgrade()`; `uq_backends_code` + `ix_backends_position`.
+- [x] `PATCH /api/backends/{id}`: смена `code` проверяет уникальность (`409`); re-check только при смене `domain`; смена `code`/`name` статус не трогает.
+- [x] `PATCH /api/backends/order`: перестановка единого списка; полная перестановка валидируется (иначе `422`); несуществующий `id` → `404 backend_not_found`.
+- [x] Frontend: вкладка «Бэки» в `AppLayout`, `BackendsPage` (единый список), `BackendCard`/`AddBackendCard`/`AddBackendModal` (add+edit), `409` пофилдово, drag-and-drop (клик=edit / зажатие=drag), все состояния UI, русские строки из словаря.
+- [x] Coverage ≥90 % для функций нормализации/проверки/перехода/билдеров сообщений ([06-testing-strategy.md](../../06-testing-strategy.md)).
+- [x] Lint/type-check/format проходят (backend и frontend).
 
 ## Changelog
 
+- 2026-07-07: модуль реализован (Спринт 2) — backend + frontend + qa завершены, reviewer approve/production_ready. Статус `implemented`, DoD выполнен. Косметические minor architect-reviewer (полный список причин `error_message` в 03-data-model/04-api, переход `pending → [*]: DELETE` в state-диаграмме) синхронизированы (architect).
+- 2026-07-07: backend-реализация (backend). Модель `Backend`/миграция `0007_create_backends`; схемы/репозиторий/сервис (CRUD + 409 `backend_code_taken` + нормализация домена → 422 + re-check при смене `domain`); `infra/backend_check.py` (нормализация/валидация домена, `GET https://{domain}/health`, строго 2xx); `BackendMonitorService` (стартует всегда, Telegram гейтится `notifier_enabled`); билдеры `build_backend_error`/`build_backend_recovery`. Frontend — отдельной задачей.
 - 2026-07-07: спецификация создана (architect). Решение об отдельном in-backend-мониторе healthcheck бэков (по образцу прокси [ADR-019](../../adr/ADR-019-proxies-availability-monitor.md)), без секрета/Fernet, с уникальным `code`, фиксированным `GET https://{domain}/health` и строгим `2xx` — [ADR-020](../../adr/ADR-020-backends-healthcheck-monitor.md). Отложенные пункты — [TD-029](../../100-known-tech-debt.md).

@@ -357,7 +357,7 @@ CREATE INDEX ix_proxies_position ON proxies (position);
 | `name` | `text` | `NOT NULL`, 1–64 симв. | Отображаемое имя бэка. |
 | `domain` | `text` | `NOT NULL`, 1–255 симв., без схемы/пробелов/`/` | Домен бэка (нормализованный `host[:port]`, без схемы и пути). URL проверки = `https://{domain}/health`. Не секрет. |
 | `check_status` | `text` | `NOT NULL`, `DEFAULT 'pending'`, CHECK | Статус проверки: `pending` \| `working` \| `error`. Источник состояния переходов (переживает рестарт). |
-| `error_message` | `text` | `NULL` | Причина при `error` (рус.): «Таймаут подключения»/«Бэк недоступен»/«Ошибка бэка (HTTP N)». |
+| `error_message` | `text` | `NULL` | Причина при `error` (рус.): «Таймаут подключения»/«Бэк недоступен»/«Ошибка бэка (HTTP N)»/«Ошибка бэка». |
 | `position` | `integer` | `NOT NULL`, `DEFAULT 0` | Порядок карточки в **едином списке** (drag-and-drop, как серверы/прокси). См. [«Колонка `position`»](#колонка-position-порядок-карточек). |
 | `last_checked_at` | `timestamptz` | `NULL` | Время последней конклюзивной проверки (`working`/`error`), обновляется монитором. |
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
@@ -377,6 +377,7 @@ stateDiagram-v2
     working --> error: проверка провалилась (🔴 алерт)
     error --> working: GET /health → 2xx (🟢 recovery)
     error --> error: всё ещё недоступен (молча, обновляется error_message)
+    pending --> [*]: DELETE
     working --> [*]: DELETE
     error --> [*]: DELETE
 ```

@@ -17,11 +17,14 @@ from app.infra.prometheus import get_prometheus_client
 from app.infra.rate_limit import get_login_rate_limiter
 from app.infra.telegram import TelegramClient
 from app.repositories.ai_key_repository import AiKeyRepository
+from app.repositories.backend_repository import BackendRepository
 from app.repositories.proxy_repository import ProxyRepository
 from app.repositories.server_repository import ServerRepository
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.ai_key_service import AiKeyService
 from app.services.auth_service import AuthService
+from app.services.backend_monitor_service import BackendMonitorService
+from app.services.backend_service import BackendService
 from app.services.mail_service import MailService
 from app.services.monitoring_service import MonitoringService
 from app.services.provisioning_service import ProvisioningService
@@ -126,6 +129,27 @@ def get_proxy_service(
     return ProxyService(repository=ProxyRepository(session), monitor=monitor)
 
 
+def get_backend_monitor(settings: SettingsDep) -> BackendMonitorService:
+    """Монитор бэков для немедленной проверки при create/edit (собственный
+    sessionmaker для фоновой задачи). Telegram — только при notifier_enabled."""
+    telegram = (
+        TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
+        if settings.notifier_enabled
+        else None
+    )
+    return BackendMonitorService(
+        sessionmaker=get_sessionmaker(), telegram=telegram, settings=settings
+    )
+
+
+def get_backend_service(
+    session: DbSession,
+    monitor: Annotated[BackendMonitorService, Depends(get_backend_monitor)],
+) -> BackendService:
+    """Сервис реестра бэков."""
+    return BackendService(repository=BackendRepository(session), monitor=monitor)
+
+
 def get_mail_service(settings: SettingsDep) -> MailService:
     """Сервис почты (read-through-прокси к postapp.store; клиент из настроек)."""
     return MailService(client=get_mail_client(), settings=settings)
@@ -158,5 +182,6 @@ AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 ServerServiceDep = Annotated[ServerService, Depends(get_server_service)]
 AiKeyServiceDep = Annotated[AiKeyService, Depends(get_ai_key_service)]
 ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]
+BackendServiceDep = Annotated[BackendService, Depends(get_backend_service)]
 MailServiceDep = Annotated[MailService, Depends(get_mail_service)]
 ClientIp = Annotated[str, Depends(get_client_ip)]

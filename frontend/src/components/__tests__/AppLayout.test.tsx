@@ -42,6 +42,8 @@ describe('AppLayout', () => {
     expect(screen.getByRole('link', { name: 'ИИ - ключи' })).toBeInTheDocument();
     // Вкладка «Прокси» добавлена после «ИИ - ключи» (ADR-019, modules/proxies).
     expect(screen.getByRole('link', { name: 'Прокси' })).toBeInTheDocument();
+    // Вкладка «Бэки» добавлена после «Прокси» (ADR-020, modules/backends), шестая.
+    expect(screen.getByRole('link', { name: 'Бэки' })).toBeInTheDocument();
   });
 
   it('orders tabs with Дашборд first (ADR-017)', () => {
@@ -50,9 +52,9 @@ describe('AppLayout', () => {
       .getAllByRole('link')
       .map((el) => el.textContent?.trim())
       .filter((name): name is string => Boolean(name));
-    // Порядок: Дашборд → Почты → Серверы → ИИ - ключи → Прокси (08-design-system.md
-    // «Навигация»; вкладка «Прокси» — после «ИИ - ключи», ADR-019).
-    expect(tabNames).toEqual(['Дашборд', 'Почты', 'Серверы', 'ИИ - ключи', 'Прокси']);
+    // Порядок: Дашборд → Почты → Серверы → ИИ - ключи → Прокси → Бэки (08-design-system.md
+    // «Навигация»; вкладка «Прокси» — после «ИИ - ключи», ADR-019; «Бэки» — шестая, ADR-020).
+    expect(tabNames).toEqual(['Дашборд', 'Почты', 'Серверы', 'ИИ - ключи', 'Прокси', 'Бэки']);
   });
 
   it('marks the Дашборд tab active on /dashboard', () => {

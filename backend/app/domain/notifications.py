@@ -83,9 +83,26 @@ def build_proxy_recovery(name: str, host: str, port: int) -> str:
     return f"{_RECOVERY_HEADER}\n{_proxy_block(name, host, port)}\nПрокси снова работает"
 
 
+def _backend_block(code: str, name: str, domain: str) -> str:
+    """Блок идентификации бэка: имя в кавычках + код в скобках + домен как есть."""
+    return f'Бэк "{name}" [{code}] {domain}'
+
+
+def build_backend_error(code: str, name: str, domain: str, reason: str) -> str:
+    """🔴 Бэк не работает — переход `pending|working → error` (modules/backends)."""
+    return f'{_CRITICAL_HEADER}\n{_backend_block(code, name, domain)}\nБэк не работает: "{reason}"'
+
+
+def build_backend_recovery(code: str, name: str, domain: str) -> str:
+    """🟢 Бэк восстановлен — переход `error → working` (modules/backends)."""
+    return f"{_RECOVERY_HEADER}\n{_backend_block(code, name, domain)}\nБэк снова работает"
+
+
 __all__ = [
     "METRIC_LABELS",
     "MetricItem",
+    "build_backend_error",
+    "build_backend_recovery",
     "build_critical_load",
     "build_key_error",
     "build_key_recovery",

@@ -17,6 +17,7 @@ from app.infra.prometheus import get_prometheus_client
 from app.infra.telegram import TelegramClient
 from app.logging import configure_logging, get_logger
 from app.services.ai_key_monitor_service import AiKeyMonitorService
+from app.services.backend_monitor_service import BackendMonitorService
 from app.services.monitoring_service import MonitoringService
 from app.services.notifier_service import NotifierService
 from app.services.provisioning_service import ProvisioningService
@@ -88,6 +89,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     )
     proxy_monitor_task = asyncio.create_task(proxy_monitor.run())
 
+    # Монитор доступности бэков (modules/backends, ADR-020): стартует ВСЕГДА
+    # (не гейтится Telegram) — check_status для UI работает независимо от бота.
+    # Telegram-клиент передаётся только при notifier_enabled.
+    backend_telegram = (
+        TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
+        if settings.notifier_enabled
+        else None
+    )
+    backend_monitor = BackendMonitorService(
+        sessionmaker=get_sessionmaker(),
+        telegram=backend_telegram,
+        settings=settings,
+    )
+    backend_monitor_task = asyncio.create_task(backend_monitor.run())
+
     yield
 
     if notifier_task is not None:
@@ -102,6 +118,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     proxy_monitor_task.cancel()
     with suppress(asyncio.CancelledError):
         await proxy_monitor_task
+
+    backend_monitor_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await backend_monitor_task
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
