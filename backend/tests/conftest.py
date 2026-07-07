@@ -34,7 +34,7 @@ def test_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setenv("ADMIN_USER", "admin")
     monkeypatch.setenv("ADMIN_PASSWORD", "secret")
     monkeypatch.setenv("JWT_SECRET", "test-secret-with-more-than-32-bytes")
-    monkeypatch.setenv("JWT_EXPIRES_MIN", "60")
+    monkeypatch.setenv("JWT_EXPIRES_MIN", "1440")
     monkeypatch.setenv("LOGIN_RATE_LIMIT_ATTEMPTS", "3")
     monkeypatch.setenv("LOGIN_RATE_LIMIT_WINDOW_SEC", "300")
     monkeypatch.setenv("FERNET_KEY", Fernet.generate_key().decode("utf-8"))

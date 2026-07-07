@@ -29,6 +29,8 @@ flowchart TB
 
 > **Монитор AI-ключей** также не отдельный сервис: фоновая asyncio-задача внутри `backend` ([ADR-010](adr/ADR-010-ai-key-monitor-vnutri-backend.md), [modules/ai-keys](modules/ai-keys/README.md)). Стартует всегда; требует исходящий HTTPS к `api.openai.com` и `api.anthropic.com` (`GET /v1/models`) — backend должен иметь egress в интернет. Telegram-алерты о ключах используют тот же `TELEGRAM_*`-гейт.
 
+> **Монитор доступности прокси** — также фоновая asyncio-задача внутри `backend` ([ADR-019](adr/ADR-019-proxies-availability-monitor.md), [modules/proxies](modules/proxies/README.md)). Стартует всегда; проверяет каждый прокси, выполняя `GET` эталонного `PROXY_CHECK_URL` (default `https://www.gstatic.com/generate_204`) **через сам прокси** — требует исходящий сетевой доступ backend к хостам прокси и к эталонному URL. Telegram-алерты о прокси используют тот же `TELEGRAM_*`-гейт. **Зависимость:** для `socks5`-прокси backend-образ должен включать `httpx[socks]`/`socksio` (см. [02-tech-stack.md](02-tech-stack.md#backend)).
+
 > **Модуль «Почты»** — read-through-прокси без хранения ([ADR-012](adr/ADR-012-mail-read-through-proxy.md), [modules/mail](modules/mail/README.md)): `backend` синхронно проксирует `/api/mail/*` во внешний сервис `postapp.store` (HTTPS), подставляя секрет `MAIL_API_KEY` в заголовок `X-API-Key`. Требует **исходящий HTTPS egress backend → `postapp.store`** (`MAIL_API_BASE`, default `https://postapp.store`). БД под почту нет. Фронт наружу не ходит — только `/api/mail/*`. Учитывать внешний rate-limit 120 запросов/мин на IP. Пусто `MAIL_API_KEY` → почта не настроена (`503 mail_not_configured`).
 
 ## Состав сервисов
@@ -137,7 +139,7 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `ADMIN_USER` | `admin` | Логин администратора |
 | `ADMIN_PASSWORD` | `change-me` | Пароль администратора |
 | `JWT_SECRET` | `<32+ random bytes>` | Подпись JWT (HS256) |
-| `JWT_EXPIRES_MIN` | `60` | TTL access-токена, мин |
+| `JWT_EXPIRES_MIN` | `1440` | TTL access-токена, мин (24 ч; [05-security.md](05-security.md#jwt)) |
 | `JWT_ALGORITHM` | `HS256` | Алгоритм |
 | `FERNET_KEY` | `<base64 32 bytes>` | Ключ шифрования SSH-паролей |
 | `DATABASE_URL` | `postgresql+asyncpg://crm:pwd@postgres:5432/crm` | Подключение к БД |
@@ -154,6 +156,9 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `OPENAI_API_BASE` | `https://api.openai.com/v1` | Базовый URL OpenAI API (проверка ключа) |
 | `ANTHROPIC_API_BASE` | `https://api.anthropic.com/v1` | Базовый URL Anthropic API (проверка ключа) |
 | `ANTHROPIC_API_VERSION` | `2023-06-01` | Значение заголовка `anthropic-version` |
+| `PROXY_CHECK_INTERVAL_SEC` | `60` | Интервал проверки доступности прокси (с). Монитор стартует всегда; Telegram-алерты гейтятся `TELEGRAM_*` ([modules/proxies](modules/proxies/README.md), [ADR-019](adr/ADR-019-proxies-availability-monitor.md)) |
+| `PROXY_CHECK_TIMEOUT_SEC` | `10` | Таймаут проверочного HTTP-запроса через прокси (с) |
+| `PROXY_CHECK_URL` | `https://www.gstatic.com/generate_204` | Эталонный URL для проверки связности через прокси (лёгкий `204 No Content`). `2xx`/`3xx` → прокси работает |
 | `MAIL_API_BASE` | `https://postapp.store` | Базовый URL внешнего почтового сервиса (модуль «Почты», read-through-прокси — [modules/mail](modules/mail/README.md), [ADR-012](adr/ADR-012-mail-read-through-proxy.md)) |
 | `MAIL_API_KEY` | `<external api key>` | **Секрет** (только env): ключ внешнего почтового API. Подставляется backend в заголовок `X-API-Key`; не в ответах/логах/SPA/URL. Пусто → почта не настроена (`mail_enabled=false`, эндпоинты `/api/mail/*` → `503 mail_not_configured`) |
 | `MAIL_API_TIMEOUT_SEC` | `10` | Таймаут HTTP-запроса backend → `postapp.store` |

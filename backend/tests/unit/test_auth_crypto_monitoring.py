@@ -81,7 +81,7 @@ def test_auth_rate_limit_returns_429() -> None:
 def test_jwt_missing_invalid_and_expired_tokens_are_rejected() -> None:
     token, expires_in = issue_access_token("admin")
 
-    assert expires_in == 3600
+    assert expires_in == 86400
     assert decode_access_token(token) == "admin"
 
     with pytest.raises(TokenError):

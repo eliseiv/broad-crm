@@ -42,7 +42,7 @@ class Settings(BaseSettings):
 
     # --- JWT (05-security.md) ---
     jwt_secret: str = "change-me-please-use-32-bytes-min-secret"
-    jwt_expires_min: int = 60
+    jwt_expires_min: int = 1440
     jwt_algorithm: str = "HS256"
 
     # --- Шифрование SSH-паролей (Fernet, ADR-007) ---

@@ -17,7 +17,7 @@
 ### Требования
 1. Креды из настроек (`ADMIN_USER`, `ADMIN_PASSWORD`) через pydantic-settings.
 2. Сравнение логина и пароля — `secrets.compare_digest` (constant-time), оба сравнения выполняются всегда (без раннего возврата), чтобы не было timing-разницы.
-3. JWT: HS256, `JWT_SECRET`, claims `sub`, `iat`, `exp`, `type:"access"`, TTL `JWT_EXPIRES_MIN` (60).
+3. JWT: HS256, `JWT_SECRET`, claims `sub`, `iat`, `exp`, `type:"access"`, TTL `JWT_EXPIRES_MIN` (1440 мин / 24 ч, [05-security.md](../../05-security.md#jwt)).
 4. FastAPI-dependency `get_current_user`, защищающая все роутеры, кроме `/api/auth/login` и `/api/health`. Невалидный/просроченный токен → `401 unauthorized`.
 5. Rate-limit на `/api/auth/login`: по IP, 10 попыток / 5 мин (in-memory на Этапе 1), превышение → `429 rate_limited`.
 6. Единое сообщение об ошибке для неверного логина и/или пароля.
@@ -39,3 +39,4 @@
 
 ## Changelog
 - 2026-06-28: спецификация создана (architect, bootstrap).
+- 2026-07-07: TTL JWT увеличен с 60 до **1440 мин (24 ч)** по запросу пользователя (`JWT_EXPIRES_MIN`); обоснование и trade-off — [05-security.md](../../05-security.md#jwt).

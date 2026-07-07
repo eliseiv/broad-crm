@@ -14,7 +14,7 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 async def login(
     payload: LoginRequest, service: AuthServiceDep, client_ip: ClientIp
 ) -> TokenResponse:
-    """Проверяет креды админа и выдаёт JWT (HS256, TTL 60 мин)."""
+    """Проверяет креды админа и выдаёт JWT (HS256, TTL 24ч (1440 мин))."""
     return service.login(username=payload.username, password=payload.password, client_ip=client_ip)
 
 
