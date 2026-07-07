@@ -4,10 +4,12 @@ import { AlertTriangle, Inbox, Mail, RefreshCw, Tag } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
+import { InsufficientPermissions } from '@/components/InsufficientPermissions';
 import { MailDetail } from '@/components/MailDetail';
 import { MailListItem } from '@/components/MailListItem';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
+import { useCanViewPage } from '@/features/auth/hooks';
 import { useMailFeed, useMailMailboxes, useMailTeams } from '@/features/mail/hooks';
 
 /**
@@ -56,6 +58,18 @@ function CenteredState({
 }
 
 export function MailPage() {
+  // Page-level view-guard (ADR-021 §6, 08-design-system.md «Page-level view-guard»):
+  // прямой URL/навигация без `mail:view` → заглушка «Недостаточно прав» (page-scoped),
+  // а не контент. Супер-админ/admin — всегда доступ. Единственный хук до раннего
+  // возврата — гейт; лента (useMailFeed и др.) не запрашивается без права.
+  const canView = useCanViewPage('mail');
+  if (!canView) {
+    return <InsufficientPermissions />;
+  }
+  return <MailInbox />;
+}
+
+function MailInbox() {
   // Серверный фильтр ленты (взаимоисключающи почта↔команда). Входит в queryKey ленты:
   // смена фильтра ре-запрашивает ленту, сбрасывает пагинацию и авто-выбор — ADR-017.
   const [mailAccountId, setMailAccountId] = useState<number | undefined>(undefined);

@@ -4,7 +4,9 @@ import { KeyRound, Mail, RefreshCw, Server } from 'lucide-react';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { InsufficientPermissions } from '@/components/InsufficientPermissions';
 import { ApiError } from '@/lib/api';
+import { useCanViewPage } from '@/features/auth/hooks';
 import { useAiKeys } from '@/features/ai-keys/hooks';
 import { useMailMailboxes } from '@/features/mail/hooks';
 import { useServers } from '@/features/servers/hooks';
@@ -24,6 +26,14 @@ interface Counter {
  * Состояния карточек независимы (ошибка/пустота одной не ломает остальные).
  */
 export function DashboardPage() {
+  // Page-level view-guard (ADR-021 §6, 08-design-system.md «Page-level view-guard»):
+  // прямой URL/навигация без `dashboard:view` → заглушка «Недостаточно прав»
+  // (page-scoped), а не контент. Супер-админ/admin — всегда доступ.
+  const canView = useCanViewPage('dashboard');
+  if (!canView) {
+    return <InsufficientPermissions />;
+  }
+
   return (
     <>
       <div className="mb-6">

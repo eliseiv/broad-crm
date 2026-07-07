@@ -3,6 +3,11 @@ import type { PropsWithChildren } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it } from 'vitest';
 import { AdminRoute } from '@/routes/AdminRoute';
+import {
+  INSUFFICIENT_PERMISSIONS_TITLE,
+  NO_SECTION_ACCESS_HINT,
+} from '@/components/InsufficientPermissions';
+import { useAuthStore } from '@/store/auth';
 import { loginAs, logout } from '@/test/authTestUtils';
 
 function renderAdmin() {
@@ -35,10 +40,19 @@ describe('AdminRoute (admin-only guard, ADR-021)', () => {
     expect(screen.getByText('USERS PAGE')).toBeInTheDocument();
   });
 
-  it('redirects a non-admin to /dashboard (session not cleared)', () => {
+  it('shows the page-scoped «Недостаточно прав» stub for a non-admin (no redirect, session kept)', () => {
+    // ADR-021 §6: AdminRoute для /users показывает page-scoped заглушку, а НЕ
+    // редиректит на /dashboard и НЕ сбрасывает сессию.
     loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { servers: ['view'] } });
     renderAdmin();
-    expect(screen.getByText('DASHBOARD')).toBeInTheDocument();
+
+    // Page-scoped заглушка «нет доступа к разделу» (доступ к другим разделам может быть).
+    expect(screen.getByText(INSUFFICIENT_PERMISSIONS_TITLE)).toBeInTheDocument();
+    expect(screen.getByText(NO_SECTION_ACCESS_HINT)).toBeInTheDocument();
+    // Контент /users скрыт; редиректа на /dashboard нет.
     expect(screen.queryByText('USERS PAGE')).not.toBeInTheDocument();
+    expect(screen.queryByText('DASHBOARD')).not.toBeInTheDocument();
+    // Сессия НЕ сброшена (403 ≠ 401).
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
   });
 });

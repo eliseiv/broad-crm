@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, RefreshCw, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -8,13 +8,26 @@ import { AddBackendCard } from '@/components/AddBackendCard';
 import { AddBackendModal } from '@/components/AddBackendModal';
 import { BackendCard } from '@/components/BackendCard';
 import { BackendCardSkeleton } from '@/components/BackendCardSkeleton';
+import { InsufficientPermissions } from '@/components/InsufficientPermissions';
 import { SortableItem } from '@/components/SortableItem';
 import { Button } from '@/components/ui/Button';
 import { ApiError } from '@/lib/api';
-import { useCan } from '@/features/auth/hooks';
+import { useCan, useCanViewPage } from '@/features/auth/hooks';
 import { useBackends, useReorderBackends } from '@/features/backends/hooks';
 
 export function BackendsPage() {
+  // Page-level view-guard (ADR-021 §6, 08-design-system.md «Page-level view-guard»):
+  // прямой URL/навигация без `backends:view` → заглушка «Недостаточно прав»
+  // (page-scoped), а не контент. Супер-админ/admin — всегда доступ; список не
+  // запрашивается без права.
+  const canView = useCanViewPage('backends');
+  if (!canView) {
+    return <InsufficientPermissions />;
+  }
+  return <BackendsList />;
+}
+
+function BackendsList() {
   const { data, isLoading, isError, error, refetch, isFetching } = useBackends();
   const [addOpen, setAddOpen] = useState(false);
   const reorderMutation = useReorderBackends();
@@ -76,12 +89,7 @@ export function BackendsPage() {
         </div>
       )}
 
-      {isError && forbiddenMessage && (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">
-          <ShieldAlert className="h-10 w-10 text-text-tertiary" aria-hidden="true" />
-          <p className="text-base font-semibold text-text-primary">{forbiddenMessage}</p>
-        </div>
-      )}
+      {isError && forbiddenMessage && <InsufficientPermissions />}
 
       {isError && !isAuthError && !forbiddenMessage && (
         <div className="flex flex-col items-center justify-center gap-4 rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">

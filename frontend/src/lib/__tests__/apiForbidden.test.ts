@@ -12,12 +12,14 @@ describe('api client — 403 forbidden handling (RBAC, ADR-021)', () => {
     useAuthStore.getState().setSession('jwt-token', 'operator');
     vi.stubGlobal(
       'fetch',
-      vi.fn().mockResolvedValue(
-        new Response(
-          JSON.stringify({ error: { code: 'forbidden', message: 'Недостаточно прав' } }),
-          { status: 403 },
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            JSON.stringify({ error: { code: 'forbidden', message: 'Недостаточно прав' } }),
+            { status: 403 },
+          ),
         ),
-      ),
     );
 
     const error = await apiRequest('/servers').catch((e: unknown) => e);

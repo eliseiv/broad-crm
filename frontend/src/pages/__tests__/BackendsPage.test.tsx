@@ -6,8 +6,12 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import { BackendsPage } from '@/pages/BackendsPage';
+import {
+  INSUFFICIENT_PERMISSIONS_TITLE,
+  NO_SECTION_ACCESS_HINT,
+} from '@/components/InsufficientPermissions';
 import { ApiError } from '@/lib/api';
-import { loginSuperadmin } from '@/test/authTestUtils';
+import { loginAs, loginSuperadmin } from '@/test/authTestUtils';
 import type { Backend } from '@/types/api';
 
 const backendsHook = vi.hoisted(() => ({
@@ -141,5 +145,16 @@ describe('BackendsPage', () => {
     render(<BackendsPage />, { wrapper });
 
     expect(screen.getByText('Проверка…')).toBeInTheDocument();
+  });
+
+  it('user without backends:view sees the page-scoped stub, list is not rendered (ADR-021 §6)', () => {
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    backendsHook.value = { ...backendsHook.value, data: { items: [backend()] } };
+    render(<BackendsPage />, { wrapper });
+
+    expect(screen.getByText(INSUFFICIENT_PERMISSIONS_TITLE)).toBeInTheDocument();
+    expect(screen.getByText(NO_SECTION_ACCESS_HINT)).toBeInTheDocument();
+    // Контент списка скрыт (guard короткозамыкает до рендера списка бэков).
+    expect(screen.queryByText('API EU')).not.toBeInTheDocument();
   });
 });

@@ -1,5 +1,5 @@
-import { ShieldAlert } from 'lucide-react';
 import { Navigate } from 'react-router-dom';
+import { InsufficientPermissions } from '@/components/InsufficientPermissions';
 import { useIsAdmin } from '@/features/auth/hooks';
 import { useAuthStore } from '@/store/auth';
 
@@ -42,20 +42,7 @@ export function DefaultRoute() {
     return <Navigate to={firstTab.path} replace />;
   }
 
-  return <NoAccessStub />;
-}
-
-/** Заглушка «Недостаточно прав» — тексты дословно из словаря (08-design-system.md). */
-function NoAccessStub() {
-  return (
-    <div className="flex flex-col items-center justify-center gap-4 rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">
-      <ShieldAlert className="h-10 w-10 text-text-tertiary" aria-hidden="true" />
-      <div className="max-w-md">
-        <p className="text-lg font-semibold text-text-primary">Недостаточно прав</p>
-        <p className="mt-1 text-[13px] text-text-secondary">
-          У вашей учётной записи нет доступа ни к одному разделу. Обратитесь к администратору.
-        </p>
-      </div>
-    </div>
-  );
+  // Нет ни одного `view` (и не admin/superadmin) — заглушка «нет ни одного раздела»
+  // (global-scope), БЕЗ сброса сессии и БЕЗ редиректа на /login (08-design-system.md).
+  return <InsufficientPermissions scope="global" />;
 }

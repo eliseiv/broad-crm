@@ -3,7 +3,11 @@ import { render, screen } from '@testing-library/react';
 import type { PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AiKeysPage } from '@/pages/AiKeysPage';
-import { loginSuperadmin } from '@/test/authTestUtils';
+import {
+  INSUFFICIENT_PERMISSIONS_TITLE,
+  NO_SECTION_ACCESS_HINT,
+} from '@/components/InsufficientPermissions';
+import { loginAs, loginSuperadmin } from '@/test/authTestUtils';
 import type { AiKey } from '@/types/api';
 
 const aiKeysHook = vi.hoisted(() => ({
@@ -97,5 +101,19 @@ describe('AiKeysPage grouping', () => {
 
     expect(screen.getByText('Пока нет ключей')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { level: 2 })).not.toBeInTheDocument();
+  });
+
+  it('user without ai-keys:view sees the page-scoped stub, list is not rendered (ADR-021 §6)', () => {
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    aiKeysHook.value = {
+      ...aiKeysHook.value,
+      data: { items: [makeKey({ id: 'o1', name: 'GPT One', provider: 'openai' })] },
+    };
+    render(<AiKeysPage />, { wrapper });
+
+    expect(screen.getByText(INSUFFICIENT_PERMISSIONS_TITLE)).toBeInTheDocument();
+    expect(screen.getByText(NO_SECTION_ACCESS_HINT)).toBeInTheDocument();
+    // Контент списка скрыт (guard короткозамыкает до рендера списка ключей).
+    expect(screen.queryByText('GPT One')).not.toBeInTheDocument();
   });
 });

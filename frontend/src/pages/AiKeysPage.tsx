@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, RefreshCw, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
@@ -8,10 +8,11 @@ import { AddAiKeyCard } from '@/components/AddAiKeyCard';
 import { AddAiKeyModal } from '@/components/AddAiKeyModal';
 import { AiKeyCard } from '@/components/AiKeyCard';
 import { AiKeyCardSkeleton } from '@/components/AiKeyCardSkeleton';
+import { InsufficientPermissions } from '@/components/InsufficientPermissions';
 import { SortableItem } from '@/components/SortableItem';
 import { Button } from '@/components/ui/Button';
 import { ApiError } from '@/lib/api';
-import { useCan } from '@/features/auth/hooks';
+import { useCan, useCanViewPage } from '@/features/auth/hooks';
 import { useAiKeys, useReorderAiKeys } from '@/features/ai-keys/hooks';
 import type { AiKey, AiProvider } from '@/types/api';
 
@@ -23,6 +24,18 @@ const PROVIDER_LABEL: Record<AiProvider, string> = {
 };
 
 export function AiKeysPage() {
+  // Page-level view-guard (ADR-021 §6, 08-design-system.md «Page-level view-guard»):
+  // прямой URL/навигация без `ai-keys:view` → заглушка «Недостаточно прав»
+  // (page-scoped), а не контент. Супер-админ/admin — всегда доступ; список не
+  // запрашивается без права.
+  const canView = useCanViewPage('ai-keys');
+  if (!canView) {
+    return <InsufficientPermissions />;
+  }
+  return <AiKeysList />;
+}
+
+function AiKeysList() {
   const { data, isLoading, isError, error, refetch, isFetching } = useAiKeys();
   const [addOpen, setAddOpen] = useState(false);
   const [addProvider, setAddProvider] = useState<AiProvider | undefined>(undefined);
@@ -92,12 +105,7 @@ export function AiKeysPage() {
         </div>
       )}
 
-      {isError && forbiddenMessage && (
-        <div className="flex flex-col items-center justify-center gap-3 rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">
-          <ShieldAlert className="h-10 w-10 text-text-tertiary" aria-hidden="true" />
-          <p className="text-base font-semibold text-text-primary">{forbiddenMessage}</p>
-        </div>
-      )}
+      {isError && forbiddenMessage && <InsufficientPermissions />}
 
       {isError && !isAuthError && !forbiddenMessage && (
         <div className="flex flex-col items-center justify-center gap-4 rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">

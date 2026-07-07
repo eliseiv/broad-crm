@@ -6,8 +6,12 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { toast } from 'sonner';
 import { ProxiesPage } from '@/pages/ProxiesPage';
+import {
+  INSUFFICIENT_PERMISSIONS_TITLE,
+  NO_SECTION_ACCESS_HINT,
+} from '@/components/InsufficientPermissions';
 import { ApiError } from '@/lib/api';
-import { loginSuperadmin } from '@/test/authTestUtils';
+import { loginAs, loginSuperadmin } from '@/test/authTestUtils';
 import type { Proxy } from '@/types/api';
 
 const proxiesHook = vi.hoisted(() => ({
@@ -144,5 +148,16 @@ describe('ProxiesPage', () => {
     render(<ProxiesPage />, { wrapper });
 
     expect(screen.getByText('Проверка…')).toBeInTheDocument();
+  });
+
+  it('user without proxies:view sees the page-scoped stub, list is not rendered (ADR-021 §6)', () => {
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    proxiesHook.value = { ...proxiesHook.value, data: { items: [proxy()] } };
+    render(<ProxiesPage />, { wrapper });
+
+    expect(screen.getByText(INSUFFICIENT_PERMISSIONS_TITLE)).toBeInTheDocument();
+    expect(screen.getByText(NO_SECTION_ACCESS_HINT)).toBeInTheDocument();
+    // Контент списка скрыт (guard короткозамыкает до рендера списка прокси).
+    expect(screen.queryByText('DE Residential')).not.toBeInTheDocument();
   });
 });

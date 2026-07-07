@@ -1,8 +1,13 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { DashboardPage } from '@/pages/DashboardPage';
+import {
+  INSUFFICIENT_PERMISSIONS_TITLE,
+  NO_SECTION_ACCESS_HINT,
+} from '@/components/InsufficientPermissions';
 import { ApiError } from '@/lib/api';
+import { loginAs, loginSuperadmin, logout } from '@/test/authTestUtils';
 import type { AiKey, MailMailbox, Server } from '@/types/api';
 
 // Навигация по клику — spy на useNavigate (клик по карточке = переход в раздел, ADR-017).
@@ -95,14 +100,39 @@ function card(title: string): HTMLElement {
 describe('DashboardPage', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Контент дашборда доступен только с `dashboard:view` (page-level view-guard,
+    // ADR-021 §6). Существующие кейсы контента прогоняем как супер-админ.
+    loginSuperadmin();
     setAllSuccess();
   });
+
+  afterEach(() => logout());
 
   it('renders three section cards', () => {
     render(<DashboardPage />);
     expect(card('Почты')).toBeInTheDocument();
     expect(card('Серверы')).toBeInTheDocument();
     expect(card('ИИ - ключи')).toBeInTheDocument();
+  });
+
+  it('renders the page-scoped «Недостаточно прав» stub when the user lacks dashboard:view', () => {
+    // Обычный пользователь с доступом к другому разделу, но без `dashboard:view`.
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    render(<DashboardPage />);
+
+    // Page-scoped заглушка (не «нет ни одного раздела») вместо контента, ADR-021 §6.
+    expect(screen.getByText(INSUFFICIENT_PERMISSIONS_TITLE)).toBeInTheDocument();
+    expect(screen.getByText(NO_SECTION_ACCESS_HINT)).toBeInTheDocument();
+    // Карточки/данные разделов скрыты: guard короткозамыкает до их рендера.
+    expect(
+      screen.queryByRole('button', { name: /Почты — открыть раздел/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Серверы — открыть раздел/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /ИИ - ключи — открыть раздел/ }),
+    ).not.toBeInTheDocument();
   });
 
   it('client-side counts active/inactive mailboxes by is_active', () => {

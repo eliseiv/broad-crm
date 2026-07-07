@@ -2,11 +2,18 @@ import { render, screen, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MailPage } from '@/pages/MailPage';
+import {
+  INSUFFICIENT_PERMISSIONS_TITLE,
+  NO_SECTION_ACCESS_HINT,
+} from '@/components/InsufficientPermissions';
 import { ApiError } from '@/lib/api';
+import { loginAs, loginSuperadmin, logout } from '@/test/authTestUtils';
 import type { MailFeedResult } from '@/features/mail/hooks';
 import type { MailMessage } from '@/types/api';
 
 const feed = vi.hoisted(() => ({ value: null as unknown }));
+// Spy для проверки, что лента НЕ запрашивается за page-level view-guard (ADR-021 §6).
+const useMailFeedSpy = vi.hoisted(() => vi.fn());
 // Справочники дропдаунов «Почта»/«Команда» (серверные фильтры, ADR-017) — управляемы
 // из тестов; по умолчанию отдают по одной опции, чтобы тулбар был полнофункционален.
 const mailboxes = vi.hoisted(() => ({
@@ -29,7 +36,10 @@ const teams = vi.hoisted(() => ({
 }));
 
 vi.mock('@/features/mail/hooks', () => ({
-  useMailFeed: () => feed.value,
+  useMailFeed: (args: unknown) => {
+    useMailFeedSpy(args);
+    return feed.value;
+  },
   // MailDetail → MailReplyForm использует useReplyMail — мокаем как no-op мутацию.
   useReplyMail: () => ({ mutate: vi.fn(), isPending: false }),
   // Дропдауны серверных фильтров тянут справочники ящиков/команд (ADR-017).
@@ -108,10 +118,14 @@ describe('MailPage master-detail', () => {
     vi.clearAllMocks();
     ioCallback = null;
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+    // Контент почты доступен только с `mail:view` (page-level view-guard, ADR-021 §6).
+    // Существующие кейсы контента прогоняем как супер-админ.
+    loginSuperadmin();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    logout();
   });
 
   it('shows "Сервис почт не настроен" on 503 without toast spam', () => {
@@ -198,10 +212,14 @@ describe('MailPage "С тегами" filter', () => {
     vi.clearAllMocks();
     ioCallback = null;
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+    // Контент почты доступен только с `mail:view` (page-level view-guard, ADR-021 §6).
+    // Существующие кейсы контента прогоняем как супер-админ.
+    loginSuperadmin();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    logout();
   });
 
   it('toggles aria-pressed on the filter button', async () => {
@@ -280,10 +298,14 @@ describe('MailPage server filters (Почта/Команда dropdowns)', () => 
     vi.clearAllMocks();
     ioCallback = null;
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+    // Контент почты доступен только с `mail:view` (page-level view-guard, ADR-021 §6).
+    // Существующие кейсы контента прогоняем как супер-админ.
+    loginSuperadmin();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    logout();
   });
 
   function getMailboxSelect(): HTMLSelectElement {
@@ -368,10 +390,14 @@ describe('MailPage scrollbar hiding (scrollbar-none on the list scroll container
     vi.clearAllMocks();
     ioCallback = null;
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+    // Контент почты доступен только с `mail:view` (page-level view-guard, ADR-021 §6).
+    // Существующие кейсы контента прогоняем как супер-админ.
+    loginSuperadmin();
   });
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    logout();
   });
 
   // Скролл-контейнер списка — единственный div с overflow-y-auto (у <pre> тела — overflow-auto,
@@ -398,5 +424,48 @@ describe('MailPage scrollbar hiding (scrollbar-none on the list scroll container
     // Прокрутка сохранена: контейнер остаётся overflow-y-auto и НЕ становится overflow-hidden.
     expect(list?.classList.contains('overflow-y-auto')).toBe(true);
     expect(list?.classList.contains('overflow-hidden')).toBe(false);
+  });
+});
+
+// Page-level view-guard (ADR-021 §6, 08-design-system.md «Page-level view-guard»):
+// прямой URL/навигация без `mail:view` → page-scoped заглушка «Недостаточно прав»,
+// лента не запрашивается.
+describe('MailPage view-guard (mail:view)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ioCallback = null;
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    logout();
+  });
+
+  it('renders the page-scoped stub and does not request the feed without mail:view', () => {
+    // Обычный пользователь с доступом к другому разделу, но без `mail:view`.
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { servers: ['view'] } });
+    feed.value = baseFeed({ messages: [makeMessage(2)] });
+    render(<MailPage />);
+
+    // Page-scoped заглушка (не «нет ни одного раздела»), ADR-021 §6.
+    expect(screen.getByText(INSUFFICIENT_PERMISSIONS_TITLE)).toBeInTheDocument();
+    expect(screen.getByText(NO_SECTION_ACCESS_HINT)).toBeInTheDocument();
+    // Лента не запрашивается — useMailFeed не вызывается за guard'ом.
+    expect(useMailFeedSpy).not.toHaveBeenCalled();
+    // Тулбар фильтров и master-detail скрыты (контента нет).
+    expect(screen.queryByRole('button', { name: /С тегами/ })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Почта')).not.toBeInTheDocument();
+  });
+
+  it('renders the mail content for a user holding mail:view', () => {
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
+    render(<MailPage />);
+
+    // Guard пропускает — лента запрашивается, контент виден.
+    expect(useMailFeedSpy).toHaveBeenCalled();
+    expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
+    expect(screen.queryByText(INSUFFICIENT_PERMISSIONS_TITLE)).not.toBeInTheDocument();
   });
 });

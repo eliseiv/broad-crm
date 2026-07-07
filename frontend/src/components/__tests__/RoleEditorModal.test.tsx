@@ -89,7 +89,9 @@ describe('RoleEditorModal (матрица прав и коды ошибок, ADR
       opts.onError(new ApiError(409, 'role_in_use', 'Роль назначена пользователям')),
     );
 
-    render(<RoleEditorModal open onOpenChange={vi.fn()} catalog={CATALOG} mode="edit" role={role} />);
+    render(
+      <RoleEditorModal open onOpenChange={vi.fn()} catalog={CATALOG} mode="edit" role={role} />,
+    );
 
     await user.click(screen.getByRole('button', { name: /удалить/i }));
     // Подтверждение удаления во втором модальном окне.

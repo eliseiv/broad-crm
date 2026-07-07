@@ -5,6 +5,10 @@ import type { PropsWithChildren } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServersPage } from '@/pages/ServersPage';
+import {
+  INSUFFICIENT_PERMISSIONS_TITLE,
+  NO_SECTION_ACCESS_HINT,
+} from '@/components/InsufficientPermissions';
 import { loginAs, loginSuperadmin } from '@/test/authTestUtils';
 import type { Server } from '@/types/api';
 
@@ -149,5 +153,18 @@ describe('ServersPage', () => {
     expect(screen.getByText('Server 01')).toBeInTheDocument();
     // Кнопка/карточка «Добавить» скрыта по правам (canCreate=false).
     expect(screen.queryByText('Добавить')).not.toBeInTheDocument();
+  });
+
+  it('user without servers:view sees the page-scoped stub, list is not rendered (ADR-021 §6)', () => {
+    // Есть доступ к другому разделу, но нет `servers:view` → page-level view-guard.
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    serversHook.value = { ...serversHook.value, data: { items: [server()] } };
+
+    render(<ServersPage />, { wrapper });
+
+    expect(screen.getByText(INSUFFICIENT_PERMISSIONS_TITLE)).toBeInTheDocument();
+    expect(screen.getByText(NO_SECTION_ACCESS_HINT)).toBeInTheDocument();
+    // Контент списка скрыт (guard короткозамыкает до рендера ServersList).
+    expect(screen.queryByText('Server 01')).not.toBeInTheDocument();
   });
 });

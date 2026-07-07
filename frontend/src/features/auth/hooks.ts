@@ -72,3 +72,15 @@ export function useIsAdmin(): boolean {
   const role = useAuthStore((s) => s.role);
   return isSuperadmin || role === 'admin';
 }
+
+/**
+ * Page-level view-guard для permission-gated страницы (UI-гейтинг, только UX).
+ * Супер-админ и `role=="admin"` видят все страницы; иначе доступ ⇔ `view` ∈
+ * `permissions[page]`. Единый источник безопасности — серверный `403`
+ * (ADR-021 §6, 08-design-system.md «Page-level view-guard»).
+ */
+export function useCanViewPage(page: string): boolean {
+  const isAdmin = useIsAdmin();
+  const canView = useCan(page, 'view');
+  return isAdmin || canView;
+}
