@@ -50,6 +50,18 @@ erDiagram
         timestamptz created_at
         timestamptz updated_at
     }
+    BACKENDS {
+        uuid id PK
+        text code
+        text name
+        text domain
+        text check_status
+        text error_message
+        int position
+        timestamptz last_checked_at
+        timestamptz created_at
+        timestamptz updated_at
+    }
     NOTIFIER_SERVER_STATE {
         uuid server_id PK_FK
         boolean online
@@ -70,7 +82,7 @@ erDiagram
     SERVERS ||--o{ NOTIFIER_ALERT_LOG : "1:N (ON DELETE SET NULL)"
 ```
 
-`servers`, `ai_keys` и `proxies` — независимые таблицы (связей между ними нет: один админ; метрики серверов во внешней системе; AI-ключи проверяются у внешних провайдеров; прокси проверяются прямым запросом через прокси). `proxies` с нотификатором не связан (его состояние — в `proxies.check_status`, отдельный монитор — [ADR-019](adr/ADR-019-proxies-availability-monitor.md)). `notifier_server_state` — **1:1-расширение** `servers` (per-server состояние нотификатора), связано FK `server_id → servers.id` с `ON DELETE CASCADE`; `ai_keys` с нотификатором не связан (его состояние — в `ai_keys.check_status`). `notifier_alert_log` — **1:N append-only-лог** отправленных серверных алертов ([ADR-018](adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)), связан FK `server_id → servers.id` с **`ON DELETE SET NULL`** (лог переживает удаление сервера — в отличие от `notifier_server_state`).
+`servers`, `ai_keys`, `proxies` и `backends` — независимые таблицы (связей между ними нет: один админ; метрики серверов во внешней системе; AI-ключи проверяются у внешних провайдеров; прокси проверяются прямым запросом через прокси; бэки проверяются `GET https://{домен}/health`). `backends` с нотификатором не связан (его состояние — в `backends.check_status`, отдельный монитор — [ADR-020](adr/ADR-020-backends-healthcheck-monitor.md)). `proxies` с нотификатором не связан (его состояние — в `proxies.check_status`, отдельный монитор — [ADR-019](adr/ADR-019-proxies-availability-monitor.md)). `notifier_server_state` — **1:1-расширение** `servers` (per-server состояние нотификатора), связано FK `server_id → servers.id` с `ON DELETE CASCADE`; `ai_keys` с нотификатором не связан (его состояние — в `ai_keys.check_status`). `notifier_alert_log` — **1:N append-only-лог** отправленных серверных алертов ([ADR-018](adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)), связан FK `server_id → servers.id` с **`ON DELETE SET NULL`** (лог переживает удаление сервера — в отличие от `notifier_server_state`).
 
 ## Таблица `servers`
 
@@ -334,6 +346,86 @@ CREATE INDEX ix_proxies_position ON proxies (position);
 
 ---
 
+## Таблица `backends`
+
+Реестр бэков (backend-сервисов) с автоматической проверкой доступности по HTTP-эндпоинту здоровья. Модуль — [modules/backends](modules/backends/README.md), API — [04-api.md](04-api.md#backends), решение — [ADR-020](adr/ADR-020-backends-healthcheck-monitor.md). Устроена по образцу `proxies` (модель со статусом + фоновый монитор), но **проще**: секрета нет (нет Fernet); идентификатор `code` **уникален**; проверка — прямой `GET https://{domain}/health` (без прокси-туннеля); список **единый** (без группировки).
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `id` | `uuid` | PK, `DEFAULT gen_random_uuid()` | Идентификатор бэка. |
+| `code` | `text` | `NOT NULL`, `UNIQUE`, 1–64 симв. | Бизнес-код сервиса (уникален). Дубликат → `409 backend_code_taken`. Не секрет — возвращается в API. |
+| `name` | `text` | `NOT NULL`, 1–64 симв. | Отображаемое имя бэка. |
+| `domain` | `text` | `NOT NULL`, 1–255 симв., без схемы/пробелов/`/` | Домен бэка (нормализованный `host[:port]`, без схемы и пути). URL проверки = `https://{domain}/health`. Не секрет. |
+| `check_status` | `text` | `NOT NULL`, `DEFAULT 'pending'`, CHECK | Статус проверки: `pending` \| `working` \| `error`. Источник состояния переходов (переживает рестарт). |
+| `error_message` | `text` | `NULL` | Причина при `error` (рус.): «Таймаут подключения»/«Бэк недоступен»/«Ошибка бэка (HTTP N)». |
+| `position` | `integer` | `NOT NULL`, `DEFAULT 0` | Порядок карточки в **едином списке** (drag-and-drop, как серверы/прокси). См. [«Колонка `position`»](#колонка-position-порядок-карточек). |
+| `last_checked_at` | `timestamptz` | `NULL` | Время последней конклюзивной проверки (`working`/`error`), обновляется монитором. |
+| `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
+| `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
+
+> Секрета у бэка нет — все поля публичны, возвращаются в API как есть. `code` уникален (`UNIQUE`), даёт детерминированный `409` при дубле. `domain` хранится **нормализованным** (без схемы `http(s)://`, без завершающего `/` и пути) — нормализация на входе (`POST`/`PATCH`), детали — [modules/backends](modules/backends/README.md#нормализация-домена-и-проверка-нормативно).
+
+### Перечисление `check_status`
+
+Конечный автомат статуса (состояние в БД, переживает рестарт — [ADR-020](adr/ADR-020-backends-healthcheck-monitor.md)):
+
+```mermaid
+stateDiagram-v2
+    [*] --> pending: POST /api/backends
+    pending --> working: GET /health → 2xx (молча)
+    pending --> error: проверка провалилась (🔴 алерт)
+    working --> error: проверка провалилась (🔴 алерт)
+    error --> working: GET /health → 2xx (🟢 recovery)
+    error --> error: всё ещё недоступен (молча, обновляется error_message)
+    working --> [*]: DELETE
+    error --> [*]: DELETE
+```
+
+> Как у `proxies`, у бэков **нет** исхода `unknown`: недоступность бэка и есть отслеживаемое событие. Транзиентность гасится ретраями внутри одной проверки (см. [modules/backends](modules/backends/README.md#нормализация-домена-и-проверка-нормативно)).
+
+### DDL (концепт миграции)
+
+> Реализуется через Alembic. **Требование (нормативно):** миграция ОБЯЗАНА иметь рабочий `downgrade()` (`DROP TABLE backends` + индексы), протестированный на откат — см. [07-deployment.md](07-deployment.md#откат-миграций-бд).
+
+```sql
+CREATE TABLE backends (
+    id                  uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    code                text NOT NULL CHECK (char_length(code) BETWEEN 1 AND 64),
+    name                text NOT NULL CHECK (char_length(name) BETWEEN 1 AND 64),
+    domain              text NOT NULL
+                            CHECK (char_length(domain) BETWEEN 1 AND 255 AND domain ~ '^[^\s/]+$'),
+    check_status        text NOT NULL DEFAULT 'pending'
+                            CHECK (check_status IN ('pending','working','error')),
+    error_message       text,
+    position            integer NOT NULL DEFAULT 0,
+    last_checked_at     timestamptz,
+    created_at          timestamptz NOT NULL DEFAULT now(),
+    updated_at          timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE UNIQUE INDEX uq_backends_code ON backends (code);
+CREATE INDEX ix_backends_position ON backends (position);
+```
+
+### Индексы и обоснование
+- `uq_backends_code` (UNIQUE) — нельзя добавить бэк с уже занятым `code`; даёт детерминированную ошибку конфликта (`409 backend_code_taken`).
+- `ix_backends_position` — стабильная сортировка списка `GET /api/backends` по `position ASC` (порядок drag-and-drop), тай-брейк `created_at DESC`, `id`. Отдельный индекс по `created_at` не нужен (тай-брейк на ≤ десятков строк).
+- CHECK домена `domain ~ '^[^\s/]+$'` — инвариант нормализации: в БД хранится «голый» домен (без схемы `//`, без пробелов и слэшей); полная валидация формата хоста — на уровне приложения (Pydantic, `422`).
+
+### Политика удаления
+
+Этап 1 — **hard delete** (`DELETE FROM backends WHERE id = ...`). Soft-delete/аудит — будущий этап ([TD-001](100-known-tech-debt.md)).
+
+## Миграция `0007_create_backends` (концепт)
+
+> Реализуется через Alembic. `down_revision = "0006_create_proxies"` (текущая голова цепочки). **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат на одну ревизию — см. [07-deployment.md](07-deployment.md#откат-миграций-бд).
+
+**`upgrade()`** — создать таблицу `backends` (DDL выше) + уникальный индекс `uq_backends_code` + индекс `ix_backends_position`. Backfill не выполняется (таблица стартует пустой).
+
+**`downgrade()`** — `DROP TABLE backends` (индексы снимаются вместе с таблицей).
+
+---
+
 ## Таблица `notifier_server_state`
 
 Персистентное состояние Telegram-нотификатора **per-server**: последняя наблюдённая зона каждой метрики и флаг доступности. Переживает рестарт/деплой backend → закрывает [TD-019](100-known-tech-debt.md). Решение — [ADR-014](adr/ADR-014-persist-notifier-state-alert-on-first-elevated.md); state-машина, дедуп и правило alert-on-first-elevated — [modules/notifier](modules/notifier/README.md#state-машина-персистентная). Не путать с состоянием AI-ключей (`ai_keys.check_status`) — это отдельный сервис ([ADR-010](adr/ADR-010-ai-key-monitor-vnutri-backend.md)).
@@ -434,7 +526,7 @@ CREATE INDEX ix_notifier_alert_log_created_at ON notifier_alert_log (created_at 
 
 ## Колонка `position` (порядок карточек)
 
-Общая для `servers`, `ai_keys` и `proxies`. Хранит пользовательский порядок карточек (drag-and-drop), решение — [ADR-011](adr/ADR-011-poryadok-blokov-server-side-dnd-kit.md). API — [04-api.md](04-api.md#перестановка-порядок-карточек). `proxies` — **единый список** (как `servers`, `position` уникален по всей таблице после перестановки); группировки, как у `ai_keys`, нет.
+Общая для `servers`, `ai_keys`, `proxies` и `backends`. Хранит пользовательский порядок карточек (drag-and-drop), решение — [ADR-011](adr/ADR-011-poryadok-blokov-server-side-dnd-kit.md). API — [04-api.md](04-api.md#перестановка-порядок-карточек). `proxies` и `backends` — **единый список** (как `servers`, `position` уникален по всей таблице после перестановки); группировки, как у `ai_keys`, нет.
 
 **Правило сортировки (нормативно, одинаково для обеих таблиц):**
 

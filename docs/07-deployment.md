@@ -159,6 +159,8 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `PROXY_CHECK_INTERVAL_SEC` | `60` | Интервал проверки доступности прокси (с). Монитор стартует всегда; Telegram-алерты гейтятся `TELEGRAM_*` ([modules/proxies](modules/proxies/README.md), [ADR-019](adr/ADR-019-proxies-availability-monitor.md)) |
 | `PROXY_CHECK_TIMEOUT_SEC` | `10` | Таймаут проверочного HTTP-запроса через прокси (с) |
 | `PROXY_CHECK_URL` | `https://www.gstatic.com/generate_204` | Эталонный URL для проверки связности через прокси (лёгкий `204 No Content`). `2xx`/`3xx` → прокси работает |
+| `BACKEND_CHECK_INTERVAL_SEC` | `60` | Интервал healthcheck бэков (с). Монитор стартует всегда; Telegram-алерты гейтятся `TELEGRAM_*` ([modules/backends](modules/backends/README.md), [ADR-020](adr/ADR-020-backends-healthcheck-monitor.md)) |
+| `BACKEND_CHECK_TIMEOUT_SEC` | `10` | Таймаут проверочного запроса `GET https://{domain}/health` (с). Путь `/health` и схема `https://` фиксированы (не конфиг) |
 | `MAIL_API_BASE` | `https://postapp.store` | Базовый URL внешнего почтового сервиса (модуль «Почты», read-through-прокси — [modules/mail](modules/mail/README.md), [ADR-012](adr/ADR-012-mail-read-through-proxy.md)) |
 | `MAIL_API_KEY` | `<external api key>` | **Секрет** (только env): ключ внешнего почтового API. Подставляется backend в заголовок `X-API-Key`; не в ответах/логах/SPA/URL. Пусто → почта не настроена (`mail_enabled=false`, эндпоинты `/api/mail/*` → `503 mail_not_configured`) |
 | `MAIL_API_TIMEOUT_SEC` | `10` | Таймаут HTTP-запроса backend → `postapp.store` |

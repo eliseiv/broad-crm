@@ -1,4 +1,4 @@
-# CRM — Мониторинг серверов · Документация
+# CRM · Документация
 
 Единственный источник истины (source of truth) проекта. Любой код, тест и инфраструктура должны соответствовать этим документам. При расхождении `docs/` ↔ код — виноват тот, кто не обновил `docs/`.
 
@@ -36,6 +36,7 @@ CRM-система мониторинга backend-сервисов и серве
 | AI Keys (реестр ключей + проверка + алерты) | [modules/ai-keys/README.md](modules/ai-keys/README.md) | backend, frontend |
 | Mail (Почты — read-through-прокси + reply) | [modules/mail/README.md](modules/mail/README.md) | backend, frontend |
 | Proxies (реестр прокси + монитор доступности + алерты) | [modules/proxies/README.md](modules/proxies/README.md) | backend, frontend |
+| Backends (реестр бэков + healthcheck `/health` + алерты) | [modules/backends/README.md](modules/backends/README.md) | backend, frontend |
 | UI (страница «Серверы», спидометры) | [modules/ui/README.md](modules/ui/README.md) | frontend |
 
 ## Статусы модулей
@@ -50,6 +51,7 @@ CRM-система мониторинга backend-сервисов и серве
 | ai-keys | `spec-ready` | Не реализован — спецификация готова |
 | mail | `spec-ready` | Не реализован — спецификация готова |
 | proxies | `implemented` | Реализован (Спринт 1) — модель+миграция 0006, монитор, Telegram-алерты, CRUD API, страница `/proxies`, тесты |
+| backends | `spec-ready` | Не реализован — спецификация готова ([ADR-020](adr/ADR-020-backends-healthcheck-monitor.md), миграция 0007) |
 | ui | `spec-ready` | Не реализован — спецификация готова |
 
 ## Глоссарий

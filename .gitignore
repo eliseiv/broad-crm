@@ -40,3 +40,6 @@ backups/
 
 .claude
 CLAUDE.md
+
+# исходник логотипа (не нужен в репо; используется frontend/public/favicon.png)
+/favicon.jpg

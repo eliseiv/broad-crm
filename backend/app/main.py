@@ -114,7 +114,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     openapi_url = "/api/openapi.json" if settings.docs_enabled else None
 
     app = FastAPI(
-        title="CRM — Мониторинг серверов",
+        title="CRM",
         version="0.1.0",
         docs_url=docs_url,
         redoc_url=redoc_url,
