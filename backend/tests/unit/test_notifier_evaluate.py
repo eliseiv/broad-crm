@@ -9,10 +9,12 @@ modules/notifier «State-машина», ADR-014.
 
 from __future__ import annotations
 
+from typing import get_args
+
 from app.domain.thresholds import Zone
 from app.schemas.metrics import Metric, MetricDetail, ServerMetrics
 from app.services.monitoring_service import InstanceMetrics
-from app.services.notifier_service import ServerAlertState, evaluate
+from app.services.notifier_service import AlertKind, ServerAlertState, evaluate
 
 NAME = "srv"
 IP = "10.0.0.1"
@@ -157,12 +159,64 @@ def test_offline_to_offline_silent() -> None:
 
 
 def test_offline_to_online_under_load_realerts_base_green() -> None:
-    # Возврат: база = green по всем → red-метрики снова алертятся.
+    # Возврат offline→online: recovery (ADR-018) + база green по всем → red/yellow
+    # метрики снова алертятся. Порядок (ADR-018): recovered → warning → critical.
     prev = _state(False, None)
     state, alerts = evaluate(prev, _online(cpu="red", ram="yellow"), name=NAME, ip=IP)
-    kinds = sorted(a.kind for a in alerts)
-    assert kinds == ["critical", "warning"]
+    assert [a.kind for a in alerts] == ["recovered", "warning", "critical"]
+    assert "🟢🟢🟢ВОССТАНОВЛЕНО🟢🟢🟢" in alerts[0].text
+    assert "RAM: Нагрузка более 85%" in alerts[1].text  # warning = ram yellow
+    assert "CPU: Нагрузка более 95%" in alerts[2].text  # critical = cpu red
     assert state.zones == {"cpu": "red", "ram": "yellow", "ssd": "green"}
+
+
+# ---------------------------------------- recovery offline→online (ADR-018)
+# prev.online == False → im.online == True шлёт 🟢 ВОССТАНОВЛЕНО (build_recovered,
+# AlertKind="recovered"). НЕ шлётся при prev is None (baseline online). Дедуп — персист.
+def test_recovery_offline_to_online_green_only_recovered() -> None:
+    # prev offline → online, зоны green → ровно один recovered (побайтово по спеку).
+    prev = _state(False, None)
+    state, alerts = evaluate(prev, _online("green", "green", "green"), name=NAME, ip=IP)
+    assert [a.kind for a in alerts] == ["recovered"]
+    assert alerts[0].text == (
+        "🟢🟢🟢ВОССТАНОВЛЕНО🟢🟢🟢\n" 'Сервер "srv"\n' "IP 10.0.0.1\n" "\n" "Сервер снова в сети"
+    )
+    assert state == _state(True, dict(_GREEN))
+
+
+def test_recovery_offline_to_online_no_metrics_only_recovered() -> None:
+    # prev offline → online, но метрики ещё недоступны (metrics=None): recovery
+    # определяется по факту up → шлётся только recovered; зоны не оцениваются (None).
+    prev = _state(False, None)
+    state, alerts = evaluate(prev, _online_no_metrics(), name=NAME, ip=IP)
+    assert [a.kind for a in alerts] == ["recovered"]
+    assert state == _state(True, None)
+
+
+def test_recovery_not_sent_when_prev_none_baseline_online() -> None:
+    # prev is None ≡ здоровый baseline online → recovery НЕ шлётся (ADR-018), ни при
+    # наличии метрик, ни без них (нет ложного «снова в сети» на первой встрече).
+    _, alerts_metrics = evaluate(None, _online("green", "green", "green"), name=NAME, ip=IP)
+    assert "recovered" not in [a.kind for a in alerts_metrics]
+    _, alerts_no_metrics = evaluate(None, _online_no_metrics(), name=NAME, ip=IP)
+    assert "recovered" not in [a.kind for a in alerts_no_metrics]
+
+
+def test_recovery_not_sent_when_prev_online_true() -> None:
+    # prev.online=True → online (не переход offline→online) → recovered нет.
+    prev = _state(True, dict(_GREEN))
+    _, alerts = evaluate(prev, _online("green", "green", "green"), name=NAME, ip=IP)
+    assert "recovered" not in [a.kind for a in alerts]
+
+
+def test_recovery_dedup_via_persist_second_poll_silent() -> None:
+    # После recovery online=True персистится → следующий опрос видит base.online=True →
+    # повторного recovery нет (дедуп через персист, ADR-018).
+    prev_offline = _state(False, None)
+    state1, alerts1 = evaluate(prev_offline, _online("green", "green", "green"), name=NAME, ip=IP)
+    assert [a.kind for a in alerts1] == ["recovered"]
+    _, alerts2 = evaluate(state1, _online("green", "green", "green"), name=NAME, ip=IP)
+    assert alerts2 == []
 
 
 # ------------------------------------------------------- online без метрик
@@ -235,3 +289,9 @@ def test_deescalation_to_green_persists_then_regrow_realerts() -> None:
     # Повторный рост от персистнутой green-базы → снова critical.
     _, realert = evaluate(green_state, _online(cpu="red"), name=NAME, ip=IP)
     assert [a.kind for a in realert] == ["critical"]
+
+
+# ------------------------------------------------------------------- AlertKind
+def test_alert_kind_includes_recovered_all_four_formats() -> None:
+    # ADR-018: AlertKind расширен 'recovered' — ровно четыре типа серверных алертов.
+    assert set(get_args(AlertKind)) == {"warning", "critical", "offline", "recovered"}

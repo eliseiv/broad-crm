@@ -1,11 +1,13 @@
-"""Unit-тесты max-over-window режима MonitoringService (modules/monitoring, ADR-016).
+"""Unit-тесты max-over-window / min-over-window режима MonitoringService (ADR-016/018).
 
 Покрывают: генерацию PromQL нотификатора (usage CPU/RAM/SSD оборачивается в
-max_over_time((<expr>)[Ws:15s]), а online/uptime/detail остаются мгновенными);
-регрессию read-path (window_sec=None → прежние инстант-запросы без max_over_time);
+max_over_time((<expr>)[Ws:15s]), `up` — в min_over_time(up[Ws]) без subquery,
+а uptime/detail остаются мгновенными, ADR-018); регрессию read-path (window_sec=None →
+прежние инстант-запросы без max_over_time/min_over_time); windowed offline-детект
+(min_over_time(up[W]) == 0 → offline) при неизменном мгновенном up (up_value == 1.0);
 раздельность TTL-кэша по window_sec (мгновенный UI-результат и windowed-результат
 нотификатора не смешиваются даже при совпадении набора instances). Prometheus —
-стаб (без сети); нормативный источник — 02-promql.md#notifier-max-over-window, ADR-016.
+стаб (без сети); нормативный источник — 02-promql.md#notifier-max-over-window, ADR-016/018.
 """
 
 from __future__ import annotations
@@ -23,10 +25,10 @@ from app.services.monitoring_service import (
 _INST = "10.0.0.7:9100"
 _WINDOW_SEC = 90
 _STEP = "15s"
-# usage-метрики оборачиваются max_over_time; остальные ключи — мгновенные.
+# usage-метрики оборачиваются max_over_time; `up` — min_over_time (ADR-018);
+# остальные ключи — мгновенные.
 _USAGE_KEYS = ("cpu_usage", "ram_usage", "ssd_usage")
 _INSTANT_KEYS = (
-    "up",
     "uptime",
     "cpu_cores",
     "ram_total",
@@ -52,10 +54,16 @@ def test_build_queries_wraps_only_usage_in_max_over_time_windowed() -> None:
     for key in _USAGE_KEYS:
         assert windowed[key] == f"max_over_time(({instant[key]})[{_WINDOW_SEC}s:{_STEP}])"
 
-    # online/uptime/detail (cores/GB) — мгновенные, не оборачиваются.
+    # up: min_over_time за окно (ADR-018) — прямой range-vector `up[Ws]` без subquery/step.
+    assert windowed["up"] == f"min_over_time({instant['up']}[{_WINDOW_SEC}s])"
+    assert "min_over_time" not in instant["up"]
+    assert "max_over_time" not in windowed["up"]  # up не оборачивается в max
+
+    # uptime/detail (cores/GB) — мгновенные, не оборачиваются.
     for key in _INSTANT_KEYS:
         assert windowed[key] == instant[key]
         assert "max_over_time" not in windowed[key]
+        assert "min_over_time" not in windowed[key]
 
 
 def test_build_queries_instant_default_has_no_max_over_time_read_path_regression() -> None:
@@ -65,6 +73,7 @@ def test_build_queries_instant_default_has_no_max_over_time_read_path_regression
     assert queries == _build_queries(_instance_matcher([_INST]), window_sec=None)
     for promql in queries.values():
         assert "max_over_time" not in promql
+        assert "min_over_time" not in promql  # up тоже мгновенный в read-path (ADR-018)
 
 
 def _vector(instance: str, value: float, timestamp: float = 1000.0) -> dict[str, object]:
@@ -153,3 +162,49 @@ async def test_cache_key_separates_instant_and_windowed_results() -> None:
     assert windowed_metrics.cpu.usage_percent == 95.0
     # Два раздельных ключа кэша (instant + windowed), не один.
     assert len(monitoring_module._cache) == 2
+
+
+@pytest.mark.asyncio
+async def test_fetch_windowed_offline_when_up_min_zero_in_window() -> None:
+    # ADR-018: online = min_over_time(up[W]) == 1. Провал up в любой точке окна →
+    # min=0 → offline (metrics=None). Сервис шлёт именно min_over_time(up[...]).
+    matcher = _instance_matcher([_INST])
+    q = _build_queries(matcher, window_sec=_WINDOW_SEC)
+    responses = _responses_for(_INST, window_sec=_WINDOW_SEC, cpu_usage=95.0)
+    responses[q["up"]] = [_vector(_INST, 0)]  # up падал в окне → min_over_time == 0
+    prom = _RoutedPrometheus(responses)
+    service = MonitoringService(prom)  # type: ignore[arg-type]
+
+    result = await service.fetch_for_instances([_INST], window_sec=_WINDOW_SEC)
+
+    im = result[_INST]
+    assert im.online is False
+    assert im.metrics is None
+    assert im.uptime_seconds is None
+    # Windowed offline-детект послал min_over_time(up[...]), не мгновенный up.
+    assert any(promql.startswith("min_over_time(up") for promql in prom.seen)
+
+
+@pytest.mark.asyncio
+async def test_fetch_windowed_online_when_up_min_one_whole_window() -> None:
+    # min_over_time(up[W]) == 1 (up был 1 всё окно) → online (ADR-018).
+    prom = _RoutedPrometheus(_responses_for(_INST, window_sec=_WINDOW_SEC, cpu_usage=10.0))
+    service = MonitoringService(prom)  # type: ignore[arg-type]
+
+    result = await service.fetch_for_instances([_INST], window_sec=_WINDOW_SEC)
+
+    assert result[_INST].online is True
+    assert any(promql.startswith("min_over_time(up") for promql in prom.seen)
+
+
+@pytest.mark.asyncio
+async def test_fetch_instant_online_up_value_unchanged_no_min_over_time() -> None:
+    # Регрессия read-path: window_sec=None → up остаётся мгновенным (up_value == 1.0 →
+    # online), min_over_time НЕ применяется (ADR-018 не трогает UI-путь).
+    prom = _RoutedPrometheus(_responses_for(_INST, window_sec=None, cpu_usage=10.0))
+    service = MonitoringService(prom)  # type: ignore[arg-type]
+
+    result = await service.fetch_for_instances([_INST])
+
+    assert result[_INST].online is True
+    assert all(not promql.startswith("min_over_time") for promql in prom.seen)

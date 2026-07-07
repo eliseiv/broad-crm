@@ -40,16 +40,16 @@ MonitoringService.fetch_for_instances(instances: list[str], window_sec: int | No
 
 - `instances` — список `"<ip>:<exporter_port>"` (см. `Server.instance` в [modules/servers](../servers/README.md)).
 - Возвращает словарь `instance -> InstanceMetrics`. Бросает `PrometheusUnavailable` при устойчивой недоступности самого Prometheus (случай «а» из таблицы [«Доступность метрик»](../../04-api.md#доступность-метрик-up0--отсутствие-данных-vs-prometheus-down), после исчерпания ретраев). Случай «б» (`up==0` / частичный валидный ответ) исключения НЕ даёт.
-- **`window_sec` (режим max-over-window, [ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md)):**
-  - `None` (**default**) — **мгновенные** запросы ([02-promql.md](02-promql.md)). Это путь **UI/read-path** (`GET /api/servers`, `GET /api/servers/{id}/metrics`) — поведение и контракт карт **не меняются**.
-  - `int` (секунды) — CPU/RAM/SSD `usage_percent` берётся как `max_over_time(<usage_expr>[window_sec:step])` ([«Notifier: max-over-window»](02-promql.md#notifier-max-over-window-только-для-оценки-зоны-алертов)); `zone` = `usage_to_zone(max)`. Этот путь вызывает **только** [notifier](../notifier/README.md) с `window_sec = NOTIFIER_METRIC_WINDOW_SEC`. Поля `online` (мгновенный `up`), `uptime_seconds`, `detail` сохраняют **мгновенную** семантику независимо от `window_sec` — окно применяется **лишь** к `usage_percent` метрик нагрузки.
-  - Тип возврата, маппинг, `usage_to_zone` и **пороги идентичны** в обоих режимах — различается только источник числа `usage_percent` для CPU/RAM/SSD.
+- **`window_sec` (windowed-режим нотификатора, [ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md) + [ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)):**
+  - `None` (**default**) — **мгновенные** запросы ([02-promql.md](02-promql.md)), включая `online = up_value == 1.0`. Это путь **UI/read-path** (`GET /api/servers`, `GET /api/servers/{id}/metrics`) — поведение и контракт карт **не меняются**.
+  - `int` (секунды) — оборачиваются **две группы**: CPU/RAM/SSD `usage_percent` = `max_over_time(<usage_expr>[window_sec:step])` (`zone = usage_to_zone(max)`, [ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md)); `online` = `min_over_time(up[window_sec]) == 1` (offline при провале `up` в любой точке окна, [ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md), [02-promql.md](02-promql.md#online--offline-min-за-окно--только-notifier)). Этот путь вызывает **только** [notifier](../notifier/README.md) с `window_sec = NOTIFIER_METRIC_WINDOW_SEC`. Поля `uptime_seconds`, `detail` сохраняют **мгновенную** семантику независимо от `window_sec`.
+  - Тип возврата, маппинг, `usage_to_zone` и **пороги идентичны** в обоих режимах — различается только источник числа `usage_percent` (max за окно) и `online` (min за окно) в windowed-режиме.
 
 ### Типы
 
 ```
 InstanceMetrics = {
-  online: bool,                       # up == 1
+  online: bool,                       # up == 1 (мгновенно); в windowed-режиме min_over_time(up[окно]) == 1 (ADR-018)
   uptime_seconds: int | None,
   last_updated: datetime,             # момент сбора (для UI/диагностики)
   metrics: ServerMetrics | None,      # None — online, но метрики недоступны (случай «б»)
@@ -77,3 +77,4 @@ TTL-кэш ключуется по **набору instances и окну**: `key 
 ## Changelog
 - 2026-06-28: спецификация создана (architect, bootstrap).
 - 2026-07-06: добавлен опциональный `window_sec` в `fetch_for_instances` — режим max-over-window для оценки зоны нотификатором ([ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md)); кэш-ключ расширен `window_sec`. UI/read-path (`window_sec=None`) и пороги — **без изменений**.
+- 2026-07-07: в windowed-режиме (`window_sec` задан) `online` теперь вычисляется как `min_over_time(up[window_sec]) == 1` (offline при провале `up` в любой точке окна, [ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)) — в дополнение к max-over-window для зон. UI/read-path (`window_sec=None`, мгновенный `up`) — **без изменений**.

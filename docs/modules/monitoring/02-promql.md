@@ -2,7 +2,7 @@
 
 `$inst` = `<ip>:<exporter_port>` (label `instance`). Окно rate — `1m`. Все usage в процентах (0–100).
 
-Запросы в разделах ниже (CPU/RAM/SSD usage %, detail, uptime, online) — **мгновенные**; они используются **UI-картами и read-path** (`GET /api/servers`, `GET /api/servers/{id}/metrics`) и соответствуют режиму `MonitoringService.fetch_for_instances(instances)` **без окна** (`window_sec=None`). Нотификатор использует те же usage-выражения, обёрнутые в `max_over_time` за окно опроса — см. [«Notifier: max-over-window»](#notifier-max-over-window-только-для-оценки-зоны-алертов) ([ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md)).
+Запросы в разделах ниже (CPU/RAM/SSD usage %, detail, uptime, online) — **мгновенные**; они используются **UI-картами и read-path** (`GET /api/servers`, `GET /api/servers/{id}/metrics`) и соответствуют режиму `MonitoringService.fetch_for_instances(instances)` **без окна** (`window_sec=None`). Нотификатор использует те же usage-выражения, обёрнутые в `max_over_time` за окно опроса — см. [«Notifier: max-over-window»](#notifier-max-over-window-зоны--min-over-window-offline) ([ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md)).
 
 ## CPU usage %
 ```promql
@@ -55,9 +55,9 @@ up{instance="$inst"}   # 1 = online, 0/нет данных = offline
 - CPU cores: целое число (`int`), без конверсии.
 - usage_percent: округление до 1 знака, clamp в [0,100].
 
-## Notifier: max-over-window (только для оценки зоны алертов)
+## Notifier: max-over-window (зоны) + min-over-window (offline)
 
-Применяется **исключительно** на пути нотификатора (`MonitoringService.fetch_for_instances(instances, window_sec=W)`), когда `window_sec` задан. UI-карты и read-path используют мгновенные запросы выше — **эти обёртки к ним не применяются** ([ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md)). Меняется только источник `usage_percent` для **CPU/RAM/SSD**; `online` (мгновенный `up`), `uptime`, `detail` — как в мгновенных запросах.
+Применяется **исключительно** на пути нотификатора (`MonitoringService.fetch_for_instances(instances, window_sec=W)`), когда `window_sec` задан. UI-карты и read-path используют мгновенные запросы выше — **эти обёртки к ним не применяются** ([ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md), [ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). В windowed-режиме оборачиваются **две группы**: `usage_percent` CPU/RAM/SSD → `max_over_time` (зона по пику, [ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md)); `up` → `min_over_time` (offline по любому провалу в окне, [ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). `uptime`, `detail` — как в мгновенных запросах.
 
 `$W` = `NOTIFIER_METRIC_WINDOW_SEC` (env, default `90`, нормативно `≥ NOTIFIER_POLL_INTERVAL_SEC`). `$step` = разрешение subquery, рекомендация `15s` (≈ scrape-интервал). Зона выводится из максимума через **неизменённый** `usage_to_zone()`.
 
@@ -85,5 +85,16 @@ max_over_time(
 )
 ```
 
-- **Окно и перекрытие:** `$W ≥ poll_interval` → соседние окна опросов перекрываются, любой момент попадает хотя бы в одно окно (см. обоснование в [ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md#решение)). Слишком широкое окно → «залипание» алерта (max держит пик всю длину окна) — потому берётся `poll_interval + запас`, а не десятки минут.
-- **online/detail/uptime не оборачиваются:** offline-детект остаётся на мгновенном `up{instance="$inst"}`; абсолютные `detail` (cores/GB) и `uptime` — мгновенные. Нотификатор всё равно использует только `zone`/`usage_percent`.
+### Online / offline (min за окно) — только notifier
+
+```promql
+min_over_time(up{instance="$inst"}[90s])   # 1 = up всё окно; 0 = падал в любой точке окна
+```
+Онлайн-статус нотификатора (`online = min_over_time(up[$W]) == 1`): сервер считается «падавшим» (`online=False`), если `up` был `0` **в любой точке** окна ([ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). Симметрично `max_over_time` для зон, но ловит **провал** доступности между опросами.
+
+- **`up` — сырая серия → прямой range-vector `up[$W]` без subquery/step** (в отличие от вычисляемых usage-выражений): `min` берётся по фактическим scrape-сэмплам окна (точнее и дешевле resampling'а `[:step]`).
+- Нет `0`-сэмпла в окне (все `1`) → `min=1` → online. Нет данных вообще → результат пуст → instance отсутствует в ответе → трактуется как offline (как и мгновенный `up`).
+- **Остаточная оговорка:** провал `up` короче scrape (~15 с) может лечь между scrape-сэмплами и не дать `0` → сгладится (симметрично оговорке зон; ловим устойчивые ≥ scrape падения).
+
+- **Окно и перекрытие:** `$W ≥ poll_interval` → соседние окна опросов перекрываются, любой момент попадает хотя бы в одно окно (см. обоснование в [ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md#решение)). Слишком широкое окно → «залипание» (max держит пик / min держит offline всю длину окна) — потому берётся `poll_interval + запас`, а не десятки минут. **offline-окно = то же `NOTIFIER_METRIC_WINDOW_SEC`** (нового env нет, [ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md#2-выбор-окна--переиспользовать-notifier_metric_window_sec-нового-env-не-вводим)).
+- **detail/uptime не оборачиваются:** абсолютные `detail` (cores/GB) и `uptime` — мгновенные. В windowed-режиме нотификатор использует только `zone`/`usage_percent` (max) и `online` (min).

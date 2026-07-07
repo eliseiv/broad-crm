@@ -56,7 +56,7 @@ CRM-система мониторинга backend-сервисов и серве
 - **Провижининг** — автоматическая установка node_exporter на целевой сервер через Ansible и регистрация scrape-таргета Prometheus.
 - **file_sd** — file-based service discovery Prometheus: backend пишет JSON-файлы таргетов, Prometheus перечитывает их без рестарта.
 - **Drill-down** — детальный просмотр метрик в Grafana. На Этапе 1 ссылки из карточки нет ([ADR-005, поправка](adr/ADR-005-custom-gauge-vs-grafana-embed.md#поправка-2026-06-30--удаление-drill-down-ссылки-из-карточки)); Grafana открывается напрямую через `/grafana`.
-- **Notifier** — фоновая asyncio-задача backend, шлёт Telegram-алерты при эскалации нагрузки/доступности ([ADR-009](adr/ADR-009-in-backend-notifier-vs-alertmanager.md)).
+- **Notifier** — фоновая asyncio-задача backend, шлёт Telegram-алерты при эскалации нагрузки/доступности и при восстановлении (`offline→online`); windowed offline-детект (`min_over_time` для `up`) + durable-лог отправленных алертов ([ADR-009](adr/ADR-009-in-backend-notifier-vs-alertmanager.md), [ADR-016](adr/ADR-016-notifier-max-over-window-zone.md), [ADR-018](adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)).
 
 ## Принципы
 

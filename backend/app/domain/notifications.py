@@ -45,6 +45,11 @@ def build_offline(name: str, ip: str) -> str:
     return f"{_CRITICAL_HEADER}\n{_server_block(name, ip)}\n\nСервер не доступен"
 
 
+def build_recovered(name: str, ip: str) -> str:
+    """🟢 ВОССТАНОВЛЕНО (recovery) — переход offline→online (ADR-018)."""
+    return f"{_RECOVERY_HEADER}\n{_server_block(name, ip)}\n\nСервер снова в сети"
+
+
 def _key_block(name: str, last4: str | None) -> str:
     """Блок идентификации ключа: имя в кавычках + маска `****<last4>`.
 
@@ -70,5 +75,6 @@ __all__ = [
     "build_key_error",
     "build_key_recovery",
     "build_offline",
+    "build_recovered",
     "build_warning",
 ]

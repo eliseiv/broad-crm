@@ -6,7 +6,8 @@ test_ai_keys_migration/test_position_migration): шаг 0003→0004 создаё
 и FK `ON DELETE CASCADE` — БЕЗ backfill (таблица пустая, alert-on-first-elevated,
 ADR-014); обратный шаг 0004→0003 = `DROP TABLE`. Ревизия обязана иметь рабочий
 `downgrade()` (03-data-model.md#миграция-0004_create_notifier_state, ADR-014,
-07-deployment.md#откат-миграций-бд). Дополнительно — единственная голова в цепочке ревизий.
+07-deployment.md#откат-миграций-бд). Дополнительно — 0004 сидит поверх 0003
+(единственная голова цепочки теперь 0005 — см. test_notifier_alert_log_migration, ADR-018).
 """
 
 from __future__ import annotations
@@ -60,10 +61,9 @@ def test_downgrade_0004_drops_notifier_state_table(capsys: pytest.CaptureFixture
     assert "DROP TABLE notifier_server_state" in sql
 
 
-def test_revision_chain_single_head_with_0004_on_top() -> None:
+def test_revision_0004_sits_on_0003() -> None:
+    # 0004 сидит поверх 0003. Единственная голова цепочки теперь 0005
+    # (проверяется в test_notifier_alert_log_migration после добавления 0005, ADR-018).
     script = ScriptDirectory.from_config(_alembic_config())
-    heads = script.get_heads()
-
-    assert heads == ["0004_create_notifier_state"]  # одна голова — цепочка линейна
     rev = script.get_revision("0004_create_notifier_state")
-    assert rev.down_revision == "0003_add_position"  # 0004 сидит поверх 0003
+    assert rev.down_revision == "0003_add_position"

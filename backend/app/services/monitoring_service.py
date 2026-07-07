@@ -60,17 +60,30 @@ def _max_over_window(usage_expr: str, window_sec: int) -> str:
 
     `usage_expr` — инстант-вектор usage %, поэтому берётся subquery
     `[<window_sec>s:<step>]`. Применяется ТОЛЬКО к usage CPU/RAM/SSD в windowed-
-    режиме; online/uptime/detail всегда мгновенные и не оборачиваются.
+    режиме; uptime/detail всегда мгновенные и не оборачиваются.
     """
     return f"max_over_time(({usage_expr})[{window_sec}s:{_SUBQUERY_STEP}])"
+
+
+def _min_over_window(up_expr: str, window_sec: int) -> str:
+    """Обёртка min_over_time за окно опроса для `up` (ADR-018, 02-promql.md).
+
+    `up` — сырая серия, поэтому используется прямой range-vector `up[<window_sec>s]`
+    БЕЗ subquery/step (в отличие от вычисляемых usage-выражений): min берётся по
+    фактическим scrape-сэмплам окна. Применяется ТОЛЬКО в windowed-режиме
+    нотификатора: offline, если `up` падал в любой точке окна. Мгновенный режим
+    (window_sec=None, UI/read-path) не меняется.
+    """
+    return f"min_over_time({up_expr}[{window_sec}s])"
 
 
 def _build_queries(matcher: str, window_sec: int | None = None) -> dict[str, str]:
     """Полный набор PromQL-запросов (02-promql.md) с подставленным селектором.
 
-    `window_sec is None` (UI/read-path) → мгновенные usage-запросы. `window_sec`
-    задан (notifier) → usage CPU/RAM/SSD оборачивается в max_over_time за окно
-    (ADR-016); online/uptime/detail (cores/GB) остаются мгновенными.
+    `window_sec is None` (UI/read-path) → мгновенные запросы. `window_sec` задан
+    (notifier) → usage CPU/RAM/SSD оборачивается в max_over_time за окно (ADR-016),
+    а `up` — в min_over_time за окно (ADR-018); uptime/detail (cores/GB) остаются
+    мгновенными.
     """
     ssd_sel = f'{matcher},mountpoint="/",fstype!~"tmpfs|overlay"'
     cpu_usage = (
@@ -85,12 +98,14 @@ def _build_queries(matcher: str, window_sec: int | None = None) -> dict[str, str
         f"(1 - node_filesystem_avail_bytes{{{ssd_sel}}}"
         f" / node_filesystem_size_bytes{{{ssd_sel}}}) * 100"
     )
+    up_expr = f"up{{{matcher}}}"
     if window_sec is not None:
         cpu_usage = _max_over_window(cpu_usage, window_sec)
         ram_usage = _max_over_window(ram_usage, window_sec)
         ssd_usage = _max_over_window(ssd_usage, window_sec)
+        up_expr = _min_over_window(up_expr, window_sec)
     return {
-        "up": f"up{{{matcher}}}",
+        "up": up_expr,
         "uptime": (f"node_time_seconds{{{matcher}}} - node_boot_time_seconds{{{matcher}}}"),
         "cpu_usage": cpu_usage,
         "cpu_cores": (f'count by(instance)(node_cpu_seconds_total{{{matcher},mode="idle"}})'),
@@ -302,7 +317,8 @@ class MonitoringService:
         """Выполняет батч PromQL (с ограничением конкурентности) и маппит в схему.
 
         `window_sec` задан → usage CPU/RAM/SSD берётся как max_over_time за окно
-        (ADR-016); online/uptime/detail остаются мгновенными.
+        (ADR-016), `online` — как `min_over_time(up[окно]) == 1` (ADR-018);
+        uptime/detail остаются мгновенными.
         """
         queries = _build_queries(_instance_matcher(instances), window_sec)
         keys = list(queries.keys())

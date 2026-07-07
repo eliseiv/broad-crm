@@ -1,7 +1,8 @@
 """Unit-тесты формата Telegram-сообщений нотификатора (modules/notifier «Типы сообщений»).
 
-Проверяется побайтовое соответствие трёх шаблонов, заголовки, блок идентификации
-сервера, строки метрик, floor для int(usage_percent), стабильный порядок CPU/RAM/SSD.
+Проверяется побайтовое соответствие четырёх шаблонов (warning/critical/offline/recovered,
+ADR-018), заголовки, блок идентификации сервера, строки метрик, floor для
+int(usage_percent), стабильный порядок CPU/RAM/SSD.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ from app.domain.notifications import (
     METRIC_LABELS,
     build_critical_load,
     build_offline,
+    build_recovered,
     build_warning,
 )
 
@@ -61,6 +63,28 @@ def test_offline_message_byte_exact() -> None:
     assert text == (
         "🔴🔴🔴СРОЧНО🔴🔴🔴\n" 'Сервер "worker-09"\n' "IP 172.16.0.4\n" "\n" "Сервер не доступен"
     )
+
+
+def test_recovered_message_byte_exact() -> None:
+    # ADR-018: 🟢 ВОССТАНОВЛЕНО / «Сервер снова в сети» — переход offline→online.
+    text = build_recovered("cam-07", "10.0.0.12")
+    assert text == (
+        "🟢🟢🟢ВОССТАНОВЛЕНО🟢🟢🟢\n"
+        'Сервер "cam-07"\n'
+        "IP 10.0.0.12\n"
+        "\n"
+        "Сервер снова в сети"
+    )
+
+
+def test_recovered_header_exact() -> None:
+    assert build_recovered("n", "1.2.3.4").startswith("🟢🟢🟢ВОССТАНОВЛЕНО🟢🟢🟢\n")
+
+
+def test_recovered_name_in_double_quotes_and_ip_label() -> None:
+    text = build_recovered("Фотобудка", "8.8.4.4")
+    assert 'Сервер "Фотобудка"' in text
+    assert "IP 8.8.4.4" in text
 
 
 def test_warning_header_exact() -> None:

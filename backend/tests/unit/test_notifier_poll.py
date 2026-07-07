@@ -5,10 +5,13 @@
 MonitoringService, TelegramClient, репозитории и сессия БД — стабы (без сети/БД); стаб
 репозитория состояния хранит строки в словаре, эмулируя персист между итерациями.
 
-Покрывают: PrometheusUnavailable → пропуск без UPSERT; instance отсутствует в ответе →
-строка не трогается (нет UPSERT); пустой реестр online → нет записи; alert-on-first-elevated
-при отсутствии строки; сопоставление InstanceMetrics по instance; дедуп по зоне через персист
-(две poll_once в одной зоне → один алерт); устойчивость run к ошибке итерации и отмене.
+Покрывают: PrometheusUnavailable → пропуск без UPSERT и без записи лога; instance
+отсутствует в ответе → строка не трогается (нет UPSERT); пустой реестр online → нет записи;
+alert-on-first-elevated при отсутствии строки; сопоставление InstanceMetrics по instance;
+дедуп по зоне через персист (две poll_once в одной зоне → один алерт); durable-лог
+notifier_alert_log (ADR-018): одна строка на каждый отправленный алерт с delivered =
+результат send_message, message без секретов, recovery-алерт логируется; устойчивость run
+к ошибке итерации и отмене.
 """
 
 from __future__ import annotations
@@ -19,6 +22,7 @@ from typing import ClassVar
 
 import pytest
 from app.domain.thresholds import Zone
+from app.models.notifier_alert_log import NotifierAlertLog
 from app.schemas.metrics import Metric, MetricDetail, ServerMetrics
 from app.services import notifier_service as ns
 from app.services.monitoring_service import InstanceMetrics, PrometheusUnavailable
@@ -50,11 +54,23 @@ class _FakeServer:
 
 
 class _FakeSession:
+    """Стаб сессии: собирает добавленные ORM-объекты (строки notifier_alert_log).
+
+    `add` вызывает реальный NotifierAlertLogRepository (не замокан) — так проверяем,
+    что durable-лог пишется в финальной сессии с корректными полями (ADR-018).
+    Добавленные объекты складываются в ClassVar (сброс — в фикстуре patched_db).
+    """
+
+    added: ClassVar[list[object]] = []
+
     async def __aenter__(self) -> _FakeSession:
         return self
 
     async def __aexit__(self, *exc: object) -> bool:
         return False
+
+    def add(self, obj: object) -> None:
+        _FakeSession.added.append(obj)
 
     async def commit(self) -> None:
         return None
@@ -131,12 +147,13 @@ class _FakeMonitoring:
 
 
 class _FakeTelegram:
-    def __init__(self) -> None:
+    def __init__(self, *, deliver: bool = True) -> None:
         self.sent: list[str] = []
+        self._deliver = deliver  # результат send_message → delivered в логе
 
     async def send_message(self, text: str) -> bool:
         self.sent.append(text)
-        return True
+        return self._deliver
 
 
 @pytest.fixture
@@ -147,6 +164,12 @@ def patched_db(monkeypatch: pytest.MonkeyPatch) -> None:
     _FakeServerRepo.servers = []
     _FakeStateRepo.store = {}
     _FakeStateRepo.upsert_calls = []
+    _FakeSession.added = []
+
+
+def _alert_logs() -> list[NotifierAlertLog]:
+    """Строки notifier_alert_log, добавленные в финальной сессии итерации."""
+    return [obj for obj in _FakeSession.added if isinstance(obj, NotifierAlertLog)]
 
 
 _METRIC_WINDOW_SEC = 90
@@ -166,7 +189,14 @@ def _make_service(
     )
 
 
-def _seed_state(sid: uuid.UUID, *, online: bool, cpu: str, ram: str, ssd: str) -> None:
+def _seed_state(
+    sid: uuid.UUID,
+    *,
+    online: bool,
+    cpu: str | None,
+    ram: str | None,
+    ssd: str | None,
+) -> None:
     _FakeStateRepo.store[sid] = _FakeRow(online, cpu, ram, ssd)
 
 
@@ -302,6 +332,127 @@ async def test_dedup_via_persist_two_polls_same_zone_single_alert(patched_db: No
     assert len(tg.sent) == 1  # дедуп по зоне через персист
     assert _FakeStateRepo.upsert_calls == [sid, sid]  # UPSERT каждую итерацию
     assert _FakeStateRepo.store[sid].zone_cpu == "red"
+
+
+# -------------------------------------------------- durable-лог алертов (ADR-018)
+async def test_alert_log_one_row_per_sent_alert_delivered_true(patched_db: None) -> None:
+    # ADR-018: одна строка notifier_alert_log на КАЖДЫЙ отправленный алерт;
+    # delivered = результат send_message (True); message = plain-текст без секретов.
+    sid = uuid.uuid4()
+    inst = "10.0.0.11:9100"
+    _FakeServerRepo.servers = [_FakeServer(sid, "web", "10.0.0.11", inst)]
+    _seed_state(sid, online=True, cpu="green", ram="green", ssd="green")
+    mon = _FakeMonitoring()
+    mon.result = {inst: _online(cpu="red")}
+    tg = _FakeTelegram()  # send_message → True
+    svc = _make_service(mon, tg)
+
+    await svc.poll_once()
+
+    logs = _alert_logs()
+    assert len(logs) == 1  # ровно одна строка на один отправленный алерт
+    row = logs[0]
+    assert row.server_id == sid
+    assert row.kind == "critical"
+    assert row.delivered is True
+    assert row.message == tg.sent[0]  # тот же отправленный текст
+    # Секретов в message нет: только тело алерта (имя/IP), без токена/chat_id/URL.
+    assert "🔴🔴🔴СРОЧНО🔴🔴🔴" in row.message
+    assert "http" not in row.message
+    assert "bot" not in row.message.lower()
+
+
+async def test_alert_log_delivered_false_when_send_fails(patched_db: None) -> None:
+    # send_message вернул False (исчерпаны ретраи) → строка всё равно пишется с
+    # delivered=False (в этом смысл лога — доказать попытку, ADR-018).
+    sid = uuid.uuid4()
+    inst = "10.0.0.13:9100"
+    _FakeServerRepo.servers = [_FakeServer(sid, "db", "10.0.0.13", inst)]
+    _seed_state(sid, online=True, cpu="green", ram="green", ssd="green")
+    mon = _FakeMonitoring()
+    mon.result = {inst: _online(cpu="red")}
+    tg = _FakeTelegram(deliver=False)
+    svc = _make_service(mon, tg)
+
+    await svc.poll_once()
+
+    logs = _alert_logs()
+    assert len(logs) == 1
+    assert logs[0].delivered is False
+
+
+async def test_alert_log_multiple_rows_per_iteration_mixed_kinds(patched_db: None) -> None:
+    # Смешанная эскалация за опрос: warning + critical → две отправки → две строки лога.
+    sid = uuid.uuid4()
+    inst = "10.0.0.14:9100"
+    _FakeServerRepo.servers = [_FakeServer(sid, "mix", "10.0.0.14", inst)]
+    _seed_state(sid, online=True, cpu="green", ram="green", ssd="green")
+    mon = _FakeMonitoring()
+    mon.result = {inst: _online(cpu="yellow", ram="red")}
+    tg = _FakeTelegram()
+    svc = _make_service(mon, tg)
+
+    await svc.poll_once()
+
+    logs = _alert_logs()
+    assert sorted(row.kind for row in logs) == ["critical", "warning"]
+    assert all(row.server_id == sid and row.delivered is True for row in logs)
+
+
+async def test_recovery_offline_to_online_sends_and_logs_recovered(patched_db: None) -> None:
+    # prev.online=False → online (здоров): 🟢 ВОССТАНОВЛЕНО отправлено и залогировано
+    # (kind='recovered'), состояние online=True персистится (ADR-018).
+    sid = uuid.uuid4()
+    inst = "10.0.0.12:9100"
+    _FakeServerRepo.servers = [_FakeServer(sid, "cam", "10.0.0.12", inst)]
+    _seed_state(sid, online=False, cpu=None, ram=None, ssd=None)  # был offline
+    mon = _FakeMonitoring()
+    mon.result = {inst: _online("green", "green", "green")}  # вернулся здоровым
+    tg = _FakeTelegram()
+    svc = _make_service(mon, tg)
+
+    await svc.poll_once()
+
+    assert len(tg.sent) == 1
+    assert "🟢🟢🟢ВОССТАНОВЛЕНО🟢🟢🟢" in tg.sent[0]
+    logs = _alert_logs()
+    assert [row.kind for row in logs] == ["recovered"]
+    assert logs[0].delivered is True
+    assert _FakeStateRepo.store[sid].online is True
+
+
+async def test_prometheus_unavailable_no_alert_log_written(patched_db: None) -> None:
+    # PrometheusUnavailable → итерация пропущена целиком: ни UPSERT, ни строки лога.
+    sid = uuid.uuid4()
+    _FakeServerRepo.servers = [_FakeServer(sid, "s1", "10.0.0.1", "10.0.0.1:9100")]
+    _seed_state(sid, online=True, cpu="green", ram="green", ssd="green")
+    mon = _FakeMonitoring()
+    mon.raise_unavailable = True
+    tg = _FakeTelegram()
+    svc = _make_service(mon, tg)
+
+    await svc.poll_once()
+
+    assert _alert_logs() == []  # лог алертов не пишется
+    assert _FakeStateRepo.upsert_calls == []
+
+
+async def test_no_alert_no_log_row_on_silent_iteration(patched_db: None) -> None:
+    # Молчаливая итерация (зона без изменений): UPSERT есть, но строк лога нет.
+    sid = uuid.uuid4()
+    inst = "10.0.0.15:9100"
+    _FakeServerRepo.servers = [_FakeServer(sid, "quiet", "10.0.0.15", inst)]
+    _seed_state(sid, online=True, cpu="yellow", ram="green", ssd="green")
+    mon = _FakeMonitoring()
+    mon.result = {inst: _online(cpu="yellow")}  # та же зона → молча
+    tg = _FakeTelegram()
+    svc = _make_service(mon, tg)
+
+    await svc.poll_once()
+
+    assert tg.sent == []
+    assert _alert_logs() == []  # нет отправок → нет строк лога
+    assert _FakeStateRepo.upsert_calls == [sid]  # состояние всё равно персистится
 
 
 # ---------------------------------------------------------------- run()

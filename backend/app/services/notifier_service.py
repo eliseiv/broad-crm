@@ -23,12 +23,16 @@ from app.domain.notifications import (
     MetricItem,
     build_critical_load,
     build_offline,
+    build_recovered,
     build_warning,
 )
 from app.domain.thresholds import Zone
 from app.infra.telegram import TelegramClient
 from app.logging import get_logger
 from app.models.notifier_server_state import NotifierServerState
+from app.repositories.notifier_alert_log_repository import (
+    NotifierAlertLogRepository,
+)
 from app.repositories.notifier_server_state_repository import (
     NotifierServerStateRepository,
 )
@@ -46,7 +50,7 @@ _METRIC_KEYS: tuple[str, ...] = ("cpu", "ram", "ssd")
 # Ранг зоны для сравнения эскалации: green=0 < yellow=1 < red=2.
 _ZONE_RANK: dict[Zone, int] = {"green": 0, "yellow": 1, "red": 2}
 
-AlertKind = Literal["warning", "critical", "offline"]
+AlertKind = Literal["warning", "critical", "offline", "recovered"]
 
 
 @dataclass(frozen=True)
@@ -89,9 +93,11 @@ def evaluate(
     Возвращает новое состояние и список алертов (тип + текст) для отправки.
     Отсутствие базы (`prev is None`) трактуется как здоровый baseline
     (online + green×3, ADR-014): сервер, впервые увиденный уже в yellow/red/offline,
-    получает ровно один catch-up-алерт (alert-on-first-elevated). Алерт только при
-    `rank(cur) > rank(base)` (эскалация зоны) и при online→offline; деэскалация и
-    восстановление offline→online — молча. Тестируется qa без сети/БД.
+    получает ровно один catch-up-алерт (alert-on-first-elevated). Алерт при
+    `rank(cur) > rank(base)` (эскалация зоны), при online→offline и при
+    offline→online (recovery, ADR-018 — только при явном `prev.online == False`,
+    не при `prev is None`). Деэскалация зон — молча. При элевированном возврате
+    порядок: recovery → warning/critical. Тестируется qa без сети/БД.
     """
     base_state = prev if prev is not None else _HEALTHY_BASELINE
 
@@ -103,9 +109,17 @@ def evaluate(
             alerts.append(Alert("offline", build_offline(name, ip)))
         return ServerAlertState(online=False, zones=None), alerts
 
+    # Recovery (offline→online): только при ЯВНОМ prev.online == False. `prev is None`
+    # ≡ здоровый baseline (online) ⇒ base_state.online == True ⇒ recovery НЕ шлётся
+    # (ADR-018). Дедуп — через персист: после recovery online=True записывается.
+    recovered = not base_state.online
+
     # --- online, но метрики недоступны: зоны не оцениваются, zone_* пишутся NULL ---
     if im.metrics is None:
-        return ServerAlertState(online=True, zones=None), []
+        alerts = []
+        if recovered:
+            alerts.append(Alert("recovered", build_recovered(name, ip)))
+        return ServerAlertState(online=True, zones=None), alerts
 
     # --- online + есть метрики ---
     metrics_map = {"cpu": im.metrics.cpu, "ram": im.metrics.ram, "ssd": im.metrics.ssd}
@@ -134,7 +148,10 @@ def evaluate(
         elif cur == "red":
             critical_items.append((label, percent))
 
+    # Порядок при элевированном возврате: сначала «жив» (recovery), затем нагрузка.
     alerts = []
+    if recovered:
+        alerts.append(Alert("recovered", build_recovered(name, ip)))
     if warning_items:
         alerts.append(Alert("warning", build_warning(name, ip, warning_items)))
     if critical_items:
@@ -192,8 +209,10 @@ class NotifierService:
 
         Короткая сессия читает `list_online()` + персистнутое состояние из БД
         (источник истины, ADR-014) и закрывается до запроса к Prometheus.
-        `PrometheusUnavailable` → итерация пропускается, состояние в БД НЕ трогается.
-        После отправки алертов новое состояние UPSERT'ится отдельной короткой сессией.
+        `PrometheusUnavailable` → итерация пропускается, состояние в БД НЕ трогается
+        (лог алертов тоже не пишется). После отправки алертов новое состояние
+        UPSERT'ится отдельной короткой сессией; в той же сессии одним коммитом
+        пишутся строки `notifier_alert_log` на каждый отправленный алерт (ADR-018).
         """
         sessionmaker = get_sessionmaker()
         async with sessionmaker() as session:
@@ -223,6 +242,10 @@ class NotifierService:
             return  # состояние в БД НЕ трогаем
 
         to_persist: list[tuple[uuid.UUID, ServerAlertState]] = []
+        # Строки durable-лога на каждый ОТПРАВЛЕННЫЙ алерт (ADR-018): (server_id,
+        # kind, message, delivered). Собираются по мере отправок, пишутся в финальной
+        # сессии. message = plain-текст алерта (без секретов: токен/chat_id/URL нет).
+        alert_log_rows: list[tuple[uuid.UUID, AlertKind, str, bool]] = []
         for server_id, (name, ip, instance) in snapshot.items():
             prev = prev_states.get(server_id)
             im = metrics_by_instance.get(instance)
@@ -232,12 +255,14 @@ class NotifierService:
             state, alerts = evaluate(prev, im, name=name, ip=ip)
             to_persist.append((server_id, state))
             for alert in alerts:
-                await self._telegram.send_message(alert.text)
+                delivered = await self._telegram.send_message(alert.text)
+                alert_log_rows.append((server_id, alert.kind, alert.text, delivered))
 
         if not to_persist:
             return
-        # UPSERT состояния — отдельной короткой сессией, независимо от результата
-        # доставки в Telegram (best-effort доставка не влияет на состояние).
+        # UPSERT состояния + INSERT строк лога — отдельной короткой сессией одним
+        # коммитом, независимо от результата доставки в Telegram (best-effort доставка
+        # не влияет на состояние; `delivered` фиксируется в логе).
         async with sessionmaker() as session:
             state_repo = NotifierServerStateRepository(session)
             for server_id, state in to_persist:
@@ -249,6 +274,10 @@ class NotifierService:
                     zone_ram=zone_ram,
                     zone_ssd=zone_ssd,
                 )
+            if alert_log_rows:
+                log_repo = NotifierAlertLogRepository(session)
+                for log_server_id, kind, message, delivered in alert_log_rows:
+                    await log_repo.insert(log_server_id, kind, message, delivered)
             await session.commit()
 
     async def run(self) -> None:
