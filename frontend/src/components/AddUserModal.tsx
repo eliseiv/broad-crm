@@ -5,28 +5,42 @@ import { Button } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
+import { MultiSelect } from '@/components/ui/MultiSelect';
+import type { MultiSelectOption } from '@/components/ui/MultiSelect';
 import { Select } from '@/components/ui/Select';
 import type { SelectOption } from '@/components/ui/Select';
 import { ApiError } from '@/lib/api';
 import { useCreateUser, useDeleteUser, useUpdateUser } from '@/features/users/hooks';
-import type { RoleListItem, UserCreateRequest, UserListItem, UserUpdateRequest } from '@/types/api';
+import type {
+  RoleListItem,
+  TeamListItem,
+  UserCreateRequest,
+  UserListItem,
+  UserUpdateRequest,
+} from '@/types/api';
 
 interface AddUserModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Роли для Select (из GET /api/roles). */
   roles: RoleListItem[];
+  /** CRM-команды для мультивыбора «Команды» (из GET /api/teams). */
+  teams: TeamListItem[];
   /** 'add' — создание (по умолчанию); 'edit' — редактирование пользователя. */
   mode?: 'add' | 'edit';
   /** Обязателен в режиме edit — источник префила и id для PATCH/DELETE. */
   user?: UserListItem;
 }
 
-type UserField = 'username' | 'password' | 'role_id';
+type UserField = 'username' | 'email' | 'password' | 'role_id';
 type Errors = Partial<Record<UserField, string>>;
 
 function roleOptions(roles: RoleListItem[]): SelectOption[] {
   return roles.map((r) => ({ value: r.id, label: r.name }));
+}
+
+function teamOptions(teams: TeamListItem[]): MultiSelectOption[] {
+  return teams.map((t) => ({ value: t.id, label: t.name }));
 }
 
 /** username: required, 1–64 после trim (кириллица допускается — валидацию формата ведёт сервер). */
@@ -49,17 +63,26 @@ function validatePassword(password: string, required: boolean): string | undefin
 function mapApiError(err: unknown, setErrors: (u: (prev: Errors) => Errors) => void): void {
   if (err instanceof ApiError) {
     if (err.status === 409) {
-      // 04-api.md: 409 username_taken.
-      setErrors((prev) => ({
-        ...prev,
-        username: 'Пользователь с таким логином уже существует',
-      }));
+      // 04-api.md: 409 username_taken / email_taken (различаем по code).
+      if (err.code === 'email_taken') {
+        setErrors((prev) => ({ ...prev, email: 'Пользователь с такой почтой уже существует' }));
+      } else {
+        setErrors((prev) => ({
+          ...prev,
+          username: 'Пользователь с таким логином уже существует',
+        }));
+      }
       return;
     }
     if (err.status === 422 || err.status === 400) {
       const mapped: Errors = {};
       for (const d of err.details ?? []) {
-        if (d.field === 'username' || d.field === 'password' || d.field === 'role_id') {
+        if (
+          d.field === 'username' ||
+          d.field === 'email' ||
+          d.field === 'password' ||
+          d.field === 'role_id'
+        ) {
           mapped[d.field] = d.message;
         }
       }
@@ -77,28 +100,48 @@ function mapApiError(err: unknown, setErrors: (u: (prev: Errors) => Errors) => v
 }
 
 /** Ремоунт по ключу mode+id+open → чистый сброс формы (паттерн AddProxyModal). */
-export function AddUserModal({ open, onOpenChange, roles, mode = 'add', user }: AddUserModalProps) {
+export function AddUserModal({
+  open,
+  onOpenChange,
+  roles,
+  teams,
+  mode = 'add',
+  user,
+}: AddUserModalProps) {
   const key = `${mode}-${user?.id ?? 'new'}-${open ? 'open' : 'closed'}`;
   if (mode === 'edit' && user) {
     return (
-      <EditUserDialog key={key} open={open} onOpenChange={onOpenChange} roles={roles} user={user} />
+      <EditUserDialog
+        key={key}
+        open={open}
+        onOpenChange={onOpenChange}
+        roles={roles}
+        teams={teams}
+        user={user}
+      />
     );
   }
-  return <AddUserDialog key={key} open={open} onOpenChange={onOpenChange} roles={roles} />;
+  return (
+    <AddUserDialog key={key} open={open} onOpenChange={onOpenChange} roles={roles} teams={teams} />
+  );
 }
 
 function AddUserDialog({
   open,
   onOpenChange,
   roles,
+  teams,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   roles: RoleListItem[];
+  teams: TeamListItem[];
 }) {
   const [username, setUsername] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [roleId, setRoleId] = useState(roles[0]?.id ?? '');
+  const [teamIds, setTeamIds] = useState<string[]>([]);
   const [errors, setErrors] = useState<Errors>({});
   const [showPassword, setShowPassword] = useState(false);
   const createMutation = useCreateUser();
@@ -121,6 +164,11 @@ function AddUserDialog({
       password,
       role_id: roleId,
     };
+    // email опционален: пусто → не отправляем (без email, 04-api.md).
+    const trimmedEmail = email.trim();
+    if (trimmedEmail) payload.email = trimmedEmail;
+    if (teamIds.length > 0) payload.team_ids = teamIds;
+
     createMutation.mutate(payload, {
       onSuccess: () => {
         toast.success('Пользователь создан');
@@ -158,7 +206,6 @@ function AddUserDialog({
         )}
         <Input
           label="Логин"
-          placeholder="Никита"
           value={username}
           error={errors.username}
           autoFocus
@@ -167,6 +214,18 @@ function AddUserDialog({
           onChange={(e) => {
             setUsername(e.target.value);
             if (errors.username) setErrors((p) => ({ ...p, username: undefined }));
+          }}
+        />
+        <Input
+          label="Почта"
+          type="email"
+          placeholder="Опционально"
+          value={email}
+          error={errors.email}
+          autoComplete="off"
+          onChange={(e) => {
+            setEmail(e.target.value);
+            if (errors.email) setErrors((p) => ({ ...p, email: undefined }));
           }}
         />
         <Input
@@ -203,6 +262,13 @@ function AddUserDialog({
             if (errors.role_id) setErrors((p) => ({ ...p, role_id: undefined }));
           }}
         />
+        <MultiSelect
+          label="Команды"
+          value={teamIds}
+          options={teamOptions(teams)}
+          onChange={setTeamIds}
+          emptyHint="Пока нет команд"
+        />
       </form>
     </Modal>
   );
@@ -212,16 +278,21 @@ function EditUserDialog({
   open,
   onOpenChange,
   roles,
+  teams,
   user,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   roles: RoleListItem[];
+  teams: TeamListItem[];
   user: UserListItem;
 }) {
+  const initialTeamIds = user.teams.map((t) => t.id);
+  const [email, setEmail] = useState(user.email ?? '');
   const [roleId, setRoleId] = useState(user.role_id);
   const [isActive, setIsActive] = useState(user.is_active);
   const [password, setPassword] = useState('');
+  const [teamIds, setTeamIds] = useState<string[]>(initialTeamIds);
   const [errors, setErrors] = useState<Errors>({});
   const [showPassword, setShowPassword] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -242,6 +313,15 @@ function EditUserDialog({
     if (roleId !== user.role_id) payload.role_id = roleId;
     if (isActive !== user.is_active) payload.is_active = isActive;
     if (password) payload.password = password;
+    // email: сравниваем с текущим; пусто → null (убрать email), значение → установить.
+    const trimmedEmail = email.trim();
+    const currentEmail = user.email ?? '';
+    if (trimmedEmail !== currentEmail) payload.email = trimmedEmail === '' ? null : trimmedEmail;
+    // team_ids: если набор изменился — передаём полный новый набор (заменяет членство).
+    const teamsChanged =
+      teamIds.length !== initialTeamIds.length ||
+      !teamIds.every((id) => initialTeamIds.includes(id));
+    if (teamsChanged) payload.team_ids = teamIds;
 
     if (Object.keys(payload).length === 0) {
       onOpenChange(false);
@@ -265,6 +345,12 @@ function EditUserDialog({
         onOpenChange(false);
       },
       onError: (err) => {
+        // 04-api.md: 409 user_is_team_leader (пользователь — лидер команды).
+        if (err instanceof ApiError && err.code === 'user_is_team_leader') {
+          toast.error('Пользователь — лидер команды: сначала смените лидера');
+          setConfirmOpen(false);
+          return;
+        }
         const message = err instanceof ApiError ? err.message : 'Не удалось удалить пользователя';
         toast.error(message);
       },
@@ -310,6 +396,18 @@ function EditUserDialog({
               <span className="font-mono text-sm text-text-primary">{user.username}</span>
             </div>
           </div>
+          <Input
+            label="Почта"
+            type="email"
+            placeholder="Опционально"
+            value={email}
+            error={errors.email}
+            autoComplete="off"
+            onChange={(e) => {
+              setEmail(e.target.value);
+              if (errors.email) setErrors((p) => ({ ...p, email: undefined }));
+            }}
+          />
           <Select
             label="Роль"
             options={roleOptions(roles)}
@@ -319,6 +417,13 @@ function EditUserDialog({
               setRoleId(e.target.value);
               if (errors.role_id) setErrors((p) => ({ ...p, role_id: undefined }));
             }}
+          />
+          <MultiSelect
+            label="Команды"
+            value={teamIds}
+            options={teamOptions(teams)}
+            onChange={setTeamIds}
+            emptyHint="Пока нет команд"
           />
           <div className="flex flex-col gap-1.5">
             <span className="text-[13px] font-medium text-text-secondary">Статус</span>

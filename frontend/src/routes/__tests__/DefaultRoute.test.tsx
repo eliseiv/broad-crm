@@ -12,31 +12,25 @@ function renderDefault() {
   return render(
     <Routes>
       <Route path="/" element={<DefaultRoute />} />
-      <Route path="/dashboard" element={<div>DASHBOARD</div>} />
       <Route path="/mail" element={<div>MAIL</div>} />
       <Route path="/servers" element={<div>SERVERS</div>} />
+      <Route path="/users" element={<div>USERS</div>} />
+      <Route path="/roles" element={<div>ROLES</div>} />
     </Routes>,
     { wrapper },
   );
 }
 
-describe('DefaultRoute (permission-aware default, ADR-021)', () => {
+describe('DefaultRoute (permission-aware default без /dashboard, ADR-022)', () => {
   afterEach(() => logout());
 
-  it('redirects to /dashboard when the user has dashboard:view', () => {
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { dashboard: ['view'] } });
-    renderDefault();
-    expect(screen.getByText('DASHBOARD')).toBeInTheDocument();
-  });
-
-  it('superadmin lands on /dashboard', () => {
+  it('superadmin lands on the first nav leaf /mail (dashboard больше не дефолт)', () => {
     loginAs({ isSuperadmin: true });
     renderDefault();
-    expect(screen.getByText('DASHBOARD')).toBeInTheDocument();
+    expect(screen.getByText('MAIL')).toBeInTheDocument();
   });
 
-  it('redirects to the first available tab when there is no dashboard access', () => {
-    // Нет dashboard:view, но есть mail:view — по порядку навигации первая доступная — /mail.
+  it('redirects to /mail when the user has mail:view', () => {
     loginAs({
       isSuperadmin: false,
       role: 'Оператор',
@@ -47,11 +41,31 @@ describe('DefaultRoute (permission-aware default, ADR-021)', () => {
     expect(screen.queryByText('SERVERS')).not.toBeInTheDocument();
   });
 
+  it('falls through to the first available leaf when earlier leaves are inaccessible', () => {
+    // Нет mail, но есть servers:view — первая доступная в порядке навигации /servers.
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { servers: ['view'] } });
+    renderDefault();
+    expect(screen.getByText('SERVERS')).toBeInTheDocument();
+  });
+
+  it('resolves /roles when only roles:view is granted', () => {
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { roles: ['view'] } });
+    renderDefault();
+    expect(screen.getByText('ROLES')).toBeInTheDocument();
+  });
+
+  it('non-superadmin role=admin (no explicit perms) reaches /users via admin flag', () => {
+    // `users` гейтится admin-признаком, не матрицей (04-api.md, ADR-021/022).
+    loginAs({ isSuperadmin: false, role: 'admin', permissions: {} });
+    renderDefault();
+    expect(screen.getByText('USERS')).toBeInTheDocument();
+  });
+
   it('shows the «Недостаточно прав» stub when the user has no view anywhere', () => {
     loginAs({ isSuperadmin: false, role: 'Пусто', permissions: {} });
     renderDefault();
     expect(screen.getByText('Недостаточно прав')).toBeInTheDocument();
     // Не редиректит и не разлогинивает — только заглушка.
-    expect(screen.queryByText('DASHBOARD')).not.toBeInTheDocument();
+    expect(screen.queryByText('MAIL')).not.toBeInTheDocument();
   });
 });

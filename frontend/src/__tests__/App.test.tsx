@@ -2,18 +2,30 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import type { PropsWithChildren } from 'react';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { App } from '@/App';
-import { loginSuperadmin } from '@/test/authTestUtils';
+import { loginAs, loginSuperadmin, logout } from '@/test/authTestUtils';
 import { useAuthStore } from '@/store/auth';
 
-// Страницы мокаем маркерами — тест про роутинг (дефолт/fallback → /dashboard, ADR-017),
-// а не про их внутренности (иначе подтянулись бы реальные data-хуки/запросы).
+// Страницы мокаем маркерами — тест про роутинг (permission-aware дефолт/fallback → первая
+// доступная вкладка, БЕЗ /dashboard, ADR-022), а не про их внутренности.
 vi.mock('@/pages/DashboardPage', () => ({ DashboardPage: () => <div>DASHBOARD</div> }));
 vi.mock('@/pages/MailPage', () => ({ MailPage: () => <div>MAIL</div> }));
 vi.mock('@/pages/ServersPage', () => ({ ServersPage: () => <div>SERVERS</div> }));
 vi.mock('@/pages/AiKeysPage', () => ({ AiKeysPage: () => <div>AIKEYS</div> }));
+vi.mock('@/pages/ProxiesPage', () => ({ ProxiesPage: () => <div>PROXIES</div> }));
+vi.mock('@/pages/BackendsPage', () => ({ BackendsPage: () => <div>BACKENDS</div> }));
+vi.mock('@/pages/RolesPage', () => ({ RolesPage: () => <div>ROLES</div> }));
+vi.mock('@/pages/TeamsPage', () => ({ TeamsPage: () => <div>TEAMS</div> }));
+vi.mock('@/pages/UsersPage', () => ({ UsersPage: () => <div>USERS</div> }));
 vi.mock('@/pages/LoginPage', () => ({ LoginPage: () => <div>LOGIN</div> }));
+
+// AppLayout вызывает useMe() (GET /api/auth/me). В тесте роутинга сеть не нужна —
+// мокаем useMe как no-op; гейтинг читает принципала из стора (loginAs/loginSuperadmin).
+vi.mock('@/features/auth/hooks', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/features/auth/hooks')>();
+  return { ...actual, useMe: () => ({ data: undefined }) };
+});
 
 function renderAt(path: string) {
   function wrapper({ children }: PropsWithChildren) {
@@ -26,30 +38,42 @@ function renderAt(path: string) {
   return render(<App />, { wrapper });
 }
 
-describe('App routing (ADR-017 default route /dashboard)', () => {
-  beforeEach(() => {
-    // ADR-021: DefaultRoute резолвит /dashboard по dashboard:view/superadmin — задаём принципала.
-    loginSuperadmin();
+describe('App routing (permission-aware default без /dashboard, ADR-022)', () => {
+  afterEach(() => logout());
+
+  describe('superadmin', () => {
+    beforeEach(() => loginSuperadmin());
+
+    it('redirects index "/" to the first nav leaf /mail', () => {
+      renderAt('/');
+      expect(screen.getByText('MAIL')).toBeInTheDocument();
+    });
+
+    it('redirects an unknown path (fallback *) to the first nav leaf /mail', () => {
+      renderAt('/does-not-exist');
+      expect(screen.getByText('MAIL')).toBeInTheDocument();
+    });
+
+    it('renders /servers on its route', () => {
+      renderAt('/servers');
+      expect(screen.getByText('SERVERS')).toBeInTheDocument();
+    });
+
+    it('keeps /dashboard reachable by direct URL (out of the menu)', () => {
+      renderAt('/dashboard');
+      expect(screen.getByText('DASHBOARD')).toBeInTheDocument();
+    });
   });
 
-  it('redirects index "/" to /dashboard', () => {
+  it('resolves the default to the first tab the user can reach (no mail → /servers)', () => {
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { servers: ['view'] } });
     renderAt('/');
-    expect(screen.getByText('DASHBOARD')).toBeInTheDocument();
-  });
-
-  it('redirects an unknown path (fallback *) to /dashboard', () => {
-    renderAt('/does-not-exist');
-    expect(screen.getByText('DASHBOARD')).toBeInTheDocument();
-  });
-
-  it('renders /mail on its route', () => {
-    renderAt('/mail');
-    expect(screen.getByText('MAIL')).toBeInTheDocument();
+    expect(screen.getByText('SERVERS')).toBeInTheDocument();
   });
 
   it('redirects to /login when unauthenticated', () => {
     useAuthStore.getState().clearSession();
-    renderAt('/dashboard');
+    renderAt('/servers');
     expect(screen.getByText('LOGIN')).toBeInTheDocument();
   });
 });

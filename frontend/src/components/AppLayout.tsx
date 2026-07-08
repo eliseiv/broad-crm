@@ -1,27 +1,54 @@
 import { LogOut, ServerCog } from 'lucide-react';
-import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
+import { NavMenu } from '@/components/ui/NavMenu';
+import type { NavMenuItem } from '@/components/ui/NavMenu';
 import { cn } from '@/lib/cn';
-import { useIsAdmin, useMe } from '@/features/auth/hooks';
+import { useCanViewPage, useIsAdmin, useMe } from '@/features/auth/hooks';
 import { useAuthStore } from '@/store/auth';
 
 /**
- * Ресурсные вкладки. `page` — ключ каталога прав (GET /api/permissions/catalog),
- * по которому гейтится видимость (view). 08-design-system.md «Навигация».
+ * Категоризированная навигация (08-design-system.md «Навигация (категории-
+ * дропдауны)», ADR-022). Каждый пункт хранит `page` — ключ гейтинга видимости.
+ * «Дашборд» в меню отсутствует (маршрут доступен только по прямому URL).
  */
-const TABS: { to: string; label: string; page: string }[] = [
-  { to: '/dashboard', label: 'Дашборд', page: 'dashboard' },
-  { to: '/mail', label: 'Почты', page: 'mail' },
-  { to: '/servers', label: 'Серверы', page: 'servers' },
-  { to: '/ai-keys', label: 'ИИ - ключи', page: 'ai-keys' },
-  { to: '/proxies', label: 'Прокси', page: 'proxies' },
-  { to: '/backends', label: 'Бэки', page: 'backends' },
+interface NavLeaf extends NavMenuItem {
+  page: string;
+}
+interface NavCategory {
+  label: string;
+  leaves: NavLeaf[];
+}
+
+const CATEGORIES: NavCategory[] = [
+  {
+    label: 'Агрегатор',
+    leaves: [{ to: '/mail', label: 'Почты', page: 'mail' }],
+  },
+  {
+    label: 'Мониторинг',
+    leaves: [
+      { to: '/servers', label: 'Серверы', page: 'servers' },
+      { to: '/ai-keys', label: 'ИИ - ключи', page: 'ai-keys' },
+      { to: '/proxies', label: 'Прокси', page: 'proxies' },
+      { to: '/backends', label: 'Бэки', page: 'backends' },
+    ],
+  },
+  {
+    label: 'Пользователи',
+    leaves: [
+      { to: '/users', label: 'Пользователи', page: 'users' },
+      { to: '/roles', label: 'Роли', page: 'roles' },
+      { to: '/teams', label: 'Команды', page: 'teams' },
+    ],
+  },
 ];
 
 /**
- * Общий layout с верхними вкладками-навигацией (08-design-system.md «Навигация»).
- * Заголовок, ранее зашитый в ServersPage, вынесен сюда. Обе страницы — под auth-guard.
+ * Общий layout с верхней категоризированной навигацией (08-design-system.md
+ * «Навигация», ADR-022). Все страницы — под auth-guard. Гейтинг видимости — только
+ * UX; безопасность обеспечивает сервер (403).
  */
 export function AppLayout() {
   const navigate = useNavigate();
@@ -29,29 +56,29 @@ export function AppLayout() {
   const queryClient = useQueryClient();
   const username = useAuthStore((s) => s.username);
   const clearSession = useAuthStore((s) => s.clearSession);
-  const isSuperadmin = useAuthStore((s) => s.isSuperadmin);
-  const permissions = useAuthStore((s) => s.permissions);
-  const isAdmin = useIsAdmin();
 
   // Обновляем права принципала при входе на защищённые страницы (ADR-021:
   // права могут меняться без пере-логина). Наполняет стор → гейтинг реактивен.
   useMe();
 
-  // UI-гейтинг вкладок по правам (08-design-system.md «Гейтинг навигации»).
-  // Ресурсная/dashboard/mail вкладка видна ⇔ view ∈ permissions[page] (или супер-админ).
-  // Вкладка «Пользователи» — только is_superadmin || role=="admin".
-  const canView = (page: string) => isSuperadmin || Boolean(permissions?.[page]?.includes('view'));
-  const visibleTabs = TABS.filter((tab) => canView(tab.page));
+  // Доступ по страницам (общий useCanViewPage, без инлайн-canView). Пункт `users`
+  // гейтится admin-признаком (вне матрицы, ADR-021); остальные — <page>:view.
+  const isAdmin = useIsAdmin();
+  const access: Record<string, boolean> = {
+    mail: useCanViewPage('mail'),
+    servers: useCanViewPage('servers'),
+    'ai-keys': useCanViewPage('ai-keys'),
+    proxies: useCanViewPage('proxies'),
+    backends: useCanViewPage('backends'),
+    roles: useCanViewPage('roles'),
+    teams: useCanViewPage('teams'),
+    users: isAdmin,
+  };
+  const canSee = (page: string) => Boolean(access[page]);
 
   // Два режима shell по маршруту (08-design-system.md «Full-bleed layout»):
-  //  • /mail (full-bleed) — модель фиксированной высоты: shell `h-screen overflow-hidden`,
-  //    хэдер `shrink-0`, `<main>` `flex-1 min-h-0 w-full overflow-hidden`, `<Outlet/>` напрямую.
-  //    Страница сама не скроллится, скролл — внутри панелей master-detail.
-  //  • не-mail (/servers, /ai-keys) — ОБЫЧНЫЙ поток документа: shell `min-h-screen`
-  //    (без h-screen/overflow-hidden), хэдер `sticky top-0`, `<main>` — простой контейнер
-  //    (НЕ скролл-контейнер), ширину 1400px держит внутренний `<div>`-обёртка. Скроллит `body`
-  //    нативно (скроллбар у края окна); влезает — скроллбара нет. Это устраняет контейнерный/
-  //    фантомный скролл `<main>` (overflow-y-auto), который давал «панель скролла».
+  //  • /mail (full-bleed) — фиксированная высота; скролл внутри панелей master-detail.
+  //  • не-mail — обычный поток документа (min-h-screen), ширину держит внутренний div.
   const isFullBleed = location.pathname.startsWith('/mail');
 
   const handleLogout = () => {
@@ -79,42 +106,21 @@ export function AppLayout() {
               <ServerCog className="h-[18px] w-[18px]" aria-hidden="true" />
             </span>
             <nav className="flex items-center gap-1" aria-label="Основная навигация">
-              {visibleTabs.map((tab) => (
-                <NavLink
-                  key={tab.to}
-                  to={tab.to}
-                  className={({ isActive }) =>
-                    cn(
-                      'relative rounded-md px-3 py-2 text-[14px] font-medium transition-colors',
-                      'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-                      'after:absolute after:inset-x-3 after:-bottom-[13px] after:h-0.5 after:rounded-full after:transition-colors',
-                      isActive
-                        ? 'text-accent after:bg-accent'
-                        : 'text-text-secondary after:bg-transparent hover:text-text-primary',
-                    )
-                  }
-                >
-                  {tab.label}
-                </NavLink>
-              ))}
-              {/* Седьмая вкладка «Пользователи» — admin-only (08-design-system.md). */}
-              {isAdmin && (
-                <NavLink
-                  to="/users"
-                  className={({ isActive }) =>
-                    cn(
-                      'relative rounded-md px-3 py-2 text-[14px] font-medium transition-colors',
-                      'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-                      'after:absolute after:inset-x-3 after:-bottom-[13px] after:h-0.5 after:rounded-full after:transition-colors',
-                      isActive
-                        ? 'text-accent after:bg-accent'
-                        : 'text-text-secondary after:bg-transparent hover:text-text-primary',
-                    )
-                  }
-                >
-                  Пользователи
-                </NavLink>
-              )}
+              {CATEGORIES.map((category) => {
+                // Пункты категории, доступные пользователю (08-design-system.md:
+                // пункт виден ⇔ есть доступ). Категория видна ⇔ ≥1 доступного пункта.
+                const visibleLeaves = category.leaves.filter((leaf) => canSee(leaf.page));
+                if (visibleLeaves.length === 0) return null;
+                const active = visibleLeaves.some((leaf) => location.pathname.startsWith(leaf.to));
+                return (
+                  <NavMenu
+                    key={category.label}
+                    label={category.label}
+                    active={active}
+                    items={visibleLeaves.map(({ to, label }) => ({ to, label }))}
+                  />
+                );
+              })}
             </nav>
           </div>
           <div className="flex items-center gap-3">

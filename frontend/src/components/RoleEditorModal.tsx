@@ -25,6 +25,8 @@ interface RoleEditorModalProps {
   mode?: 'add' | 'edit';
   /** Обязателен в режиме edit — источник префила и id для PATCH/DELETE. */
   role?: RoleListItem;
+  /** Показывать кнопку «Удалить» в режиме edit (по `roles:delete`). По умолчанию true. */
+  canDelete?: boolean;
 }
 
 /** Проверяет, выбрано ли действие для страницы в текущем состоянии матрицы. */
@@ -67,6 +69,7 @@ export function RoleEditorModal({
   catalog,
   mode = 'add',
   role,
+  canDelete = true,
 }: RoleEditorModalProps) {
   const key = `${mode}-${role?.id ?? 'new'}-${open ? 'open' : 'closed'}`;
   return (
@@ -77,11 +80,19 @@ export function RoleEditorModal({
       catalog={catalog}
       mode={mode}
       role={role}
+      canDelete={canDelete}
     />
   );
 }
 
-function RoleDialog({ open, onOpenChange, catalog, mode, role }: RoleEditorModalProps) {
+function RoleDialog({
+  open,
+  onOpenChange,
+  catalog,
+  mode,
+  role,
+  canDelete = true,
+}: RoleEditorModalProps) {
   const isEdit = mode === 'edit' && role !== undefined;
   const [name, setName] = useState(role?.name ?? '');
   const [perm, setPerm] = useState<PermissionsMap>(role?.permissions ?? {});
@@ -173,7 +184,7 @@ function RoleDialog({ open, onOpenChange, catalog, mode, role }: RoleEditorModal
         size="lg"
         footer={
           <div className="flex w-full items-center justify-between gap-2">
-            {isEdit ? (
+            {isEdit && canDelete ? (
               <Button variant="danger" onClick={() => setConfirmOpen(true)} disabled={isSubmitting}>
                 <Trash2 className="h-4 w-4" />
                 Удалить

@@ -23,6 +23,8 @@ export const PAGE_LABEL: Record<string, string> = {
   proxies: 'Прокси',
   backends: 'Бэки',
   mail: 'Почты',
+  roles: 'Роли',
+  teams: 'Команды',
 };
 
 /** Локализованное имя страницы (фолбэк — технический ключ). */

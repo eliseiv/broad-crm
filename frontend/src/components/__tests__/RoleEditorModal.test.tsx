@@ -82,6 +82,7 @@ describe('RoleEditorModal (матрица прав и коды ошибок, ADR
       id: 'r1',
       name: 'Оператор',
       permissions: { servers: ['view'] },
+      user_count: 0,
       created_at: '2026-07-07T09:00:00Z',
       updated_at: '2026-07-07T09:00:00Z',
     };

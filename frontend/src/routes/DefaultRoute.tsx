@@ -4,26 +4,29 @@ import { useIsAdmin } from '@/features/auth/hooks';
 import { useAuthStore } from '@/store/auth';
 
 /**
- * Порядок навигации (08-design-system.md «Навигация»): первая доступная по `view`
- * вкладка определяется этим порядком сверху вниз. «Пользователи» гейтится admin —
- * покрывается коротким замыканием isAdmin ниже, поэтому в списке ресурсных вкладок нет.
+ * Плоский порядок листьев навигации (08-design-system.md «Навигация», ADR-022) —
+ * БЕЗ `dashboard`: первая доступная по правам вкладка определяется этим порядком
+ * сверху вниз. `users` гейтится admin-признаком (не матрицей). «Дашборд» больше не
+ * дефолт — доступен только по прямому URL `/dashboard`.
  */
 const NAV_ORDER: { path: string; page: string }[] = [
-  { path: '/dashboard', page: 'dashboard' },
   { path: '/mail', page: 'mail' },
   { path: '/servers', page: 'servers' },
   { path: '/ai-keys', page: 'ai-keys' },
   { path: '/proxies', page: 'proxies' },
   { path: '/backends', page: 'backends' },
+  { path: '/users', page: 'users' },
+  { path: '/roles', page: 'roles' },
+  { path: '/teams', page: 'teams' },
 ];
 
 /**
  * Permission-aware дефолтный маршрут (index `/` и fallback `*`), 08-design-system.md
- * «Дефолтный маршрут после логина (permission-aware)»:
- *  - `/dashboard`, если есть `dashboard:view` (или пользователь admin/superadmin);
- *  - иначе — редирект на ПЕРВУЮ доступную по `view` вкладку в порядке навигации;
- *  - если нет ни одного `view` (и не admin/superadmin) — страница-заглушка
- *    «Недостаточно прав» БЕЗ сброса сессии и БЕЗ редиректа на /login.
+ * «Дефолтный маршрут после логина (permission-aware)», ADR-022:
+ *  - редирект на ПЕРВУЮ доступную вкладку в порядке навигации (без `dashboard`);
+ *    `users` — по admin-признаку, ресурсные/roles/teams — по `<page>:view`;
+ *  - если нет ни одного доступного листа (и не admin/superadmin) — заглушка
+ *    «Недостаточно прав» (global-scope), БЕЗ сброса сессии и редиректа на /login.
  * Рендерится внутри AppLayout (шапка с «Выйти» доступна; useMe обновляет права).
  */
 export function DefaultRoute() {
@@ -31,18 +34,17 @@ export function DefaultRoute() {
   const permissions = useAuthStore((s) => s.permissions);
   const isAdmin = useIsAdmin();
 
-  const canView = (page: string) => isSuperadmin || Boolean(permissions?.[page]?.includes('view'));
+  const canReach = (page: string) => {
+    if (page === 'users') return isAdmin;
+    return isSuperadmin || Boolean(permissions?.[page]?.includes('view'));
+  };
 
-  if (isSuperadmin || isAdmin || canView('dashboard')) {
-    return <Navigate to="/dashboard" replace />;
-  }
-
-  const firstTab = NAV_ORDER.find((tab) => canView(tab.page));
+  const firstTab = NAV_ORDER.find((tab) => canReach(tab.page));
   if (firstTab) {
     return <Navigate to={firstTab.path} replace />;
   }
 
-  // Нет ни одного `view` (и не admin/superadmin) — заглушка «нет ни одного раздела»
-  // (global-scope), БЕЗ сброса сессии и БЕЗ редиректа на /login (08-design-system.md).
+  // Нет ни одного доступного листа (и не admin/superadmin) — заглушка «нет ни
+  // одного раздела» (global-scope), БЕЗ сброса сессии / редиректа (08-design-system.md).
   return <InsufficientPermissions scope="global" />;
 }

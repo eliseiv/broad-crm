@@ -449,16 +449,30 @@ export interface PermissionsCatalogResponse {
 }
 
 /**
+ * Ссылка на CRM-команду пользователя (04-api.md, `TeamRef`). Денормализовано
+ * для группировки списка «Пользователи» по командам. Это CRM-команды ([Teams]),
+ * НЕ mail-«команды» (MailTeam).
+ */
+export interface TeamRef {
+  id: string;
+  name: string;
+}
+
+/**
  * Элемент списка пользователей (04-api.md, схема `UserListItem`). Пароль
  * (`password`/`password_hash`) в ответах отсутствует всегда — только на вход.
  */
 export interface UserListItem {
   id: string;
   username: string;
+  /** Опциональный email (ADR-022); `null` — не задан. */
+  email: string | null;
   role_id: string;
   /** Имя роли (денормализовано для UI-списка). */
   role_name: string;
   is_active: boolean;
+  /** CRM-команды пользователя (может быть пустым) — для группировки списка. */
+  teams: TeamRef[];
   created_at: string;
   updated_at: string;
 }
@@ -471,22 +485,29 @@ export interface UserListResponse {
 /**
  * Тело POST /api/users (04-api.md, `UserCreateRequest`). `username` 1–64
  * (кириллица допускается), `password` 8–128, `role_id` — существующая роль.
+ * `email` опционален (валидный формат/уникален); `team_ids` — опц. набор CRM-команд.
  */
 export interface UserCreateRequest {
   username: string;
+  email?: string;
   password: string;
   role_id: string;
+  team_ids?: string[];
 }
 
 /**
  * Тело PATCH /api/users/{id} (04-api.md, `UserUpdateRequest`). `username`
  * не редактируется. Все поля опциональны — передаются только изменяемые
  * (exclude_unset). `password`: не передан → не менять; непустой (8–128) → сброс.
+ * `email`: не передан → не менять; `null`/`""` → убрать email. `team_ids`
+ * (если передан) полностью заменяет набор CRM-команд пользователя.
  */
 export interface UserUpdateRequest {
+  email?: string | null;
   role_id?: string;
   is_active?: boolean;
   password?: string;
+  team_ids?: string[];
 }
 
 /**
@@ -497,6 +518,8 @@ export interface RoleListItem {
   id: string;
   name: string;
   permissions: PermissionsMap;
+  /** Число пользователей с этой ролью (ADR-022). `≥1` → удаление запрещено. */
+  user_count: number;
   created_at: string;
   updated_at: string;
 }
@@ -522,6 +545,63 @@ export interface RoleCreateRequest {
 export interface RoleUpdateRequest {
   name?: string;
   permissions?: PermissionsMap;
+}
+
+// --- Teams (04-api.md «Teams», modules/teams, ADR-022) ---
+
+/**
+ * Участник CRM-команды (04-api.md, `TeamMember`). Отдаётся в списке команд
+ * для prefill формы редактирования — отдельного GET /api/teams/{id} нет.
+ */
+export interface TeamMember {
+  id: string;
+  username: string;
+}
+
+/**
+ * Элемент списка CRM-команд (04-api.md, схема `TeamListItem`). CRM-команды —
+ * отдельная сущность (uuid, БД CRM, лидер+участники), НЕ mail-«команды» (MailTeam).
+ */
+export interface TeamListItem {
+  id: string;
+  /** Название (уникально). Дубликат → 409 team_name_taken. */
+  name: string;
+  leader_id: string;
+  /** Логин лидера (денормализовано для списка, агрегат JOIN users). */
+  leader_username: string;
+  /** Число участников (= members.length; включает лидера). */
+  member_count: number;
+  /** Участники команды (включая лидера). */
+  members: TeamMember[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** Ответ GET /api/teams (04-api.md, схема `TeamListResponse`). */
+export interface TeamListResponse {
+  items: TeamListItem[];
+}
+
+/**
+ * Тело POST /api/teams (04-api.md, `TeamCreateRequest`). Лидер добавляется в
+ * участники автоматически. `member_ids` опц. (default `[]`); дубль `leader_id`
+ * в `member_ids` — не ошибка. Уникальность `name` → 409 team_name_taken.
+ */
+export interface TeamCreateRequest {
+  name: string;
+  leader_id: string;
+  member_ids?: string[];
+}
+
+/**
+ * Тело PATCH /api/teams/{id} (04-api.md, `TeamUpdateRequest`). Все поля
+ * опциональны (exclude_unset). `member_ids` (если передан) полностью заменяет
+ * состав; лидер (текущий/новый) всегда включается (инвариант «лидер ∈ участники»).
+ */
+export interface TeamUpdateRequest {
+  name?: string;
+  leader_id?: string;
+  member_ids?: string[];
 }
 
 /** Единый формат ошибки API (04-api.md). */
