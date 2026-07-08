@@ -52,11 +52,14 @@ class User(Base):
         server_default=text("gen_random_uuid()"),
     )
     username: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
-    # Опциональный email (ADR-022). Уникален только среди заданных (частичный
-    # уникальный индекс uq_users_email WHERE email IS NOT NULL, миграция 0010).
-    # Хранится нормализованным (trim+lower); формат — на Pydantic/домене.
-    email: Mapped[str | None] = mapped_column(Text, nullable=True)
-    password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    # Опциональный телеграм-ник (ADR-025; заменяет прежний email из ADR-022). Уникален
+    # только среди заданных (частичный уникальный индекс uq_users_telegram
+    # WHERE telegram IS NOT NULL, миграция 0011). Хранится нормализованным (без `@`,
+    # lower-case); формат — на Pydantic/домене (app.domain.telegram).
+    telegram: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # NULL = беспарольный пользователь (пароль ещё не задан — «открытый первый вход»,
+    # ADR-025, миграция 0011). Непустой — bcrypt-хэш. Plaintext не хранится.
+    password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
     role_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
         ForeignKey("roles.id", ondelete="RESTRICT"),

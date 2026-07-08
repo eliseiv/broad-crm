@@ -1,16 +1,32 @@
 import { useEffect } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
-import { getMe, login } from '@/features/auth/api';
+import { getMe, login, setPassword } from '@/features/auth/api';
 import { useAuthStore } from '@/store/auth';
-import type { LoginRequest } from '@/types/api';
+import type { LoginRequest, LoginSuccessResponse, SetPasswordRequest } from '@/types/api';
 
 export const meKey = ['me'] as const;
 
+/** Кладёт access-токен в стор и догружает права принципала (общий хвост входа). */
+async function establishSession(
+  data: LoginSuccessResponse,
+  username: string,
+  setSession: (token: string, username: string) => void,
+  setPrincipal: (me: Awaited<ReturnType<typeof getMe>>) => void,
+): Promise<void> {
+  setSession(data.access_token, username);
+  try {
+    const me = await getMe();
+    setPrincipal(me);
+  } catch {
+    // Права доуточнит useMe на защищённых страницах; вход не блокируется.
+  }
+}
+
 /**
- * Мутация входа: при успехе кладёт токен в стор (память + sessionStorage),
- * затем догружает права принципала через GET /api/auth/me и заполняет стор
- * (ADR-021, 08-design-system.md «Гейтинг»). Ошибка /me не валит вход — гейтинг
- * доуточнит useMe после навигации.
+ * Мутация входа: при успехе-`false` кладёт токен в стор (память + sessionStorage)
+ * и догружает права принципала через GET /api/auth/me (ADR-021, «Гейтинг»). При
+ * `password_setup_required:true` сессия НЕ устанавливается — компонент показывает
+ * окно «Задайте пароль» с setup-токеном (ADR-025). Ошибка /me не валит вход.
  */
 export function useLogin() {
   const setSession = useAuthStore((s) => s.setSession);
@@ -18,13 +34,24 @@ export function useLogin() {
   return useMutation({
     mutationFn: (payload: LoginRequest) => login(payload),
     onSuccess: async (data, variables) => {
-      setSession(data.access_token, variables.username);
-      try {
-        const me = await getMe();
-        setPrincipal(me);
-      } catch {
-        // Права доуточнит useMe на защищённых страницах; вход не блокируется.
-      }
+      if (data.password_setup_required) return; // ветку setup ведёт компонент
+      await establishSession(data, variables.username, setSession, setPrincipal);
+    },
+  });
+}
+
+/**
+ * Мутация установки пароля «первого входа» (ADR-025): POST /api/auth/set-password
+ * с setup-токеном. Успех → пользователь сразу залогинен (access-токен) + права.
+ */
+export function useSetPassword() {
+  const setSession = useAuthStore((s) => s.setSession);
+  const setPrincipal = useAuthStore((s) => s.setPrincipal);
+  return useMutation({
+    mutationFn: (vars: { payload: SetPasswordRequest; setupToken: string; username: string }) =>
+      setPassword(vars.payload, vars.setupToken),
+    onSuccess: async (data, variables) => {
+      await establishSession(data, variables.username, setSession, setPrincipal);
     },
   });
 }

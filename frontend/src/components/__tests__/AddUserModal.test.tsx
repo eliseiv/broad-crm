@@ -63,14 +63,14 @@ describe('AddUserModal (создание пользователя, коды ош
     );
   });
 
-  it('includes email and team_ids in the payload when provided (ADR-022)', async () => {
+  it('includes telegram and team_ids in the payload when provided (ADR-025)', async () => {
     const user = userEvent.setup();
     mutations.create.mockImplementation((_payload, opts) => opts.onSuccess());
 
     render(<AddUserModal open onOpenChange={vi.fn()} roles={ROLES} teams={TEAMS} mode="add" />);
 
     await user.type(screen.getByLabelText('Логин'), 'Никита');
-    await user.type(screen.getByLabelText('Почта'), 'nikita@example.com');
+    await user.type(screen.getByLabelText('Телеграм'), '@Nikita_01');
     await user.type(screen.getByLabelText('Пароль'), 's3cret-pass');
     await user.click(screen.getByRole('checkbox', { name: 'Продажи' }));
     await user.click(screen.getByRole('button', { name: 'Добавить' }));
@@ -80,9 +80,25 @@ describe('AddUserModal (создание пользователя, коды ош
         username: 'Никита',
         password: 's3cret-pass',
         role_id: 'r1',
-        email: 'nikita@example.com',
+        telegram: '@Nikita_01',
         team_ids: ['t1'],
       },
+      expect.any(Object),
+    );
+  });
+
+  it('creates a passwordless user when the password is left empty (ADR-025)', async () => {
+    const user = userEvent.setup();
+    mutations.create.mockImplementation((_payload, opts) => opts.onSuccess());
+
+    render(<AddUserModal open onOpenChange={vi.fn()} roles={ROLES} teams={TEAMS} mode="add" />);
+
+    await user.type(screen.getByLabelText('Логин'), 'Никита');
+    await user.click(screen.getByRole('button', { name: 'Добавить' }));
+
+    // Пароль пуст → в payload не попадает (беспарольный «открытый первый вход»).
+    expect(mutations.create).toHaveBeenCalledWith(
+      { username: 'Никита', role_id: 'r1' },
       expect.any(Object),
     );
   });
@@ -110,20 +126,20 @@ describe('AddUserModal (создание пользователя, коды ош
     expect(screen.getByText('Пользователь с таким логином уже существует')).toBeInTheDocument();
   });
 
-  it('maps 409 email_taken to an inline email error (ADR-022)', async () => {
+  it('maps 409 telegram_taken to an inline telegram error (ADR-025)', async () => {
     const user = userEvent.setup();
     mutations.create.mockImplementation((_payload, opts) =>
-      opts.onError(new ApiError(409, 'email_taken', 'Почта уже занята')),
+      opts.onError(new ApiError(409, 'telegram_taken', 'Телеграм уже занят')),
     );
 
     render(<AddUserModal open onOpenChange={vi.fn()} roles={ROLES} teams={TEAMS} mode="add" />);
 
     await user.type(screen.getByLabelText('Логин'), 'Никита');
-    await user.type(screen.getByLabelText('Почта'), 'nikita@example.com');
+    await user.type(screen.getByLabelText('Телеграм'), '@nikita_01');
     await user.type(screen.getByLabelText('Пароль'), 's3cret-pass');
     await user.click(screen.getByRole('button', { name: 'Добавить' }));
 
-    expect(screen.getByText('Пользователь с такой почтой уже существует')).toBeInTheDocument();
+    expect(screen.getByText('Пользователь с таким Телеграмом уже существует')).toBeInTheDocument();
   });
 
   it('validates the password length client-side before hitting the API', async () => {

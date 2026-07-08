@@ -86,6 +86,10 @@
 
 Проверка = **доступность прокси** через эталонный запрос. HTTP-клиент — `httpx` с коротким таймаутом `PROXY_CHECK_TIMEOUT_SEC` (default 10 с) и ограниченными ретраями на транзиентные ошибки (backoff-паттерн `app/infra/ai_provider.py`). TLS verify включён.
 
+> **Анти-зависание (нормативно, [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)).** Чтобы проверка не «зависала» бесконечно (наблюдалось для `138.16.43.116` — прокси TCP-принимает, но не отвечает; per-attempt-таймаут `httpx` мог не покрывать connect/SOCKS-handshake-фазу):
+> 1. **Явный `httpx.Timeout` по всем фазам:** `PROXY_CHECK_TIMEOUT_SEC` применяется как `httpx.Timeout(connect=t, read=t, write=t, pool=t)` — **не** как одиночный float (иначе connect/pool могут остаться по умолчанию).
+> 2. **Абсолютный overall-deadline:** проверка одного прокси (`check_one`, включая **все** внутренние ретраи и backoff) оборачивается `asyncio.wait_for(..., PROXY_CHECK_DEADLINE_SEC)` (default **30 с**). Превышение → `asyncio.TimeoutError` → исход **`error`**, `error_message = «Таймаут подключения»`. Проверка **всегда завершается** конклюзивно; `deadline` (30 с) < интервал (60 с) — зависшая проверка гарантированно закрывается в пределах цикла, не накапливая повисшие задачи.
+
 1. Собрать URL прокси в памяти: `"<proxy_type>://[<username>[:<password>]@]<host>:<port>"`.
    - `proxy_type` = схема (`http`/`https`/`socks5`).
    - `username`/`password` включаются, только если заданы (URL-энкодятся; пароль расшифровывается `decrypt_secret` из `password_encrypted` непосредственно перед сборкой).
@@ -158,7 +162,7 @@
 
 ### Backend — ориентиры реализации (структура — на усмотрение)
 
-1. **Настройки** (`config.py`): `proxy_check_interval_sec: int = 60`, `proxy_check_timeout_sec: float = 10.0`, `proxy_check_url: str = "https://www.gstatic.com/generate_204"`. `notifier_enabled` переиспользуется.
+1. **Настройки** (`config.py`): `proxy_check_interval_sec: int = 60`, `proxy_check_timeout_sec: float = 10.0`, **`proxy_check_deadline_sec: float = 30.0`** (overall-deadline `asyncio.wait_for`, анти-зависание — [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)), `proxy_check_url: str = "https://www.gstatic.com/generate_204"`. `notifier_enabled` переиспользуется.
 2. **Зависимость `httpx[socks]`** (обязательно для `socks5`): `httpx` из коробки проксирует HTTP/HTTPS, но `socks5://` требует экстру `httpx[socks]` (транзитивно `socksio`). Текущий `backend/pyproject.toml` объявляет `httpx>=0.27,<0.28` **без** этой экстры → **добавить `httpx[socks]`** (пометка для backend/devops, [ADR-019](../../adr/ADR-019-proxies-availability-monitor.md); [02-tech-stack.md](../../02-tech-stack.md#backend)). Без экстры проверка SOCKS5-прокси падает.
 3. **Проверка прокси** (`infra/`, напр. `proxy_checker.py`): чистый результат `ProxyCheckResult{outcome, reason}` (`working`/`error`) — маппинг тестируется без сети (моки httpx). Сборка URL — отдельная функция; пароль/URL не логируются.
 4. **Билдеры сообщений** (`domain/notifications.py`): `build_proxy_error(name, host, port, reason)` / `build_proxy_recovery(name, host, port)` → строка. qa проверяет побайтовое совпадение формата.
@@ -177,7 +181,7 @@
 ### Страница `ProxiesPage`
 
 - Адаптивная сетка карточек (`grid-cols-1 md:grid-cols-2 xl:grid-cols-3`, gap 24px), как «Серверы»/«ИИ - ключи». Единый список (без секций), сортировка по `position`. Ячейки: `ProxyCard` на каждый прокси + `AddProxyCard`.
-- `ProxyCard`: имя, тип (http/https/socks5), `host:port` (моношрифт), статус-бейдж (**Работает** / **Не работает** / **Проверка…**), причина ошибки при `error`, наличие логина/пароля (иконка/подпись при `username`/`has_password`), кнопка **Удалить**.
+- `ProxyCard`: имя, тип (http/https/socks5), **только IP-адрес прокси** (`host`, моношрифт — **без порта, логина и пароля**, [ADR-023](../../adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md); поля `port`/`username`/`has_password` остаются в ответе API и в форме edit, но на карточке не отображаются), статус-бейдж (**Работает** / **Не работает** / **Проверка…**), причина ошибки при `error`, **единственная** кнопка **Удалить** (дубль в error-состоянии не рендерится).
 - **Клик по карточке = редактирование** (короткий клик открывает `AddProxyModal` в режиме edit). **Зажатие ~200 мс + движение = перетаскивание** (@dnd-kit, [08-design-system.md](../../08-design-system.md#перестановка-карточек-drag-and-drop)). Кнопка **Удалить** — `stopPropagation`.
 - `AddProxyCard` → `AddProxyModal` (Radix Dialog) в режиме **add**: поля **Название** (`Input`), **Тип** (`Select`: http/https/socks5), **Хост** (`Input`), **Порт** (`Input`, числовой), **Логин** (`Input`, опц.), **Пароль** (`Input type=password`, toggle видимости, опц.). Кнопки **Отмена** / **Добавить**.
 - **Режим edit `AddProxyModal`:** префил `name`/`proxy_type`/`host`/`port`/`username`; поле **Пароль пустое** с подсказкой «Оставьте пустым, чтобы не менять пароль». Кнопка действия — **Сохранить**. Отправляются только изменённые поля; пустой `password` не отправляется. После смены связанного с подключением поля карточка возвращается в **Проверка…** и polling статуса возобновляется.
@@ -212,4 +216,5 @@ Loading (skeleton), empty (только `AddProxyCard` + подсказка), pe
 ## Changelog
 
 - 2026-07-07: спецификация создана (architect). Решение об отдельном in-backend-мониторе доступности прокси (по образцу AI-ключей), Fernet для пароля, отдельных полях ввода и эталонном URL проверки — [ADR-019](../../adr/ADR-019-proxies-availability-monitor.md). Отложенные пункты — [TD-028](../../100-known-tech-debt.md). Требуется добавить зависимость `httpx[socks]` (backend/devops).
+- 2026-07-08: **UI + анти-зависание** ([ADR-023](../../adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md), [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)): карточка `ProxyCard` показывает **только IP** (`host`, без порта/логина/пароля); единственная кнопка «Удалить»; проверка получила **явный `httpx.Timeout` по всем фазам** + **overall-deadline** `PROXY_CHECK_DEADLINE_SEC`=30 (`asyncio.wait_for`) — устраняет зависание проверки (кейс `138.16.43.116`). Контракт API `ProxyListItem` не изменён.
 - 2026-07-07: **Спринт 1 реализован** (backend + frontend + qa, все гейты зелёные, reviewer approve / production_ready). Закрыты все пункты DoD: модель + миграция `0006_create_proxies`, `ProxyMonitorService` (старт всегда, персистентный `check_status`), Telegram-алерты down 🔴 / recovery 🟢, CRUD API (`GET/POST/PATCH/DELETE /api/proxies`, `PATCH /api/proxies/order`, `GET /api/proxies/{id}/status`), страница `/proxies` (единый список, DnD, add/edit-модалка), `httpx[socks]`, тесты (coverage ≥90 % для проверки/перехода/билдеров). Статус модуля → `implemented`. Остаточный edge-case (алерт для прокси, удалённого в момент in-flight проверки) — [TD-028](../../100-known-tech-debt.md).

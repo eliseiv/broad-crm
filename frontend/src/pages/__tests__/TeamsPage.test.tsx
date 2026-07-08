@@ -54,7 +54,8 @@ const USERS: UserListResponse = {
     {
       id: 'u1',
       username: 'Никита',
-      email: null,
+      telegram: null,
+      has_password: true,
       role_id: 'r1',
       role_name: 'Оператор',
       is_active: true,
@@ -65,7 +66,8 @@ const USERS: UserListResponse = {
     {
       id: 'u2',
       username: 'Мария',
-      email: null,
+      telegram: null,
+      has_password: true,
       role_id: 'r1',
       role_name: 'Оператор',
       is_active: true,
@@ -117,6 +119,28 @@ describe('TeamsPage (CRM-команды, гейтинг, ADR-022)', () => {
     expect(screen.getByText('Никита')).toBeInTheDocument();
     // member_count=3 → «3 участника».
     expect(screen.getByText('3 участника')).toBeInTheDocument();
+  });
+
+  it('команда без лидера отображается как «Без лидера» (ADR-026)', () => {
+    state.teams = {
+      items: [
+        {
+          id: 't9',
+          name: 'Резерв',
+          leader_id: null,
+          leader_username: null,
+          member_count: 0,
+          members: [],
+          created_at: '2026-07-08T09:00:00Z',
+          updated_at: '2026-07-08T09:00:00Z',
+        },
+      ],
+    };
+    render(<TeamsPage />, { wrapper });
+    expect(screen.getByText('Резерв')).toBeInTheDocument();
+    expect(screen.getByText('Без лидера')).toBeInTheDocument();
+    // member_count=0 → «0 участников».
+    expect(screen.getByText('0 участников')).toBeInTheDocument();
   });
 
   it('кнопка «Добавить команду» видна при teams:create и скрыта без него', () => {

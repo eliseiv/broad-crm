@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
-import { Clock, Lock, Loader2, Network, Trash2, User } from 'lucide-react';
+import { Clock, Loader2, Network, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { AddProxyModal } from '@/components/AddProxyModal';
 import { Badge } from '@/components/ui/Badge';
@@ -129,37 +129,21 @@ export function ProxyCard({ proxy, canEdit = true, canDelete = true }: ProxyCard
           )}
         </div>
 
-        {/* Адрес (host:port, моношрифт) */}
+        {/* Адрес — только IP/хост (ADR-023: логин/пароль/порт не показываем; они в форме edit) */}
         <div className="rounded-sub border border-border-subtle bg-surface-2 px-3 py-2.5">
-          <span className="font-mono text-sm tracking-tight text-text-secondary" aria-label="Адрес">
-            {proxy.host}:{proxy.port}
+          <span
+            className="font-mono text-sm tracking-tight text-text-secondary"
+            aria-label="IP-адрес"
+          >
+            {proxy.host}
           </span>
         </div>
-
-        {/* Авторизация: логин и/или индикатор наличия пароля */}
-        {(proxy.username || proxy.has_password) && (
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-[13px] text-text-secondary">
-            {proxy.username && (
-              <span className="inline-flex min-w-0 items-center gap-1.5">
-                <User className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                <span className="shrink-0">Логин:</span>
-                <span className="truncate font-mono text-text-primary">{proxy.username}</span>
-              </span>
-            )}
-            {proxy.has_password && (
-              <span className="inline-flex items-center gap-1.5">
-                <Lock className="h-3.5 w-3.5" aria-hidden="true" />
-                Пароль задан
-              </span>
-            )}
-          </div>
-        )}
 
         {/* Причина ошибки при error */}
         {isError && errorMessage && <p className="text-[13px] text-status-red">{errorMessage}</p>}
 
-        {/* Обновлено + действие */}
-        <div className="flex items-center justify-between gap-2">
+        {/* Обновлено (единственная кнопка «Удалить» — в шапке карточки, ADR-023) */}
+        <div className="flex items-center gap-2">
           {lastChecked ? (
             <span className="inline-flex items-center gap-1.5 text-[13px] text-text-secondary">
               <Clock className="h-3.5 w-3.5" aria-hidden="true" />
@@ -167,21 +151,6 @@ export function ProxyCard({ proxy, canEdit = true, canDelete = true }: ProxyCard
             </span>
           ) : (
             <span className="text-[13px] text-text-tertiary">Ожидание первой проверки…</span>
-          )}
-          {isError && canDelete && (
-            <Button
-              variant="danger"
-              size="sm"
-              loading={deleteMutation.isPending}
-              onPointerDown={stopForDelete}
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfirmOpen(true);
-              }}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Удалить
-            </Button>
           )}
         </div>
       </Card>

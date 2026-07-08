@@ -22,22 +22,25 @@ class TeamMember(BaseModel):
 
 
 class TeamCreateRequest(BaseModel):
-    """Тело POST /api/teams (04-api.md#post-apiteams).
+    """Тело POST /api/teams (04-api.md#post-apiteams, ADR-026).
 
-    `member_ids` опц. (default `[]`); лидер добавляется в участники автоматически.
-    `name`/существование ссылок валидируются сервисом (422).
+    `leader_id`/`member_ids` **опциональны** (пустая команда без лидера допустима).
+    Заданный лидер добавляется в участники; при отсутствии лидера первый участник
+    авто-назначается лидером. `name`/существование ссылок валидируются сервисом (422).
     """
 
     name: str
-    leader_id: uuid.UUID
+    leader_id: uuid.UUID | None = None
     member_ids: list[uuid.UUID] = Field(default_factory=list)
 
 
 class TeamUpdateRequest(BaseModel):
-    """Тело PATCH /api/teams/{id} (04-api.md#patch-apiteamsid). Все поля опц.
+    """Тело PATCH /api/teams/{id} (04-api.md#patch-apiteamsid, ADR-026). Все поля опц.
 
     «Переданное поле» — по `model_fields_set` (Pydantic v2 `exclude_unset`). `member_ids`,
-    если передано, ПОЛНОСТЬЮ заменяет состав (лидер всегда включается в итоговый набор).
+    если передано, ПОЛНОСТЬЮ заменяет состав. `leader_id`: uuid → сменить лидера (он ∈
+    участники); `null` → снять лидера. Если `leader_id` НЕ передан, а текущий лидер
+    исключён из нового состава → авто-передача следующему по `user_teams.created_at`.
     """
 
     name: str | None = None
@@ -46,12 +49,16 @@ class TeamUpdateRequest(BaseModel):
 
 
 class TeamListItem(BaseModel):
-    """Элемент GET /api/teams и тело 201 POST / 200 PATCH (04-api.md#teams)."""
+    """Элемент GET /api/teams и тело 201 POST / 200 PATCH (04-api.md#teams, ADR-026).
+
+    `leader_id`/`leader_username` — `null` у команды без лидера; `member_count` может
+    быть `0` (пустая команда).
+    """
 
     id: uuid.UUID
     name: str
-    leader_id: uuid.UUID
-    leader_username: str
+    leader_id: uuid.UUID | None
+    leader_username: str | None
     member_count: int
     members: list[TeamMember]
     created_at: datetime

@@ -15,7 +15,7 @@ from app.config import Settings, get_settings
 from app.db import get_session, get_sessionmaker
 from app.domain.permissions import full_catalog_permissions
 from app.errors import forbidden, unauthorized
-from app.infra.jwt import TokenError, decode_access_token
+from app.infra.jwt import SetupTokenClaims, TokenError, decode_access_token, decode_setup_token
 from app.infra.mail_client import get_mail_client
 from app.infra.prometheus import get_prometheus_client
 from app.infra.rate_limit import get_login_rate_limiter
@@ -113,6 +113,25 @@ async def get_current_principal(
 
 
 PrincipalDep = Annotated[Principal, Depends(get_current_principal)]
+
+
+async def get_setup_principal(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> SetupTokenClaims:
+    """Декодит limited-scope setup-токен (`type:"pwd_setup"`) для set-password (ADR-025).
+
+    Отдельная зависимость: принимает ТОЛЬКО setup-token (обычный access-token отвергается
+    внутри `decode_setup_token`). Нет/просрочен/неверный тип → 401 unauthorized.
+    """
+    if credentials is None or not credentials.credentials:
+        raise unauthorized()
+    try:
+        return decode_setup_token(credentials.credentials)
+    except TokenError as exc:
+        raise unauthorized() from exc
+
+
+SetupPrincipalDep = Annotated[SetupTokenClaims, Depends(get_setup_principal)]
 
 
 def require(page: str, action: str) -> Callable[[Principal], Awaitable[Principal]]:

@@ -371,3 +371,40 @@ async def test_run_survives_iteration_error(monkeypatch: pytest.MonkeyPatch) -> 
         await svc.run()
 
     assert state["n"] == 2  # пережил ошибку первой итерации, выполнил вторую
+
+
+# ------------------------------------------------- overall-deadline (ADR-024)
+async def test_check_one_deadline_aborts_hung_check_and_alerts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Проверка прокси «зависает» (socks5-handshake) → overall-deadline (asyncio.wait_for)
+    # прерывает её → конклюзивный error «Таймаут подключения». У прокси алерт немедленный
+    # (ADR-024: grace только у бэков) → 🔴 отправляется сразу.
+    monkeypatch.setenv("PROXY_CHECK_DEADLINE_SEC", "0.05")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+
+    proxy = _FakeProxy(status=ProxyStatus.working.value)
+    repo = _FakeRepo(proxy)
+    tg = _FakeTelegram()
+    monkeypatch.setattr(mod, "ProxyRepository", lambda _session: repo)
+    monkeypatch.setattr(mod, "decrypt_secret", lambda _enc: "decrypted-pass")
+
+    async def _hang(*_args: object, **_kw: object) -> ProxyCheckResult:
+        await asyncio.Event().wait()  # никогда не завершится
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(mod, "check_proxy", _hang)
+
+    svc = ProxyMonitorService(
+        sessionmaker=lambda: _FakeSession(),  # type: ignore[arg-type]
+        telegram=tg,  # type: ignore[arg-type]
+        settings=get_settings(),  # type: ignore[arg-type]
+    )
+
+    await svc.check_one(proxy.id)
+
+    assert repo.updates == [(proxy.id, ProxyStatus.error.value, "Таймаут подключения")]
+    assert len(tg.sent) == 1  # прокси — немедленный алерт
+    assert "🔴🔴🔴СРОЧНО🔴🔴🔴" in tg.sent[0]

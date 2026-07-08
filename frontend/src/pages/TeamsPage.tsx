@@ -154,7 +154,13 @@ function TeamsList() {
                         {team.name}
                       </span>
                       <span className="truncate text-[13px] text-text-secondary">
-                        Лидер: <span className="font-mono">{team.leader_username}</span>
+                        {team.leader_username ? (
+                          <>
+                            Лидер: <span className="font-mono">{team.leader_username}</span>
+                          </>
+                        ) : (
+                          'Без лидера'
+                        )}
                       </span>
                     </div>
                   </div>

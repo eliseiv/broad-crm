@@ -23,7 +23,8 @@ function makeUser(id: string, username: string): UserListItem {
   return {
     id,
     username,
-    email: null,
+    telegram: null,
+    has_password: true,
     role_id: 'r1',
     role_name: 'Оператор',
     is_active: true,
@@ -49,48 +50,51 @@ const TEAM: TeamListItem = {
   updated_at: '2026-07-08T09:00:00Z',
 };
 
-describe('AddTeamModal (создание/редактирование команды, ADR-022)', () => {
+describe('AddTeamModal (создание/редактирование команды, ADR-026)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('лидер зафиксирован как участник (checkbox отмечен и недоступен для снятия)', () => {
+  it('лидер опционален: по умолчанию «Без лидера»', () => {
     render(<AddTeamModal open onOpenChange={vi.fn()} users={USERS} mode="add" />);
-    // Лидер по умолчанию — первый пользователь (u1 Никита).
-    const leaderCheckbox = screen.getByRole('checkbox', { name: 'Никита' });
-    expect(leaderCheckbox).toBeChecked();
-    expect(leaderCheckbox).toBeDisabled();
+    const leaderSelect = screen.getByLabelText('Лидер') as HTMLSelectElement;
+    // Дефолт — «Без лидера» (пустое значение); участники не отмечены.
+    expect(leaderSelect.value).toBe('');
+    expect(screen.getByRole('checkbox', { name: 'Никита' })).not.toBeChecked();
   });
 
-  it('create: payload содержит name, leader_id и member_ids БЕЗ лидера (инвариант «лидер ∈ участники»)', async () => {
+  it('create: пустая команда без лидера → payload {name, member_ids: []}', async () => {
     const user = userEvent.setup();
     mutations.create.mockImplementation((_payload, opts) => opts.onSuccess());
 
     render(<AddTeamModal open onOpenChange={vi.fn()} users={USERS} mode="add" />);
 
-    await user.type(screen.getByLabelText('Название'), 'Продажи');
-    // Отмечаем участника Мария (лидер u1 добавится сервером автоматически).
-    await user.click(screen.getByRole('checkbox', { name: 'Мария' }));
+    await user.type(screen.getByLabelText('Название'), 'Пустая');
     await user.click(screen.getByRole('button', { name: 'Добавить' }));
 
+    // leader_id не передаётся (команда без лидера / авто-назначение на сервере).
     expect(mutations.create).toHaveBeenCalledWith(
-      { name: 'Продажи', leader_id: 'u1', member_ids: ['u2'] },
+      { name: 'Пустая', member_ids: [] },
       expect.any(Object),
     );
   });
 
-  it('смена лидера исключает нового лидера из member_ids (инвариант соблюдается)', async () => {
+  it('create: выбранный лидер зафиксирован в участниках и не дублируется в member_ids', async () => {
     const user = userEvent.setup();
     mutations.create.mockImplementation((_payload, opts) => opts.onSuccess());
 
     render(<AddTeamModal open onOpenChange={vi.fn()} users={USERS} mode="add" />);
 
     await user.type(screen.getByLabelText('Название'), 'Продажи');
-    // Сначала выбираем Марию участником, затем делаем её лидером.
+    await user.selectOptions(screen.getByLabelText('Лидер'), 'u1');
+    // Лидер (Никита) заблокирован как участник (checked+disabled).
+    const leaderMember = screen.getByRole('checkbox', { name: 'Никита' });
+    expect(leaderMember).toBeChecked();
+    expect(leaderMember).toBeDisabled();
+    // Добавляем участника Марию.
     await user.click(screen.getByRole('checkbox', { name: 'Мария' }));
-    await user.selectOptions(screen.getByLabelText('Лидер'), 'u2');
     await user.click(screen.getByRole('button', { name: 'Добавить' }));
 
     expect(mutations.create).toHaveBeenCalledWith(
-      { name: 'Продажи', leader_id: 'u2', member_ids: [] },
+      { name: 'Продажи', member_ids: ['u2'], leader_id: 'u1' },
       expect.any(Object),
     );
   });
@@ -132,6 +136,19 @@ describe('AddTeamModal (создание/редактирование коман
     await user.click(screen.getByRole('button', { name: 'Сохранить' }));
 
     expect(mutations.update).toHaveBeenCalledWith({ name: 'Продажи EU' }, expect.any(Object));
+  });
+
+  it('edit: снятие лидера через «Без лидера» → PATCH { leader_id: null } (ADR-026)', async () => {
+    const user = userEvent.setup();
+    mutations.update.mockImplementation((_payload, opts) => opts.onSuccess());
+
+    render(<AddTeamModal open onOpenChange={vi.fn()} users={USERS} mode="edit" team={TEAM} />);
+
+    await user.selectOptions(screen.getByLabelText('Лидер'), '');
+    await user.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    const [payload] = mutations.update.mock.calls[0];
+    expect(payload.leader_id).toBeNull();
   });
 
   it('edit: без изменений закрывает форму без вызова API', async () => {

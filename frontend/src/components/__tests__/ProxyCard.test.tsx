@@ -48,11 +48,13 @@ function makeProxy(overrides: Partial<Proxy> = {}): Proxy {
 describe('ProxyCard — status badges', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('renders "Работает" badge and host:port for working status', () => {
+  it('renders "Работает" badge and ТОЛЬКО host (без порта, ADR-023) for working status', () => {
     render(<ProxyCard proxy={makeProxy({ check_status: 'working' })} />, { wrapper });
 
     expect(screen.getByText('Работает')).toBeInTheDocument();
-    expect(screen.getByText('proxy.example.com:1080')).toBeInTheDocument();
+    // ADR-023: карточка показывает только host (логин/пароль/порт — в форме edit).
+    expect(screen.getByText('proxy.example.com')).toBeInTheDocument();
+    expect(screen.queryByText('proxy.example.com:1080')).not.toBeInTheDocument();
     expect(screen.getByText('SOCKS5')).toBeInTheDocument();
   });
 
@@ -75,13 +77,27 @@ describe('ProxyCard — status badges', () => {
     expect(screen.queryByText('Работает')).not.toBeInTheDocument();
   });
 
-  it('shows login and "Пароль задан" when username/has_password present', () => {
+  it('в error-состоянии — ровно одна кнопка «Удалить» (в шапке; второй нет, ADR-023)', () => {
+    render(
+      <ProxyCard
+        proxy={makeProxy({ check_status: 'error', error_message: 'Прокси недоступен' })}
+      />,
+      { wrapper },
+    );
+
+    // Единственная кнопка удаления — в шапке карточки (нет второй в error-футере).
+    expect(screen.getAllByRole('button', { name: 'Удалить прокси DE Residential' })).toHaveLength(
+      1,
+    );
+  });
+
+  it('не показывает логин/«Пароль задан» на карточке (ADR-023: только host)', () => {
     render(<ProxyCard proxy={makeProxy({ username: 'user01', has_password: true })} />, {
       wrapper,
     });
 
-    expect(screen.getByText('user01')).toBeInTheDocument();
-    expect(screen.getByText('Пароль задан')).toBeInTheDocument();
+    expect(screen.queryByText('user01')).not.toBeInTheDocument();
+    expect(screen.queryByText('Пароль задан')).not.toBeInTheDocument();
   });
 });
 

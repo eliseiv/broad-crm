@@ -84,6 +84,6 @@ def test_revision_chain_single_head_with_0006_on_top() -> None:
 
     # Голова цепочки — 0008_create_users_roles (добавлена поверх 0007 фичей RBAC, ADR-021);
     # цепочка остаётся линейной (одна голова). 0006 по-прежнему сидит поверх 0005.
-    assert heads == ["0010_add_user_email"]  # одна голова — цепочка линейна
+    assert heads == ["0013_backends_alert_grace"]  # одна голова — цепочка линейна
     rev = script.get_revision("0006_create_proxies")
     assert rev.down_revision == "0005_create_notifier_alert_log"  # 0006 сидит поверх 0005

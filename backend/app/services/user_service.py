@@ -1,7 +1,9 @@
-"""Бизнес-логика реестра пользователей (modules/auth, 04-api.md#users, ADR-021/022).
+"""Бизнес-логика реестра пользователей (modules/auth, 04-api.md#users, ADR-021/022/025/026).
 
-Пароль хранится только как bcrypt-хэш; plaintext не возвращается/не логируется.
-`email` (опц.) и членство в CRM-командах (`team_ids`) — ADR-022.
+Пароль хранится только как bcrypt-хэш; plaintext не возвращается/не логируется. Пароль
+**опционален** (беспарольный пользователь — «открытый первый вход», ADR-025). Контакт —
+`telegram` (опц., заменяет прежний email). Членство в CRM-командах (`team_ids`) — ADR-022;
+при исключении из команды, которую пользователь ведёт, лидерство авто-передаётся (ADR-026).
 """
 
 from __future__ import annotations
@@ -10,12 +12,11 @@ import uuid
 
 from sqlalchemy.exc import IntegrityError
 
-from app.domain.email import EmailFormatError, validate_email
 from app.domain.identity import IdentityNameError, validate_identity_name
+from app.domain.telegram import TelegramFormatError, validate_telegram
 from app.errors import (
-    email_taken,
+    telegram_taken,
     unprocessable,
-    user_is_team_leader,
     user_not_found,
     username_taken,
 )
@@ -51,19 +52,19 @@ def _validate_username(raw: str) -> str:
         ) from exc
 
 
-def _validate_email(raw: str) -> str:
-    """Валидирует/нормализует email; нарушение → 422 unprocessable."""
+def _validate_telegram(raw: str) -> str:
+    """Валидирует/нормализует телеграм-ник; нарушение → 422 unprocessable."""
     try:
-        return validate_email(raw)
-    except EmailFormatError as exc:
+        return validate_telegram(raw)
+    except TelegramFormatError as exc:
         raise unprocessable(
-            "Недопустимый email",
-            details=[{"field": "email", "message": str(exc)}],
+            "Недопустимый телеграм-ник",
+            details=[{"field": "telegram", "message": str(exc)}],
         ) from exc
 
 
-def _validate_password_reset(password: str) -> None:
-    """Проверяет длину пароля при сбросе (PATCH); нарушение/`""` → 422 unprocessable."""
+def _validate_password_length(password: str) -> None:
+    """Проверяет длину пароля (create с паролем / сброс через PATCH); иначе → 422."""
     if not (_PASSWORD_MIN_LEN <= len(password) <= _PASSWORD_MAX_LEN):
         raise unprocessable(
             "Пароль должен быть длиной 8–128 символов",
@@ -72,7 +73,7 @@ def _validate_password_reset(password: str) -> None:
 
 
 class UserService:
-    """CRUD реестра пользователей: username/email/role/пароль, bcrypt-хэш, команды."""
+    """CRUD реестра пользователей: username/telegram/role/пароль (опц.), команды."""
 
     def __init__(
         self,
@@ -91,11 +92,12 @@ class UserService:
         return UserListResponse(items=[self._to_item(user) for user in users])
 
     async def create_user(self, payload: UserCreateRequest) -> UserListItem:
-        """Создаёт пользователя. Прецеденция: username/email-формат (422) →
+        """Создаёт пользователя. Прецеденция: username/telegram/password-формат (422) →
         существование role_id/team_ids (422) → уникальность username (409) →
-        уникальность email (409)."""
+        уникальность telegram (409). Пароль опционален (беспарольный при отсутствии)."""
         username = _validate_username(payload.username)
-        email = self._normalize_optional_email(payload.email)
+        telegram = self._normalize_optional_telegram(payload.telegram)
+        password_hash = self._optional_password_hash(payload.password)
 
         role = await self._roles.get_by_id(payload.role_id)
         if role is None:
@@ -108,14 +110,14 @@ class UserService:
 
         if await self._users.exists_by_username(username):
             raise username_taken()
-        if email is not None and await self._users.exists_by_email(email):
-            raise email_taken()
+        if telegram is not None and await self._users.exists_by_telegram(telegram):
+            raise telegram_taken()
 
         try:
             user = await self._users.create(
                 username=username,
-                email=email,
-                password_hash=hash_password(payload.password),
+                telegram=telegram,
+                password_hash=password_hash,
                 role_id=payload.role_id,
             )
             await self._users.set_membership(user.id, team_ids)
@@ -123,9 +125,9 @@ class UserService:
         except IntegrityError as exc:
             await self._users.session.rollback()
             logger.info("user_create_conflict")
-            # Гонка на уникальность username/email между проверкой и вставкой.
-            if email is not None and await self._users.exists_by_email(email):
-                raise email_taken() from exc
+            # Гонка на уникальность username/telegram между проверкой и вставкой.
+            if telegram is not None and await self._users.exists_by_telegram(telegram):
+                raise telegram_taken() from exc
             raise username_taken() from exc
 
         reloaded = await self._users.get_with_teams(user.id)
@@ -134,21 +136,22 @@ class UserService:
         return self._to_item(reloaded)
 
     async def update_user(self, user_id: uuid.UUID, payload: UserUpdateRequest) -> UserListItem:
-        """Редактирует email/роль/статус/пароль/команды. 404 → 422 → 409 (email).
-        username не редактируется. Деактивация аннулирует JWT на следующем запросе."""
+        """Редактирует telegram/роль/статус/пароль/команды. 404 → 422 → 409 (telegram).
+        username не редактируется. При исключении из ведомой команды — авто-передача
+        лидерства (ADR-026). Деактивация аннулирует JWT на следующем запросе."""
         user = await self._users.get_by_id(user_id)
         if user is None:
             raise user_not_found()
 
         fields_set = payload.model_fields_set
 
-        new_email: str | None = None
-        clear_email = False
-        if "email" in fields_set:
-            if payload.email is None or payload.email == "":
-                clear_email = True
+        new_telegram: str | None = None
+        clear_telegram = False
+        if "telegram" in fields_set:
+            if payload.telegram is None or payload.telegram == "":
+                clear_telegram = True
             else:
-                new_email = _validate_email(payload.email)
+                new_telegram = _validate_telegram(payload.telegram)
 
         if "role_id" in fields_set and payload.role_id is not None:
             role = await self._roles.get_by_id(payload.role_id)
@@ -162,25 +165,22 @@ class UserService:
             user.role = role
 
         if "password" in fields_set and payload.password is not None:
-            _validate_password_reset(payload.password)
+            _validate_password_length(payload.password)
 
-        team_ids: set[uuid.UUID] | None = None
+        requested_teams: set[uuid.UUID] | None = None
         if "team_ids" in fields_set and payload.team_ids is not None:
-            requested = await self._validate_team_ids(payload.team_ids)
-            # Инвариант «лидер ∈ участники»: команды, ведомые пользователем, остаются
-            # в его членстве, даже если отсутствуют в team_ids (лидер не исключается).
-            team_ids = requested | await self._teams.ids_led_by(user_id)
+            requested_teams = await self._validate_team_ids(payload.team_ids)
 
-        # Уникальность email (409) — после всех 422-валидаций.
-        if new_email is not None and await self._users.exists_by_email(
-            new_email, exclude_id=user_id
+        # Уникальность telegram (409) — после всех 422-валидаций.
+        if new_telegram is not None and await self._users.exists_by_telegram(
+            new_telegram, exclude_id=user_id
         ):
-            raise email_taken()
+            raise telegram_taken()
 
-        if clear_email:
-            user.email = None
-        elif new_email is not None:
-            user.email = new_email
+        if clear_telegram:
+            user.telegram = None
+        elif new_telegram is not None:
+            user.telegram = new_telegram
 
         if "password" in fields_set and payload.password is not None:
             user.password_hash = hash_password(payload.password)
@@ -188,15 +188,15 @@ class UserService:
         if "is_active" in fields_set and payload.is_active is not None:
             user.is_active = payload.is_active
 
-        if team_ids is not None:
-            await self._users.set_membership(user_id, team_ids)
+        if requested_teams is not None:
+            await self._replace_membership_with_transfer(user_id, requested_teams)
 
         try:
             await self._users.session.commit()
         except IntegrityError as exc:
             await self._users.session.rollback()
             logger.info("user_update_conflict", user_id=str(user_id))
-            raise email_taken() from exc
+            raise telegram_taken() from exc
 
         reloaded = await self._users.get_with_teams(user_id)
         assert reloaded is not None  # существует (только что обновлён)
@@ -204,25 +204,45 @@ class UserService:
         return self._to_item(reloaded)
 
     async def delete_user(self, user_id: uuid.UUID) -> None:
-        """Hard-delete; повтор → 404. Лидер команды → 409 user_is_team_leader
-        (ON DELETE RESTRICT на teams.leader_id)."""
-        try:
-            deleted = await self._users.delete_by_id(user_id)
-            await self._users.session.commit()
-        except IntegrityError as exc:
-            await self._users.session.rollback()
-            logger.info("user_delete_is_team_leader", user_id=str(user_id))
-            raise user_is_team_leader() from exc
-        if not deleted:
+        """Hard-delete; повтор → 404. Лидерство ведомых команд авто-передаётся
+        следующему участнику (или `NULL`), затем пользователь удаляется (ADR-026)."""
+        user = await self._users.get_by_id(user_id)
+        if user is None:
             raise user_not_found()
+
+        for team_id in await self._teams.ids_led_by(user_id):
+            await self._teams.promote_next_leader(team_id, exclude_user_id=user_id)
+
+        await self._users.delete_by_id(user_id)
+        await self._users.session.commit()
         logger.info("user_deleted", user_id=str(user_id))
 
-    @staticmethod
-    def _normalize_optional_email(raw: str | None) -> str | None:
-        """Опциональный email: None/`""` → None; иначе валидирует/нормализует (422)."""
+    async def _replace_membership_with_transfer(
+        self, user_id: uuid.UUID, requested_teams: set[uuid.UUID]
+    ) -> None:
+        """Заменяет набор команд пользователя; при исключении из ведомой команды —
+        авто-передача лидерства следующему участнику (ADR-026)."""
+        current = await self._users.team_ids_of_user(user_id)
+        removed = current - requested_teams
+        await self._users.set_membership(user_id, requested_teams)
+        if removed:
+            led = await self._teams.ids_led_by(user_id)
+            for team_id in led & removed:
+                await self._teams.promote_next_leader(team_id, exclude_user_id=user_id)
+
+    def _optional_password_hash(self, raw: str | None) -> str | None:
+        """Опциональный пароль: None/`""` → None (беспарольный); иначе валидирует+хэширует."""
         if raw is None or raw == "":
             return None
-        return _validate_email(raw)
+        _validate_password_length(raw)
+        return hash_password(raw)
+
+    @staticmethod
+    def _normalize_optional_telegram(raw: str | None) -> str | None:
+        """Опциональный telegram: None/`""` → None; иначе валидирует/нормализует (422)."""
+        if raw is None or raw == "":
+            return None
+        return _validate_telegram(raw)
 
     async def _validate_team_ids(self, team_ids: list[uuid.UUID]) -> set[uuid.UUID]:
         """Проверяет существование всех team_ids; несуществующие → 422. Возвращает set."""
@@ -243,7 +263,8 @@ class UserService:
         return UserListItem(
             id=user.id,
             username=user.username,
-            email=user.email,
+            telegram=user.telegram,
+            has_password=user.password_hash is not None,
             role_id=user.role_id,
             role_name=user.role.name,
             is_active=user.is_active,

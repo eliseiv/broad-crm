@@ -44,16 +44,16 @@ CRM-система мониторинга backend-сервисов и серве
 
 | Модуль | Статус | DoD |
 |--------|--------|-----|
-| auth | `implemented` (Спринт A — `spec-ready`) | Реализован (Спринт 3, [ADR-021](adr/ADR-021-rbac-users-roles.md)): двухшаговый вход + JWT, RBAC, enforcement `require(page,action)`/`require_admin`/`403 forbidden`, bcrypt-хэш, Users/Roles/Permissions API, страница `/users`, миграция 0008, тесты. **Спринт A ([ADR-022](adr/ADR-022-teams-nav-categories.md), spec-ready):** каталог += `roles`/`teams`, роли под матрицей `roles:*`, инвариант эскалации, `users.email`, `RoleListItem.user_count`, миграции 0009/0010 |
-| teams | `spec-ready` | Не реализован — спецификация готова (Спринт A, [ADR-022](adr/ADR-022-teams-nav-categories.md)): CRM-команды `teams`+`user_teams` (M2M), лидер+участники, `/api/teams`, миграция 0009 |
+| auth | `implemented` (правки A/ADR-025 — `spec-ready`) | Реализован (Спринт 3, [ADR-021](adr/ADR-021-rbac-users-roles.md)): двухшаговый вход + JWT, RBAC, enforcement `require(page,action)`/`require_admin`/`403 forbidden`, bcrypt-хэш, Users/Roles/Permissions API, страница `/users`, миграция 0008, тесты. **Спринт A ([ADR-022](adr/ADR-022-teams-nav-categories.md), spec-ready):** каталог += `roles`/`teams`, роли под матрицей `roles:*`, инвариант эскалации, `RoleListItem.user_count`, миграции 0009/0010. **Правки [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md) (spec-ready):** `users.email`→`users.telegram`, беспарольные пользователи (`password_hash` nullable), вход по Логину/Телеграму, открытый первый вход (`set-password`), миграция 0011 |
+| teams | `spec-ready` | Не реализован — спецификация готова (Спринт A, [ADR-022](adr/ADR-022-teams-nav-categories.md)): CRM-команды `teams`+`user_teams` (M2M), лидер+участники, `/api/teams`, миграция 0009. **Правки [ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md):** команды без лидера (`leader_id` nullable, авто-назначение/передача лидерства), миграция 0012 |
 | servers | `spec-ready` | Не реализован — спецификация готова |
 | monitoring | `spec-ready` | Не реализован — спецификация готова |
 | provisioning | `spec-ready` | Не реализован — спецификация готова |
 | notifier | `spec-ready` | Не реализован — спецификация готова |
 | ai-keys | `spec-ready` | Не реализован — спецификация готова |
 | mail | `spec-ready` | Не реализован — спецификация готова |
-| proxies | `implemented` | Реализован (Спринт 1) — модель+миграция 0006, монитор, Telegram-алерты, CRUD API, страница `/proxies`, тесты |
-| backends | `implemented` | Реализован (Спринт 2) — модель+миграция 0007, healthcheck-монитор `GET /health`, Telegram-алерты, CRUD API, страница `/backends`, тесты ([ADR-020](adr/ADR-020-backends-healthcheck-monitor.md)) |
+| proxies | `implemented` (правки ADR-023/024 — `spec-ready`) | Реализован (Спринт 1) — модель+миграция 0006, монитор, Telegram-алерты, CRUD API, страница `/proxies`, тесты. **Правки:** карточка — только IP ([ADR-023](adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)); overall-deadline проверки против зависания ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
+| backends | `implemented` (правки ADR-023/024 — `spec-ready`) | Реализован (Спринт 2) — модель+миграция 0007, healthcheck-монитор `GET /health`, Telegram-алерты, CRUD API, страница `/backends`, тесты ([ADR-020](adr/ADR-020-backends-healthcheck-monitor.md)). **Правки:** одна кнопка «Удалить» ([ADR-023](adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)); overall-deadline + grace-порог 30 мин алерта, миграция 0013 ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
 | ui | `spec-ready` | Не реализован — спецификация готова |
 
 ## Глоссарий

@@ -1,8 +1,10 @@
-"""Тесты UserService: прецеденция ошибок, bcrypt-хэш, пароль не в ответах (ADR-021).
+"""Тесты UserService: прецеденция ошибок, bcrypt-хэш, telegram, беспарольность, команды.
 
 Прогоняется реальный сервис поверх in-memory фейков репозиториев (conftest.RbacFakeDb),
 что сохраняет установленную в репо конвенцию тестов без Postgres. Прецеденция (04-api.md):
-username-формат (422) → существование role_id (422) → уникальность username (409).
+username-формат (422) → telegram-формат (422) → существование role_id/team_ids (422) →
+уникальность username (409) → уникальность telegram (409). Пароль опционален (ADR-025);
+при исключении из ведомой команды лидерство авто-передаётся (ADR-026).
 """
 
 from __future__ import annotations
@@ -42,6 +44,7 @@ async def test_create_user_hashes_password_and_omits_it_from_response(db: RbacFa
     assert item.role_id == role.id
     assert item.role_name == "admin"
     assert item.is_active is True
+    assert item.has_password is True
     # Пароль (plaintext/hash) отсутствует в схеме ответа.
     assert not hasattr(item, "password")
     assert not hasattr(item, "password_hash")
@@ -200,29 +203,69 @@ async def test_list_users_returns_all(db: RbacFakeDb) -> None:
     assert all(not hasattr(u, "password_hash") for u in result.items)
 
 
-# --- email (опциональный, ADR-022) ---
+# --- Беспарольные пользователи (ADR-025) ---
 
 
 @pytest.mark.asyncio
-async def test_create_user_with_email_is_normalized(db: RbacFakeDb) -> None:
+async def test_create_user_without_password_is_passwordless(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    service = _service(db)
+
+    item = await service.create_user(UserCreateRequest(username="Никита", role_id=role.id))
+
+    assert item.has_password is False
+    stored = next(iter(db.users.values()))
+    assert stored.password_hash is None
+
+
+@pytest.mark.asyncio
+async def test_create_user_empty_password_is_passwordless(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    service = _service(db)
+
+    item = await service.create_user(
+        UserCreateRequest(username="Никита", password="", role_id=role.id)
+    )
+
+    assert item.has_password is False
+
+
+@pytest.mark.asyncio
+async def test_create_user_short_password_is_422(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    service = _service(db)
+
+    with pytest.raises(AppError) as exc:
+        await service.create_user(
+            UserCreateRequest(username="Никита", password="short", role_id=role.id)
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.details[0]["field"] == "password"
+
+
+# --- telegram (опциональный, ADR-025) ---
+
+
+@pytest.mark.asyncio
+async def test_create_user_with_telegram_is_normalized(db: RbacFakeDb) -> None:
     role = next(iter(db.roles.values()))
     service = _service(db)
 
     item = await service.create_user(
         UserCreateRequest(
             username="Никита",
-            email="  Nikita@Example.COM ",
+            telegram="@Nikita_01",
             password="s3cret-pass",
             role_id=role.id,
         )
     )
 
-    # Нормализация trim+lower.
-    assert item.email == "nikita@example.com"
+    # Нормализация: снят ведущий @, lower-case.
+    assert item.telegram == "nikita_01"
 
 
 @pytest.mark.asyncio
-async def test_create_user_without_email_is_none(db: RbacFakeDb) -> None:
+async def test_create_user_without_telegram_is_none(db: RbacFakeDb) -> None:
     role = next(iter(db.roles.values()))
     service = _service(db)
 
@@ -230,80 +273,80 @@ async def test_create_user_without_email_is_none(db: RbacFakeDb) -> None:
         UserCreateRequest(username="Никита", password="s3cret-pass", role_id=role.id)
     )
 
-    assert item.email is None
+    assert item.telegram is None
 
 
 @pytest.mark.asyncio
-async def test_create_user_invalid_email_is_422_field_email(db: RbacFakeDb) -> None:
+async def test_create_user_invalid_telegram_is_422_field_telegram(db: RbacFakeDb) -> None:
     role = next(iter(db.roles.values()))
     service = _service(db)
 
     with pytest.raises(AppError) as exc:
         await service.create_user(
             UserCreateRequest(
-                username="Никита", email="not-an-email", password="s3cret-pass", role_id=role.id
+                username="Никита", telegram="bad ник", password="s3cret-pass", role_id=role.id
             )
         )
     assert exc.value.status_code == 422
-    assert exc.value.details[0]["field"] == "email"
+    assert exc.value.details[0]["field"] == "telegram"
 
 
 @pytest.mark.asyncio
-async def test_create_user_duplicate_email_is_409(db: RbacFakeDb) -> None:
+async def test_create_user_duplicate_telegram_is_409(db: RbacFakeDb) -> None:
     role = next(iter(db.roles.values()))
     service = _service(db)
     await service.create_user(
         UserCreateRequest(
-            username="Никита", email="dup@example.com", password="s3cret-pass", role_id=role.id
+            username="Никита", telegram="dup_nick", password="s3cret-pass", role_id=role.id
         )
     )
 
     with pytest.raises(AppError) as exc:
         await service.create_user(
             UserCreateRequest(
-                username="Пётр", email="DUP@example.com", password="other-pass", role_id=role.id
+                username="Пётр", telegram="@DUP_nick", password="other-pass", role_id=role.id
             )
         )
     assert exc.value.status_code == 409
-    assert exc.value.code == "email_taken"
+    assert exc.value.code == "telegram_taken"
 
 
 @pytest.mark.asyncio
-async def test_update_user_clear_email_via_null(db: RbacFakeDb) -> None:
+async def test_update_user_clear_telegram_via_null(db: RbacFakeDb) -> None:
     role = next(iter(db.roles.values()))
-    user = db.add_user("Иван", role, email="ivan@example.com")
+    user = db.add_user("Иван", role, telegram="ivan_nick")
     service = _service(db)
 
-    item = await service.update_user(user.id, UserUpdateRequest(email=None))
+    item = await service.update_user(user.id, UserUpdateRequest(telegram=None))
 
-    assert item.email is None
+    assert item.telegram is None
 
 
 @pytest.mark.asyncio
-async def test_update_user_clear_email_via_empty_string(db: RbacFakeDb) -> None:
+async def test_update_user_clear_telegram_via_empty_string(db: RbacFakeDb) -> None:
     role = next(iter(db.roles.values()))
-    user = db.add_user("Иван", role, email="ivan@example.com")
+    user = db.add_user("Иван", role, telegram="ivan_nick")
     service = _service(db)
 
-    item = await service.update_user(user.id, UserUpdateRequest(email=""))
+    item = await service.update_user(user.id, UserUpdateRequest(telegram=""))
 
-    assert item.email is None
+    assert item.telegram is None
 
 
 @pytest.mark.asyncio
-async def test_update_user_set_email_duplicate_is_409(db: RbacFakeDb) -> None:
+async def test_update_user_set_telegram_duplicate_is_409(db: RbacFakeDb) -> None:
     role = next(iter(db.roles.values()))
-    db.add_user("Пётр", role, email="taken@example.com")
+    db.add_user("Пётр", role, telegram="taken_nick")
     user = db.add_user("Иван", role)
     service = _service(db)
 
     with pytest.raises(AppError) as exc:
-        await service.update_user(user.id, UserUpdateRequest(email="taken@example.com"))
+        await service.update_user(user.id, UserUpdateRequest(telegram="@Taken_nick"))
     assert exc.value.status_code == 409
-    assert exc.value.code == "email_taken"
+    assert exc.value.code == "telegram_taken"
 
 
-# --- team_ids (CRM-команды, ADR-022) ---
+# --- team_ids (CRM-команды, ADR-022/026) ---
 
 
 @pytest.mark.asyncio
@@ -358,30 +401,57 @@ async def test_update_user_team_ids_full_replace(db: RbacFakeDb) -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_user_leader_preserved_when_excluded_from_team_ids(db: RbacFakeDb) -> None:
+async def test_update_user_excluded_leader_auto_transfers(db: RbacFakeDb) -> None:
     role = next(iter(db.roles.values()))
-    user = db.add_user("Иван", role)
-    led = db.add_team("Продажи", user)  # user — лидер команды
+    leader = db.add_user("Иван", role)
+    heir = db.add_user("Мария", role)
+    led = db.add_team("Продажи", leader, members=[heir])  # Иван — лидер, Мария — участник
     service = _service(db)
 
-    # Пытаемся исключить пользователя из всех команд — но он лидер `led`.
-    item = await service.update_user(user.id, UserUpdateRequest(team_ids=[]))
+    # Иван исключается из всех команд (team_ids=[]) → лидерство переходит Марии (ADR-026).
+    item = await service.update_user(leader.id, UserUpdateRequest(team_ids=[]))
 
-    # Инвариант «лидер ∈ участники»: команда, ведомая пользователем, сохраняется.
-    assert led.id in {t.id for t in item.teams}
-    assert user.id in db.teams[led.id]._member_ids
+    assert led.id not in {t.id for t in item.teams}  # Иван больше не в команде
+    assert db.teams[led.id].leader_id == heir.id  # авто-передача Марии
+    assert leader.id not in db.teams[led.id]._members
 
 
 @pytest.mark.asyncio
-async def test_delete_user_who_is_team_leader_is_409(db: RbacFakeDb) -> None:
+async def test_update_user_excluded_last_leader_leaves_team_leaderless(db: RbacFakeDb) -> None:
     role = next(iter(db.roles.values()))
-    user = db.add_user("Иван", role)
-    db.add_team("Продажи", user)
-    # ON DELETE RESTRICT на teams.leader_id → IntegrityError на commit → 409.
-    db.session.raise_integrity = True
+    leader = db.add_user("Иван", role)
+    led = db.add_team("Продажи", leader)  # единственный участник и лидер
     service = _service(db)
 
-    with pytest.raises(AppError) as exc:
-        await service.delete_user(user.id)
-    assert exc.value.status_code == 409
-    assert exc.value.code == "user_is_team_leader"
+    await service.update_user(leader.id, UserUpdateRequest(team_ids=[]))
+
+    assert db.teams[led.id].leader_id is None  # участников не осталось → без лидера
+
+
+@pytest.mark.asyncio
+async def test_delete_user_leader_auto_transfers_no_409(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    leader = db.add_user("Иван", role)
+    heir = db.add_user("Мария", role)
+    led = db.add_team("Продажи", leader, members=[heir])
+    service = _service(db)
+
+    # Удаление пользователя-лидера завершается успешно (204) с авто-передачей (ADR-026,
+    # код 409 user_is_team_leader упразднён).
+    await service.delete_user(leader.id)
+
+    assert leader.id not in db.users
+    assert db.teams[led.id].leader_id == heir.id
+
+
+@pytest.mark.asyncio
+async def test_delete_last_leader_leaves_team_leaderless(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    leader = db.add_user("Иван", role)
+    led = db.add_team("Продажи", leader)
+    service = _service(db)
+
+    await service.delete_user(leader.id)
+
+    assert leader.id not in db.users
+    assert db.teams[led.id].leader_id is None

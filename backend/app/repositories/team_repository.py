@@ -1,17 +1,20 @@
-"""Репозиторий реестра CRM-команд (SQLAlchemy 2.0 async, modules/teams, ADR-022).
+"""Репозиторий реестра CRM-команд (SQLAlchemy 2.0 async, modules/teams, ADR-022/026).
 
-`teams` + M2M `user_teams`. Лидер (`Team.leader`) и участники (`Team.members`)
-грузятся `selectinload`. Членство пишется явными statements (`_write_members`) —
-единственная точка записи под контролем сервиса (инвариант «лидер ∈ участники»).
-Существование пользователей (`leader_id`/`member_ids`) валидирует сервис через
-`UserRepository`; здесь — существование команд и «команды, ведомые пользователем».
+`teams` + M2M `user_teams`. Лидер (`Team.leader`, опционален) и участники
+(`Team.members`, порядок по `user_teams.created_at`) грузятся `selectinload`. Членство
+пишется явными statements — единственная точка записи под контролем сервиса (инвариант
+«если лидер задан — он ∈ участники»; авто-назначение/передача лидерства, ADR-026).
+При замене состава `created_at` существующих участников СОХРАНЯЕТСЯ (дата добавления —
+база порядка авто-передачи); новым ставится строго возрастающий `created_at` в порядке
+входного списка (детерминизм «первого/следующего по дате»).
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import delete, insert, select
+from sqlalchemy import delete, insert, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -70,22 +73,88 @@ class TeamRepository:
         return set(result.scalars().all())
 
     async def ids_led_by(self, user_id: uuid.UUID) -> set[uuid.UUID]:
-        """id команд, где пользователь — лидер (для инварианта «лидер ∈ участники»)."""
+        """id команд, где пользователь — лидер (для авто-передачи лидерства, ADR-026)."""
         stmt = select(Team.id).where(Team.leader_id == user_id)
         result = await self._session.execute(stmt)
         return set(result.scalars().all())
 
-    async def create(self, *, name: str, leader_id: uuid.UUID, member_ids: set[uuid.UUID]) -> Team:
-        """Создаёт команду и записывает членство (лидер включён) в одной транзакции."""
+    async def create(
+        self, *, name: str, leader_id: uuid.UUID | None, ordered_member_ids: list[uuid.UUID]
+    ) -> Team:
+        """Создаёт команду и записывает участников (в порядке списка) в одной транзакции.
+
+        `leader_id` может быть None (команда без лидера). Инвариант «лидер ∈ участники»
+        обеспечивает вызывающий сервис (лидер уже включён в `ordered_member_ids`).
+        """
         team = Team(name=name, leader_id=leader_id)
         self._session.add(team)
         await self._session.flush()
-        await self._write_members(team.id, member_ids | {leader_id})
+        await self._insert_members(team.id, ordered_member_ids, base=datetime.now(UTC))
         return team
 
-    async def replace_members(self, team_id: uuid.UUID, member_ids: set[uuid.UUID]) -> None:
-        """Полностью заменяет состав команды (лидер уже включён вызывающим сервисом)."""
-        await self._write_members(team_id, member_ids)
+    async def replace_members(
+        self, team_id: uuid.UUID, ordered_member_ids: list[uuid.UUID]
+    ) -> None:
+        """Приводит состав команды к `ordered_member_ids`, сохраняя `created_at` остающихся.
+
+        Выбывшие участники удаляются; новые добавляются со строго возрастающим
+        `created_at` ПОСЛЕ максимального существующего (дата добавления → порядок
+        авто-передачи, ADR-026). Порядок новых — по позиции во входном списке.
+        """
+        existing = await self._member_created_at(team_id)
+        desired = list(dict.fromkeys(ordered_member_ids))
+        desired_set = set(desired)
+
+        to_remove = set(existing) - desired_set
+        if to_remove:
+            await self._session.execute(
+                delete(user_teams).where(
+                    user_teams.c.team_id == team_id,
+                    user_teams.c.user_id.in_(to_remove),
+                )
+            )
+
+        new_members = [uid for uid in desired if uid not in existing]
+        if new_members:
+            base = max(existing.values()) if existing else datetime.now(UTC)
+            await self._insert_members(team_id, new_members, base=base, offset=1)
+
+    async def get_first_member(self, team_id: uuid.UUID) -> uuid.UUID | None:
+        """Первый участник по `(created_at ASC, user_id ASC)` (кандидат в лидеры) или None."""
+        stmt = (
+            select(user_teams.c.user_id)
+            .where(user_teams.c.team_id == team_id)
+            .order_by(user_teams.c.created_at.asc(), user_teams.c.user_id.asc())
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        return result.scalars().first()
+
+    async def promote_next_leader(
+        self, team_id: uuid.UUID, *, exclude_user_id: uuid.UUID
+    ) -> uuid.UUID | None:
+        """Назначает лидером следующего участника (по дате), исключая `exclude_user_id`.
+
+        Если других участников нет → `leader_id = NULL` (команда без лидера, ADR-026).
+        Возвращает нового лидера (или None). Вызывается перед исключением/удалением
+        текущего лидера (его строка `user_teams` ещё может присутствовать — потому
+        `exclude_user_id`).
+        """
+        stmt = (
+            select(user_teams.c.user_id)
+            .where(
+                user_teams.c.team_id == team_id,
+                user_teams.c.user_id != exclude_user_id,
+            )
+            .order_by(user_teams.c.created_at.asc(), user_teams.c.user_id.asc())
+            .limit(1)
+        )
+        result = await self._session.execute(stmt)
+        next_leader = result.scalars().first()
+        await self._session.execute(
+            update(Team).where(Team.id == team_id).values(leader_id=next_leader)
+        )
+        return next_leader
 
     async def delete_by_id(self, team_id: uuid.UUID) -> bool:
         """Hard-delete по id (каскад `user_teams`). True, если запись была удалена."""
@@ -94,11 +163,36 @@ class TeamRepository:
         # CursorResult.rowcount не типизирован в SQLAlchemy stubs (известное ограничение).
         return (result.rowcount or 0) > 0  # type: ignore[attr-defined]
 
-    async def _write_members(self, team_id: uuid.UUID, member_ids: set[uuid.UUID]) -> None:
-        """Удаляет прежние строки `user_teams` команды и вставляет новый набор."""
-        await self._session.execute(delete(user_teams).where(user_teams.c.team_id == team_id))
-        if member_ids:
-            await self._session.execute(
-                insert(user_teams),
-                [{"user_id": uid, "team_id": team_id} for uid in member_ids],
-            )
+    async def _member_created_at(self, team_id: uuid.UUID) -> dict[uuid.UUID, datetime]:
+        """Текущие участники команды с их `created_at` (для сохранения дат при замене)."""
+        stmt = select(user_teams.c.user_id, user_teams.c.created_at).where(
+            user_teams.c.team_id == team_id
+        )
+        result = await self._session.execute(stmt)
+        return {row.user_id: row.created_at for row in result}
+
+    async def _insert_members(
+        self,
+        team_id: uuid.UUID,
+        member_ids: list[uuid.UUID],
+        *,
+        base: datetime,
+        offset: int = 0,
+    ) -> None:
+        """Вставляет строки `user_teams` со строго возрастающим `created_at` в порядке списка.
+
+        `created_at = base + (offset + i) микросекунд` — сохраняет порядок входного
+        списка и (при `offset=1`) размещает новых участников после максимального
+        существующего `created_at`.
+        """
+        if not member_ids:
+            return
+        rows = [
+            {
+                "user_id": uid,
+                "team_id": team_id,
+                "created_at": base + timedelta(microseconds=offset + index),
+            }
+            for index, uid in enumerate(member_ids)
+        ]
+        await self._session.execute(insert(user_teams), rows)

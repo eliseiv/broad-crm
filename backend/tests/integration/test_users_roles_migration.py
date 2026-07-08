@@ -79,6 +79,6 @@ def test_revision_chain_single_head_with_0008_on_top() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
     heads = script.get_heads()
 
-    assert heads == ["0010_add_user_email"]  # одна голова — цепочка линейна
+    assert heads == ["0013_backends_alert_grace"]  # одна голова — цепочка линейна
     rev = script.get_revision("0008_create_users_roles")
     assert rev.down_revision == "0007_create_backends"  # 0008 сидит поверх 0007

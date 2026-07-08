@@ -20,7 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from app.config import Settings
 from app.domain.notifications import build_proxy_error, build_proxy_recovery
 from app.infra.crypto import CryptoError, decrypt_secret
-from app.infra.proxy_check import ProxyCheckResult, check_proxy
+from app.infra.proxy_check import REASON_TIMEOUT, ProxyCheckResult, check_proxy
 from app.infra.telegram import TelegramClient
 from app.logging import get_logger
 from app.models.proxy import ProxyStatus
@@ -85,6 +85,9 @@ class ProxyMonitorService:
         self._sessionmaker = sessionmaker
         self._telegram = telegram
         self._interval_sec = settings.proxy_check_interval_sec
+        # Overall-deadline одной проверки (анти-зависание, ADR-024): жёсткий верхний
+        # предел поверх per-attempt httpx.Timeout и ретраев.
+        self._deadline_sec = settings.proxy_check_deadline_sec
 
     async def check_one(self, proxy_id: uuid.UUID) -> None:
         """Проверяет один прокси (немедленная проверка при создании/re-check).
@@ -164,13 +167,21 @@ class ProxyMonitorService:
                 logger.error("proxy_decrypt_failed", proxy_id=str(snapshot.id))
                 return
 
-        result = await check_proxy(
-            snapshot.proxy_type,
-            snapshot.host,
-            snapshot.port,
-            snapshot.username,
-            password,
-        )
+        # Overall-deadline (ADR-024): даже если httpx/socksio не соблюли per-attempt
+        # таймаут, wait_for жёстко прерывает проверку → гарантированно конклюзивный исход.
+        try:
+            result = await asyncio.wait_for(
+                check_proxy(
+                    snapshot.proxy_type,
+                    snapshot.host,
+                    snapshot.port,
+                    snapshot.username,
+                    password,
+                ),
+                timeout=self._deadline_sec,
+            )
+        except TimeoutError:
+            result = ProxyCheckResult("error", REASON_TIMEOUT)
         if result.outcome == "error":
             # Без секретов: только id и причина (URL/пароль не логируются).
             logger.warning("proxy_check_error", proxy_id=str(snapshot.id), reason=result.reason)

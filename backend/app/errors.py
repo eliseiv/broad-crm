@@ -108,6 +108,22 @@ def email_taken() -> AppError:
     )
 
 
+def telegram_taken() -> AppError:
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="telegram_taken",
+        message="Пользователь с таким телеграмом уже существует",
+    )
+
+
+def password_already_set() -> AppError:
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="password_already_set",
+        message="Пароль уже установлен",
+    )
+
+
 def user_is_team_leader() -> AppError:
     return AppError(
         status_code=status.HTTP_409_CONFLICT,

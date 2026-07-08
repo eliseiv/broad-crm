@@ -44,6 +44,9 @@ const config: Config = {
         card: '16px',
         sub: '12px',
         chip: '8px',
+        // Панель дропдауна навигации (NavMenu) — «квадратнее» карточек/кнопок
+        // (ADR-023, 08-design-system.md «Сетка, отступы, скругления»).
+        nav: '6px',
       },
       boxShadow: {
         card: '0 1px 0 rgba(255,255,255,0.03) inset, 0 8px 24px rgba(0,0,0,0.4)',

@@ -116,7 +116,10 @@ async def test_users_crud_contract_and_password_never_returned() -> None:
     assert created.status_code == 201
     assert created.json()["username"] == "Никита"
     assert created.json()["role_name"] == "Оператор"
-    assert "password" not in created.text
+    # Пароль создан → has_password=true; plaintext/hash/ключ "password" отсутствуют
+    # (ответ несёт только производный флаг has_password, ADR-025).
+    assert created.json()["has_password"] is True
+    assert '"password"' not in created.text
     assert "s3cret-pass" not in created.text
     assert "password_hash" not in created.text
     assert listed.status_code == 200
@@ -338,11 +341,11 @@ async def test_roles_list_and_patch_report_user_count() -> None:
     assert patched.json()["user_count"] == 2
 
 
-# --- Users: email/teams через API (ADR-022) ---
+# --- Users: telegram/teams через API (ADR-022/025) ---
 
 
 @pytest.mark.asyncio
-async def test_users_email_and_teams_contract_via_api() -> None:
+async def test_users_telegram_and_teams_contract_via_api() -> None:
     db = RbacFakeDb()
     role = db.add_role("Оператор", {"servers": ["view"]})
     leader = db.add_user("Лидер", role)
@@ -354,18 +357,18 @@ async def test_users_email_and_teams_contract_via_api() -> None:
             "/api/users",
             json={
                 "username": "Никита",
-                "email": "Nikita@Example.com",
+                "telegram": "@Nikita_01",
                 "password": "s3cret-pass",
                 "role_id": str(role.id),
                 "team_ids": [str(team.id)],
             },
         )
-        # Дубликат email → 409 email_taken.
-        dup_email = await client.post(
+        # Дубликат telegram (нормализуется @Nikita_01 → nikita_01) → 409 telegram_taken.
+        dup_tg = await client.post(
             "/api/users",
             json={
                 "username": "Пётр",
-                "email": "nikita@example.com",
+                "telegram": "NIKITA_01",
                 "password": "s3cret-pass",
                 "role_id": str(role.id),
             },
@@ -373,14 +376,33 @@ async def test_users_email_and_teams_contract_via_api() -> None:
 
     assert created.status_code == 201
     body = created.json()
-    assert body["email"] == "nikita@example.com"  # нормализован
+    assert body["telegram"] == "nikita_01"  # нормализован (без @, lower-case)
+    assert body["has_password"] is True
     assert [t["name"] for t in body["teams"]] == ["Продажи"]
-    assert dup_email.status_code == 409
-    assert dup_email.json()["error"]["code"] == "email_taken"
+    assert dup_tg.status_code == 409
+    assert dup_tg.json()["error"]["code"] == "telegram_taken"
 
 
 @pytest.mark.asyncio
-async def test_users_invalid_email_is_422_via_api() -> None:
+async def test_users_create_without_password_is_passwordless_via_api() -> None:
+    db = RbacFakeDb()
+    role = db.add_role("Оператор", {"servers": ["view"]})
+    app = _build_app(db, make_principal())
+
+    async with _client(app) as client:
+        created = await client.post(
+            "/api/users",
+            json={"username": "Никита", "role_id": str(role.id)},
+        )
+
+    assert created.status_code == 201
+    body = created.json()
+    assert body["has_password"] is False  # беспарольный пользователь (ADR-025)
+    assert body["telegram"] is None
+
+
+@pytest.mark.asyncio
+async def test_users_invalid_telegram_is_422_via_api() -> None:
     db = RbacFakeDb()
     role = db.add_role("Оператор", {"servers": ["view"]})
     app = _build_app(db, make_principal())
@@ -390,14 +412,14 @@ async def test_users_invalid_email_is_422_via_api() -> None:
             "/api/users",
             json={
                 "username": "Никита",
-                "email": "bad-email",
+                "telegram": "ab",  # < 5 символов → невалидный формат
                 "password": "s3cret-pass",
                 "role_id": str(role.id),
             },
         )
 
     assert resp.status_code == 422
-    assert resp.json()["error"]["details"][0]["field"] == "email"
+    assert resp.json()["error"]["details"][0]["field"] == "telegram"
 
 
 @pytest.mark.asyncio

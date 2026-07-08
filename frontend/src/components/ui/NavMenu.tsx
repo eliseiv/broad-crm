@@ -50,8 +50,13 @@ export function NavMenu({ label, active, items }: NavMenuProps) {
           align="start"
           sideOffset={8}
           className={cn(
-            'z-50 min-w-[180px] rounded-sub border border-border-strong bg-surface-1 p-1.5 shadow-card',
-            'data-[state=open]:animate-content-in focus:outline-none',
+            // Вертикальный стек пунктов (по одному в строку) + «квадратная» панель 6px
+            // (ADR-023, 08-design-system.md «Навигация»).
+            'z-50 flex min-w-[180px] flex-col rounded-nav border border-border-strong bg-surface-1 p-1.5 shadow-card',
+            // Анимация появления для ЗАЯКОРЕННОЙ панели: только opacity + лёгкий
+            // translateY (keyframe `fade-in`), БЕЗ translate(-50%,-50%) — та центрирующая
+            // анимация (`content-in`) относится к модалке и вызывала «прыжок» дропдауна.
+            'data-[state=open]:animate-fade-in focus:outline-none',
           )}
         >
           {items.map((item) => (
@@ -60,7 +65,7 @@ export function NavMenu({ label, active, items }: NavMenuProps) {
                 to={item.to}
                 className={({ isActive }) =>
                   cn(
-                    'flex cursor-pointer select-none items-center rounded-md px-3 py-2 text-[14px] font-medium outline-none transition-colors',
+                    'flex w-full cursor-pointer select-none items-center rounded-md px-3 py-2 text-[14px] font-medium outline-none transition-colors',
                     'data-[highlighted]:bg-surface-3 data-[highlighted]:text-text-primary',
                     isActive ? 'text-accent' : 'text-text-secondary',
                   )

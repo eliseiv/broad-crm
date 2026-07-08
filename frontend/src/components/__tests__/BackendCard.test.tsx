@@ -72,6 +72,17 @@ describe('BackendCard — status badges', () => {
     expect(screen.getByText('Проверка…')).toBeInTheDocument();
     expect(screen.queryByText('Работает')).not.toBeInTheDocument();
   });
+
+  it('в error-состоянии — ровно одна кнопка «Удалить» (нет второй, ADR-023)', () => {
+    render(
+      <BackendCard
+        backend={makeBackend({ check_status: 'error', error_message: 'Бэк недоступен' })}
+      />,
+      { wrapper },
+    );
+
+    expect(screen.getAllByRole('button', { name: 'Удалить бэк API EU' })).toHaveLength(1);
+  });
 });
 
 describe('BackendCard — interactions', () => {

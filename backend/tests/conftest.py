@@ -4,7 +4,7 @@ import os
 import sys
 import uuid as _uuid
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -105,8 +105,9 @@ class _FakeUser:
 
     Модель SQLAlchemy при `user.role = role` обновляет FK `role_id` на flush; фейк
     воспроизводит это через property-сеттер, чтобы сервис-тесты видели то же поведение.
-    `email` — опциональный (ADR-022). `teams` — производное свойство CRM-команд
-    пользователя (по членству `_member_ids` команд в общей `RbacFakeDb`), порядок
+    `telegram` (опц., ADR-025; заменяет прежний email). `password_hash` nullable
+    (`None` = беспарольный пользователь, ADR-025). `teams` — производное свойство
+    CRM-команд пользователя (по членству команд в общей `RbacFakeDb`), порядок
     `created_at DESC` (как `User.teams` в модели)."""
 
     def __init__(
@@ -114,17 +115,17 @@ class _FakeUser:
         *,
         id: _uuid.UUID,
         username: str,
-        password_hash: str,
+        password_hash: str | None,
         role: Any,
         is_active: bool,
         created_at: datetime,
         updated_at: datetime,
         db: RbacFakeDb,
-        email: str | None = None,
+        telegram: str | None = None,
     ) -> None:
         self.id = id
         self.username = username
-        self.email = email
+        self.telegram = telegram
         self.password_hash = password_hash
         self._role = role
         self.role_id = role.id if role is not None else None
@@ -144,27 +145,29 @@ class _FakeUser:
 
     @property
     def teams(self) -> list[Any]:
-        teams = [t for t in self._db.teams.values() if self.id in t._member_ids]
+        teams = [t for t in self._db.teams.values() if self.id in t._members]
         return sorted(teams, key=lambda t: t.created_at, reverse=True)
 
 
 class _FakeTeam:
-    """Фейк ORM-команды CRM (лидер + участники, ADR-022).
+    """Фейк ORM-команды CRM (опциональный лидер + участники, ADR-022/026).
 
-    Состав хранится как `_member_ids` (включая лидера — инвариант обеспечивает сервис).
-    `leader`/`members` — производные из общей `RbacFakeDb` (как `Team.leader`/`Team.members`
-    в модели). `members` упорядочены `created_at ASC`."""
+    Состав хранится как `_members: dict[user_id, created_at]` (дата добавления —
+    база порядка авто-передачи лидерства, ADR-026). `leader`/`members` — производные
+    из общей `RbacFakeDb` (как `Team.leader`/`Team.members` в модели). `members`
+    упорядочены `(created_at ASC, user_id ASC)`. `leader_id` nullable (команда без
+    лидера)."""
 
     def __init__(
         self,
         *,
         id: _uuid.UUID,
         name: str,
-        leader_id: _uuid.UUID,
+        leader_id: _uuid.UUID | None,
         created_at: datetime,
         updated_at: datetime,
         db: RbacFakeDb,
-        member_ids: set[_uuid.UUID],
+        members: dict[_uuid.UUID, datetime],
     ) -> None:
         self.id = id
         self.name = name
@@ -172,20 +175,23 @@ class _FakeTeam:
         self.created_at = created_at
         self.updated_at = updated_at
         self._db = db
-        self._member_ids = set(member_ids)
+        self._members = dict(members)
 
     @property
     def leader(self) -> Any:
+        if self.leader_id is None:
+            return None
         return self._db.users.get(self.leader_id)
 
     @property
     def members(self) -> list[Any]:
-        members = [self._db.users[uid] for uid in self._member_ids if uid in self._db.users]
-        return sorted(members, key=lambda u: u.created_at)
+        present = [(uid, ts) for uid, ts in self._members.items() if uid in self._db.users]
+        ordered = sorted(present, key=lambda item: (item[1], str(item[0])))
+        return [self._db.users[uid] for uid, _ in ordered]
 
 
 class _FakeSession:
-    """Фейк AsyncSession: commit/rollback/refresh — no-op (in-memory фейки репо).
+    """Фейк AsyncSession: commit/rollback/refresh/flush — no-op (in-memory фейки репо).
 
     `raise_integrity=True` заставляет `commit()` бросить IntegrityError — для проверки
     race-ветки сервисов (детерминированный 409 при гонке уникальности)."""
@@ -201,6 +207,9 @@ class _FakeSession:
         return None
 
     async def refresh(self, _obj: Any) -> None:
+        return None
+
+    async def flush(self) -> None:
         return None
 
 
@@ -223,13 +232,20 @@ class _FakeUserRepo:
     async def get_by_username(self, username: str) -> Any | None:
         return next((u for u in self._db.users.values() if u.username == username), None)
 
+    async def get_by_telegram(self, telegram: str) -> Any | None:
+        if not telegram:
+            return None
+        return next((u for u in self._db.users.values() if u.telegram == telegram), None)
+
     async def exists_by_username(
         self, username: str, *, exclude_id: _uuid.UUID | None = None
     ) -> bool:
         return any(u.username == username and u.id != exclude_id for u in self._db.users.values())
 
-    async def exists_by_email(self, email: str, *, exclude_id: _uuid.UUID | None = None) -> bool:
-        return any(u.email == email and u.id != exclude_id for u in self._db.users.values())
+    async def exists_by_telegram(
+        self, telegram: str, *, exclude_id: _uuid.UUID | None = None
+    ) -> bool:
+        return any(u.telegram == telegram and u.id != exclude_id for u in self._db.users.values())
 
     async def get_existing_ids(self, ids: set[_uuid.UUID]) -> set[_uuid.UUID]:
         return {uid for uid in ids if uid in self._db.users}
@@ -237,20 +253,26 @@ class _FakeUserRepo:
     async def get_with_teams(self, user_id: _uuid.UUID) -> Any | None:
         return self._db.users.get(user_id)
 
+    async def team_ids_of_user(self, user_id: _uuid.UUID) -> set[_uuid.UUID]:
+        return {t.id for t in self._db.teams.values() if user_id in t._members}
+
     async def set_membership(self, user_id: _uuid.UUID, team_ids: set[_uuid.UUID]) -> None:
+        # Существующие членства СОХРАНЯЮТ created_at (дата добавления, ADR-026);
+        # удаляются только выбывшие, добавляются только новые (с новым created_at).
         for team in self._db.teams.values():
-            team._member_ids.discard(user_id)
+            if team.id not in team_ids and user_id in team._members:
+                del team._members[user_id]
         for tid in team_ids:
             team = self._db.teams.get(tid)
-            if team is not None:
-                team._member_ids.add(user_id)
+            if team is not None and user_id not in team._members:
+                team._members[user_id] = self._db.next_created_at()
 
     async def create(
         self,
         *,
         username: str,
-        email: str | None = None,
-        password_hash: str,
+        telegram: str | None = None,
+        password_hash: str | None,
         role_id: _uuid.UUID,
     ) -> Any:
         role = self._db.roles.get(role_id)
@@ -258,7 +280,7 @@ class _FakeUserRepo:
         user = _FakeUser(
             id=_uuid.uuid4(),
             username=username,
-            email=email,
+            telegram=telegram,
             password_hash=password_hash,
             role=role,
             is_active=True,
@@ -270,6 +292,9 @@ class _FakeUserRepo:
         return user
 
     async def delete_by_id(self, user_id: _uuid.UUID) -> bool:
+        # Каскад user_teams: снять членства удаляемого пользователя.
+        for team in self._db.teams.values():
+            team._members.pop(user_id, None)
         return self._db.users.pop(user_id, None) is not None
 
 
@@ -316,7 +341,7 @@ class _FakeRoleRepo:
 
 
 class _FakeTeamRepo:
-    """In-memory замена TeamRepository (тот же интерфейс, без БД, ADR-022)."""
+    """In-memory замена TeamRepository (тот же интерфейс, без БД, ADR-022/026)."""
 
     def __init__(self, db: RbacFakeDb) -> None:
         self._db = db
@@ -326,7 +351,6 @@ class _FakeTeamRepo:
         return self._db.session
 
     async def list_all(self) -> list[Any]:
-        # created_at DESC, id ASC (стабильная сортировка: сначала id ASC, затем ts DESC).
         teams = sorted(self._db.teams.values(), key=lambda t: str(t.id))
         return sorted(teams, key=lambda t: t.created_at, reverse=True)
 
@@ -345,8 +369,17 @@ class _FakeTeamRepo:
     async def ids_led_by(self, user_id: _uuid.UUID) -> set[_uuid.UUID]:
         return {t.id for t in self._db.teams.values() if t.leader_id == user_id}
 
-    async def create(self, *, name: str, leader_id: _uuid.UUID, member_ids: set[_uuid.UUID]) -> Any:
+    async def create(
+        self,
+        *,
+        name: str,
+        leader_id: _uuid.UUID | None,
+        ordered_member_ids: list[_uuid.UUID],
+    ) -> Any:
         now = datetime.now(UTC)
+        members: dict[_uuid.UUID, datetime] = {}
+        for uid in dict.fromkeys(ordered_member_ids):
+            members[uid] = self._db.next_created_at()
         team = _FakeTeam(
             id=_uuid.uuid4(),
             name=name,
@@ -354,13 +387,44 @@ class _FakeTeamRepo:
             created_at=now,
             updated_at=now,
             db=self._db,
-            member_ids=set(member_ids) | {leader_id},
+            members=members,
         )
         self._db.teams[team.id] = team
         return team
 
-    async def replace_members(self, team_id: _uuid.UUID, member_ids: set[_uuid.UUID]) -> None:
-        self._db.teams[team_id]._member_ids = set(member_ids)
+    async def replace_members(
+        self, team_id: _uuid.UUID, ordered_member_ids: list[_uuid.UUID]
+    ) -> None:
+        team = self._db.teams[team_id]
+        desired = list(dict.fromkeys(ordered_member_ids))
+        desired_set = set(desired)
+        # Выбывшие — удалить; остающиеся — сохранить created_at; новые — позже макс.
+        for uid in list(team._members):
+            if uid not in desired_set:
+                del team._members[uid]
+        for uid in desired:
+            if uid not in team._members:
+                team._members[uid] = self._db.next_created_at()
+
+    async def get_first_member(self, team_id: _uuid.UUID) -> _uuid.UUID | None:
+        team = self._db.teams.get(team_id)
+        if team is None or not team._members:
+            return None
+        ordered = sorted(team._members.items(), key=lambda item: (item[1], str(item[0])))
+        return ordered[0][0]
+
+    async def promote_next_leader(
+        self, team_id: _uuid.UUID, *, exclude_user_id: _uuid.UUID
+    ) -> _uuid.UUID | None:
+        team = self._db.teams.get(team_id)
+        if team is None:
+            return None
+        candidates = [(uid, ts) for uid, ts in team._members.items() if uid != exclude_user_id]
+        next_leader: _uuid.UUID | None = None
+        if candidates:
+            next_leader = sorted(candidates, key=lambda item: (item[1], str(item[0])))[0][0]
+        team.leader_id = next_leader
+        return next_leader
 
     async def delete_by_id(self, team_id: _uuid.UUID) -> bool:
         return self._db.teams.pop(team_id, None) is not None
@@ -380,6 +444,14 @@ class RbacFakeDb:
         self.user_repo = _FakeUserRepo(self)
         self.role_repo = _FakeRoleRepo(self)
         self.team_repo = _FakeTeamRepo(self)
+        # Монотонный источник `user_teams.created_at` (детерминированный порядок
+        # авто-передачи лидерства без зависимости от разрешения системного таймера).
+        self._member_seq = 0
+
+    def next_created_at(self) -> datetime:
+        """Строго возрастающая «дата добавления» участника (детерминизм ADR-026)."""
+        self._member_seq += 1
+        return datetime(2020, 1, 1, tzinfo=UTC) + timedelta(microseconds=self._member_seq)
 
     def add_role(self, name: str, permissions: dict[str, list[str]]) -> Any:
         now = datetime.now(UTC)
@@ -395,14 +467,14 @@ class RbacFakeDb:
         role: Any,
         *,
         is_active: bool = True,
-        password_hash: str = "x",
-        email: str | None = None,
+        password_hash: str | None = "x",
+        telegram: str | None = None,
     ) -> Any:
         now = datetime.now(UTC)
         user = _FakeUser(
             id=_uuid.uuid4(),
             username=username,
-            email=email,
+            telegram=telegram,
             password_hash=password_hash,
             role=role,
             is_active=is_active,
@@ -413,18 +485,27 @@ class RbacFakeDb:
         self.users[user.id] = user
         return user
 
-    def add_team(self, name: str, leader: Any, *, members: list[Any] | None = None) -> Any:
-        """Создаёт CRM-команду; лидер всегда в участниках (инвариант)."""
+    def add_team(self, name: str, leader: Any = None, *, members: list[Any] | None = None) -> Any:
+        """Создаёт CRM-команду; заданный лидер всегда в участниках (инвариант, ADR-026).
+
+        `leader=None` → команда без лидера. Порядок добавления участников: сначала
+        `members` (в переданном порядке), затем лидер (если ещё не в составе)."""
         now = datetime.now(UTC)
-        member_ids = {m.id for m in (members or [])} | {leader.id}
+        ordered: list[Any] = list(members or [])
+        if leader is not None and leader not in ordered:
+            ordered.append(leader)
+        member_map: dict[_uuid.UUID, datetime] = {}
+        for m in ordered:
+            if m.id not in member_map:
+                member_map[m.id] = self.next_created_at()
         team = _FakeTeam(
             id=_uuid.uuid4(),
             name=name,
-            leader_id=leader.id,
+            leader_id=leader.id if leader is not None else None,
             created_at=now,
             updated_at=now,
             db=self,
-            member_ids=member_ids,
+            members=member_map,
         )
         self.teams[team.id] = team
         return team

@@ -47,10 +47,35 @@ export interface LoginRequest {
   password: string;
 }
 
-export interface LoginResponse {
+/**
+ * Ответ POST /api/auth/login — дискриминированный по `password_setup_required`
+ * (04-api.md схема `LoginResponse`, ADR-025). Успех (`false`) несёт обычный
+ * access-токен; «требуется установка» (`true`) — limited-scope setup-токен,
+ * принимаемый ТОЛЬКО POST /api/auth/set-password (модель «открытого первого входа»).
+ */
+export interface LoginSuccessResponse {
+  password_setup_required: false;
   access_token: string;
   token_type: string;
   expires_in: number;
+}
+
+export interface LoginSetupRequiredResponse {
+  password_setup_required: true;
+  setup_token: string;
+  token_type: string;
+  expires_in: number;
+}
+
+export type LoginResponse = LoginSuccessResponse | LoginSetupRequiredResponse;
+
+/**
+ * Тело POST /api/auth/set-password (04-api.md схема `SetPasswordRequest`, ADR-025).
+ * `password` 8–128. Auth — Bearer setup-token из ответа login. Ответ — `LoginSuccessResponse`
+ * (пользователь сразу залогинен обычным access-токеном).
+ */
+export interface SetPasswordRequest {
+  password: string;
 }
 
 /**
@@ -465,8 +490,16 @@ export interface TeamRef {
 export interface UserListItem {
   id: string;
   username: string;
-  /** Опциональный email (ADR-022); `null` — не задан. */
-  email: string | null;
+  /**
+   * Опциональный телеграм-ник (ADR-025; заменяет прежний `email`); `null` — не
+   * задан. Нормализован (без `@`, lower-case). Второй идентификатор входа.
+   */
+  telegram: string | null;
+  /**
+   * Производное `password_hash IS NOT NULL` (ADR-025). `false` — беспарольный
+   * пользователь (ещё не прошёл «открытый первый вход»). Сам пароль не возвращается.
+   */
+  has_password: boolean;
   role_id: string;
   /** Имя роли (денормализовано для UI-списка). */
   role_name: string;
@@ -483,27 +516,29 @@ export interface UserListResponse {
 }
 
 /**
- * Тело POST /api/users (04-api.md, `UserCreateRequest`). `username` 1–64
- * (кириллица допускается), `password` 8–128, `role_id` — существующая роль.
- * `email` опционален (валидный формат/уникален); `team_ids` — опц. набор CRM-команд.
+ * Тело POST /api/users (04-api.md, `UserCreateRequest`; ADR-025). `username` 1–64
+ * (кириллица допускается), `role_id` — существующая роль. `password` **опционален**
+ * (8–128 при наличии; отсутствие → беспарольный пользователь «открытого первого входа»).
+ * `telegram` опционален (формат телеграм-ника, нормализуется/уникален на сервере);
+ * `team_ids` — опц. набор CRM-команд.
  */
 export interface UserCreateRequest {
   username: string;
-  email?: string;
-  password: string;
+  telegram?: string;
+  password?: string;
   role_id: string;
   team_ids?: string[];
 }
 
 /**
- * Тело PATCH /api/users/{id} (04-api.md, `UserUpdateRequest`). `username`
+ * Тело PATCH /api/users/{id} (04-api.md, `UserUpdateRequest`; ADR-025). `username`
  * не редактируется. Все поля опциональны — передаются только изменяемые
- * (exclude_unset). `password`: не передан → не менять; непустой (8–128) → сброс.
- * `email`: не передан → не менять; `null`/`""` → убрать email. `team_ids`
+ * (exclude_unset). `password`: не передан → не менять; непустой (8–128) → сброс/установка.
+ * `telegram`: не передан → не менять; `null`/`""` → убрать телеграм. `team_ids`
  * (если передан) полностью заменяет набор CRM-команд пользователя.
  */
 export interface UserUpdateRequest {
-  email?: string | null;
+  telegram?: string | null;
   role_id?: string;
   is_active?: boolean;
   password?: string;
@@ -566,12 +601,13 @@ export interface TeamListItem {
   id: string;
   /** Название (уникально). Дубликат → 409 team_name_taken. */
   name: string;
-  leader_id: string;
-  /** Логин лидера (денормализовано для списка, агрегат JOIN users). */
-  leader_username: string;
-  /** Число участников (= members.length; включает лидера). */
+  /** ID лидера; `null` — команда без лидера (ADR-026). */
+  leader_id: string | null;
+  /** Логин лидера (денормализовано, JOIN users); `null` — без лидера (ADR-026). */
+  leader_username: string | null;
+  /** Число участников (= members.length; включает лидера, если он есть). Может быть 0. */
   member_count: number;
-  /** Участники команды (включая лидера). */
+  /** Участники команды (включая лидера, если задан; может быть пустым). */
   members: TeamMember[];
   created_at: string;
   updated_at: string;
@@ -583,24 +619,27 @@ export interface TeamListResponse {
 }
 
 /**
- * Тело POST /api/teams (04-api.md, `TeamCreateRequest`). Лидер добавляется в
- * участники автоматически. `member_ids` опц. (default `[]`); дубль `leader_id`
- * в `member_ids` — не ошибка. Уникальность `name` → 409 team_name_taken.
+ * Тело POST /api/teams (04-api.md, `TeamCreateRequest`; ADR-026). Лидер и участники —
+ * **опциональны** (можно создать пустую команду без лидера). Если `leader_id` задан —
+ * он добавляется в участники автоматически; если не задан, а `member_ids` непуст —
+ * лидером становится первый участник. `member_ids` опц. (default `[]`); дубль
+ * `leader_id` в `member_ids` — не ошибка. Уникальность `name` → 409 team_name_taken.
  */
 export interface TeamCreateRequest {
   name: string;
-  leader_id: string;
+  leader_id?: string;
   member_ids?: string[];
 }
 
 /**
- * Тело PATCH /api/teams/{id} (04-api.md, `TeamUpdateRequest`). Все поля
- * опциональны (exclude_unset). `member_ids` (если передан) полностью заменяет
- * состав; лидер (текущий/новый) всегда включается (инвариант «лидер ∈ участники»).
+ * Тело PATCH /api/teams/{id} (04-api.md, `TeamUpdateRequest`; ADR-026). Все поля
+ * опциональны (exclude_unset). `leader_id`: задан → сменить лидера; `null` → снять
+ * лидера (команда без лидера). `member_ids` (если передан) полностью заменяет состав;
+ * при исключении текущего лидера лидерство авто-передаётся (или команда без лидера).
  */
 export interface TeamUpdateRequest {
   name?: string;
-  leader_id?: string;
+  leader_id?: string | null;
   member_ids?: string[];
 }
 

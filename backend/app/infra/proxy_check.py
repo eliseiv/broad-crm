@@ -76,8 +76,14 @@ async def check_proxy(
     url = build_proxy_url(proxy_type, host, port, username, password)
     max_attempts = len(_BACKOFF_DELAYS_SEC) + 1
 
+    # Явный httpx.Timeout по ВСЕМ фазам (connect/read/write/pool), а не одиночный float —
+    # особенно важно для socks5 (SOCKS-handshake может не соблюдать read-таймаут).
+    # Абсолютный overall-deadline проверки — в мониторе (asyncio.wait_for), ADR-024.
+    timeout = settings.proxy_check_timeout_sec
     async with httpx.AsyncClient(
-        proxy=url, timeout=settings.proxy_check_timeout_sec, verify=True
+        proxy=url,
+        timeout=httpx.Timeout(connect=timeout, read=timeout, write=timeout, pool=timeout),
+        verify=True,
     ) as client:
         for attempt in range(max_attempts):
             try:

@@ -139,8 +139,8 @@ export function BackendCard({ backend, canEdit = true, canDelete = true }: Backe
         {/* Причина ошибки при error */}
         {isError && errorMessage && <p className="text-[13px] text-status-red">{errorMessage}</p>}
 
-        {/* Обновлено + действие */}
-        <div className="flex items-center justify-between gap-2">
+        {/* Обновлено (единственная кнопка «Удалить» — в шапке карточки, ADR-023) */}
+        <div className="flex items-center gap-2">
           {lastChecked ? (
             <span className="inline-flex items-center gap-1.5 text-[13px] text-text-secondary">
               <Clock className="h-3.5 w-3.5" aria-hidden="true" />
@@ -148,21 +148,6 @@ export function BackendCard({ backend, canEdit = true, canDelete = true }: Backe
             </span>
           ) : (
             <span className="text-[13px] text-text-tertiary">Ожидание первой проверки…</span>
-          )}
-          {isError && canDelete && (
-            <Button
-              variant="danger"
-              size="sm"
-              loading={deleteMutation.isPending}
-              onPointerDown={stopForDelete}
-              onClick={(e) => {
-                e.stopPropagation();
-                setConfirmOpen(true);
-              }}
-            >
-              <Trash2 className="h-3.5 w-3.5" />
-              Удалить
-            </Button>
           )}
         </div>
       </Card>

@@ -356,13 +356,17 @@ CREATE INDEX ix_proxies_position ON proxies (position);
 | `code` | `text` | `NOT NULL`, `UNIQUE`, 1–64 симв. | Бизнес-код сервиса (уникален). Дубликат → `409 backend_code_taken`. Не секрет — возвращается в API. |
 | `name` | `text` | `NOT NULL`, 1–64 симв. | Отображаемое имя бэка. |
 | `domain` | `text` | `NOT NULL`, 1–255 симв., без схемы/пробелов/`/` | Домен бэка (нормализованный `host[:port]`, без схемы и пути). URL проверки = `https://{domain}/health`. Не секрет. |
-| `check_status` | `text` | `NOT NULL`, `DEFAULT 'pending'`, CHECK | Статус проверки: `pending` \| `working` \| `error`. Источник состояния переходов (переживает рестарт). |
+| `check_status` | `text` | `NOT NULL`, `DEFAULT 'pending'`, CHECK | Статус проверки: `pending` \| `working` \| `error`. Источник состояния переходов (переживает рестарт). **Переходит в `error` немедленно** при первом провале (UI показывает реальность сразу); отправка 🔴-алерта — отложенно (grace-порог, см. `error_since`/`alert_sent`). |
 | `error_message` | `text` | `NULL` | Причина при `error` (рус.): «Таймаут подключения»/«Бэк недоступен»/«Ошибка бэка (HTTP N)»/«Ошибка бэка». |
 | `position` | `integer` | `NOT NULL`, `DEFAULT 0` | Порядок карточки в **едином списке** (drag-and-drop, как серверы/прокси). См. [«Колонка `position`»](#колонка-position-порядок-карточек). |
 | `last_checked_at` | `timestamptz` | `NULL` | Время последней конклюзивной проверки (`working`/`error`), обновляется монитором. |
+| `error_since` | `timestamptz` | `NULL` | **Начало текущего непрерывного эпизода недоступности** ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md); миграция `0013`). Ставится при переходе `pending\|working → error`; сбрасывается в `NULL` при `working`. База grace-порога `BACKEND_ALERT_AFTER_SEC` (30 мин) перед 🔴. |
+| `alert_sent` | `boolean` | `NOT NULL`, `DEFAULT false` | **Отправлен ли 🔴 для текущего эпизода** недоступности ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md); миграция `0013`). `true` после отправки; сбрасывается в `false` при `working`. Гейтит recovery-🟢 (шлётся только если `alert_sent` был `true`) и защищает от повторного 🔴. |
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
 
+> **Grace-порог алерта (нормативно, [ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)).** `check_status='error'` выставляется немедленно (реальность в UI), но Telegram-🔴 шлётся только если бэк недоступен непрерывно **≥ `BACKEND_ALERT_AFTER_SEC` (30 мин)**: монитор ведёт `error_since` (начало эпизода) и `alert_sent` (был ли 🔴). Устраняет ложные алерты при рестартах бэка (1–2 мин). Переживает рестарт backend (персистентно). Чистая функция перехода — [modules/backends](modules/backends/README.md#переходы-статуса-и-алерты-нормативно).
+>
 > Секрета у бэка нет — все поля публичны, возвращаются в API как есть. `code` уникален (`UNIQUE`), даёт детерминированный `409` при дубле. `domain` хранится **нормализованным** (без схемы `http(s)://`, без завершающего `/` и пути) — нормализация на входе (`POST`/`PATCH`), детали — [modules/backends](modules/backends/README.md#нормализация-домена-и-проверка-нормативно).
 
 ### Перечисление `check_status`
@@ -373,10 +377,10 @@ CREATE INDEX ix_proxies_position ON proxies (position);
 stateDiagram-v2
     [*] --> pending: POST /api/backends
     pending --> working: GET /health → 2xx (молча)
-    pending --> error: проверка провалилась (🔴 алерт)
-    working --> error: проверка провалилась (🔴 алерт)
-    error --> working: GET /health → 2xx (🟢 recovery)
-    error --> error: всё ещё недоступен (молча, обновляется error_message)
+    pending --> error: проверка провалилась (старт grace; 🔴 позже)
+    working --> error: проверка провалилась (старт grace; 🔴 позже)
+    error --> working: GET /health → 2xx (🟢 recovery, если 🔴 был)
+    error --> error: недоступен; 🔴 при непрерывных ≥30 мин (grace)
     pending --> [*]: DELETE
     working --> [*]: DELETE
     error --> [*]: DELETE
@@ -407,6 +411,8 @@ CREATE TABLE backends (
 CREATE UNIQUE INDEX uq_backends_code ON backends (code);
 CREATE INDEX ix_backends_position ON backends (position);
 ```
+
+> **Амендмент [ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md).** DDL выше — базовая миграция `0007` (историческая). Поля grace-порога алерта **`error_since timestamptz NULL`** и **`alert_sent boolean NOT NULL DEFAULT false`** добавляются миграцией **`0013_backends_alert_grace`** (см. выше). Таблица полей отражает состояние **после** `0013`.
 
 ### Индексы и обоснование
 - `uq_backends_code` (UNIQUE) — нельзя добавить бэк с уже занятым `code`; даёт детерминированную ошибку конфликта (`409 backend_code_taken`).
@@ -443,7 +449,7 @@ erDiagram
     USERS {
         uuid id PK
         text username
-        text email
+        text telegram
         text password_hash
         uuid role_id FK
         boolean is_active
@@ -453,21 +459,22 @@ erDiagram
     TEAMS {
         uuid id PK
         text name
-        uuid leader_id FK
+        uuid leader_id FK "NULL, ON DELETE SET NULL"
         timestamptz created_at
         timestamptz updated_at
     }
     USER_TEAMS {
         uuid user_id PK_FK
         uuid team_id PK_FK
+        timestamptz created_at
     }
     ROLES ||--o{ USERS : "1:N (ON DELETE RESTRICT)"
-    USERS ||--o{ TEAMS : "leader 1:N (ON DELETE RESTRICT)"
+    USERS ||--o| TEAMS : "leader 0..1:N (ON DELETE SET NULL)"
     USERS ||--o{ USER_TEAMS : "1:N (ON DELETE CASCADE)"
     TEAMS ||--o{ USER_TEAMS : "1:N (ON DELETE CASCADE)"
 ```
 
-`users.role_id → roles.id` с **`ON DELETE RESTRICT`**: роль, назначенную хотя бы одному пользователю, удалить нельзя (→ `409 role_in_use`, [04-api.md](04-api.md#delete-apirolesid)). `teams.leader_id → users.id` — **`ON DELETE RESTRICT`** (нельзя удалить пользователя-лидера, не разобравшись с командой → `409 user_is_team_leader`); `user_teams` — M2M между `users` и `teams`, обе стороны **`ON DELETE CASCADE`** (см. [«Таблицы `teams` и `user_teams`»](#таблицы-teams-и-user_teams-crm-команды)).
+`users.role_id → roles.id` с **`ON DELETE RESTRICT`**: роль, назначенную хотя бы одному пользователю, удалить нельзя (→ `409 role_in_use`, [04-api.md](04-api.md#delete-apirolesid)). `teams.leader_id → users.id` — **nullable, `ON DELETE SET NULL`** ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)): команда может быть **без лидера**; удаление пользователя-лидера не блокируется (лидерство авто-передаётся сервисом, остаток — `SET NULL`; код `409 user_is_team_leader` **упразднён**). `user_teams` — M2M между `users` и `teams`, обе стороны **`ON DELETE CASCADE`**, с колонкой `created_at` (дата добавления участника — для авто-передачи лидерства; см. [«Таблицы `teams` и `user_teams`»](#таблицы-teams-и-user_teams-crm-команды)).
 
 ### Таблица `roles`
 
@@ -488,9 +495,9 @@ erDiagram
 | Поле | Тип | Ограничения | Описание |
 |------|-----|-------------|----------|
 | `id` | `uuid` | PK, `DEFAULT gen_random_uuid()` | Идентификатор пользователя. Кладётся в JWT как `uid` ([ADR-021](adr/ADR-021-rbac-users-roles.md#4-auth-поток-см-modulesauth-05-securitymd)). |
-| `username` | `text` | `NOT NULL`, `UNIQUE`, CHECK (см. ниже) | Логин. **Допускает кириллицу/юникод-буквы** («Админ», «Никита»). Уникален — дубликат → `409 username_taken`. |
-| `email` | `text` | `NULL`, UNIQUE-when-present | **Опциональный** email пользователя ([ADR-022](adr/ADR-022-teams-nav-categories.md)). `NULL` — email не задан. Уникален **только среди заданных** (частичный уникальный индекс `uq_users_email WHERE email IS NOT NULL`) — дубликат → `409 email_taken`. Формат валидируется на Pydantic (`422`); хранится нормализованным (trim, lower-case). Не секрет. |
-| `password_hash` | `text` | `NOT NULL` | bcrypt-хэш пароля ([05-security.md](05-security.md#хэширование-паролей-bcrypt)). Plaintext никогда не хранится/не логируется/не возвращается. |
+| `username` | `text` | `NOT NULL`, `UNIQUE`, CHECK (см. ниже) | Логин. **Допускает кириллицу/юникод-буквы** («Админ», «Никита»). Уникален — дубликат → `409 username_taken`. **Идентификатор входа** (логин **или** `telegram`, [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). |
+| `telegram` | `text` | `NULL`, UNIQUE-when-present | **Опциональный** телеграм-ник пользователя ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md); заменяет прежний `email` из [ADR-022](adr/ADR-022-teams-nav-categories.md)). `NULL` — телеграм не задан. Уникален **только среди заданных** (частичный уникальный индекс `uq_users_telegram WHERE telegram IS NOT NULL`) — дубликат → `409 telegram_taken`. Формат валидируется на Pydantic (`422`, см. [«Правило `telegram`»](#правило-telegram-телеграм-ник-нормативно)); хранится нормализованным (без ведущего `@`, lower-case). **Второй допустимый идентификатор входа**. Не секрет. |
+| `password_hash` | `text` | `NULL` | bcrypt-хэш пароля ([05-security.md](05-security.md#хэширование-паролей-bcrypt)). **`NULL` = беспарольный пользователь** (пароль ещё не задан — модель «открытого первого входа», [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). Непустой — bcrypt-хэш. Plaintext никогда не хранится/не логируется/не возвращается. |
 | `role_id` | `uuid` | `NOT NULL`, FK → `roles(id)` `ON DELETE RESTRICT` | Роль пользователя. Удаление назначенной роли запрещено (`409 role_in_use`). |
 | `is_active` | `boolean` | `NOT NULL`, `DEFAULT true` | Активен ли пользователь. `false` → вход запрещён, а действующий JWT аннулируется на следующем запросе (`401`, свежая загрузка из БД). |
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
@@ -502,6 +509,13 @@ erDiagram
 
 - **Pydantic-валидатор (авторитетный):** после `strip()` — длина 1–64; регэксп (Python `re`, юникод по умолчанию) — `^(?=.*[^\W\d_])[\w.\- ]{1,64}$`. То есть допускаются **юникод-буквы (любой алфавит, вкл. кириллицу), цифры, `_`, пробел, `.`, `-`**, и обязательна хотя бы одна буква. `\w` в Python-`re` для `str` юникодный → `Админ`, `Никита`, `user.01`, `Иван-Петров` валидны; `123`, `...`, `  ` — нет.
 - **DB-CHECK (свободный инвариант):** `char_length(username) BETWEEN 1 AND 64 AND username = btrim(username) AND username !~ '[[:cntrl:]]'` — длина, без ведущих/хвостовых пробелов, без control-символов. Кириллица проходит тривиально.
+
+#### Правило `telegram` (телеграм-ник, нормативно)
+
+Формат телеграм-ника ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)), авторитетно — на уровне **Pydantic**; DB — свободный инвариант:
+
+- **Pydantic-валидатор (авторитетный):** принимается опциональный ведущий `@`, затем **5–32 символа** из `[A-Za-z0-9_]`. Регэксп: `^@?[A-Za-z0-9_]{5,32}$`. **Нормализация при сохранении:** снять ведущий `@`, привести к нижнему регистру (Telegram-ники регистронезависимы) → канон `[a-z0-9_]{5,32}`. Невалидный → `422 unprocessable` (`details[].field="telegram"`).
+- **DB (свободный инвариант):** колонка `telegram text NULL`; уникальность заданных — частичный индекс `uq_users_telegram (telegram) WHERE telegram IS NOT NULL` (канон уже нормализован приложением). Каноничность формата обеспечивает приложение (по образцу свободного инварианта `username`/`backends.domain`).
 
 #### DDL (концепт миграции)
 
@@ -532,13 +546,13 @@ CREATE TABLE users (
 CREATE INDEX ix_users_role_id ON users (role_id);
 ```
 
-> Колонка `email text NULL` и частичный уникальный индекс `uq_users_email` добавляются **позже**, миграцией `0010_add_user_email` ([ADR-022](adr/ADR-022-teams-nav-categories.md)) — см. [«Миграция `0010_add_user_email`»](#миграция-0010_add_user_email-концепт). В базовой миграции `0008` колонки `email` ещё нет.
+> **Эволюция колонок `users` (нормативно).** Базовая миграция `0008` создаёт `users` **с `password_hash NOT NULL` и без контактной колонки**. Затем: `0010_add_user_email` добавляет `email text NULL` + `uq_users_email` ([ADR-022](adr/ADR-022-teams-nav-categories.md); историческая запись). **`0011_user_passwordless_telegram` ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) заменяет `email` → `telegram`** (rename колонки + swap частичного уникального индекса на `uq_users_telegram`) **и снимает `NOT NULL` с `password_hash`** (беспарольные пользователи). Целевое состояние (таблица полей выше) отражает результат после `0011` — см. [«Миграция `0011_user_passwordless_telegram`»](#миграция-0011_user_passwordless_telegram-концепт).
 
 ### Индексы и обоснование
 - `UNIQUE(roles.name)` — детерминированный `409 role_name_taken`.
 - `UNIQUE(users.username)` — детерминированный `409 username_taken`.
 - `ix_users_role_id` — под проверку «роль назначена пользователям?» при `DELETE /api/roles/{id}` (`ON DELETE RESTRICT` даёт `409 role_in_use`) и загрузку прав. Отдельные индексы по `permissions`/`is_active` не нужны (объём — единицы строк, NFR-1).
-- `uq_users_email` (частичный UNIQUE `WHERE email IS NOT NULL`, миграция `0010`) — детерминированный `409 email_taken` среди заданных email; множество пользователей без email допускается.
+- `uq_users_telegram` (частичный UNIQUE `WHERE telegram IS NOT NULL`, миграция `0011` — заменяет `uq_users_email` из `0010`) — детерминированный `409 telegram_taken` среди заданных телеграм-ников; множество пользователей без телеграма допускается.
 
 ### Политика удаления
 
@@ -565,13 +579,13 @@ CREATE INDEX ix_users_role_id ON users (role_id);
 |------|-----|-------------|----------|
 | `id` | `uuid` | PK, `DEFAULT gen_random_uuid()` | Идентификатор команды. |
 | `name` | `text` | `NOT NULL`, `UNIQUE`, CHECK (см. ниже) | Название команды. Уникально — дубликат → `409 team_name_taken`. Правило набора символов — как у `username` («свободный» DB-CHECK + Pydantic). |
-| `leader_id` | `uuid` | `NOT NULL`, FK → `users(id)` `ON DELETE RESTRICT` | Лидер команды. Удаление пользователя-лидера запрещено (→ `409 user_is_team_leader`). **Инвариант: лидер ∈ участники** (в `user_teams` всегда есть строка `(leader_id, id)`) — обеспечивает сервис. |
+| `leader_id` | `uuid` | **`NULL`**, FK → `users(id)` **`ON DELETE SET NULL`** | Лидер команды ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)). **`NULL` — команда без лидера.** Удаление пользователя-лидера **не блокируется** (лидерство авто-передаётся сервисом, остаток — `SET NULL`; `409 user_is_team_leader` **упразднён**). **Инвариант: если `leader_id` задан — он ∈ участники** (в `user_teams` есть строка `(leader_id, id)`) — обеспечивает сервис. |
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
 
 > **Правило `name`** — по образцу [`username`](#правило-username-кириллица-допускающее-нормативно): Pydantic-валидатор авторитетен (после `strip()` длина 1–64, допускаются юникод-буквы/цифры/`_`/пробел/`.`/`-`, обязательна хотя бы одна буква); DB-CHECK «свободный» — `char_length(name) BETWEEN 1 AND 64 AND name = btrim(name) AND name !~ '[[:cntrl:]]'`.
 >
-> **Лидер — обязательная одиночная ссылка** (`leader_id NOT NULL`), участники — M2M (`user_teams`). `ON DELETE RESTRICT` на `leader_id` гарантирует, что у команды всегда есть лидер и что лидера нельзя удалить, не переназначив/не удалив команду.
+> **Лидер — опциональная одиночная ссылка** (`leader_id NULL`, [ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)), участники — M2M (`user_teams`). `ON DELETE SET NULL` на `leader_id` гарантирует, что удаление пользователя никогда не блокируется командой; осмысленного нового лидера проставляет **авто-передача** в сервисе (правило порядка — по `user_teams.created_at`, см. ниже), а `SET NULL` — предохранитель, когда заменить некем. **Авто-назначение:** первый добавленный участник становится лидером, если лидера нет ([04-api.md](04-api.md#teams)).
 
 ### Таблица `user_teams` (M2M)
 
@@ -579,6 +593,7 @@ CREATE INDEX ix_users_role_id ON users (role_id);
 |------|-----|-------------|----------|
 | `user_id` | `uuid` | PK-часть, FK → `users(id)` `ON DELETE CASCADE` | Пользователь-участник. Удаление пользователя снимает его членства автоматически. |
 | `team_id` | `uuid` | PK-часть, FK → `teams(id)` `ON DELETE CASCADE` | Команда. Удаление команды снимает все членства автоматически. |
+| `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | **Дата добавления участника** ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)). Определяет порядок авто-назначения/авто-передачи лидерства: «первый/следующий по дате» = минимальный `(created_at, user_id)`. Для участников, добавленных одной операцией (`member_ids`), порядок соответствует их позиции в массиве. |
 
 Составной первичный ключ `PRIMARY KEY (user_id, team_id)` — участник входит в команду не более одного раза; пользователь может состоять в 0..N командах.
 
@@ -609,14 +624,16 @@ CREATE TABLE user_teams (
 CREATE INDEX ix_user_teams_team_id ON user_teams (team_id);
 ```
 
+> **Амендмент [ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md).** DDL выше — базовая миграция `0009` (историческая: `leader_id NOT NULL`, FK `ON DELETE RESTRICT`, `user_teams` без `created_at`). Миграция **`0012_teams_optional_leader`** (ниже) приводит схему к целевому состоянию: `leader_id` → nullable, FK → `ON DELETE SET NULL`, `user_teams += created_at`. Таблицы полей выше отражают состояние **после** `0012`.
+
 ### Индексы и обоснование
 - `UNIQUE(teams.name)` — детерминированный `409 team_name_taken`.
-- `ix_teams_leader_id` — под проверку «пользователь — лидер какой-либо команды?» при `DELETE /api/users/{id}` (`ON DELETE RESTRICT` → `409 user_is_team_leader`).
-- Составной `PK(user_id, team_id)` покрывает выборку «команды пользователя» (по префиксу `user_id`); `ix_user_teams_team_id` — обратную выборку «участники команды» и подсчёт `member_count`.
+- `ix_teams_leader_id` — выборка «команды под лидерством пользователя» (для авто-передачи лидерства при `DELETE`/`PATCH` пользователя, [ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)).
+- Составной `PK(user_id, team_id)` покрывает выборку «команды пользователя» (по префиксу `user_id`); `ix_user_teams_team_id` — обратную выборку «участники команды», подсчёт `member_count` и упорядочивание по `created_at` для авто-передачи.
 
 ### Политика удаления
 - **Команда** — **hard delete** (`DELETE FROM teams WHERE id = ...`); строки `user_teams` снимаются `ON DELETE CASCADE`.
-- **Пользователь** — hard delete; членства снимаются `ON DELETE CASCADE`, **но** если пользователь — лидер хотя бы одной команды, `ON DELETE RESTRICT` на `teams.leader_id` блокирует удаление → приложение возвращает `409 user_is_team_leader` (сначала нужно сменить лидера/удалить команду).
+- **Пользователь** — hard delete; членства снимаются `ON DELETE CASCADE`. Если пользователь — лидер хотя бы одной команды, удаление **не блокируется** ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)): сервис **авто-передаёт лидерство** следующему участнику по `user_teams.created_at` (или `leader_id → NULL`, если участников не осталось; `ON DELETE SET NULL` — предохранитель), затем удаляет пользователя. Код `409 user_is_team_leader` **упразднён**.
 
 ## Миграция `0009_create_teams` (концепт)
 
@@ -627,6 +644,8 @@ CREATE INDEX ix_user_teams_team_id ON user_teams (team_id);
 **`downgrade()`** — `DROP TABLE user_teams;` затем `DROP TABLE teams;` (порядок из-за FK; индексы снимаются вместе с таблицами).
 
 ## Миграция `0010_add_user_email` (концепт)
+
+> **Историческая запись (амендмент [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)).** Колонка `email`, добавленная этой миграцией, **впоследствии заменяется на `telegram`** миграцией `0011_user_passwordless_telegram` (ниже). Текст `0010` сохраняется как есть (историческая цепочка миграций); актуальная контактная колонка — `telegram`.
 
 > Реализуется через Alembic. `down_revision = "0009_create_teams"`. **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат на одну ревизию — см. [07-deployment.md](07-deployment.md#откат-миграций-бд).
 
@@ -670,6 +689,78 @@ WHERE name = 'admin';
 DROP INDEX IF EXISTS uq_users_email;
 ALTER TABLE users DROP COLUMN email;
 ```
+
+## Миграция `0011_user_passwordless_telegram` (концепт)
+
+> Реализуется через Alembic. `down_revision = "0010_add_user_email"`. Решение — [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md). **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат на одну ревизию. На проде пользователей 0 → замена колонки `email`→`telegram` безопасна (данных нет).
+
+**`upgrade()`** — два независимых действия над `users`:
+
+1. **Заменить контакт `email` → `telegram`** (rename колонки + swap частичного уникального индекса):
+
+```sql
+DROP INDEX IF EXISTS uq_users_email;
+ALTER TABLE users RENAME COLUMN email TO telegram;
+CREATE UNIQUE INDEX uq_users_telegram ON users (telegram) WHERE telegram IS NOT NULL;
+```
+
+2. **Снять `NOT NULL` с `password_hash`** (беспарольные пользователи, `NULL` = пароль не задан):
+
+```sql
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+```
+
+**`downgrade()`** — обратно (телеграм → email, вернуть `NOT NULL`). Так как беспарольные строки нарушили бы `NOT NULL`, перед восстановлением ограничения `NULL`-хэши заполняются невалидным сентинелом (вход по нему невозможен):
+
+```sql
+UPDATE users SET password_hash = '!' WHERE password_hash IS NULL;
+ALTER TABLE users ALTER COLUMN password_hash SET NOT NULL;
+DROP INDEX IF EXISTS uq_users_telegram;
+ALTER TABLE users RENAME COLUMN telegram TO email;
+CREATE UNIQUE INDEX uq_users_email ON users (email) WHERE email IS NOT NULL;
+```
+
+## Миграция `0012_teams_optional_leader` (концепт)
+
+> Реализуется через Alembic. `down_revision = "0011_user_passwordless_telegram"`. Решение — [ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md). **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат.
+
+**`upgrade()`** — привести `teams`/`user_teams` к модели «команда без лидера»:
+
+```sql
+-- 1. leader_id → nullable + FK ON DELETE SET NULL (пересоздать констрейнт)
+ALTER TABLE teams ALTER COLUMN leader_id DROP NOT NULL;
+ALTER TABLE teams DROP CONSTRAINT teams_leader_id_fkey;
+ALTER TABLE teams ADD CONSTRAINT teams_leader_id_fkey
+    FOREIGN KEY (leader_id) REFERENCES users(id) ON DELETE SET NULL;
+
+-- 2. дата добавления участника (для авто-передачи лидерства)
+ALTER TABLE user_teams ADD COLUMN created_at timestamptz NOT NULL DEFAULT now();
+```
+
+> Имя констрейнта (`teams_leader_id_fkey`) — типовое Alembic/Postgres-имя; при отличии в реальной схеме использовать фактическое (backend уточняет из БД). Backfill `user_teams.created_at` для существующих строк — `DEFAULT now()` (на проде команд 0 — данных нет).
+
+**`downgrade()`** — обратно (лидер снова обязателен, FK `RESTRICT`, снять `created_at`). Так как строки с `leader_id IS NULL` нарушили бы `NOT NULL`, при наличии таких команд downgrade невозможен без ручного назначения лидера (на проде команд 0 — не блокирует):
+
+```sql
+ALTER TABLE user_teams DROP COLUMN created_at;
+ALTER TABLE teams DROP CONSTRAINT teams_leader_id_fkey;
+ALTER TABLE teams ADD CONSTRAINT teams_leader_id_fkey
+    FOREIGN KEY (leader_id) REFERENCES users(id) ON DELETE RESTRICT;
+ALTER TABLE teams ALTER COLUMN leader_id SET NOT NULL;  -- требует отсутствия NULL-лидеров
+```
+
+## Миграция `0013_backends_alert_grace` (концепт)
+
+> Реализуется через Alembic. `down_revision = "0012_teams_optional_leader"`. Решение — [ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md). **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат.
+
+**`upgrade()`** — добавить в `backends` поля grace-порога алерта недоступности (30 мин):
+
+```sql
+ALTER TABLE backends ADD COLUMN error_since timestamptz;
+ALTER TABLE backends ADD COLUMN alert_sent boolean NOT NULL DEFAULT false;
+```
+
+**`downgrade()`** — `ALTER TABLE backends DROP COLUMN alert_sent; ALTER TABLE backends DROP COLUMN error_since;`
 
 ---
 

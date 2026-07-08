@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me-please-use-32-bytes-min-secret"
     jwt_expires_min: int = 1440
     jwt_algorithm: str = "HS256"
+    # TTL limited-scope setup-токена «первого входа» (type:"pwd_setup", ADR-025).
+    # Выдаётся беспарольному пользователю; принимается только POST /api/auth/set-password.
+    pwd_setup_token_expires_min: int = 10
 
     # --- Шифрование SSH-паролей (Fernet, ADR-007) ---
     fernet_key: str = ""
@@ -87,16 +90,24 @@ class Settings(BaseSettings):
     # --- Монитор доступности прокси (modules/proxies, ADR-019) ---
     # Интервал периодической проверки всех прокси; монитор стартует всегда.
     proxy_check_interval_sec: int = 60
-    # Таймаут HTTP-запроса через прокси к эталонному URL при проверке доступности.
+    # Таймаут HTTP-запроса через прокси к эталонному URL (per-attempt, все фазы httpx).
     proxy_check_timeout_sec: float = 10.0
+    # Overall-deadline проверки одного прокси (анти-зависание, asyncio.wait_for; ADR-024).
+    # Превышение → error «Таймаут подключения». deadline (30 с) < интервал (60 с).
+    proxy_check_deadline_sec: float = 30.0
     # Эталонный URL проверки связности через прокси (лёгкий 204 No Content).
     proxy_check_url: str = "https://www.gstatic.com/generate_204"
 
     # --- Монитор доступности бэков (modules/backends, ADR-020) ---
     # Интервал периодической проверки всех бэков; монитор стартует всегда.
     backend_check_interval_sec: int = 60
-    # Таймаут HTTP-запроса GET https://{domain}/health при проверке доступности.
+    # Таймаут HTTP-запроса GET https://{domain}/health (per-attempt, все фазы httpx).
     backend_check_timeout_sec: float = 10.0
+    # Overall-deadline проверки одного бэка (анти-зависание, asyncio.wait_for; ADR-024).
+    backend_check_deadline_sec: float = 30.0
+    # Grace-порог: непрерывная недоступность бэка (сек) перед 🔴-алертом (30 мин, ADR-024).
+    # check_status→error немедленно; откладывается только уведомление (error_since/alert_sent).
+    backend_alert_after_sec: int = 1800
 
     # --- Модуль «Почты» (read-through-прокси, modules/mail, ADR-012) ---
     # Backend проксирует /api/mail/* во внешний сервис postapp.store, подставляя

@@ -103,8 +103,12 @@ async def check_backend(domain: str) -> BackendCheckResult:
     url = build_health_url(domain)
     max_attempts = len(_BACKOFF_DELAYS_SEC) + 1
 
+    # Явный httpx.Timeout по ВСЕМ фазам (connect/read/write/pool), а не одиночный float —
+    # чтобы connect/pool-фазы были ограничены явно (анти-зависание, ADR-024). Абсолютный
+    # overall-deadline проверки — в мониторе (asyncio.wait_for), поверх этого таймаута.
+    timeout = settings.backend_check_timeout_sec
     async with httpx.AsyncClient(
-        timeout=settings.backend_check_timeout_sec,
+        timeout=httpx.Timeout(connect=timeout, read=timeout, write=timeout, pool=timeout),
         verify=True,
         follow_redirects=False,
     ) as client:

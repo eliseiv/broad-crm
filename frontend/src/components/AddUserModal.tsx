@@ -32,7 +32,7 @@ interface AddUserModalProps {
   user?: UserListItem;
 }
 
-type UserField = 'username' | 'email' | 'password' | 'role_id';
+type UserField = 'username' | 'telegram' | 'password' | 'role_id';
 type Errors = Partial<Record<UserField, string>>;
 
 function roleOptions(roles: RoleListItem[]): SelectOption[] {
@@ -63,9 +63,12 @@ function validatePassword(password: string, required: boolean): string | undefin
 function mapApiError(err: unknown, setErrors: (u: (prev: Errors) => Errors) => void): void {
   if (err instanceof ApiError) {
     if (err.status === 409) {
-      // 04-api.md: 409 username_taken / email_taken (различаем по code).
-      if (err.code === 'email_taken') {
-        setErrors((prev) => ({ ...prev, email: 'Пользователь с такой почтой уже существует' }));
+      // 04-api.md: 409 username_taken / telegram_taken (различаем по code, ADR-025).
+      if (err.code === 'telegram_taken') {
+        setErrors((prev) => ({
+          ...prev,
+          telegram: 'Пользователь с таким Телеграмом уже существует',
+        }));
       } else {
         setErrors((prev) => ({
           ...prev,
@@ -79,7 +82,7 @@ function mapApiError(err: unknown, setErrors: (u: (prev: Errors) => Errors) => v
       for (const d of err.details ?? []) {
         if (
           d.field === 'username' ||
-          d.field === 'email' ||
+          d.field === 'telegram' ||
           d.field === 'password' ||
           d.field === 'role_id'
         ) {
@@ -138,7 +141,7 @@ function AddUserDialog({
   teams: TeamListItem[];
 }) {
   const [username, setUsername] = useState('');
-  const [email, setEmail] = useState('');
+  const [telegram, setTelegram] = useState('');
   const [password, setPassword] = useState('');
   const [roleId, setRoleId] = useState(roles[0]?.id ?? '');
   const [teamIds, setTeamIds] = useState<string[]>([]);
@@ -153,7 +156,8 @@ function AddUserDialog({
     const nextErrors: Errors = {};
     const uErr = validateUsername(username);
     if (uErr) nextErrors.username = uErr;
-    const pErr = validatePassword(password, true);
+    // Пароль опционален (ADR-025): валидируем 8–128 только если введён.
+    const pErr = validatePassword(password, false);
     if (pErr) nextErrors.password = pErr;
     if (!roleId) nextErrors.role_id = 'Выберите роль';
     setErrors(nextErrors);
@@ -161,12 +165,13 @@ function AddUserDialog({
 
     const payload: UserCreateRequest = {
       username: username.trim(),
-      password,
       role_id: roleId,
     };
-    // email опционален: пусто → не отправляем (без email, 04-api.md).
-    const trimmedEmail = email.trim();
-    if (trimmedEmail) payload.email = trimmedEmail;
+    // Пароль опционален: пусто → не отправляем (беспарольный «открытый первый вход», ADR-025).
+    if (password) payload.password = password;
+    // Телеграм опционален: пусто → не отправляем (без телеграма, 04-api.md).
+    const trimmedTelegram = telegram.trim();
+    if (trimmedTelegram) payload.telegram = trimmedTelegram;
     if (teamIds.length > 0) payload.team_ids = teamIds;
 
     createMutation.mutate(payload, {
@@ -185,7 +190,7 @@ function AddUserDialog({
       open={open}
       onOpenChange={(next) => !isSubmitting && onOpenChange(next)}
       title="Добавить пользователя"
-      description="Логин и пароль для входа в систему; доступ определяется ролью."
+      description="Логин обязателен; пароль можно не задавать — пользователь задаст его при первом входе. Доступ определяется ролью."
       dismissible={!isSubmitting}
       footer={
         <>
@@ -217,21 +222,21 @@ function AddUserDialog({
           }}
         />
         <Input
-          label="Почта"
-          type="email"
-          placeholder="Опционально"
-          value={email}
-          error={errors.email}
+          label="Телеграм"
+          type="text"
+          placeholder="@username (опционально)"
+          value={telegram}
+          error={errors.telegram}
           autoComplete="off"
           onChange={(e) => {
-            setEmail(e.target.value);
-            if (errors.email) setErrors((p) => ({ ...p, email: undefined }));
+            setTelegram(e.target.value);
+            if (errors.telegram) setErrors((p) => ({ ...p, telegram: undefined }));
           }}
         />
         <Input
           label="Пароль"
           type={showPassword ? 'text' : 'password'}
-          placeholder="Не менее 8 символов"
+          placeholder="Не менее 8 символов (опционально)"
           value={password}
           error={errors.password}
           maxLength={128}
@@ -288,7 +293,7 @@ function EditUserDialog({
   user: UserListItem;
 }) {
   const initialTeamIds = user.teams.map((t) => t.id);
-  const [email, setEmail] = useState(user.email ?? '');
+  const [telegram, setTelegram] = useState(user.telegram ?? '');
   const [roleId, setRoleId] = useState(user.role_id);
   const [isActive, setIsActive] = useState(user.is_active);
   const [password, setPassword] = useState('');
@@ -313,10 +318,11 @@ function EditUserDialog({
     if (roleId !== user.role_id) payload.role_id = roleId;
     if (isActive !== user.is_active) payload.is_active = isActive;
     if (password) payload.password = password;
-    // email: сравниваем с текущим; пусто → null (убрать email), значение → установить.
-    const trimmedEmail = email.trim();
-    const currentEmail = user.email ?? '';
-    if (trimmedEmail !== currentEmail) payload.email = trimmedEmail === '' ? null : trimmedEmail;
+    // telegram: сравниваем с текущим; пусто → null (убрать телеграм), значение → установить.
+    const trimmedTelegram = telegram.trim();
+    const currentTelegram = user.telegram ?? '';
+    if (trimmedTelegram !== currentTelegram)
+      payload.telegram = trimmedTelegram === '' ? null : trimmedTelegram;
     // team_ids: если набор изменился — передаём полный новый набор (заменяет членство).
     const teamsChanged =
       teamIds.length !== initialTeamIds.length ||
@@ -345,12 +351,8 @@ function EditUserDialog({
         onOpenChange(false);
       },
       onError: (err) => {
-        // 04-api.md: 409 user_is_team_leader (пользователь — лидер команды).
-        if (err instanceof ApiError && err.code === 'user_is_team_leader') {
-          toast.error('Пользователь — лидер команды: сначала смените лидера');
-          setConfirmOpen(false);
-          return;
-        }
+        // ADR-026: код user_is_team_leader упразднён — удаление лидера проходит с
+        // авто-передачей лидерства; блокирующей ветки больше нет.
         const message = err instanceof ApiError ? err.message : 'Не удалось удалить пользователя';
         toast.error(message);
       },
@@ -397,15 +399,15 @@ function EditUserDialog({
             </div>
           </div>
           <Input
-            label="Почта"
-            type="email"
-            placeholder="Опционально"
-            value={email}
-            error={errors.email}
+            label="Телеграм"
+            type="text"
+            placeholder="@username (опционально)"
+            value={telegram}
+            error={errors.telegram}
             autoComplete="off"
             onChange={(e) => {
-              setEmail(e.target.value);
-              if (errors.email) setErrors((p) => ({ ...p, email: undefined }));
+              setTelegram(e.target.value);
+              if (errors.telegram) setErrors((p) => ({ ...p, telegram: undefined }));
             }}
           />
           <Select

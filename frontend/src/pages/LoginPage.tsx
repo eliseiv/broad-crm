@@ -1,19 +1,29 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArrowLeft, ArrowRight, Pencil } from 'lucide-react';
+import { ArrowLeft, ArrowRight, Eye, EyeOff, Pencil } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
+import { Modal } from '@/components/ui/Modal';
 import { ApiError } from '@/lib/api';
-import { useLogin } from '@/features/auth/hooks';
+import { useLogin, useSetPassword } from '@/features/auth/hooks';
 import { useAuthStore } from '@/store/auth';
 
 type Step = 'username' | 'password';
 const GENERIC_ERROR = 'Неверный логин или пароль';
 
+/**
+ * Двухшаговый вход (08-design-system.md «Экран входа»). Идентификатор = логин
+ * ИЛИ телеграм-ник (ADR-025); поле «Пароль» на клиенте НЕ обязательно —
+ * беспарольный пользователь оставляет его пустым. Если login отвечает
+ * `password_setup_required` — показывается окно «Задайте пароль» (модель
+ * «открытого первого входа», ADR-025): пользователь задаёт пароль ≥8 →
+ * POST /api/auth/set-password → сразу залогинен.
+ */
 export function LoginPage() {
   const navigate = useNavigate();
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const loginMutation = useLogin();
+  const setPasswordMutation = useSetPassword();
 
   const [step, setStep] = useState<Step>('username');
   const [username, setUsername] = useState('');
@@ -22,6 +32,16 @@ export function LoginPage() {
   const [formError, setFormError] = useState<string | null>(null);
   const [shake, setShake] = useState(false);
   const passwordRef = useRef<HTMLInputElement>(null);
+
+  // Кросс-шаговое уведомление (напр. «Сессия установки истекла» после закрытия окна).
+  const [banner, setBanner] = useState<string | null>(null);
+
+  // Окно «Задайте пароль» (открыто ⇔ setupToken !== null).
+  const [setupToken, setSetupToken] = useState<string | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [newPasswordError, setNewPasswordError] = useState<string | null>(null);
+  const [setupError, setSetupError] = useState<string | null>(null);
+  const [showNewPassword, setShowNewPassword] = useState(false);
 
   useEffect(() => {
     // Permission-aware дефолт: index `/` резолвит целевой раздел по правам
@@ -41,10 +61,11 @@ export function LoginPage() {
   const handleNext = (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim()) {
-      setUsernameError('Введите логин');
+      setUsernameError('Введите логин или телеграм');
       return;
     }
     setUsernameError(null);
+    setBanner(null);
     setStep('password');
   };
 
@@ -52,20 +73,29 @@ export function LoginPage() {
     setStep('username');
     setPassword('');
     setFormError(null);
+    setBanner(null);
   };
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!password) {
-      setFormError(GENERIC_ERROR);
-      triggerShake();
-      return;
-    }
+    // Пароль на клиенте НЕ обязателен (ADR-025): беспарольный пользователь
+    // оставляет поле пустым → сервер вернёт password_setup_required.
     setFormError(null);
+    setBanner(null);
     loginMutation.mutate(
       { username: username.trim(), password },
       {
-        onSuccess: () => navigate('/', { replace: true }),
+        onSuccess: (data) => {
+          if (data.password_setup_required) {
+            // Открываем окно «Задайте пароль» с limited-scope setup-токеном.
+            setNewPassword('');
+            setNewPasswordError(null);
+            setSetupError(null);
+            setSetupToken(data.setup_token);
+          } else {
+            navigate('/', { replace: true });
+          }
+        },
         onError: (err) => {
           if (err instanceof ApiError && err.status === 429) {
             setFormError('Слишком много попыток входа. Попробуйте позже.');
@@ -78,15 +108,67 @@ export function LoginPage() {
     );
   };
 
+  const closeSetup = () => {
+    if (setPasswordMutation.isPending) return;
+    setSetupToken(null);
+  };
+
+  const handleSetPassword = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPassword.length < 8) {
+      setNewPasswordError('Не менее 8 символов');
+      return;
+    }
+    if (!setupToken) return;
+    setNewPasswordError(null);
+    setSetupError(null);
+    setPasswordMutation.mutate(
+      { payload: { password: newPassword }, setupToken, username: username.trim() },
+      {
+        onSuccess: () => {
+          setSetupToken(null);
+          navigate('/', { replace: true });
+        },
+        onError: (err) => {
+          if (err instanceof ApiError && err.status === 422) {
+            setNewPasswordError('Не менее 8 символов');
+            return;
+          }
+          if (err instanceof ApiError && err.code === 'password_already_set') {
+            // Пароль уже задан (гонка/повтор) — вернуться к вводу пароля.
+            setSetupToken(null);
+            setPassword('');
+            setBanner('Пароль уже задан, войдите с паролем');
+            return;
+          }
+          if (err instanceof ApiError && err.status === 401) {
+            // Setup-токен просрочен — начать вход заново.
+            setSetupToken(null);
+            setPassword('');
+            setStep('username');
+            setBanner('Сессия установки истекла, начните заново');
+            return;
+          }
+          setSetupError('Не удалось сохранить пароль. Повторите попытку.');
+        },
+      },
+    );
+  };
+
   return (
     <main className="flex min-h-screen items-center justify-center bg-bg-base px-4">
       <div className="w-full max-w-sm">
         <div className="rounded-card border border-border-subtle bg-surface-1 p-6 shadow-card">
+          {banner && (
+            <p role="alert" className="mb-4 text-[13px] text-status-red">
+              {banner}
+            </p>
+          )}
           {step === 'username' ? (
             <form onSubmit={handleNext} className="flex flex-col gap-4" noValidate>
               <Input
-                label="Логин"
-                placeholder="admin"
+                label="Логин или Телеграм"
+                placeholder="admin или @username"
                 value={username}
                 error={usernameError}
                 autoFocus
@@ -94,6 +176,7 @@ export function LoginPage() {
                 onChange={(e) => {
                   setUsername(e.target.value);
                   if (usernameError) setUsernameError(null);
+                  if (banner) setBanner(null);
                 }}
               />
               <Button type="submit" fullWidth>
@@ -108,17 +191,17 @@ export function LoginPage() {
               noValidate
             >
               <div className="flex items-center justify-between rounded-[10px] border border-border-subtle bg-surface-2 px-3 py-2">
-                <span className="flex flex-col">
+                <span className="flex min-w-0 flex-col">
                   <span className="text-[11px] uppercase tracking-wide text-text-tertiary">
-                    Логин
+                    Логин или Телеграм
                   </span>
-                  <span className="font-mono text-sm text-text-primary">{username}</span>
+                  <span className="truncate font-mono text-sm text-text-primary">{username}</span>
                 </span>
                 <button
                   type="button"
                   onClick={handleBack}
                   disabled={loginMutation.isPending}
-                  className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-[12px] text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
+                  className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[12px] text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent disabled:opacity-50"
                 >
                   <Pencil className="h-3 w-3" />
                   Сменить
@@ -162,6 +245,62 @@ export function LoginPage() {
           )}
         </div>
       </div>
+
+      <Modal
+        open={setupToken !== null}
+        onOpenChange={(next) => !next && closeSetup()}
+        title="Задайте пароль"
+        description="У вашей учётной записи ещё нет пароля. Задайте его для входа."
+        dismissible={!setPasswordMutation.isPending}
+        footer={
+          <>
+            <Button variant="ghost" onClick={closeSetup} disabled={setPasswordMutation.isPending}>
+              Отмена
+            </Button>
+            <Button type="submit" form="set-password-form" loading={setPasswordMutation.isPending}>
+              Сохранить
+            </Button>
+          </>
+        }
+      >
+        <form
+          id="set-password-form"
+          onSubmit={handleSetPassword}
+          className="flex flex-col gap-4"
+          noValidate
+        >
+          <Input
+            label="Новый пароль"
+            type={showNewPassword ? 'text' : 'password'}
+            placeholder="Не менее 8 символов"
+            value={newPassword}
+            error={newPasswordError}
+            autoFocus
+            maxLength={128}
+            autoComplete="new-password"
+            onChange={(e) => {
+              setNewPassword(e.target.value);
+              if (newPasswordError) setNewPasswordError(null);
+              if (setupError) setSetupError(null);
+            }}
+            trailing={
+              <button
+                type="button"
+                onClick={() => setShowNewPassword((v) => !v)}
+                aria-label={showNewPassword ? 'Скрыть пароль' : 'Показать пароль'}
+                className="flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+              </button>
+            }
+          />
+          {setupError && (
+            <p role="alert" className="text-[13px] text-status-red">
+              {setupError}
+            </p>
+          )}
+        </form>
+      </Modal>
     </main>
   );
 }

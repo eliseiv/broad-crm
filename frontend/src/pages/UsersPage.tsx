@@ -164,9 +164,9 @@ export function UsersPage() {
                           <span className="truncate font-mono text-sm font-medium text-text-primary">
                             {user.username}
                           </span>
-                          {user.email && (
+                          {user.telegram && (
                             <span className="truncate font-mono text-[13px] text-text-secondary">
-                              {user.email}
+                              @{user.telegram}
                             </span>
                           )}
                           <span className="truncate text-[13px] text-text-secondary">
@@ -174,11 +174,16 @@ export function UsersPage() {
                           </span>
                         </div>
                       </div>
-                      {user.is_active ? (
-                        <Badge tone="green">Активен</Badge>
-                      ) : (
-                        <Badge tone="neutral">Неактивен</Badge>
-                      )}
+                      <div className="flex shrink-0 items-center gap-3">
+                        {/* Беспарольный пользователь ещё не завершил «открытый первый
+                            вход» (ADR-025 §5) — единственный визуальный признак учётки. */}
+                        {!user.has_password && <Badge tone="yellow">Без пароля</Badge>}
+                        {user.is_active ? (
+                          <Badge tone="green">Активен</Badge>
+                        ) : (
+                          <Badge tone="neutral">Неактивен</Badge>
+                        )}
+                      </div>
                     </Card>
                   </li>
                 ))}

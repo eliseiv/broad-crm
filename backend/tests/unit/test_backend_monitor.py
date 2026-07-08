@@ -1,37 +1,47 @@
-"""Unit-тесты монитора бэков check_one/poll_once/_check_snapshot/run (modules/backends).
+"""Unit-тесты монитора бэков check_one/poll_once/_check_snapshot/run (ADR-020/024).
 
 Репозиторий, сессия БД и проверка доступности — стабы (без сети/БД). Покрывают:
-обновление check_status при конклюзивном исходе независимо от Telegram; гейт Telegram
-(`telegram=None` → не отправляем, статус всё равно пишем); отправку 🔴/🟢 при переходах;
-сборку URL проверки из domain; устойчивость check_one к исключению; устойчивость run к
-ошибке итерации и отмене. Исхода `unknown` у бэков НЕТ.
+grace-порог алерта (🔴 только после непрерывной недоступности ≥ порога, ADR-024),
+recovery только если 🔴 был, overall-deadline (`asyncio.wait_for` прерывает зависшую
+проверку → «Таймаут подключения»), гейт Telegram (`telegram=None` → не отправляем,
+статус пишем), устойчивость check_one/run к исключениям. Исхода `unknown` у бэков НЕТ.
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
-from app.infra.backend_check import BackendCheckResult
+from app.infra.backend_check import REASON_TIMEOUT, BackendCheckResult
 from app.models.service_backend import BackendStatus
 from app.services import backend_monitor_service as mod
 from app.services.backend_monitor_service import BackendMonitorService
 
 
 class _FakeBackend:
-    def __init__(self, *, status: str = BackendStatus.pending.value) -> None:
+    def __init__(
+        self,
+        *,
+        status: str = BackendStatus.pending.value,
+        error_since: datetime | None = None,
+        alert_sent: bool = False,
+    ) -> None:
         self.id = uuid.uuid4()
         self.code = "api-eu"
         self.name = "API EU"
         self.domain = "api.example.com"
         self.check_status = status
+        self.error_since = error_since
+        self.alert_sent = alert_sent
 
 
 class _FakeRepo:
     def __init__(self, backend: _FakeBackend | None) -> None:
         self.backend = backend
-        self.updates: list[tuple[uuid.UUID, str, str | None]] = []
+        self.updates: list[dict[str, Any]] = []
 
     async def get_by_id(self, backend_id: uuid.UUID) -> _FakeBackend | None:
         if self.backend is not None and backend_id == self.backend.id:
@@ -48,8 +58,18 @@ class _FakeRepo:
         status: str,
         error_message: str | None,
         last_checked_at: object,
+        error_since: datetime | None,
+        alert_sent: bool,
     ) -> None:
-        self.updates.append((backend_id, status, error_message))
+        self.updates.append(
+            {
+                "id": backend_id,
+                "status": status,
+                "error_message": error_message,
+                "error_since": error_since,
+                "alert_sent": alert_sent,
+            }
+        )
 
 
 class _FakeSession:
@@ -114,8 +134,8 @@ async def test_check_one_working_updates_db_no_telegram_when_disabled(
 
     await svc.check_one(backend.id)
 
-    # check_status обновлён в БД независимо от Telegram (бот отключён).
-    assert repo.updates == [(backend.id, BackendStatus.working.value, None)]
+    assert repo.updates[0]["status"] == BackendStatus.working.value
+    assert repo.updates[0]["error_message"] is None
 
 
 async def test_check_one_builds_url_from_domain(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -132,14 +152,12 @@ async def test_check_one_builds_url_from_domain(monkeypatch: pytest.MonkeyPatch)
 
     await svc.check_one(backend.id)
 
-    # Домен из снимка передан в проверку доступности.
     assert captured["domain"] == "api.example.com"
 
 
-async def test_check_one_error_first_check_updates_and_alerts_red(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    backend = _FakeBackend(status=BackendStatus.pending.value)
+async def test_check_one_first_error_starts_grace_no_red(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Первый провал (working→error): статус error немедленно, но 🔴 НЕ шлём (grace, ADR-024).
+    backend = _FakeBackend(status=BackendStatus.working.value)
     repo = _FakeRepo(backend)
     tg = _FakeTelegram()
     svc = _make_service(
@@ -148,43 +166,117 @@ async def test_check_one_error_first_check_updates_and_alerts_red(
 
     await svc.check_one(backend.id)
 
-    assert repo.updates == [(backend.id, BackendStatus.error.value, "Бэк недоступен")]
+    assert repo.updates[0]["status"] == BackendStatus.error.value
+    assert repo.updates[0]["error_since"] is not None  # начало эпизода зафиксировано
+    assert repo.updates[0]["alert_sent"] is False
+    assert tg.sent == []  # grace-окно не истекло → тихо
+
+
+async def test_check_one_error_after_grace_sends_red(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Недоступен непрерывно > 30 мин (error_since в прошлом), 🔴 ещё не слали → отправить 🔴.
+    past = datetime.now(UTC) - timedelta(minutes=31)
+    backend = _FakeBackend(status=BackendStatus.error.value, error_since=past, alert_sent=False)
+    repo = _FakeRepo(backend)
+    tg = _FakeTelegram()
+    svc = _make_service(
+        monkeypatch, repo, telegram=tg, outcome=BackendCheckResult("error", "Бэк недоступен")
+    )
+
+    await svc.check_one(backend.id)
+
+    assert repo.updates[0]["alert_sent"] is True
     assert len(tg.sent) == 1
     assert "🔴🔴🔴СРОЧНО🔴🔴🔴" in tg.sent[0]
     assert 'Бэк "API EU" [api-eu] api.example.com' in tg.sent[0]
     assert 'Бэк не работает: "Бэк недоступен"' in tg.sent[0]
 
 
-async def test_check_one_recovery_sends_green_alert(monkeypatch: pytest.MonkeyPatch) -> None:
-    backend = _FakeBackend(status=BackendStatus.error.value)
+async def test_check_one_recovery_sends_green_when_alert_was_sent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    backend = _FakeBackend(
+        status=BackendStatus.error.value,
+        error_since=datetime.now(UTC) - timedelta(minutes=40),
+        alert_sent=True,
+    )
     repo = _FakeRepo(backend)
     tg = _FakeTelegram()
     svc = _make_service(monkeypatch, repo, telegram=tg, outcome=BackendCheckResult("working", None))
 
     await svc.check_one(backend.id)
 
-    assert repo.updates == [(backend.id, BackendStatus.working.value, None)]
+    assert repo.updates[0]["status"] == BackendStatus.working.value
+    assert repo.updates[0]["error_since"] is None
+    assert repo.updates[0]["alert_sent"] is False
     assert len(tg.sent) == 1
     assert "🟢🟢🟢ВОССТАНОВЛЕНО🟢🟢🟢" in tg.sent[0]
     assert "Бэк снова работает" in tg.sent[0]
 
 
-async def test_check_one_error_alert_suppressed_when_telegram_none(
+async def test_check_one_recovery_silent_when_alert_not_sent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    backend = _FakeBackend(status=BackendStatus.working.value)
+    # Рестарт < 30 мин: 🔴 не слали → 🟢 не нужен (тихо), статус всё равно working.
+    backend = _FakeBackend(
+        status=BackendStatus.error.value,
+        error_since=datetime.now(UTC) - timedelta(minutes=5),
+        alert_sent=False,
+    )
+    repo = _FakeRepo(backend)
+    tg = _FakeTelegram()
+    svc = _make_service(monkeypatch, repo, telegram=tg, outcome=BackendCheckResult("working", None))
+
+    await svc.check_one(backend.id)
+
+    assert repo.updates[0]["status"] == BackendStatus.working.value
+    assert tg.sent == []
+
+
+async def test_check_one_red_suppressed_when_telegram_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    past = datetime.now(UTC) - timedelta(minutes=31)
+    backend = _FakeBackend(status=BackendStatus.error.value, error_since=past, alert_sent=False)
     repo = _FakeRepo(backend)
     svc = _make_service(
-        monkeypatch,
-        repo,
-        telegram=None,
-        outcome=BackendCheckResult("error", "Таймаут подключения"),
+        monkeypatch, repo, telegram=None, outcome=BackendCheckResult("error", "Таймаут подключения")
     )
 
     await svc.check_one(backend.id)
 
-    # Статус пишется, но отправлять некуда (бот отключён) — исключений нет.
-    assert repo.updates == [(backend.id, BackendStatus.error.value, "Таймаут подключения")]
+    # Статус/alert_sent пишутся, но отправлять некуда (бот отключён) — исключений нет.
+    assert repo.updates[0]["status"] == BackendStatus.error.value
+    assert repo.updates[0]["alert_sent"] is True
+
+
+async def test_check_one_deadline_aborts_hung_check(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Проверка «зависает» → overall-deadline (asyncio.wait_for) прерывает её →
+    # гарантированно конклюзивный error «Таймаут подключения» (ADR-024).
+    monkeypatch.setenv("BACKEND_CHECK_DEADLINE_SEC", "0.05")
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+
+    backend = _FakeBackend(status=BackendStatus.working.value)
+    repo = _FakeRepo(backend)
+    monkeypatch.setattr(mod, "BackendRepository", lambda _session: repo)
+
+    async def _hang(_domain: str) -> BackendCheckResult:
+        await asyncio.Event().wait()  # никогда не завершится
+        raise AssertionError("unreachable")
+
+    monkeypatch.setattr(mod, "check_backend", _hang)
+
+    svc = BackendMonitorService(
+        sessionmaker=lambda: _FakeSession(),  # type: ignore[arg-type]
+        telegram=None,
+        settings=get_settings(),
+    )
+
+    await svc.check_one(backend.id)
+
+    assert repo.updates[0]["status"] == BackendStatus.error.value
+    assert repo.updates[0]["error_message"] == REASON_TIMEOUT
 
 
 async def test_check_one_working_to_working_no_alert(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,8 +287,8 @@ async def test_check_one_working_to_working_no_alert(monkeypatch: pytest.MonkeyP
 
     await svc.check_one(backend.id)
 
-    assert repo.updates == [(backend.id, BackendStatus.working.value, None)]
-    assert tg.sent == []  # working→working молча
+    assert repo.updates[0]["status"] == BackendStatus.working.value
+    assert tg.sent == []
 
 
 async def test_check_one_missing_backend_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -238,7 +330,6 @@ async def test_check_one_swallows_exception_and_logs(monkeypatch: pytest.MonkeyP
         settings=_settings(),  # type: ignore[arg-type]
     )
 
-    # Исключение внутри check_one логируется и НЕ всплывает наружу.
     await svc.check_one(uuid.uuid4())
 
     assert "backend_check_one_failed" in events
@@ -269,8 +360,10 @@ async def test_poll_once_checks_all_backends_and_updates(monkeypatch: pytest.Mon
 
     await svc.poll_once()
 
-    assert repo.updates == [(backend.id, BackendStatus.error.value, "Ошибка бэка (HTTP 500)")]
-    assert len(tg.sent) == 1
+    assert repo.updates[0]["status"] == BackendStatus.error.value
+    assert repo.updates[0]["error_message"] == "Ошибка бэка (HTTP 500)"
+    # Первый провал → grace, 🔴 не шлём.
+    assert tg.sent == []
 
 
 # ---------------------------------------------------------------- run()
@@ -320,4 +413,4 @@ async def test_run_survives_iteration_error(monkeypatch: pytest.MonkeyPatch) -> 
     with pytest.raises(asyncio.CancelledError):
         await svc.run()
 
-    assert state["n"] == 2  # пережил ошибку первой итерации, выполнил вторую
+    assert state["n"] == 2

@@ -27,9 +27,11 @@
 | Эталонный URL | `PROXY_CHECK_URL` (конфиг) | путь **фиксирован** `/health`, URL = `https://{domain}/health` |
 | Исход `unknown` | нет | **нет** (как у прокси) |
 | Интервал (default) | `PROXY_CHECK_INTERVAL_SEC=60` | `BACKEND_CHECK_INTERVAL_SEC=60` |
+| Overall-deadline проверки | `PROXY_CHECK_DEADLINE_SEC=30` | `BACKEND_CHECK_DEADLINE_SEC=30` ([ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
+| Модель алерта недоступности | **немедленно** при первом `error` | **grace-порог 30 мин** непрерывной недоступности перед 🔴 (`BACKEND_ALERT_AFTER_SEC=1800`, поля `error_since`/`alert_sent` — [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
 | Re-check при `PATCH` | смена `proxy_type`/`host`/`port`/`username`/`password` | смена **`domain`** (только оно связано с подключением) |
 
-Всё остальное (статус в БД, переходы `pending|working→error`/`error→working`, монитор стартует всегда, Telegram гейтится `notifier_enabled`, немедленная проверка при создании, единый список с reorder как у серверов) — как у прокси.
+Всё остальное (статус в БД, `error→working` recovery, монитор стартует всегда, Telegram гейтится `notifier_enabled`, немедленная проверка при создании, единый список с reorder как у серверов) — как у прокси. **Отличие модели алерта:** у бэков 🔴 откладывается на grace-порог 30 мин (у прокси — немедленно); `check_status` в обоих случаях меняется сразу (реальность в UI).
 
 ## Безопасность (нормативно)
 
@@ -88,7 +90,9 @@
 
 **Валидация формата** после нормализации: непустой `host` из валидных DNS-меток (буквы/цифры/дефис, точки-разделители) с опциональным `:port` (`1..65535`); в результате нет пробелов и `/`. Невалидный → `422 unprocessable` (`details:[{field:"domain", ...}]`). Примеры: `https://api.example.com/` → `api.example.com`; `API.Example.com:8443` → `api.example.com:8443`; `http://x/health` → `x`.
 
-**Проверка доступности** = `GET https://{domain}/health`. HTTP-клиент — `httpx.AsyncClient(timeout=BACKEND_CHECK_TIMEOUT_SEC, verify=True, follow_redirects=False)` с ограниченными ретраями на транзиентные ошибки (backoff-паттерн `app/infra/ai_provider.py` / проверки прокси). Путь `/health` и схема `https://` **фиксированы**.
+**Проверка доступности** = `GET https://{domain}/health`. HTTP-клиент — `httpx.AsyncClient(timeout=<явный httpx.Timeout по всем фазам>, verify=True, follow_redirects=False)` с ограниченными ретраями на транзиентные ошибки (backoff-паттерн `app/infra/ai_provider.py` / проверки прокси). Путь `/health` и схема `https://` **фиксированы**.
+
+> **Анти-зависание (нормативно, [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)).** Как у прокси: `BACKEND_CHECK_TIMEOUT_SEC` применяется как явный `httpx.Timeout(connect=t, read=t, write=t, pool=t)` (не одиночный float), а проверка одного бэка (`check_one`, вкл. все ретраи) оборачивается `asyncio.wait_for(..., BACKEND_CHECK_DEADLINE_SEC)` (default **30 с**) → при превышении исход `error` «Таймаут подключения». Проверка всегда завершается конклюзивно; `deadline` (30 с) < интервал (60 с).
 
 **Маппинг результата → исход проверки:**
 
@@ -116,19 +120,23 @@
 
 ### Переходы статуса и алерты (нормативно)
 
-`prev` — предыдущий `check_status` из БД, `cur` — исход текущей проверки. Чистая функция перехода `evaluate_transition(old_status, result) -> (new_status, error_message, alert)` (образец — `evaluate_transition` прокси-монитора), `alert ∈ {None, "error", "recovery"}`:
+**Grace-порог 30 минут перед 🔴 (нормативно, [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)).** `check_status` переходит в `error` **немедленно** (реальность в UI сразу), но Telegram-🔴 шлётся только если бэк недоступен **непрерывно ≥ `BACKEND_ALERT_AFTER_SEC` (default 1800 с = 30 мин)** — устраняет ложные алерты при штатных перезагрузках бэка (1–2 мин). Состояние эпизода — персистентные поля `backends.error_since` (начало недоступности) и `backends.alert_sent` (был ли 🔴) ([03-data-model.md](../../03-data-model.md#таблица-backends), миграция `0013_backends_alert_grace`).
 
-| `prev` | `cur` | Действие |
-|--------|-------|----------|
-| `pending` / `working` | `error` | **🔴 «Бэк не работает»** (в т.ч. первая проверка недоступного бэка) |
-| `error` | `working` | **🟢 «Бэк снова работает»** (recovery/отбой) |
-| `working` | `working` | молча |
-| `pending` | `working` | молча (первая успешная проверка — не recovery) |
-| `error` | `error` | молча (уже сломан; `error_message` обновляется на актуальную причину) |
+Чистая функция перехода (time-aware) `evaluate_transition(prev_status, result, error_since, alert_sent, now) -> (new_status, error_message, new_error_since, new_alert_sent, alert)`, `alert ∈ {None, "error", "recovery"}`:
 
-- Telegram-отправка выполняется **только если** `settings.notifier_enabled` (`TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID` заданы). Иначе переход только фиксируется в БД (статус для UI), лог `backend_alert_suppressed_no_telegram` (info) — не ошибка.
-- `check_status` в БД обновляется **всегда**, независимо от `notifier_enabled` и результата отправки Telegram.
-- Персистентность `check_status` гарантирует: после рестарта backend сломанный бэк не переоткрывается (нет дубль-🔴), а recovery отрабатывает корректно между рестартами.
+| `prev` | `cur` (result) | `new_status` | `error_since` | `alert_sent` | Алерт |
+|--------|----------------|--------------|---------------|--------------|-------|
+| `pending` / `working` | `error` | `error` | ← `now` (старт эпизода) | остаётся `false` | **нет** (grace-окно только началось) |
+| `error` | `error` (прошло `< 30 мин`) | `error` | без изменений | `false` | молча (обновляется `error_message`) |
+| `error` | `error` (прошло `≥ 30 мин`, `alert_sent=false`) | `error` | без изменений | → `true` | **🔴 «Бэк не работает»** |
+| `error` | `error` (`alert_sent=true`) | `error` | без изменений | `true` | молча (уже слали) |
+| `error` | `working` (`alert_sent=true`) | `working` | → `NULL` | → `false` | **🟢 «Бэк снова работает»** (отбой) |
+| `error` | `working` (`alert_sent=false`) | `working` | → `NULL` | `false` | молча (🔴 не слали, напр. рестарт < 30 мин) |
+| `pending` / `working` | `working` | `working` | `NULL` | `false` | молча |
+
+- Telegram-отправка выполняется **только если** `settings.notifier_enabled` (`TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID` заданы). Иначе переход только фиксируется в БД (статус + `error_since`/`alert_sent` для UI/grace), лог `backend_alert_suppressed_no_telegram` (info) — не ошибка.
+- `check_status`/`error_since`/`alert_sent` в БД обновляются **всегда**, независимо от `notifier_enabled` и результата отправки Telegram.
+- Персистентность (`check_status` + `error_since` + `alert_sent`) переживает рестарт backend: grace-отсчёт и признак отправки корректны между рестартами (сломанный бэк не переоткрывает окно, нет дубль-🔴; recovery-🟢 шлётся только если 🔴 был отправлен).
 
 ### Формат сообщений Telegram (точно, нормативно — источник истины)
 
@@ -167,7 +175,7 @@ build_backend_recovery(code: str, name: str, domain: str) -> str
 
 ### Backend — ориентиры реализации (структура — на усмотрение)
 
-1. **Настройки** (`config.py`): `backend_check_interval_sec: int = 60`, `backend_check_timeout_sec: float = 10.0`. `notifier_enabled` переиспользуется. Путь `/health` и схема `https://` — константы, не конфиг.
+1. **Настройки** (`config.py`): `backend_check_interval_sec: int = 60`, `backend_check_timeout_sec: float = 10.0`, **`backend_check_deadline_sec: float = 30.0`** (overall-deadline, анти-зависание — [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)), **`backend_alert_after_sec: int = 1800`** (grace-порог 30 мин перед 🔴). `notifier_enabled` переиспользуется. Путь `/health` и схема `https://` — константы, не конфиг. Монитор ведёт grace-состояние в `backends.error_since`/`alert_sent`.
 2. **Проверка бэка** (`infra/`, напр. `backend_check.py`): чистый результат `BackendCheckResult{outcome, reason}` (`working`/`error`) — маппинг тестируется без сети (моки httpx). Нормализация домена и сборка URL — отдельные чистые функции.
 3. **Билдеры сообщений** (`domain/notifications.py`): `build_backend_error(code, name, domain, reason)` / `build_backend_recovery(code, name, domain)` → строка. qa проверяет побайтовое совпадение формата.
 4. **BackendMonitorService** (`services/`): цикл + **чистая функция перехода** `evaluate_transition(prev_status, result) -> (new_status, error_message, alert)` (образец прокси-монитора) для тестируемости матрицы без сети/БД. Исхода `unknown` нет.
@@ -185,7 +193,7 @@ build_backend_recovery(code: str, name: str, domain: str) -> str
 ### Страница `BackendsPage`
 
 - Адаптивная сетка карточек (`grid-cols-1 md:grid-cols-2 xl:grid-cols-3`, gap 24px), как «Серверы»/«Прокси». Единый список (без секций), сортировка по `position`. Ячейки: `BackendCard` на каждый бэк + `AddBackendCard`.
-- `BackendCard`: имя (`name`), код (`code`, моношрифт/чип), домен (`domain`, моношрифт), статус-бейдж (**Работает** / **Не работает** / **Проверка…**), причина ошибки при `error`, кнопка **Удалить**.
+- `BackendCard`: имя (`name`), код (`code`, моношрифт/чип), домен (`domain`, моношрифт), статус-бейдж (**Работает** / **Не работает** / **Проверка…**), причина ошибки при `error`, **единственная** кнопка **Удалить** (одна на карточку; дубль в error/недоступном состоянии **не рендерится** — [ADR-023](../../adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)).
 - **Клик по карточке = редактирование** (короткий клик открывает `AddBackendModal` в режиме edit). **Зажатие ~200 мс + движение = перетаскивание** (@dnd-kit, [08-design-system.md](../../08-design-system.md#перестановка-карточек-drag-and-drop)). Кнопка **Удалить** — `stopPropagation`.
 - `AddBackendCard` → `AddBackendModal` (Radix Dialog) в режиме **add**: поля **Код** (`Input`), **Название** (`Input`), **Домен** (`Input`). Кнопки **Отмена** / **Добавить**. Ошибка `409 backend_code_taken` — пофилдово под полем «Код» («Код занят»).
 - **Режим edit `AddBackendModal`:** префил `code`/`name`/`domain`. Кнопка действия — **Сохранить**. Отправляются только изменённые поля. После смены `domain` карточка возвращается в **Проверка…** и polling статуса возобновляется.
@@ -201,11 +209,15 @@ Loading (skeleton), empty (только `AddBackendCard` + подсказка), 
 - [x] Endpoints и коды ошибок соответствуют [04-api.md](../../04-api.md#backends); `code` уникален (дубль → `409 backend_code_taken`); прецеденция `400`/`422` → `409`.
 - [x] Нормализация домена (с/без схемы, завершающий `/`, path → authority) и валидация формата (`422` на невалидном); в БД хранится «голый» `host[:port]`.
 - [x] Проверка идёт `GET https://{domain}/health` (`follow_redirects=False`, `verify=True`); строго `2xx` → `working`; таймаут/сеть/не-2xx (после ретраев) → `error` с рус. причиной, содержащей код статуса при не-2xx.
-- [x] Матрица переходов и алерты соответствуют таблице; первая неуспешная проверка шлёт 🔴, recovery `error→working` шлёт 🟢; исхода `unknown` нет.
 - [x] Формат обоих сообщений Telegram побайтово соответствует спецификации (`build_backend_error`/`build_backend_recovery`, блок `Бэк "<name>" [<code>] <domain>`).
-- [x] Монитор стартует всегда; Telegram-отправка гейтится `notifier_enabled`; `check_status` обновляется независимо от бота; переходы переживают рестарт.
-- [x] Alembic-миграция `0007_create_backends` (`down_revision="0006_create_proxies"`) с рабочим `downgrade()`; `uq_backends_code` + `ix_backends_position`.
 - [x] `PATCH /api/backends/{id}`: смена `code` проверяет уникальность (`409`); re-check только при смене `domain`; смена `code`/`name` статус не трогает.
+
+**Правки [ADR-023](../../adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)/[ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md) (spec-ready, требуют реализации):**
+- [ ] Grace-порог: `check_status→error` немедленно, **🔴 только после непрерывной недоступности ≥ `BACKEND_ALERT_AFTER_SEC` (30 мин)**; recovery `error→working` шлёт 🟢 **только если 🔴 был отправлен** (`alert_sent`). `evaluate_transition` — time-aware (пять аргументов: `+error_since, alert_sent, now`).
+- [ ] Проверка не зависает: явный `httpx.Timeout` по всем фазам + overall-deadline `BACKEND_CHECK_DEADLINE_SEC` (`asyncio.wait_for`) → таймаут-исход.
+- [ ] Монитор пишет `check_status`/`error_since`/`alert_sent` независимо от бота; grace-состояние переживает рестарт.
+- [ ] Alembic-миграция `0013_backends_alert_grace` (`error_since`/`alert_sent`) с рабочим `downgrade()`.
+- [ ] Единственная кнопка «Удалить» на карточке (дубль в error-состоянии убран).
 - [x] `PATCH /api/backends/order`: перестановка единого списка; полная перестановка валидируется (иначе `422`); несуществующий `id` → `404 backend_not_found`.
 - [x] Frontend: вкладка «Бэки» в `AppLayout`, `BackendsPage` (единый список), `BackendCard`/`AddBackendCard`/`AddBackendModal` (add+edit), `409` пофилдово, drag-and-drop (клик=edit / зажатие=drag), все состояния UI, русские строки из словаря.
 - [x] Coverage ≥90 % для функций нормализации/проверки/перехода/билдеров сообщений ([06-testing-strategy.md](../../06-testing-strategy.md)).
@@ -213,6 +225,7 @@ Loading (skeleton), empty (только `AddBackendCard` + подсказка), 
 
 ## Changelog
 
+- 2026-07-08: **спецификация правок [ADR-023](../../adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)/[ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)** (architect, требуют реализации): overall-deadline проверки `BACKEND_CHECK_DEADLINE_SEC`=30 (анти-зависание) + явный `httpx.Timeout` по всем фазам; **grace-порог 30 мин** непрерывной недоступности перед 🔴 (`BACKEND_ALERT_AFTER_SEC`=1800, поля `error_since`/`alert_sent`, миграция `0013_backends_alert_grace`, time-aware `evaluate_transition`); единственная кнопка «Удалить» на карточке. Устраняет ложные алерты при перезагрузке бэка (1–2 мин). Модель алерта у бэков теперь отличается от прокси (немедленно) — grace-порог.
 - 2026-07-07: модуль реализован (Спринт 2) — backend + frontend + qa завершены, reviewer approve/production_ready. Статус `implemented`, DoD выполнен. Косметические minor architect-reviewer (полный список причин `error_message` в 03-data-model/04-api, переход `pending → [*]: DELETE` в state-диаграмме) синхронизированы (architect).
 - 2026-07-07: backend-реализация (backend). Модель `Backend`/миграция `0007_create_backends`; схемы/репозиторий/сервис (CRUD + 409 `backend_code_taken` + нормализация домена → 422 + re-check при смене `domain`); `infra/backend_check.py` (нормализация/валидация домена, `GET https://{domain}/health`, строго 2xx); `BackendMonitorService` (стартует всегда, Telegram гейтится `notifier_enabled`); билдеры `build_backend_error`/`build_backend_recovery`. Frontend — отдельной задачей.
 - 2026-07-07: спецификация создана (architect). Решение об отдельном in-backend-мониторе healthcheck бэков (по образцу прокси [ADR-019](../../adr/ADR-019-proxies-availability-monitor.md)), без секрета/Fernet, с уникальным `code`, фиксированным `GET https://{domain}/health` и строгим `2xx` — [ADR-020](../../adr/ADR-020-backends-healthcheck-monitor.md). Отложенные пункты — [TD-029](../../100-known-tech-debt.md).

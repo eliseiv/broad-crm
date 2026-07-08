@@ -140,6 +140,7 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `ADMIN_PASSWORD` | `change-me` | Пароль администратора |
 | `JWT_SECRET` | `<32+ random bytes>` | Подпись JWT (HS256) |
 | `JWT_EXPIRES_MIN` | `1440` | TTL access-токена, мин (24 ч; [05-security.md](05-security.md#jwt)) |
+| `PWD_SETUP_TOKEN_EXPIRES_MIN` | `10` | TTL setup-токена «первого входа» (`type:"pwd_setup"`, limited-scope). Выдаётся беспарольному пользователю; принимается только `POST /api/auth/set-password` ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) |
 | `JWT_ALGORITHM` | `HS256` | Алгоритм |
 | `FERNET_KEY` | `<base64 32 bytes>` | Ключ шифрования SSH-паролей |
 | `DATABASE_URL` | `postgresql+asyncpg://crm:pwd@postgres:5432/crm` | Подключение к БД |
@@ -157,10 +158,13 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `ANTHROPIC_API_BASE` | `https://api.anthropic.com/v1` | Базовый URL Anthropic API (проверка ключа) |
 | `ANTHROPIC_API_VERSION` | `2023-06-01` | Значение заголовка `anthropic-version` |
 | `PROXY_CHECK_INTERVAL_SEC` | `60` | Интервал проверки доступности прокси (с). Монитор стартует всегда; Telegram-алерты гейтятся `TELEGRAM_*` ([modules/proxies](modules/proxies/README.md), [ADR-019](adr/ADR-019-proxies-availability-monitor.md)) |
-| `PROXY_CHECK_TIMEOUT_SEC` | `10` | Таймаут проверочного HTTP-запроса через прокси (с) |
+| `PROXY_CHECK_TIMEOUT_SEC` | `10` | Таймаут проверочного HTTP-запроса через прокси (с). Применяется как явный `httpx.Timeout` по всем фазам ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
+| `PROXY_CHECK_DEADLINE_SEC` | `30` | Overall-deadline проверки одного прокси (с, `asyncio.wait_for`) — анти-зависание; превышение → `error` «Таймаут подключения» ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
 | `PROXY_CHECK_URL` | `https://www.gstatic.com/generate_204` | Эталонный URL для проверки связности через прокси (лёгкий `204 No Content`). `2xx`/`3xx` → прокси работает |
 | `BACKEND_CHECK_INTERVAL_SEC` | `60` | Интервал healthcheck бэков (с). Монитор стартует всегда; Telegram-алерты гейтятся `TELEGRAM_*` ([modules/backends](modules/backends/README.md), [ADR-020](adr/ADR-020-backends-healthcheck-monitor.md)) |
-| `BACKEND_CHECK_TIMEOUT_SEC` | `10` | Таймаут проверочного запроса `GET https://{domain}/health` (с). Путь `/health` и схема `https://` фиксированы (не конфиг) |
+| `BACKEND_CHECK_TIMEOUT_SEC` | `10` | Таймаут проверочного запроса `GET https://{domain}/health` (с). Явный `httpx.Timeout` по всем фазам. Путь `/health` и схема `https://` фиксированы (не конфиг) |
+| `BACKEND_CHECK_DEADLINE_SEC` | `30` | Overall-deadline проверки одного бэка (с, `asyncio.wait_for`) — анти-зависание ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
+| `BACKEND_ALERT_AFTER_SEC` | `1800` | Grace-порог: непрерывная недоступность бэка (с) перед 🔴-алертом (30 мин). Устраняет ложные алерты при перезагрузке; `check_status→error` — сразу, откладывается только уведомление (поля `error_since`/`alert_sent`, [ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
 | `MAIL_API_BASE` | `https://postapp.store` | Базовый URL внешнего почтового сервиса (модуль «Почты», read-through-прокси — [modules/mail](modules/mail/README.md), [ADR-012](adr/ADR-012-mail-read-through-proxy.md)) |
 | `MAIL_API_KEY` | `<external api key>` | **Секрет** (только env): ключ внешнего почтового API. Подставляется backend в заголовок `X-API-Key`; не в ответах/логах/SPA/URL. Пусто → почта не настроена (`mail_enabled=false`, эндпоинты `/api/mail/*` → `503 mail_not_configured`) |
 | `MAIL_API_TIMEOUT_SEC` | `10` | Таймаут HTTP-запроса backend → `postapp.store` |

@@ -5,6 +5,10 @@
 - Спринт: A (backend) + B (frontend)
 - Расширяет / уточняет: [ADR-021](ADR-021-rbac-users-roles.md) (амендмент §1 — каталог прав), [ADR-017](ADR-017-dashboard-client-aggregation-mail-server-filters.md) (дефолт-маршрут: «Дашборд» больше не стартовая вкладка), [ADR-008](ADR-008-admin-iz-env.md) (супер-админ — граница эскалации)
 
+> **Амендменты (последующие ADR, текст ниже сохранён как исторический):**
+> - **[ADR-025](ADR-025-passwordless-users-login-identifier-open-first-login.md)** — поле `users.email` (введённое здесь, §2) **заменено на `users.telegram`** (формат телеграм-ника, `409 telegram_taken` вместо `email_taken`, индекс `uq_users_telegram`); вход — по Логину **или** Телеграму; пароль опционален. Все упоминания `email`/`email_taken`/`uq_users_email` ниже читать как исторические.
+> - **[ADR-026](ADR-026-teams-optional-leader-auto-transfer.md)** — лидер команды стал **опциональным** (`teams.leader_id` nullable, FK `ON DELETE SET NULL`); код **`409 user_is_team_leader` упразднён** (удаление лидера-пользователя проходит с авто-передачей лидерства). Упоминания обязательного лидера / `user_is_team_leader` / `ON DELETE RESTRICT` на `leader_id` ниже — исторические.
+
 ## Контекст
 
 После Спринта 3 ([ADR-021](ADR-021-rbac-users-roles.md)) есть пользователи, роли и RBAC на все страницы. Требуется расширение:

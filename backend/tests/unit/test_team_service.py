@@ -157,18 +157,23 @@ async def test_update_team_rename_to_taken_is_409(db: RbacFakeDb) -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_team_member_ids_full_replace_keeps_leader(db: RbacFakeDb) -> None:
+async def test_update_team_member_ids_full_replace_excluded_leader_transfers(
+    db: RbacFakeDb,
+) -> None:
     leader = _user(db, "Никита")
     old_member = _user(db, "Мария")
     new_member = _user(db, "Иван")
     team = db.add_team("Продажи", leader, members=[old_member])
     service = _service(db)
 
+    # Полная замена состава на [new_member]; лидер (Никита) исключён, leader_id не задан →
+    # лидерство авто-передаётся оставшемуся участнику (ADR-026), прежний состав выброшен.
     item = await service.update_team(team.id, TeamUpdateRequest(member_ids=[new_member.id]))
 
-    # Полная замена состава; лидер всегда включён (инвариант).
-    assert {m.id for m in item.members} == {leader.id, new_member.id}
+    assert {m.id for m in item.members} == {new_member.id}
+    assert item.leader_id == new_member.id
     assert old_member.id not in {m.id for m in item.members}
+    assert leader.id not in {m.id for m in item.members}
 
 
 @pytest.mark.asyncio
@@ -245,3 +250,104 @@ async def test_list_teams_sorted_created_at_desc(db: RbacFakeDb) -> None:
 
     # created_at DESC: более поздняя — первой.
     assert [t.name for t in result.items] == ["Вторая", "Первая"]
+
+
+# --- Опциональный лидер, авто-назначение и авто-передача (ADR-026) ---
+
+
+@pytest.mark.asyncio
+async def test_create_empty_team_without_leader(db: RbacFakeDb) -> None:
+    service = _service(db)
+
+    item = await service.create_team(TeamCreateRequest(name="Пустая"))
+
+    assert item.leader_id is None
+    assert item.leader_username is None
+    assert item.member_count == 0
+    assert item.members == []
+
+
+@pytest.mark.asyncio
+async def test_create_team_first_member_becomes_leader(db: RbacFakeDb) -> None:
+    first = _user(db, "Никита")
+    second = _user(db, "Мария")
+    service = _service(db)
+
+    # Лидер не задан, есть участники → лидером становится первый (member_ids[0]).
+    item = await service.create_team(
+        TeamCreateRequest(name="Продажи", member_ids=[first.id, second.id])
+    )
+
+    assert item.leader_id == first.id
+    assert item.member_count == 2
+
+
+@pytest.mark.asyncio
+async def test_update_team_remove_leader_via_null(db: RbacFakeDb) -> None:
+    leader = _user(db, "Никита")
+    team = db.add_team("Продажи", leader)
+    service = _service(db)
+
+    # leader_id=null → снятие лидера (команда без лидера), состав не тронут.
+    item = await service.update_team(team.id, TeamUpdateRequest(leader_id=None))
+
+    assert item.leader_id is None
+    assert item.leader_username is None
+
+
+@pytest.mark.asyncio
+async def test_update_team_excluded_leader_auto_transfers_by_created_at(db: RbacFakeDb) -> None:
+    leader = _user(db, "Никита")
+    heir = _user(db, "Мария")
+    late = _user(db, "Иван")
+    # Порядок добавления (created_at): heir раньше late; лидер — Никита.
+    team = db.add_team("Продажи", leader, members=[heir, late])
+    service = _service(db)
+
+    # Новый состав без текущего лидера, leader_id не передан → авто-передача
+    # старейшему из оставшихся по user_teams.created_at (heir добавлен раньше late).
+    item = await service.update_team(team.id, TeamUpdateRequest(member_ids=[late.id, heir.id]))
+
+    assert item.leader_id == heir.id  # старейший по дате, НЕ первый в массиве
+    assert leader.id not in {m.id for m in item.members}
+
+
+@pytest.mark.asyncio
+async def test_update_team_excluded_leader_no_members_left_is_leaderless(db: RbacFakeDb) -> None:
+    leader = _user(db, "Никита")
+    team = db.add_team("Продажи", leader)
+    service = _service(db)
+
+    # Новый состав пуст, лидер исключён → команда без лидера.
+    item = await service.update_team(team.id, TeamUpdateRequest(member_ids=[]))
+
+    assert item.leader_id is None
+    assert item.member_count == 0
+
+
+@pytest.mark.asyncio
+async def test_update_leaderless_team_add_members_assigns_first_leader(db: RbacFakeDb) -> None:
+    first = _user(db, "Никита")
+    second = _user(db, "Мария")
+    team = db.add_team("Пустая")  # без лидера, без участников
+    service = _service(db)
+
+    item = await service.update_team(team.id, TeamUpdateRequest(member_ids=[first.id, second.id]))
+
+    # У команды не было лидера + добавлены участники → первый становится лидером.
+    assert item.leader_id == first.id
+
+
+@pytest.mark.asyncio
+async def test_update_team_leader_kept_when_still_member(db: RbacFakeDb) -> None:
+    leader = _user(db, "Никита")
+    member = _user(db, "Мария")
+    add = _user(db, "Иван")
+    team = db.add_team("Продажи", leader, members=[member])
+    service = _service(db)
+
+    # Лидер остаётся в новом составе → лидерство не меняется.
+    item = await service.update_team(team.id, TeamUpdateRequest(member_ids=[leader.id, add.id]))
+
+    assert item.leader_id == leader.id
+    assert {m.id for m in item.members} == {leader.id, add.id}

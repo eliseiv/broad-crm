@@ -31,6 +31,12 @@ function userOptions(users: UserListItem[]): (SelectOption & MultiSelectOption)[
   return users.map((u) => ({ value: u.id, label: u.username }));
 }
 
+/** Опции Select лидера с пунктом «Без лидера» (пустое значение) — лидер опционален (ADR-026). */
+const NO_LEADER = '';
+function leaderOptions(users: UserListItem[]): SelectOption[] {
+  return [{ value: NO_LEADER, label: 'Без лидера' }, ...userOptions(users)];
+}
+
 /** name: required, 1–64 после trim (формат — на сервере). */
 function validateName(name: string): string | undefined {
   const trimmed = name.trim();
@@ -92,7 +98,10 @@ export function AddTeamModal({
   return <AddTeamDialog key={key} open={open} onOpenChange={onOpenChange} users={users} />;
 }
 
-/** Общая форма (Название / Лидер / Участники). Лидер зафиксирован как участник. */
+/**
+ * Общая форма (Название / Лидер / Участники). Лидер и участники опциональны (ADR-026):
+ * можно создать пустую команду без лидера. Если лидер выбран — он всегда участник.
+ */
 function TeamFormFields({
   name,
   setName,
@@ -120,7 +129,7 @@ function TeamFormFields({
     <>
       {noUsers && (
         <p className="rounded-sub border border-status-yellow/40 bg-status-yellow/5 px-3 py-2 text-[13px] text-text-secondary">
-          Нет пользователей для назначения лидера и участников.
+          Пользователей пока нет — команду можно создать без лидера и участников.
         </p>
       )}
       <Input
@@ -137,14 +146,19 @@ function TeamFormFields({
       />
       <Select
         label="Лидер"
-        options={options}
+        options={leaderOptions(users)}
         value={leaderId}
         error={errors.leader_id}
         disabled={noUsers}
         onChange={(e) => {
-          setLeaderId(e.target.value);
-          // Лидер не может числиться в member_ids (он добавляется автоматически).
-          setMemberIds(memberIds.filter((id) => id !== e.target.value));
+          const nextLeader = e.target.value;
+          setLeaderId(nextLeader);
+          // Новый лидер не дублируется в member_ids (добавляется автоматически); прежний
+          // лидер (если был) сохраняется как обычный участник, чтобы не потерять его из состава.
+          const withoutNew = memberIds.filter((id) => id !== nextLeader);
+          setMemberIds(
+            leaderId && leaderId !== nextLeader ? [...withoutNew, leaderId] : withoutNew,
+          );
           if (errors.leader_id) setErrors((p) => ({ ...p, leader_id: undefined }));
         }}
       />
@@ -172,26 +186,26 @@ function AddTeamDialog({
   users: UserListItem[];
 }) {
   const [name, setName] = useState('');
-  const [leaderId, setLeaderId] = useState(users[0]?.id ?? '');
+  // Лидер опционален (ADR-026): по умолчанию «Без лидера».
+  const [leaderId, setLeaderId] = useState(NO_LEADER);
   const [memberIds, setMemberIds] = useState<string[]>([]);
   const [errors, setErrors] = useState<Errors>({});
   const createMutation = useCreateTeam();
-  const noUsers = users.length === 0;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const next: Errors = {};
     const nErr = validateName(name);
     if (nErr) next.name = nErr;
-    if (!leaderId) next.leader_id = 'Выберите лидера';
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
     const payload: TeamCreateRequest = {
       name: name.trim(),
-      leader_id: leaderId,
       member_ids: memberIds.filter((id) => id !== leaderId),
     };
+    // leader_id опционален: задаём только если выбран (иначе команда без лидера / авто-назначение).
+    if (leaderId) payload.leader_id = leaderId;
     createMutation.mutate(payload, {
       onSuccess: () => {
         toast.success('Команда создана');
@@ -208,14 +222,14 @@ function AddTeamDialog({
       open={open}
       onOpenChange={(next) => !isSubmitting && onOpenChange(next)}
       title="Добавить команду"
-      description="Лидер и участники команды. Лидер всегда входит в участники."
+      description="Название обязательно; лидер и участники опциональны — можно создать пустую команду."
       dismissible={!isSubmitting}
       footer={
         <>
           <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={isSubmitting}>
             Отмена
           </Button>
-          <Button type="submit" form="add-team-form" loading={isSubmitting} disabled={noUsers}>
+          <Button type="submit" form="add-team-form" loading={isSubmitting}>
             Добавить
           </Button>
         </>
@@ -251,9 +265,11 @@ function EditTeamDialog({
   team: TeamListItem;
   canDelete: boolean;
 }) {
+  // Текущий лидер как строка ('' — без лидера, ADR-026: leader_id может быть null).
+  const currentLeader = team.leader_id ?? NO_LEADER;
   const initialMembers = team.members.map((m) => m.id).filter((id) => id !== team.leader_id);
   const [name, setName] = useState(team.name);
-  const [leaderId, setLeaderId] = useState(team.leader_id);
+  const [leaderId, setLeaderId] = useState(currentLeader);
   const [memberIds, setMemberIds] = useState<string[]>(initialMembers);
   const [errors, setErrors] = useState<Errors>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -265,19 +281,20 @@ function EditTeamDialog({
     const next: Errors = {};
     const nErr = validateName(name);
     if (nErr) next.name = nErr;
-    if (!leaderId) next.leader_id = 'Выберите лидера';
     setErrors(next);
     if (Object.keys(next).length > 0) return;
 
     // Отправляем ТОЛЬКО изменённые поля (04-api.md: exclude_unset).
     const payload: TeamUpdateRequest = {};
     if (name.trim() !== team.name) payload.name = name.trim();
-    if (leaderId !== team.leader_id) payload.leader_id = leaderId;
+    const leaderChanged = leaderId !== currentLeader;
+    // Снятие лидера → null; смена/назначение → id. Лидер опционален (ADR-026).
+    if (leaderChanged) payload.leader_id = leaderId === NO_LEADER ? null : leaderId;
     const nextMembers = memberIds.filter((id) => id !== leaderId);
     const changedMembers =
       nextMembers.length !== initialMembers.length ||
       !nextMembers.every((id) => initialMembers.includes(id)) ||
-      leaderId !== team.leader_id;
+      leaderChanged;
     if (changedMembers) payload.member_ids = nextMembers;
 
     if (Object.keys(payload).length === 0) {
@@ -316,7 +333,7 @@ function EditTeamDialog({
         open={open}
         onOpenChange={(next) => !isSubmitting && onOpenChange(next)}
         title="Изменить команду"
-        description="Лидер всегда входит в участники."
+        description="Лидер опционален; если задан — всегда входит в участники."
         dismissible={!isSubmitting}
         footer={
           <div className="flex w-full items-center justify-between gap-2">

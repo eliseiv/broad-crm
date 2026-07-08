@@ -4,9 +4,11 @@
 
 С Спринта 3 система **многопользовательская** с ролями и RBAC ([ADR-021](adr/ADR-021-rbac-users-roles.md)); `.env`-учётка становится несменяемым **супер-админом (bootstrap)** ([ADR-008](adr/ADR-008-admin-iz-env.md) с амендментом). Порядок проверки при `POST /api/auth/login`:
 
-1. **Сначала супер-админ (`.env`).** Логин/пароль сравниваются constant-time с `ADMIN_USER`/`ADMIN_PASSWORD`. В БД супер-админ НЕ хранится. Успех → JWT: `sub=ADMIN_USER`, `role="admin"`, `superadmin=true` (без `uid`).
-2. **Иначе БД-пользователь.** Ищется `users.username`; проверяется `verify_password` (bcrypt) и `is_active=true`. Успех → JWT: `sub=username`, `uid=users.id`, `role=role.name`, `superadmin=false`.
-3. Неудача любой ветки → единое `401 invalid_credentials`.
+1. **Сначала супер-админ (`.env`).** Логин/пароль сравниваются constant-time с `ADMIN_USER`/`ADMIN_PASSWORD`. В БД супер-админ НЕ хранится; **всегда парольный** (беспарольным не бывает). Успех → JWT: `sub=ADMIN_USER`, `role="admin"`, `superadmin=true` (без `uid`).
+2. **Иначе БД-пользователь.** Идентификатор входа (`username` в запросе) сопоставляется с `users.username` **точно**, иначе с нормализованным `users.telegram` — **вход по Логину ИЛИ Телеграму** ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). При `is_active=true`:
+   - `password_hash IS NOT NULL` (парольный) → `verify_password` (bcrypt). Успех → JWT: `sub=username`, `uid=users.id`, `role=role.name`, `superadmin=false`.
+   - `password_hash IS NULL` (**беспарольный**) → вход не выполняется; возвращается `password_setup_required: true` + limited-scope setup-token (см. [«Модель открытого первого входа»](#модель-открытого-первого-входа-нормативно)).
+3. Неудача парольной ветки (не найден / `is_active=false` / неверный пароль) → единое `401 invalid_credentials`.
 
 - Двухшаговый UI-вход; backend проверяет креды единым запросом `POST /api/auth/login` ([ADR-002](adr/ADR-002-dvuhshagovyy-auth.md)).
 - Сравнение кредов **супер-админа** — **constant-time** (`secrets.compare_digest`) для логина и пароля, чтобы исключить timing-атаки. Пароли **БД-пользователей** проверяются bcrypt (`verify_password`, [«Хэширование паролей»](#хэширование-паролей-bcrypt)).
@@ -16,6 +18,26 @@
 
 ### Хранение `ADMIN_PASSWORD`
 - На Этапе 1 допускается plaintext в `.env` (это секрет окружения, не в репозитории). Рекомендация: bcrypt-хэш `ADMIN_PASSWORD_HASH` как опция — зафиксировано как [Q-SEC-1](99-open-questions.md). По умолчанию — plaintext-сравнение constant-time.
+
+## Модель открытого первого входа (нормативно)
+
+**Осознанное решение пользователя** ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)), а не пробел безопасности. Пароль при создании пользователя **опционален** (`users.password_hash` nullable); беспарольный пользователь задаёт пароль **сам** при первом входе.
+
+**Поток:**
+1. Админ создаёт пользователя без пароля (`password_hash = NULL`).
+2. Пользователь вводит свой Логин/Телеграм (без пароля) → `POST /api/auth/login` возвращает `password_setup_required: true` + **setup-token** (limited-scope JWT, `type:"pwd_setup"`, `uid`, TTL `PWD_SETUP_TOKEN_EXPIRES_MIN`=10 мин, **без** `role`/прав).
+3. Пользователь задаёт пароль (≥ 8) → `POST /api/auth/set-password` (Bearer setup-token) → `password_hash` устанавливается (bcrypt), выдаётся обычный access-token (сразу залогинен).
+4. После установки вход только по паролю; setup-ветка больше не срабатывает.
+
+**Границы беспарольного принципала (что может / не может):**
+- **Не может** ничего, кроме `set-password`: setup-token (`type:"pwd_setup"`) проходит **только** этот эндпоинт. `get_current_principal` **отвергает** любой токен с `type != "access"` → `401` на ресурсных/Users/Roles/Teams-эндпоинтах (setup-token не даёт RBAC-прав). Access-token до установки пароля **не выдаётся** — доступа к данным нет.
+- **Может** только задать себе пароль (захватив тем самым учётку — см. риск ниже).
+
+**Осознанный риск (окно уязвимости):** с момента создания беспарольного пользователя и до установки им пароля **любой**, кто знает его Логин/Телеграм, может первым задать пароль и захватить учётку. Принято осознанно ради простого онбординга. Митигация: оперативно сообщать идентификатор адресату, не держать беспарольные учётки долго.
+
+**Взаимодействие с супер-админом и RBAC:** супер-админ (`.env`) всегда парольный — модель его не касается. Роль беспарольного пользователя существует, но прав не даёт, пока не выдан access-token (пока пароль не задан). Деактивированный (`is_active=false`) беспарольный пользователь пароль задать не может (`401`).
+
+**Энумерация:** для **парольных** пользователей вход сохраняет единое `401` (без раскрытия). Для **беспарольных** ответ `password_setup_required` раскрывает существование и беспарольность идентификатора — осознанный побочный эффект модели.
 
 ## JWT
 
@@ -28,6 +50,7 @@
 
 **Claim'ы RBAC (побуквенно, [ADR-021](adr/ADR-021-rbac-users-roles.md)):** `sub` — username; `role` — имя роли (`"admin"` у супер-админа); `superadmin` — `true` у `.env`-супер-админа, `false` у БД-пользователя; `uid` — `users.id` (присутствует **только** у БД-пользователя, отсутствует у супер-админа). Токен без `superadmin=true` и без `uid` (легаси до Спринта 3) → `401` (повторный вход). Права в токен **не кладутся** — грузятся из БД на каждый запрос (см. [«RBAC»](#rbac--роли-права-и-enforcement)).
 
+- **Setup-token первого входа** ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)): отдельный тип JWT `type:"pwd_setup"` с `uid`, **без** `role`/`superadmin`/прав, TTL `PWD_SETUP_TOKEN_EXPIRES_MIN` (default 10 мин). Выдаётся `POST /api/auth/login` беспарольному пользователю; принимается **только** `POST /api/auth/set-password`. `get_current_principal` (защищающий все прочие эндпоинты) **отвергает** токены с `type != "access"` → `401` (иначе setup-token дал бы доступ к ресурсам — критичный инвариант).
 - Выбор HS256 (а не RS256) — один сервис, симметричный ключ проще; обоснование в [ADR-002](adr/ADR-002-dvuhshagovyy-auth.md). При появлении нескольких сервисов-валидаторов — пересмотр на RS256.
 - **TTL access-токена — 1440 мин (24 часа).** По запросу пользователя срок жизни увеличен с 60 мин до 24 ч, чтобы снизить частоту релогина (админ-панель, одна учётка). Осознанный trade-off: более длинное окно валидности украденного токена. Компенсируется тем, что токен хранится только в памяти SPA (не в `localStorage`), CSP/no-referrer снижают риск XSS-кражи, а refresh-токенов нет (по истечении 24 ч — повторный вход). Значение — env-параметр `JWT_EXPIRES_MIN`, при необходимости ужесточается без изменения кода.
 - Refresh-токенов на Этапе 1 нет: по истечении TTL — повторный вход. Хранение access-токена на фронте — **в памяти (Zustand)**, не в `localStorage` (снижает риск XSS-кражи). Допустимо `sessionStorage` для переживания перезагрузки — решение фронта, зафиксировано в [modules/auth](modules/auth/README.md).
@@ -82,8 +105,8 @@
 Пароли **БД-пользователей** ([03-data-model.md](03-data-model.md#таблицы-roles-и-users-rbac), [ADR-021](adr/ADR-021-rbac-users-roles.md)):
 
 - Библиотека — **`bcrypt`** напрямую (без `passlib`), новая зависимость ([02-tech-stack.md](02-tech-stack.md#backend)). Модуль `app/infra/passwords.py`: `hash_password(plain) -> str`, `verify_password(plain, hashed) -> bool`. Cost — дефолт bcrypt (12 раундов, `bcrypt.gensalt()`).
-- В БД хранится **только** `users.password_hash`. **Plaintext-пароль никогда** не хранится, не логируется (structlog-фильтр секретов), не возвращается ни в одном ответе API (в схемах `User*` поля `password` нет на выход).
-- Политика пароля: 8–128 символов (валидация Pydantic). **Известное поведение bcrypt:** значимы только первые 72 **байта** (для кириллицы в UTF-8 — ~36 символов); это документированное ограничение bcrypt, принято осознанно (не дефект).
+- В БД хранится **только** `users.password_hash` (**nullable** — `NULL` у беспарольного пользователя до «открытого первого входа», [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). **Plaintext-пароль никогда** не хранится, не логируется (structlog-фильтр секретов), не возвращается ни в одном ответе API (в схемах `User*` поля `password` нет на выход; есть лишь производный `has_password`).
+- Политика пароля: 8–128 символов (валидация Pydantic) — как при создании (если задан), так и при `set-password` первого входа и сбросе через `PATCH`. **Пароль опционален при создании** (беспарольный пользователь), но при установке подчиняется тем же 8–128. **Известное поведение bcrypt:** значимы только первые 72 **байта** (для кириллицы в UTF-8 — ~36 символов); это документированное ограничение bcrypt, принято осознанно (не дефект).
 - Пароль **супер-админа** (`.env`) bcrypt НЕ хэшируется — сравнение plaintext constant-time ([ADR-008](adr/ADR-008-admin-iz-env.md) амендмент); опция `ADMIN_PASSWORD_HASH` ([Q-SEC-1](99-open-questions.md)) для супер-админа не вводится.
 
 ## Защита SSH-кредов целевых серверов
@@ -193,7 +216,7 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 | Секрет | Источник | Примечание |
 |--------|----------|-----------|
 | `ADMIN_USER` / `ADMIN_PASSWORD` | `.env` | Супер-админ (bootstrap); не в БД, не в репо ([ADR-008](adr/ADR-008-admin-iz-env.md)+[ADR-021](adr/ADR-021-rbac-users-roles.md)) |
-| Пароли БД-пользователей | БД (`users.password_hash`) | bcrypt-хэш at-rest; plaintext не в env/логах/ответах ([ADR-021](adr/ADR-021-rbac-users-roles.md)) |
+| Пароли БД-пользователей | БД (`users.password_hash`, **nullable**) | bcrypt-хэш at-rest; `NULL` = беспарольный (до «открытого первого входа», [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)); plaintext не в env/логах/ответах ([ADR-021](adr/ADR-021-rbac-users-roles.md)) |
 | `JWT_SECRET` | `.env` | ≥ 32 байта случайных |
 | `FERNET_KEY` | `.env` | base64 32 байта |
 | `POSTGRES_PASSWORD` | `.env` | — |
@@ -218,7 +241,8 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 | Утечка паролей прокси из БД / логов / API | Fernet at-rest (`password_encrypted`), пароль/URL не в ответах/логах, в API только `has_password` ([modules/proxies](modules/proxies/README.md)) |
 | Утечка секретов в логи | маскирование, `no_log` в Ansible |
 | Доступ к Prometheus/Grafana извне | не публикуются наружу |
-| User enumeration на входе | единое сообщение об ошибке, шаг 1 без запроса; та же ошибка для несуществующего/деактивированного БД-пользователя |
+| User enumeration на входе | единое сообщение об ошибке, шаг 1 без запроса; та же ошибка для несуществующего/деактивированного БД-пользователя. **Исключение:** беспарольные идентификаторы раскрываются ответом `password_setup_required` — осознанный побочный эффект «открытого первого входа» ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) |
+| Захват учётки в окне «открытого первого входа» (беспарольный пользователь) | **Осознанный принятый риск** ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)): setup-token limited-scope (только `set-password`, access-token не выдаётся до установки пароля); митигация — оперативная выдача идентификатора, короткое окно беспарольности |
 | Обход UI-гейтинга прямым запросом к API | RBAC на сервере (`403 forbidden`); UI-скрытие — только UX ([ADR-021](adr/ADR-021-rbac-users-roles.md)) |
 | Эскалация привилегий через устаревший токен после смены роли | права грузятся из БД на каждый запрос; деактивация/смена роли применяется без пере-логина ([ADR-021](adr/ADR-021-rbac-users-roles.md)) |
 | Утечка паролей пользователей из БД/логов/API | bcrypt-хэш at-rest (`users.password_hash`); plaintext не хранится/не логируется/не в ответах ([ADR-021](adr/ADR-021-rbac-users-roles.md)) |

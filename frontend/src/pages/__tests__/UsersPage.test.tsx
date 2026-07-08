@@ -4,7 +4,12 @@ import userEvent from '@testing-library/user-event';
 import type { PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { UsersPage } from '@/pages/UsersPage';
-import type { RoleListResponse, TeamListResponse, UserListResponse } from '@/types/api';
+import type {
+  RoleListResponse,
+  TeamListResponse,
+  UserListItem,
+  UserListResponse,
+} from '@/types/api';
 
 const state = vi.hoisted(() => ({
   users: undefined as UserListResponse | undefined,
@@ -48,6 +53,22 @@ function wrapper({ children }: PropsWithChildren) {
   return <QueryClientProvider client={new QueryClient()}>{children}</QueryClientProvider>;
 }
 
+function makeUser(
+  over: Partial<UserListItem> & Pick<UserListItem, 'id' | 'username'>,
+): UserListItem {
+  return {
+    telegram: null,
+    has_password: true,
+    role_id: 'r2',
+    role_name: 'Оператор',
+    is_active: true,
+    teams: [],
+    created_at: '2026-07-07T09:00:00Z',
+    updated_at: '2026-07-07T09:00:00Z',
+    ...over,
+  };
+}
+
 const ROLES: RoleListResponse = {
   items: [
     {
@@ -76,7 +97,7 @@ const TEAMS: TeamListResponse = {
   ],
 };
 
-describe('UsersPage (пользователи по командам, ADR-022)', () => {
+describe('UsersPage (пользователи по командам, ADR-022/025)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.users = undefined;
@@ -101,37 +122,21 @@ describe('UsersPage (пользователи по командам, ADR-022)', 
     expect(screen.queryByText('Пока нет ролей')).not.toBeInTheDocument();
   });
 
-  it('groups users by teams with a «Без команды» bucket for teamless users', () => {
+  it('groups users by teams with a «Без команды» bucket, shows telegram and status', () => {
     state.users = {
       items: [
-        {
+        makeUser({
           id: 'u1',
           username: 'Никита',
-          email: 'nikita@example.com',
-          role_id: 'r2',
-          role_name: 'Оператор',
-          is_active: true,
+          telegram: 'nikita_01',
           teams: [{ id: 't1', name: 'Продажи' }],
-          created_at: '2026-07-07T09:00:00Z',
-          updated_at: '2026-07-07T09:00:00Z',
-        },
-        {
-          id: 'u2',
-          username: 'Пётр',
-          email: null,
-          role_id: 'r2',
-          role_name: 'Оператор',
-          is_active: false,
-          teams: [],
-          created_at: '2026-07-07T09:05:00Z',
-          updated_at: '2026-07-07T09:05:00Z',
-        },
+        }),
+        makeUser({ id: 'u2', username: 'Пётр', is_active: false }),
       ],
     };
 
     render(<UsersPage />, { wrapper });
 
-    // Секция команды + бакет «Без команды».
     const teamSection = screen.getByRole('heading', { name: 'Продажи' }).closest('section');
     const noTeamSection = screen.getByRole('heading', { name: 'Без команды' }).closest('section');
     expect(teamSection).not.toBeNull();
@@ -141,12 +146,34 @@ describe('UsersPage (пользователи по командам, ADR-022)', 
     expect(within(teamSection as HTMLElement).getByText('Никита')).toBeInTheDocument();
     expect(within(noTeamSection as HTMLElement).getByText('Пётр')).toBeInTheDocument();
 
-    // email отображается, если задан; статусы — бейджами.
-    expect(screen.getByText('nikita@example.com')).toBeInTheDocument();
+    // telegram отображается как @ник, если задан; статусы — бейджами.
+    expect(screen.getByText('@nikita_01')).toBeInTheDocument();
     expect(screen.getByText('Активен')).toBeInTheDocument();
     expect(screen.getByText('Неактивен')).toBeInTheDocument();
-    // Роль пользователя отображается.
     expect(screen.getAllByText('Оператор').length).toBeGreaterThan(0);
+  });
+
+  it('показывает бейдж «Без пароля» для беспарольного и не показывает для парольного (ADR-025)', () => {
+    state.users = {
+      items: [
+        makeUser({ id: 'u1', username: 'Беспарольный', has_password: false }),
+        makeUser({ id: 'u2', username: 'Парольный', has_password: true }),
+      ],
+    };
+
+    render(<UsersPage />, { wrapper });
+
+    // Ровно один бейдж «Без пароля» — у беспарольного пользователя.
+    const badges = screen.getAllByText('Без пароля');
+    expect(badges).toHaveLength(1);
+    const passwordlessCard = screen
+      .getByText('Беспарольный')
+      .closest('[role="button"]') as HTMLElement;
+    expect(within(passwordlessCard).getByText('Без пароля')).toBeInTheDocument();
+    const withPasswordCard = screen
+      .getByText('Парольный')
+      .closest('[role="button"]') as HTMLElement;
+    expect(within(withPasswordCard).queryByText('Без пароля')).not.toBeInTheDocument();
   });
 
   it('shows a user that belongs to several teams in each of its groups', () => {
@@ -167,20 +194,14 @@ describe('UsersPage (пользователи по командам, ADR-022)', 
     };
     state.users = {
       items: [
-        {
+        makeUser({
           id: 'u1',
           username: 'Никита',
-          email: null,
-          role_id: 'r2',
-          role_name: 'Оператор',
-          is_active: true,
           teams: [
             { id: 't1', name: 'Продажи' },
             { id: 't2', name: 'Маркетинг' },
           ],
-          created_at: '2026-07-07T09:00:00Z',
-          updated_at: '2026-07-07T09:00:00Z',
-        },
+        }),
       ],
     };
 
@@ -200,27 +221,15 @@ describe('UsersPage (пользователи по командам, ADR-022)', 
     await user.click(screen.getByRole('button', { name: 'Добавить пользователя' }));
 
     expect(
-      screen.getByText('Логин и пароль для входа в систему; доступ определяется ролью.'),
+      screen.getByText(
+        'Логин обязателен; пароль можно не задавать — пользователь задаст его при первом входе. Доступ определяется ролью.',
+      ),
     ).toBeInTheDocument();
   });
 
   it('opens the edit-user modal when a user card is activated', async () => {
     const user = userEvent.setup();
-    state.users = {
-      items: [
-        {
-          id: 'u1',
-          username: 'Никита',
-          email: null,
-          role_id: 'r2',
-          role_name: 'Оператор',
-          is_active: true,
-          teams: [],
-          created_at: '2026-07-07T09:00:00Z',
-          updated_at: '2026-07-07T09:00:00Z',
-        },
-      ],
-    };
+    state.users = { items: [makeUser({ id: 'u1', username: 'Никита' })] };
 
     render(<UsersPage />, { wrapper });
     await user.click(screen.getByRole('button', { name: 'Изменить пользователя Никита' }));

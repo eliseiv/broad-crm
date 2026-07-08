@@ -27,6 +27,11 @@ interface RequestOptions {
   body?: unknown;
   /** Эндпоинт не требует JWT (например, /auth/login). */
   skipAuth?: boolean;
+  /**
+   * Явный Bearer-токен вместо токена сессии из стора (например, limited-scope
+   * setup-token для POST /api/auth/set-password, ADR-025). Игнорируется при skipAuth.
+   */
+  authToken?: string;
   signal?: AbortSignal;
 }
 
@@ -62,12 +67,12 @@ async function parseError(res: Response): Promise<ApiError> {
  * на 401 сбрасывает сессию (редирект на /login выполняет роутер).
  */
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, skipAuth = false, signal } = options;
+  const { method = 'GET', body, skipAuth = false, authToken, signal } = options;
   const headers: Record<string, string> = {};
 
   if (body !== undefined) headers['Content-Type'] = 'application/json';
   if (!skipAuth) {
-    const token = getToken();
+    const token = authToken ?? getToken();
     if (token) headers['Authorization'] = `Bearer ${token}`;
   }
 

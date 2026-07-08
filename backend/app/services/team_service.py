@@ -1,8 +1,12 @@
-"""Бизнес-логика реестра CRM-команд (modules/teams, 04-api.md#teams, ADR-022).
+"""Бизнес-логика реестра CRM-команд (modules/teams, 04-api.md#teams, ADR-022/026).
 
-Инвариант «лидер ∈ участники» обеспечивается на всех путях записи (create + update, в
-т.ч. при смене лидера). Существование `leader_id`/`member_ids` (пользователи) валидирует
-`UserRepository` → 422 с указанием поля. Уникальность `name` → 409 team_name_taken.
+Лидер **опционален** (`leader_id` nullable): команда может быть без лидера и без
+участников. Инвариант «если лидер задан — он ∈ участники» обеспечивается на всех путях
+записи. Авто-назначение: при отсутствии лидера первый участник (по дате добавления)
+становится лидером. Авто-передача: при исключении текущего лидера лидерство переходит
+следующему по `user_teams.created_at` (или `leader_id → NULL`, если участников не
+осталось). Существование `leader_id`/`member_ids` валидирует `UserRepository` → 422.
+Уникальность `name` → 409 team_name_taken.
 """
 
 from __future__ import annotations
@@ -40,7 +44,7 @@ def _validate_name(raw: str) -> str:
 
 
 class TeamService:
-    """CRUD реестра CRM-команд с инвариантом «лидер ∈ участники» и валидацией ссылок."""
+    """CRUD реестра CRM-команд: опциональный лидер, авто-назначение/передача, валидация."""
 
     def __init__(self, *, teams: TeamRepository, users: UserRepository) -> None:
         self._teams = teams
@@ -53,18 +57,29 @@ class TeamService:
 
     async def create_team(self, payload: TeamCreateRequest) -> TeamListItem:
         """Создаёт команду. Прецеденция: name-формат (422) → существование
-        leader_id/member_ids (422) → уникальность name (409). Лидер — в участники."""
+        leader_id/member_ids (422) → уникальность name (409). Лидер (если есть) — в
+        участники; авто-назначение первого участника лидером при отсутствии лидера."""
         name = _validate_name(payload.name)
 
-        await self._require_user_exists(payload.leader_id, field="leader_id")
-        member_set = await self._validate_members(payload.member_ids)
+        if payload.leader_id is not None:
+            await self._require_user_exists(payload.leader_id, field="leader_id")
+        await self._validate_members(payload.member_ids)
 
         if await self._teams.exists_by_name(name):
             raise team_name_taken()
 
+        ordered = list(dict.fromkeys(payload.member_ids))
+        # Инвариант «лидер ∈ участники»: заданный лидер добавляется в состав.
+        if payload.leader_id is not None and payload.leader_id not in ordered:
+            ordered.append(payload.leader_id)
+        # Авто-назначение: лидер не задан, но есть участники → первый становится лидером.
+        leader_id = payload.leader_id
+        if leader_id is None and ordered:
+            leader_id = ordered[0]
+
         try:
             team = await self._teams.create(
-                name=name, leader_id=payload.leader_id, member_ids=member_set
+                name=name, leader_id=leader_id, ordered_member_ids=ordered
             )
             await self._teams.session.commit()
         except IntegrityError as exc:
@@ -79,7 +94,8 @@ class TeamService:
 
     async def update_team(self, team_id: uuid.UUID, payload: TeamUpdateRequest) -> TeamListItem:
         """Редактирует команду. Прецеденция: 404 → name-формат (422) → существование
-        leader_id/member_ids (422) → уникальность name (409). Лидер всегда в составе."""
+        leader_id/member_ids (422) → уникальность name (409). Инвариант «лидер ∈
+        участники»; авто-передача/авто-назначение лидерства (ADR-026)."""
         team = await self._teams.get_with_members(team_id)
         if team is None:
             raise team_not_found()
@@ -90,35 +106,47 @@ class TeamService:
         if "name" in fields_set and payload.name is not None:
             new_name = _validate_name(payload.name)
 
-        leader_provided = "leader_id" in fields_set and payload.leader_id is not None
-        if leader_provided:
-            assert payload.leader_id is not None
+        leader_provided = "leader_id" in fields_set
+        if leader_provided and payload.leader_id is not None:
             await self._require_user_exists(payload.leader_id, field="leader_id")
 
         members_provided = "member_ids" in fields_set and payload.member_ids is not None
-        member_set: set[uuid.UUID] | None = None
         if members_provided:
             assert payload.member_ids is not None
-            member_set = await self._validate_members(payload.member_ids)
+            await self._validate_members(payload.member_ids)
 
+        # Уникальность имени (409) — после 422-валидаций.
         if new_name is not None and new_name != team.name:
             if await self._teams.exists_by_name(new_name, exclude_id=team.id):
                 raise team_name_taken()
             team.name = new_name
 
         old_leader_id = team.leader_id
-        effective_leader = payload.leader_id if leader_provided else old_leader_id
-        assert effective_leader is not None
-        if leader_provided:
-            team.leader_id = effective_leader
 
-        # Инвариант «лидер ∈ участники» + семантика замены/сохранения состава.
-        leader_changed = leader_provided and effective_leader != old_leader_id
-        if member_set is not None:
-            await self._teams.replace_members(team.id, member_set | {effective_leader})
-        elif leader_changed:
-            current = {member.id for member in team.members}
-            await self._teams.replace_members(team.id, current | {effective_leader})
+        # Целевой состав участников (с гарантией «лидер ∈ участники», если лидер — uuid).
+        ordered_desired: list[uuid.UUID] | None = None
+        if members_provided:
+            assert payload.member_ids is not None
+            ordered_desired = list(dict.fromkeys(payload.member_ids))
+        if leader_provided and payload.leader_id is not None:
+            if ordered_desired is None:
+                ordered_desired = [member.id for member in team.members]
+            if payload.leader_id not in ordered_desired:
+                ordered_desired.append(payload.leader_id)
+
+        if ordered_desired is not None:
+            await self._teams.replace_members(team.id, ordered_desired)
+            await self._teams.session.flush()
+
+        # Определение лидера после приведения состава.
+        new_leader_id = await self._resolve_leader(
+            team_id=team.id,
+            leader_provided=leader_provided,
+            payload_leader_id=payload.leader_id,
+            old_leader_id=old_leader_id,
+            ordered_desired=ordered_desired,
+        )
+        team.leader_id = new_leader_id
 
         try:
             await self._teams.session.commit()
@@ -139,6 +167,30 @@ class TeamService:
             raise team_not_found()
         await self._teams.session.commit()
         logger.info("team_deleted", team_id=str(team_id))
+
+    async def _resolve_leader(
+        self,
+        *,
+        team_id: uuid.UUID,
+        leader_provided: bool,
+        payload_leader_id: uuid.UUID | None,
+        old_leader_id: uuid.UUID | None,
+        ordered_desired: list[uuid.UUID] | None,
+    ) -> uuid.UUID | None:
+        """Вычисляет нового лидера после правки состава (ADR-026, авто-передача/назначение).
+
+        - `leader_id` передан (uuid|null) → он лидер (uuid ∈ участники гарантирован ранее);
+        - `leader_id` не передан, состав НЕ менялся → лидер без изменений;
+        - `leader_id` не передан, состав менялся → текущий лидер, если ещё участник; иначе
+          первый по `user_teams.created_at` (или None, если участников нет).
+        """
+        if leader_provided:
+            return payload_leader_id
+        if ordered_desired is None:
+            return old_leader_id
+        if old_leader_id is not None and old_leader_id in set(ordered_desired):
+            return old_leader_id
+        return await self._teams.get_first_member(team_id)
 
     async def _require_user_exists(self, user_id: uuid.UUID, *, field: str) -> None:
         """Проверяет существование пользователя-ссылки; иначе → 422 с полем."""
@@ -163,12 +215,12 @@ class TeamService:
 
     @staticmethod
     def _to_item(team: Team) -> TeamListItem:
-        """Собирает элемент ответа (лидер + участники, member_count включает лидера)."""
+        """Собирает элемент ответа (лидер опционален; member_count включает лидера)."""
         return TeamListItem(
             id=team.id,
             name=team.name,
             leader_id=team.leader_id,
-            leader_username=team.leader.username,
+            leader_username=team.leader.username if team.leader is not None else None,
             member_count=len(team.members),
             members=[TeamMember(id=member.id, username=member.username) for member in team.members],
             created_at=team.created_at,
