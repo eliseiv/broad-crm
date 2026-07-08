@@ -34,11 +34,16 @@ class RoleUpdateRequest(BaseModel):
 
 
 class RoleListItem(BaseModel):
-    """Элемент GET /api/roles и тело 201 POST / 200 PATCH (04-api.md#roles)."""
+    """Элемент GET /api/roles и тело 201 POST / 200 PATCH (04-api.md#roles).
+
+    `user_count` — число носителей роли (агрегат, ADR-022); `≥1` → удаление запрещено
+    (409 role_in_use). Супер-админ (`.env`) не учитывается (его нет в `users`).
+    """
 
     id: uuid.UUID
     name: str
     permissions: dict[str, list[str]]
+    user_count: int
     created_at: datetime
     updated_at: datetime
 

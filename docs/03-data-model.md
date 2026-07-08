@@ -2,7 +2,7 @@
 
 ## Принцип
 
-В PostgreSQL хранится **реестр серверов + статус провижининга**, **реестр AI-ключей + статус проверки**, **реестр прокси + статус доступности** ([ADR-019](adr/ADR-019-proxies-availability-monitor.md)), **персистентное состояние Telegram-нотификатора per-server** ([ADR-014](adr/ADR-014-persist-notifier-state-alert-on-first-elevated.md)) и **append-only durable-лог отправленных серверных алертов** ([ADR-018](adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). Метрики (CPU/RAM/SSD/uptime/up) НЕ дублируются в БД как временной ряд — источник истины Prometheus ([ADR-003](adr/ADR-003-prometheus-istochnik-metrik.md)); нотификатор хранит лишь **последнюю наблюдённую зону** (green/yellow/red) и флаг доступности для дедупа алертов между итерациями/рестартами, а не сами значения метрик. С Спринта 3 в БД хранится **реестр пользователей и ролей** для RBAC (`users`/`roles`, [ADR-021](adr/ADR-021-rbac-users-roles.md)). **Супер-админ (`.env`-учётка) в БД НЕ хранится** — он bootstrap вне БД ([ADR-008](adr/ADR-008-admin-iz-env.md) с амендментом [ADR-021](adr/ADR-021-rbac-users-roles.md)); в таблице `users` только дополнительные пользователи.
+В PostgreSQL хранится **реестр серверов + статус провижининга**, **реестр AI-ключей + статус проверки**, **реестр прокси + статус доступности** ([ADR-019](adr/ADR-019-proxies-availability-monitor.md)), **персистентное состояние Telegram-нотификатора per-server** ([ADR-014](adr/ADR-014-persist-notifier-state-alert-on-first-elevated.md)) и **append-only durable-лог отправленных серверных алертов** ([ADR-018](adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). Метрики (CPU/RAM/SSD/uptime/up) НЕ дублируются в БД как временной ряд — источник истины Prometheus ([ADR-003](adr/ADR-003-prometheus-istochnik-metrik.md)); нотификатор хранит лишь **последнюю наблюдённую зону** (green/yellow/red) и флаг доступности для дедупа алертов между итерациями/рестартами, а не сами значения метрик. С Спринта 3 в БД хранится **реестр пользователей и ролей** для RBAC (`users`/`roles`, [ADR-021](adr/ADR-021-rbac-users-roles.md)). **Супер-админ (`.env`-учётка) в БД НЕ хранится** — он bootstrap вне БД ([ADR-008](adr/ADR-008-admin-iz-env.md) с амендментом [ADR-021](adr/ADR-021-rbac-users-roles.md)); в таблице `users` только дополнительные пользователи. Со Спринта A ([ADR-022](adr/ADR-022-teams-nav-categories.md)) добавлены **CRM-команды** (`teams` + M2M `user_teams`) и опциональный `users.email`.
 
 ## ER-диаграмма
 
@@ -443,16 +443,31 @@ erDiagram
     USERS {
         uuid id PK
         text username
+        text email
         text password_hash
         uuid role_id FK
         boolean is_active
         timestamptz created_at
         timestamptz updated_at
     }
+    TEAMS {
+        uuid id PK
+        text name
+        uuid leader_id FK
+        timestamptz created_at
+        timestamptz updated_at
+    }
+    USER_TEAMS {
+        uuid user_id PK_FK
+        uuid team_id PK_FK
+    }
     ROLES ||--o{ USERS : "1:N (ON DELETE RESTRICT)"
+    USERS ||--o{ TEAMS : "leader 1:N (ON DELETE RESTRICT)"
+    USERS ||--o{ USER_TEAMS : "1:N (ON DELETE CASCADE)"
+    TEAMS ||--o{ USER_TEAMS : "1:N (ON DELETE CASCADE)"
 ```
 
-`users.role_id → roles.id` с **`ON DELETE RESTRICT`**: роль, назначенную хотя бы одному пользователю, удалить нельзя (→ `409 role_in_use`, [04-api.md](04-api.md#delete-apirolesid)).
+`users.role_id → roles.id` с **`ON DELETE RESTRICT`**: роль, назначенную хотя бы одному пользователю, удалить нельзя (→ `409 role_in_use`, [04-api.md](04-api.md#delete-apirolesid)). `teams.leader_id → users.id` — **`ON DELETE RESTRICT`** (нельзя удалить пользователя-лидера, не разобравшись с командой → `409 user_is_team_leader`); `user_teams` — M2M между `users` и `teams`, обе стороны **`ON DELETE CASCADE`** (см. [«Таблицы `teams` и `user_teams`»](#таблицы-teams-и-user_teams-crm-команды)).
 
 ### Таблица `roles`
 
@@ -474,6 +489,7 @@ erDiagram
 |------|-----|-------------|----------|
 | `id` | `uuid` | PK, `DEFAULT gen_random_uuid()` | Идентификатор пользователя. Кладётся в JWT как `uid` ([ADR-021](adr/ADR-021-rbac-users-roles.md#4-auth-поток-см-modulesauth-05-securitymd)). |
 | `username` | `text` | `NOT NULL`, `UNIQUE`, CHECK (см. ниже) | Логин. **Допускает кириллицу/юникод-буквы** («Админ», «Никита»). Уникален — дубликат → `409 username_taken`. |
+| `email` | `text` | `NULL`, UNIQUE-when-present | **Опциональный** email пользователя ([ADR-022](adr/ADR-022-teams-nav-categories.md)). `NULL` — email не задан. Уникален **только среди заданных** (частичный уникальный индекс `uq_users_email WHERE email IS NOT NULL`) — дубликат → `409 email_taken`. Формат валидируется на Pydantic (`422`); хранится нормализованным (trim, lower-case). Не секрет. |
 | `password_hash` | `text` | `NOT NULL` | bcrypt-хэш пароля ([05-security.md](05-security.md#хэширование-паролей-bcrypt)). Plaintext никогда не хранится/не логируется/не возвращается. |
 | `role_id` | `uuid` | `NOT NULL`, FK → `roles(id)` `ON DELETE RESTRICT` | Роль пользователя. Удаление назначенной роли запрещено (`409 role_in_use`). |
 | `is_active` | `boolean` | `NOT NULL`, `DEFAULT true` | Активен ли пользователь. `false` → вход запрещён, а действующий JWT аннулируется на следующем запросе (`401`, свежая загрузка из БД). |
@@ -516,10 +532,13 @@ CREATE TABLE users (
 CREATE INDEX ix_users_role_id ON users (role_id);
 ```
 
+> Колонка `email text NULL` и частичный уникальный индекс `uq_users_email` добавляются **позже**, миграцией `0010_add_user_email` ([ADR-022](adr/ADR-022-teams-nav-categories.md)) — см. [«Миграция `0010_add_user_email`»](#миграция-0010_add_user_email-концепт). В базовой миграции `0008` колонки `email` ещё нет.
+
 ### Индексы и обоснование
 - `UNIQUE(roles.name)` — детерминированный `409 role_name_taken`.
 - `UNIQUE(users.username)` — детерминированный `409 username_taken`.
 - `ix_users_role_id` — под проверку «роль назначена пользователям?» при `DELETE /api/roles/{id}` (`ON DELETE RESTRICT` даёт `409 role_in_use`) и загрузку прав. Отдельные индексы по `permissions`/`is_active` не нужны (объём — единицы строк, NFR-1).
+- `uq_users_email` (частичный UNIQUE `WHERE email IS NOT NULL`, миграция `0010`) — детерминированный `409 email_taken` среди заданных email; множество пользователей без email допускается.
 
 ### Политика удаления
 
@@ -533,6 +552,124 @@ CREATE INDEX ix_users_role_id ON users (role_id);
 **`upgrade()`** — создать таблицы `roles`, затем `users` (DDL выше) + индекс `ix_users_role_id`. **Сид:** вставить одну роль `admin` с полными правами по каталогу (`{"dashboard":["view"],"servers":["view","create","edit","delete"],"ai-keys":["view","create","edit","delete"],"proxies":["view","create","edit","delete"],"backends":["view","create","edit","delete"],"mail":["view"]}`), чтобы роль `admin` существовала и была назначаема из UI. Пользователи не сидятся (супер-админ — из `.env`).
 
 **`downgrade()`** — `DROP TABLE users;` затем `DROP TABLE roles;` (порядок из-за FK; индекс снимается вместе с `users`).
+
+---
+
+## Таблицы `teams` и `user_teams` (CRM-команды)
+
+**CRM-команды** — группировка пользователей вокруг лидера ([ADR-022](adr/ADR-022-teams-nav-categories.md)). Модуль — [modules/teams](modules/teams/README.md), API — [04-api.md](04-api.md#teams). **Не путать с mail-«командами»** (`groups` внешнего сервиса, `GET /api/mail/teams`, схема `MailTeam` — [ADR-017](adr/ADR-017-dashboard-client-aggregation-mail-server-filters.md)): это разные сущности в разных неймспейсах (`/api/teams` vs `/api/mail/teams`), CRM-команды хранятся в БД, mail-«команды» — прокси без хранения. `user_teams` — **первая M2M-таблица в проекте** (прежде все связи — FK-колонки).
+
+### Таблица `teams`
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `id` | `uuid` | PK, `DEFAULT gen_random_uuid()` | Идентификатор команды. |
+| `name` | `text` | `NOT NULL`, `UNIQUE`, CHECK (см. ниже) | Название команды. Уникально — дубликат → `409 team_name_taken`. Правило набора символов — как у `username` («свободный» DB-CHECK + Pydantic). |
+| `leader_id` | `uuid` | `NOT NULL`, FK → `users(id)` `ON DELETE RESTRICT` | Лидер команды. Удаление пользователя-лидера запрещено (→ `409 user_is_team_leader`). **Инвариант: лидер ∈ участники** (в `user_teams` всегда есть строка `(leader_id, id)`) — обеспечивает сервис. |
+| `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
+| `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
+
+> **Правило `name`** — по образцу [`username`](#правило-username-кириллица-допускающее-нормативно): Pydantic-валидатор авторитетен (после `strip()` длина 1–64, допускаются юникод-буквы/цифры/`_`/пробел/`.`/`-`, обязательна хотя бы одна буква); DB-CHECK «свободный» — `char_length(name) BETWEEN 1 AND 64 AND name = btrim(name) AND name !~ '[[:cntrl:]]'`.
+>
+> **Лидер — обязательная одиночная ссылка** (`leader_id NOT NULL`), участники — M2M (`user_teams`). `ON DELETE RESTRICT` на `leader_id` гарантирует, что у команды всегда есть лидер и что лидера нельзя удалить, не переназначив/не удалив команду.
+
+### Таблица `user_teams` (M2M)
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `user_id` | `uuid` | PK-часть, FK → `users(id)` `ON DELETE CASCADE` | Пользователь-участник. Удаление пользователя снимает его членства автоматически. |
+| `team_id` | `uuid` | PK-часть, FK → `teams(id)` `ON DELETE CASCADE` | Команда. Удаление команды снимает все членства автоматически. |
+
+Составной первичный ключ `PRIMARY KEY (user_id, team_id)` — участник входит в команду не более одного раза; пользователь может состоять в 0..N командах.
+
+### DDL (концепт миграции)
+
+> Реализуется через Alembic. **Требование (нормативно):** рабочий `downgrade()` (`DROP TABLE user_teams; DROP TABLE teams;` — порядок из-за FK), протестированный на откат — см. [07-deployment.md](07-deployment.md#откат-миграций-бд).
+
+```sql
+CREATE TABLE teams (
+    id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        text NOT NULL UNIQUE
+                    CHECK (char_length(name) BETWEEN 1 AND 64
+                           AND name = btrim(name)
+                           AND name !~ '[[:cntrl:]]'),
+    leader_id   uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX ix_teams_leader_id ON teams (leader_id);
+
+CREATE TABLE user_teams (
+    user_id  uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    team_id  uuid NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, team_id)
+);
+
+CREATE INDEX ix_user_teams_team_id ON user_teams (team_id);
+```
+
+### Индексы и обоснование
+- `UNIQUE(teams.name)` — детерминированный `409 team_name_taken`.
+- `ix_teams_leader_id` — под проверку «пользователь — лидер какой-либо команды?» при `DELETE /api/users/{id}` (`ON DELETE RESTRICT` → `409 user_is_team_leader`).
+- Составной `PK(user_id, team_id)` покрывает выборку «команды пользователя» (по префиксу `user_id`); `ix_user_teams_team_id` — обратную выборку «участники команды» и подсчёт `member_count`.
+
+### Политика удаления
+- **Команда** — **hard delete** (`DELETE FROM teams WHERE id = ...`); строки `user_teams` снимаются `ON DELETE CASCADE`.
+- **Пользователь** — hard delete; членства снимаются `ON DELETE CASCADE`, **но** если пользователь — лидер хотя бы одной команды, `ON DELETE RESTRICT` на `teams.leader_id` блокирует удаление → приложение возвращает `409 user_is_team_leader` (сначала нужно сменить лидера/удалить команду).
+
+## Миграция `0009_create_teams` (концепт)
+
+> Реализуется через Alembic. `down_revision = "0008_create_users_roles"` (текущая голова цепочки). **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат на одну ревизию — см. [07-deployment.md](07-deployment.md#откат-миграций-бд).
+
+**`upgrade()`** — создать таблицу `teams` (+ `ix_teams_leader_id`), затем `user_teams` (+ `ix_user_teams_team_id`). Backfill не выполняется (таблицы стартуют пустыми).
+
+**`downgrade()`** — `DROP TABLE user_teams;` затем `DROP TABLE teams;` (порядок из-за FK; индексы снимаются вместе с таблицами).
+
+## Миграция `0010_add_user_email` (концепт)
+
+> Реализуется через Alembic. `down_revision = "0009_create_teams"`. **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат на одну ревизию — см. [07-deployment.md](07-deployment.md#откат-миграций-бд).
+
+**`upgrade()`** — два действия:
+
+1. Добавить колонку `email` и частичный уникальный индекс:
+
+```sql
+ALTER TABLE users ADD COLUMN email text;
+CREATE UNIQUE INDEX uq_users_email ON users (email) WHERE email IS NOT NULL;
+```
+
+2. **Обновить seed-роль `admin`** до полного нового каталога ([ADR-022](adr/ADR-022-teams-nav-categories.md) §2), добавив права `roles`/`teams` (иначе БД-администратор не получит доступ к новым страницам; супер-админ бэкапится `full_catalog_permissions()` в рантайме):
+
+```sql
+UPDATE roles
+SET permissions = '{"dashboard":["view"],
+                    "servers":["view","create","edit","delete"],
+                    "ai-keys":["view","create","edit","delete"],
+                    "proxies":["view","create","edit","delete"],
+                    "backends":["view","create","edit","delete"],
+                    "mail":["view"],
+                    "roles":["view","create","edit","delete"],
+                    "teams":["view","create","edit","delete"]}'::jsonb,
+    updated_at = now()
+WHERE name = 'admin';
+```
+
+**`downgrade()`** — вернуть seed-роль `admin` к прежнему каталогу (без `roles`/`teams`), затем снять индекс и колонку:
+
+```sql
+UPDATE roles
+SET permissions = '{"dashboard":["view"],
+                    "servers":["view","create","edit","delete"],
+                    "ai-keys":["view","create","edit","delete"],
+                    "proxies":["view","create","edit","delete"],
+                    "backends":["view","create","edit","delete"],
+                    "mail":["view"]}'::jsonb,
+    updated_at = now()
+WHERE name = 'admin';
+DROP INDEX IF EXISTS uq_users_email;
+ALTER TABLE users DROP COLUMN email;
+```
 
 ---
 

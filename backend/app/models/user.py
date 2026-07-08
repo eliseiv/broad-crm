@@ -30,6 +30,7 @@ from app.models.base import Base
 
 if TYPE_CHECKING:
     from app.models.role import Role
+    from app.models.team import Team
 
 
 class User(Base):
@@ -51,6 +52,10 @@ class User(Base):
         server_default=text("gen_random_uuid()"),
     )
     username: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    # Опциональный email (ADR-022). Уникален только среди заданных (частичный
+    # уникальный индекс uq_users_email WHERE email IS NOT NULL, миграция 0010).
+    # Хранится нормализованным (trim+lower); формат — на Pydantic/домене.
+    email: Mapped[str | None] = mapped_column(Text, nullable=True)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
     role_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),
@@ -69,3 +74,13 @@ class User(Base):
     )
 
     role: Mapped[Role] = relationship(back_populates="users", lazy="joined")
+    # CRM-команды пользователя (M2M через user_teams). `viewonly` — членство пишется
+    # явными statements в репозитории. Грузится точечно через selectinload (список/
+    # деталь пользователя); в hot-path принципала (get_by_id) не загружается.
+    teams: Mapped[list[Team]] = relationship(
+        "Team",
+        secondary="user_teams",
+        viewonly=True,
+        lazy="select",
+        order_by="Team.created_at.desc()",
+    )

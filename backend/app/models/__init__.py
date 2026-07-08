@@ -8,6 +8,7 @@ from app.models.proxy import Proxy, ProxyStatus, ProxyType
 from app.models.role import Role
 from app.models.server import ProvisionStatus, Server
 from app.models.service_backend import Backend, BackendStatus
+from app.models.team import Team, user_teams
 from app.models.user import User
 
 __all__ = [
@@ -25,5 +26,7 @@ __all__ = [
     "ProxyType",
     "Role",
     "Server",
+    "Team",
     "User",
+    "user_teams",
 ]

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.role import Role
@@ -30,11 +30,26 @@ class RoleRepository:
         await self._session.refresh(role)
         return role
 
-    async def list_all(self) -> list[Role]:
-        """Все роли, сортировка `created_at ASC, id` (детерминизм, admin первой)."""
-        stmt = select(Role).order_by(Role.created_at.asc(), Role.id.asc())
+    async def list_all_with_counts(self) -> list[tuple[Role, int]]:
+        """Все роли с числом носителей (`user_count`), сортировка `created_at ASC, id`.
+
+        Агрегат `COUNT(users) GROUP BY role_id` через LEFT JOIN — роли без носителей
+        отдаются с `user_count=0` (ADR-022). Супер-админ (`.env`) в `users` отсутствует.
+        """
+        stmt = (
+            select(Role, func.count(User.id))
+            .outerjoin(User, User.role_id == Role.id)
+            .group_by(Role.id)
+            .order_by(Role.created_at.asc(), Role.id.asc())
+        )
         result = await self._session.execute(stmt)
-        return list(result.scalars().all())
+        return [(role, int(count)) for role, count in result.all()]
+
+    async def count_users(self, role_id: uuid.UUID) -> int:
+        """Число пользователей с этой ролью (для `user_count` в ответе POST/PATCH)."""
+        stmt = select(func.count(User.id)).where(User.role_id == role_id)
+        result = await self._session.execute(stmt)
+        return int(result.scalar_one())
 
     async def get_by_id(self, role_id: uuid.UUID) -> Role | None:
         """Возвращает роль по id или None."""

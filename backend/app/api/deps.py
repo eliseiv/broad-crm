@@ -25,6 +25,7 @@ from app.repositories.backend_repository import BackendRepository
 from app.repositories.proxy_repository import ProxyRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.server_repository import ServerRepository
+from app.repositories.team_repository import TeamRepository
 from app.repositories.user_repository import UserRepository
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.ai_key_service import AiKeyService
@@ -38,6 +39,7 @@ from app.services.proxy_monitor_service import ProxyMonitorService
 from app.services.proxy_service import ProxyService
 from app.services.role_service import RoleService
 from app.services.server_service import ServerService
+from app.services.team_service import TeamService
 from app.services.user_service import UserService
 
 _bearer = HTTPBearer(auto_error=False)
@@ -148,16 +150,25 @@ def get_auth_service(session: DbSession, settings: SettingsDep) -> AuthService:
 
 
 def get_user_service(session: DbSession) -> UserService:
-    """Сервис реестра пользователей (require_admin, ADR-021)."""
+    """Сервис реестра пользователей (require_admin, ADR-021/022)."""
     return UserService(
         users=UserRepository(session),
         roles=RoleRepository(session),
+        teams=TeamRepository(session),
     )
 
 
 def get_role_service(session: DbSession) -> RoleService:
-    """Сервис реестра ролей (require_admin, ADR-021)."""
+    """Сервис реестра ролей (матрица roles:*, ADR-022)."""
     return RoleService(repository=RoleRepository(session))
+
+
+def get_team_service(session: DbSession) -> TeamService:
+    """Сервис реестра CRM-команд (матрица teams:*, ADR-022)."""
+    return TeamService(
+        teams=TeamRepository(session),
+        users=UserRepository(session),
+    )
 
 
 def get_provisioning_service(settings: SettingsDep) -> ProvisioningService:
@@ -277,6 +288,7 @@ def get_client_ip(request: Request) -> str:
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 UserServiceDep = Annotated[UserService, Depends(get_user_service)]
 RoleServiceDep = Annotated[RoleService, Depends(get_role_service)]
+TeamServiceDep = Annotated[TeamService, Depends(get_team_service)]
 ServerServiceDep = Annotated[ServerService, Depends(get_server_service)]
 AiKeyServiceDep = Annotated[AiKeyService, Depends(get_ai_key_service)]
 ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]

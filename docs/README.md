@@ -4,7 +4,7 @@
 
 ## О проекте
 
-CRM-система мониторинга backend-сервисов и серверов. **Этап 1** — страница «Серверы»: список карточек серверов с кастомными SVG-спидометрами (CPU / RAM / SSD), двухшаговый вход администратора, добавление сервера с автоматическим провижинингом (Ansible → node_exporter → Prometheus); плюс страница «ИИ - ключи» — реестр API-ключей AI-провайдеров (OpenAI/Anthropic) с шифрованием, маской и автоматической проверкой валидности + Telegram-алерты ([modules/ai-keys](modules/ai-keys/README.md)); плюс страница «Почты» — лента писем из внешнего сервиса `postapp.store` и ответ (reply) через read-through-прокси без хранения, с серверными фильтрами по ящику/команде ([modules/mail](modules/mail/README.md), [ADR-012](adr/ADR-012-mail-read-through-proxy.md), [ADR-017](adr/ADR-017-dashboard-client-aggregation-mail-server-filters.md)); плюс обзорная стартовая страница «Дашборд» — сетка кликабельных карточек-разделов со счётчиками (клиентская агрегация из list-эндпоинтов, [08-design-system.md](08-design-system.md#страница-дашборд), [ADR-017](adr/ADR-017-dashboard-client-aggregation-mail-server-filters.md)); плюс страница «Прокси» — реестр HTTP/HTTPS/SOCKS5-прокси с фоновым монитором доступности и Telegram-алертами при недоступности/восстановлении ([modules/proxies](modules/proxies/README.md), [ADR-019](adr/ADR-019-proxies-availability-monitor.md)).
+CRM-система мониторинга backend-сервисов и серверов. **Этап 1** — страница «Серверы»: список карточек серверов с кастомными SVG-спидометрами (CPU / RAM / SSD), двухшаговый вход администратора, добавление сервера с автоматическим провижинингом (Ansible → node_exporter → Prometheus); плюс страница «ИИ - ключи» — реестр API-ключей AI-провайдеров (OpenAI/Anthropic) с шифрованием, маской и автоматической проверкой валидности + Telegram-алерты ([modules/ai-keys](modules/ai-keys/README.md)); плюс страница «Почты» — лента писем из внешнего сервиса `postapp.store` и ответ (reply) через read-through-прокси без хранения, с серверными фильтрами по ящику/команде ([modules/mail](modules/mail/README.md), [ADR-012](adr/ADR-012-mail-read-through-proxy.md), [ADR-017](adr/ADR-017-dashboard-client-aggregation-mail-server-filters.md)); плюс обзорная страница «Дашборд» (доступна по прямому URL `/dashboard`; со Спринта B убрана из меню, [ADR-022](adr/ADR-022-teams-nav-categories.md)) — сетка кликабельных карточек-разделов со счётчиками (клиентская агрегация из list-эндпоинтов, [08-design-system.md](08-design-system.md#страница-дашборд), [ADR-017](adr/ADR-017-dashboard-client-aggregation-mail-server-filters.md)); плюс страница «Прокси» — реестр HTTP/HTTPS/SOCKS5-прокси с фоновым монитором доступности и Telegram-алертами при недоступности/восстановлении ([modules/proxies](modules/proxies/README.md), [ADR-019](adr/ADR-019-proxies-availability-monitor.md)).
 
 ## Карта документации
 
@@ -37,13 +37,15 @@ CRM-система мониторинга backend-сервисов и серве
 | Mail (Почты — read-through-прокси + reply) | [modules/mail/README.md](modules/mail/README.md) | backend, frontend |
 | Proxies (реестр прокси + монитор доступности + алерты) | [modules/proxies/README.md](modules/proxies/README.md) | backend, frontend |
 | Backends (реестр бэков + healthcheck `/health` + алерты) | [modules/backends/README.md](modules/backends/README.md) | backend, frontend |
+| Teams (CRM-команды: лидер + участники M2M) | [modules/teams/README.md](modules/teams/README.md) | backend, frontend |
 | UI (страница «Серверы», спидометры) | [modules/ui/README.md](modules/ui/README.md) | frontend |
 
 ## Статусы модулей
 
 | Модуль | Статус | DoD |
 |--------|--------|-----|
-| auth | `implemented` | Реализован (Спринт 3, [ADR-021](adr/ADR-021-rbac-users-roles.md)): двухшаговый вход + JWT, RBAC (пользователи/роли/права на все страницы), enforcement `require(page,action)`/`require_admin`/`403 forbidden`, bcrypt-хэш паролей БД-пользователей, Users/Roles/Permissions API, страница `/users`, миграция 0008, тесты |
+| auth | `implemented` (Спринт A — `spec-ready`) | Реализован (Спринт 3, [ADR-021](adr/ADR-021-rbac-users-roles.md)): двухшаговый вход + JWT, RBAC, enforcement `require(page,action)`/`require_admin`/`403 forbidden`, bcrypt-хэш, Users/Roles/Permissions API, страница `/users`, миграция 0008, тесты. **Спринт A ([ADR-022](adr/ADR-022-teams-nav-categories.md), spec-ready):** каталог += `roles`/`teams`, роли под матрицей `roles:*`, инвариант эскалации, `users.email`, `RoleListItem.user_count`, миграции 0009/0010 |
+| teams | `spec-ready` | Не реализован — спецификация готова (Спринт A, [ADR-022](adr/ADR-022-teams-nav-categories.md)): CRM-команды `teams`+`user_teams` (M2M), лидер+участники, `/api/teams`, миграция 0009 |
 | servers | `spec-ready` | Не реализован — спецификация готова |
 | monitoring | `spec-ready` | Не реализован — спецификация готова |
 | provisioning | `spec-ready` | Не реализован — спецификация готова |

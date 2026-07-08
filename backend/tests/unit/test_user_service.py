@@ -26,7 +26,7 @@ def db() -> RbacFakeDb:
 
 
 def _service(db: RbacFakeDb) -> UserService:
-    return UserService(users=db.user_repo, roles=db.role_repo)
+    return UserService(users=db.user_repo, roles=db.role_repo, teams=db.team_repo)
 
 
 @pytest.mark.asyncio
@@ -198,3 +198,190 @@ async def test_list_users_returns_all(db: RbacFakeDb) -> None:
 
     assert {u.username for u in result.items} == {"Иван", "Пётр"}
     assert all(not hasattr(u, "password_hash") for u in result.items)
+
+
+# --- email (опциональный, ADR-022) ---
+
+
+@pytest.mark.asyncio
+async def test_create_user_with_email_is_normalized(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    service = _service(db)
+
+    item = await service.create_user(
+        UserCreateRequest(
+            username="Никита",
+            email="  Nikita@Example.COM ",
+            password="s3cret-pass",
+            role_id=role.id,
+        )
+    )
+
+    # Нормализация trim+lower.
+    assert item.email == "nikita@example.com"
+
+
+@pytest.mark.asyncio
+async def test_create_user_without_email_is_none(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    service = _service(db)
+
+    item = await service.create_user(
+        UserCreateRequest(username="Никита", password="s3cret-pass", role_id=role.id)
+    )
+
+    assert item.email is None
+
+
+@pytest.mark.asyncio
+async def test_create_user_invalid_email_is_422_field_email(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    service = _service(db)
+
+    with pytest.raises(AppError) as exc:
+        await service.create_user(
+            UserCreateRequest(
+                username="Никита", email="not-an-email", password="s3cret-pass", role_id=role.id
+            )
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.details[0]["field"] == "email"
+
+
+@pytest.mark.asyncio
+async def test_create_user_duplicate_email_is_409(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    service = _service(db)
+    await service.create_user(
+        UserCreateRequest(
+            username="Никита", email="dup@example.com", password="s3cret-pass", role_id=role.id
+        )
+    )
+
+    with pytest.raises(AppError) as exc:
+        await service.create_user(
+            UserCreateRequest(
+                username="Пётр", email="DUP@example.com", password="other-pass", role_id=role.id
+            )
+        )
+    assert exc.value.status_code == 409
+    assert exc.value.code == "email_taken"
+
+
+@pytest.mark.asyncio
+async def test_update_user_clear_email_via_null(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    user = db.add_user("Иван", role, email="ivan@example.com")
+    service = _service(db)
+
+    item = await service.update_user(user.id, UserUpdateRequest(email=None))
+
+    assert item.email is None
+
+
+@pytest.mark.asyncio
+async def test_update_user_clear_email_via_empty_string(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    user = db.add_user("Иван", role, email="ivan@example.com")
+    service = _service(db)
+
+    item = await service.update_user(user.id, UserUpdateRequest(email=""))
+
+    assert item.email is None
+
+
+@pytest.mark.asyncio
+async def test_update_user_set_email_duplicate_is_409(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    db.add_user("Пётр", role, email="taken@example.com")
+    user = db.add_user("Иван", role)
+    service = _service(db)
+
+    with pytest.raises(AppError) as exc:
+        await service.update_user(user.id, UserUpdateRequest(email="taken@example.com"))
+    assert exc.value.status_code == 409
+    assert exc.value.code == "email_taken"
+
+
+# --- team_ids (CRM-команды, ADR-022) ---
+
+
+@pytest.mark.asyncio
+async def test_create_user_nonexistent_team_id_is_422_field_team_ids(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    service = _service(db)
+
+    with pytest.raises(AppError) as exc:
+        await service.create_user(
+            UserCreateRequest(
+                username="Никита",
+                password="s3cret-pass",
+                role_id=role.id,
+                team_ids=[uuid.uuid4()],
+            )
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.details[0]["field"] == "team_ids"
+
+
+@pytest.mark.asyncio
+async def test_create_user_with_team_ids_reflected_in_response(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    leader = db.add_user("Лидер", role)
+    team = db.add_team("Продажи", leader)
+    service = _service(db)
+
+    item = await service.create_user(
+        UserCreateRequest(
+            username="Никита", password="s3cret-pass", role_id=role.id, team_ids=[team.id]
+        )
+    )
+
+    assert [t.id for t in item.teams] == [team.id]
+    assert item.teams[0].name == "Продажи"
+
+
+@pytest.mark.asyncio
+async def test_update_user_team_ids_full_replace(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    leader = db.add_user("Лидер", role)
+    team_a = db.add_team("A", leader)
+    team_b = db.add_team("B", leader)
+    user = db.add_user("Иван", role)
+    service = _service(db)
+
+    await service.update_user(user.id, UserUpdateRequest(team_ids=[team_a.id]))
+    item = await service.update_user(user.id, UserUpdateRequest(team_ids=[team_b.id]))
+
+    # Полная замена: остаётся только B.
+    assert {t.id for t in item.teams} == {team_b.id}
+
+
+@pytest.mark.asyncio
+async def test_update_user_leader_preserved_when_excluded_from_team_ids(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    user = db.add_user("Иван", role)
+    led = db.add_team("Продажи", user)  # user — лидер команды
+    service = _service(db)
+
+    # Пытаемся исключить пользователя из всех команд — но он лидер `led`.
+    item = await service.update_user(user.id, UserUpdateRequest(team_ids=[]))
+
+    # Инвариант «лидер ∈ участники»: команда, ведомая пользователем, сохраняется.
+    assert led.id in {t.id for t in item.teams}
+    assert user.id in db.teams[led.id]._member_ids
+
+
+@pytest.mark.asyncio
+async def test_delete_user_who_is_team_leader_is_409(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    user = db.add_user("Иван", role)
+    db.add_team("Продажи", user)
+    # ON DELETE RESTRICT на teams.leader_id → IntegrityError на commit → 409.
+    db.session.raise_integrity = True
+    service = _service(db)
+
+    with pytest.raises(AppError) as exc:
+        await service.delete_user(user.id)
+    assert exc.value.status_code == 409
+    assert exc.value.code == "user_is_team_leader"

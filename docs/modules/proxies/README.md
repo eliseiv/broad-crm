@@ -172,7 +172,7 @@
 
 ### Навигация
 
-- Добавить вкладку **«Прокси»** (`/proxies`) в `AppLayout` (после «ИИ - ключи») — [08-design-system.md](../../08-design-system.md#навигация-верхние-вкладки-applayout). Защищённый маршрут внутри `AppLayout`.
+- Добавить вкладку **«Прокси»** (`/proxies`) в `AppLayout` — [08-design-system.md](../../08-design-system.md#навигация-категории-дропдауны-applayout). Защищённый маршрут внутри `AppLayout`. (Со Спринта B «Прокси» — пункт категории «Мониторинг», [ADR-022](../../adr/ADR-022-teams-nav-categories.md).)
 
 ### Страница `ProxiesPage`
 

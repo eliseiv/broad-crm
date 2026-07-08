@@ -14,6 +14,7 @@ from app.api import (
     proxies,
     roles,
     servers,
+    teams,
     users,
 )
 
@@ -28,3 +29,4 @@ api_router.include_router(mail.router)
 api_router.include_router(permissions.router)
 api_router.include_router(users.router)
 api_router.include_router(roles.router)
+api_router.include_router(teams.router)

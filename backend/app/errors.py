@@ -100,6 +100,38 @@ def role_in_use() -> AppError:
     )
 
 
+def email_taken() -> AppError:
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="email_taken",
+        message="Пользователь с таким email уже существует",
+    )
+
+
+def user_is_team_leader() -> AppError:
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="user_is_team_leader",
+        message="Пользователь — лидер команды, удаление запрещено",
+    )
+
+
+def team_not_found() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="team_not_found",
+        message="Команда не найдена",
+    )
+
+
+def team_name_taken() -> AppError:
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="team_name_taken",
+        message="Команда с таким названием уже существует",
+    )
+
+
 def server_not_found() -> AppError:
     return AppError(
         status_code=status.HTTP_404_NOT_FOUND,

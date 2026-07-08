@@ -19,6 +19,8 @@ CATALOG: dict[str, tuple[str, ...]] = {
     "proxies": ("view", "create", "edit", "delete"),
     "backends": ("view", "create", "edit", "delete"),
     "mail": ("view",),
+    "roles": ("view", "create", "edit", "delete"),
+    "teams": ("view", "create", "edit", "delete"),
 }
 
 # Страница вне матрицы прав (гейтится require_admin, не через permissions).
@@ -63,9 +65,20 @@ def validate_permissions(permissions: dict[str, list[str]]) -> None:
             seen.add(action)
 
 
+def permissions_subset(child: dict[str, list[str]], parent: dict[str, list[str]]) -> bool:
+    """True ⇔ `child` — подмножество `parent` (subset-инвариант эскалации, ADR-022 §4а).
+
+    Для каждой страницы набор действий `child` должен быть подмножеством действий
+    `parent` по той же странице. Пустой `child` — тривиально подмножество. Используется
+    сервисом ролей: не-супер-админ/не-`admin` не может выдать роли права сверх своих.
+    """
+    return all(set(actions) <= set(parent.get(page, [])) for page, actions in child.items())
+
+
 __all__ = [
     "CATALOG",
     "PermissionsValidationError",
     "full_catalog_permissions",
+    "permissions_subset",
     "validate_permissions",
 ]

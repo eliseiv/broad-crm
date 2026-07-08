@@ -46,10 +46,13 @@
 | `dashboard` | `view` |
 | `servers` / `ai-keys` / `proxies` / `backends` | `view`, `create`, `edit`, `delete` |
 | `mail` | `view` |
+| `roles` / `teams` | `view`, `create`, `edit`, `delete` ([ADR-022](adr/ADR-022-teams-nav-categories.md)) |
 
-- Страница **«Пользователи» в каталог не входит** — управление пользователями/ролями гейтится `require_admin` (`is_superadmin || role=="admin"`).
-- Формат прав роли (`roles.permissions`, jsonb): `{ "<page>": ["<action>", ...] }`. Валиден ⇔ каждый ключ — известная страница (кроме `users`), каждое действие ∈ `CATALOG[page]`, без дублей → иначе `422 unprocessable`.
-- Каталог отдаётся UI через `GET /api/permissions/catalog` (`require_admin`).
+Порядок ключей каталога (= порядок строк матрицы в UI): `dashboard, servers, ai-keys, proxies, backends, mail, roles, teams`.
+
+- Страница **«Пользователи» (`users`) в каталог не входит** — управление **пользователями** (создание/удаление, сброс паролей, назначение ролей) гейтится `require_admin` (`is_superadmin || role=="admin"`). Управление **ролями** (`/api/roles`) и **командами** (`/api/teams`) со Спринта A — под матрицей `roles:*`/`teams:*` ([ADR-022](adr/ADR-022-teams-nav-categories.md)).
+- Формат прав роли (`roles.permissions`, jsonb): `{ "<page>": ["<action>", ...] }`. Валиден ⇔ каждый ключ — известная страница (кроме `users`; допустимы `roles`/`teams`), каждое действие ∈ `CATALOG[page]`, без дублей → иначе `422 unprocessable`.
+- Каталог отдаётся UI через `GET /api/permissions/catalog` — гейт со Спринта A **`require("roles","view")`** (было `require_admin`): каталог нужен редактору роли.
 
 ### Enforcement (свежая загрузка прав из БД)
 
@@ -60,9 +63,19 @@
 
 Свежая загрузка → **правки прав роли применяются мгновенно** (без отзыва токена; refresh-токенов нет). Стоимость — один SELECT на защищённый запрос БД-пользователя (приемлемо при NFR-1).
 
-- Фабрика `require(page, action)` → `403 forbidden`, если не супер-админ и `action ∉ permissions[page]`. Применена ко **всем** ресурсным эндпоинтам (маппинг метод→действие — [04-api.md](04-api.md#rbac-и-enforcement-прав)).
-- Фабрика `require_admin` → `403 forbidden`, если не (`is_superadmin || role=="admin"`). Гейтит Users/Roles/Permissions API.
-- `forbidden()` — новая фабрика в `app/errors.py` (403, `code="forbidden"`, message «Недостаточно прав»).
+- Фабрика `require(page, action)` → `403 forbidden`, если не супер-админ и `action ∉ permissions[page]`. Применена ко **всем** ресурсным эндпоинтам, а также к `/api/roles`, `/api/teams` и `GET /api/permissions/catalog` ([ADR-022](adr/ADR-022-teams-nav-categories.md); маппинг метод→действие — [04-api.md](04-api.md#rbac-и-enforcement-прав)).
+- Фабрика `require_admin` → `403 forbidden`, если не (`is_superadmin || role=="admin"`). Со Спринта A гейтит **только Users API** (`/api/roles`, `/api/teams`, каталог переведены на матрицу).
+- `forbidden()` — фабрика в `app/errors.py` (403, `code="forbidden"`, message «Недостаточно прав»).
+
+### Security-инвариант эскалации привилегий (нормативно, [ADR-022](adr/ADR-022-teams-nav-categories.md))
+
+Перевод редактирования ролей под матрицу (`roles:create/edit`) несёт риск эскалации: носитель `roles:edit`, не будучи админом, мог бы выдать роли (в т.ч. своей) права сверх собственных. Backend ОБЯЗАН защищать (проверка в handler `/api/roles` после прохождения гейта); сервер (`403`) — **единственная граница**:
+
+- **(а) subset:** для актора, который **не** супер-админ и **не** роль `admin`, при `POST`/`PATCH /api/roles`: `permissions` роли ⊆ `permissions` актора (по каждой `page` набор `actions` — подмножество). Нарушение → `403 forbidden`. Супер-админ и роль `admin` (полный каталог) проходят всегда.
+- **(б) защита `admin`:** роль `name == "admin"` меняет/удаляет **только** `is_superadmin || role == "admin"`. Иначе → `403 forbidden`.
+- **(в)** назначение ролей пользователям и управление учётками остаётся под `require_admin` (Users API вне матрицы) — замыкает эскалацию: не-админ не может назначить усиленную роль пользователю.
+
+Прецеденция кодов `POST`/`PATCH /api/roles`: каталожная валидация (`422`) → эскалация/защита `admin` (`403`) → уникальность имени (`409`) — [04-api.md](04-api.md#roles).
 
 ## Хэширование паролей (bcrypt)
 
