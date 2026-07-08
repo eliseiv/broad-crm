@@ -19,6 +19,17 @@ interface UserGroup {
 const NO_TEAM_KEY = '__no_team__';
 
 /**
+ * Бейдж производного тристатуса пользователя (ADR-028, 08-design-system.md
+ * «Страница Пользователи»): «Активен» (green) — только после первого входа;
+ * «Ожидает входа» (yellow) — заведён, но ещё не входил; «Неактивен» (neutral).
+ */
+function StatusBadge({ status }: { status: UserListItem['status'] }) {
+  if (status === 'active') return <Badge tone="green">Активен</Badge>;
+  if (status === 'pending') return <Badge tone="yellow">Ожидает входа</Badge>;
+  return <Badge tone="neutral">Неактивен</Badge>;
+}
+
+/**
  * Группирует пользователей по CRM-командам (08-design-system.md «Список
  * пользователей»): пользователь в нескольких командах попадает в каждую группу;
  * пользователи без команды — в бакет «Без команды» в конце. Команды сортируются
@@ -77,13 +88,6 @@ export function UsersPage() {
 
   return (
     <>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-text-primary">Пользователи</h1>
-        <p className="mt-1 text-[13px] text-text-secondary">
-          Учётные записи, сгруппированные по командам.
-        </p>
-      </div>
-
       <div className="mb-4 flex items-center justify-end">
         <Button size="sm" onClick={openAdd} disabled={rolesQuery.isLoading}>
           <Plus className="h-4 w-4" />
@@ -178,11 +182,7 @@ export function UsersPage() {
                         {/* Беспарольный пользователь ещё не завершил «открытый первый
                             вход» (ADR-025 §5) — единственный визуальный признак учётки. */}
                         {!user.has_password && <Badge tone="yellow">Без пароля</Badge>}
-                        {user.is_active ? (
-                          <Badge tone="green">Активен</Badge>
-                        ) : (
-                          <Badge tone="neutral">Неактивен</Badge>
-                        )}
+                        <StatusBadge status={user.status} />
                       </div>
                     </Card>
                   </li>

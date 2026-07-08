@@ -44,6 +44,7 @@ function wrapper({ children }: PropsWithChildren) {
 }
 
 const IDENTIFIER_LABEL = 'Логин или Телеграм';
+const SETUP_TITLE = 'Придумайте пароль';
 
 describe('LoginPage', () => {
   beforeEach(() => {
@@ -56,53 +57,70 @@ describe('LoginPage', () => {
     expect(screen.getByLabelText(IDENTIFIER_LABEL)).toBeInTheDocument();
   });
 
-  it('moves from username step to password step without API request', async () => {
-    const user = userEvent.setup();
-    render(<LoginPage />, { wrapper });
+  // --- Probe-flow «Далее» (ADR-029): пробный login({username, password:''}) ---
 
-    await user.type(screen.getByLabelText(IDENTIFIER_LABEL), 'admin');
-    await user.click(screen.getByRole('button', { name: /далее/i }));
-
-    expect(screen.getByLabelText('Пароль')).toHaveFocus();
-    expect(authHooks.mutate).not.toHaveBeenCalled();
-  });
-
-  it('пустой пароль на шаге-2 НЕ блокируется — уходит запрос на login (ADR-025)', async () => {
+  it('«Далее» шлёт пробный login с пустым паролем (probe, ADR-029)', async () => {
     const user = userEvent.setup();
     authHooks.mutate.mockImplementation(() => {});
 
     render(<LoginPage />, { wrapper });
 
-    await user.type(screen.getByLabelText(IDENTIFIER_LABEL), 'nikita');
+    await user.type(screen.getByLabelText(IDENTIFIER_LABEL), 'admin');
     await user.click(screen.getByRole('button', { name: /далее/i }));
-    // Пароль оставляем пустым (беспарольный пользователь).
-    await user.click(screen.getByRole('button', { name: /войти/i }));
 
     expect(authHooks.mutate).toHaveBeenCalledWith(
-      { username: 'nikita', password: '' },
+      { username: 'admin', password: '' },
       expect.any(Object),
     );
   });
 
-  it('submits login on step two and displays generic error', async () => {
+  it('«Далее»: password_setup_required → окно «Придумайте пароль» (без шага «Пароль»)', async () => {
     const user = userEvent.setup();
-    authHooks.mutate.mockImplementation((_payload, options) => options.onError(new Error('boom')));
+    authHooks.mutate.mockImplementation((_payload, options) =>
+      options.onSuccess({ password_setup_required: true, setup_token: 'setup-xyz' }),
+    );
+
+    render(<LoginPage />, { wrapper });
+
+    await user.type(screen.getByLabelText(IDENTIFIER_LABEL), 'nikita');
+    await user.click(screen.getByRole('button', { name: /далее/i }));
+
+    expect(await screen.findByRole('dialog', { name: SETUP_TITLE })).toBeInTheDocument();
+    // Поле «Пароль» шага 2 беспарольному не показывается.
+    expect(screen.queryByLabelText('Пароль')).not.toBeInTheDocument();
+  });
+
+  it('«Далее»: пустой пароль отклонён (401) → переход на шаг «Пароль»', async () => {
+    const user = userEvent.setup();
+    authHooks.mutate.mockImplementation((_payload, options) =>
+      options.onError(new ApiError(401, 'invalid_credentials', 'Неверные креды')),
+    );
 
     render(<LoginPage />, { wrapper });
 
     await user.type(screen.getByLabelText(IDENTIFIER_LABEL), 'admin');
     await user.click(screen.getByRole('button', { name: /далее/i }));
-    await user.type(screen.getByLabelText('Пароль'), 'bad-password');
-    await user.click(screen.getByRole('button', { name: /войти/i }));
 
-    expect(authHooks.mutate).toHaveBeenCalledWith(
-      { username: 'admin', password: 'bad-password' },
-      expect.any(Object),
-    );
-    expect(screen.getByRole('alert')).toHaveTextContent('Неверный логин или пароль');
+    // Пользователь с паролем: сервер отклонил пустой пароль → показываем ввод пароля.
+    expect(screen.getByLabelText('Пароль')).toHaveFocus();
   });
 
-  it('redirects to / (permission-aware default) after a successful login', async () => {
+  it('«Далее»: 429 rate-limit → ошибка на шаге логина, шаг «Пароль» не открывается', async () => {
+    const user = userEvent.setup();
+    authHooks.mutate.mockImplementation((_payload, options) =>
+      options.onError(new ApiError(429, 'rate_limited', 'Слишком много попыток')),
+    );
+
+    render(<LoginPage />, { wrapper });
+
+    await user.type(screen.getByLabelText(IDENTIFIER_LABEL), 'admin');
+    await user.click(screen.getByRole('button', { name: /далее/i }));
+
+    expect(screen.getByText('Слишком много попыток входа. Попробуйте позже.')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Пароль')).not.toBeInTheDocument();
+  });
+
+  it('«Далее»: успех с паролем → редирект на / (permission-aware default)', async () => {
     const user = userEvent.setup();
     authHooks.mutate.mockImplementation((_payload, options) =>
       options.onSuccess({ password_setup_required: false, access_token: 't' }),
@@ -112,6 +130,53 @@ describe('LoginPage', () => {
 
     await user.type(screen.getByLabelText(IDENTIFIER_LABEL), 'admin');
     await user.click(screen.getByRole('button', { name: /далее/i }));
+
+    expect(navigate).toHaveBeenCalledWith('/', { replace: true });
+  });
+
+  // --- Шаг «Пароль» ---
+
+  async function reachPasswordStep(user: ReturnType<typeof userEvent.setup>, username = 'admin') {
+    authHooks.mutate.mockImplementationOnce((_payload, options) =>
+      options.onError(new ApiError(401, 'invalid_credentials', 'Неверные креды')),
+    );
+    render(<LoginPage />, { wrapper });
+    await user.type(screen.getByLabelText(IDENTIFIER_LABEL), username);
+    await user.click(screen.getByRole('button', { name: /далее/i }));
+  }
+
+  it('шаг «Пароль»: «Войти» шлёт login с введённым паролем', async () => {
+    const user = userEvent.setup();
+    await reachPasswordStep(user);
+    authHooks.mutate.mockImplementation(() => {});
+
+    await user.type(screen.getByLabelText('Пароль'), 'secret');
+    await user.click(screen.getByRole('button', { name: /войти/i }));
+
+    expect(authHooks.mutate).toHaveBeenLastCalledWith(
+      { username: 'admin', password: 'secret' },
+      expect.any(Object),
+    );
+  });
+
+  it('шаг «Пароль»: неверный пароль → общая ошибка', async () => {
+    const user = userEvent.setup();
+    await reachPasswordStep(user);
+    authHooks.mutate.mockImplementation((_payload, options) => options.onError(new Error('boom')));
+
+    await user.type(screen.getByLabelText('Пароль'), 'bad-password');
+    await user.click(screen.getByRole('button', { name: /войти/i }));
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Неверный логин или пароль');
+  });
+
+  it('шаг «Пароль»: успех → редирект на /', async () => {
+    const user = userEvent.setup();
+    await reachPasswordStep(user);
+    authHooks.mutate.mockImplementation((_payload, options) =>
+      options.onSuccess({ password_setup_required: false, access_token: 't' }),
+    );
+
     await user.type(screen.getByLabelText('Пароль'), 'secret');
     await user.click(screen.getByRole('button', { name: /войти/i }));
 
@@ -126,7 +191,7 @@ describe('LoginPage', () => {
     expect(navigate).toHaveBeenCalledWith('/', { replace: true });
   });
 
-  // --- «Открытый первый вход»: password_setup_required → «Задайте пароль» (ADR-025) ---
+  // --- «Открытый первый вход»: password_setup_required → «Придумайте пароль» (ADR-029) ---
 
   async function reachSetup(user: ReturnType<typeof userEvent.setup>) {
     authHooks.mutate.mockImplementation((_payload, options) =>
@@ -135,14 +200,13 @@ describe('LoginPage', () => {
     render(<LoginPage />, { wrapper });
     await user.type(screen.getByLabelText(IDENTIFIER_LABEL), 'nikita');
     await user.click(screen.getByRole('button', { name: /далее/i }));
-    await user.click(screen.getByRole('button', { name: /войти/i }));
   }
 
-  it('password_setup_required → открывает окно «Задайте пароль»', async () => {
+  it('окно установки использует заголовок «Придумайте пароль» (ADR-029)', async () => {
     const user = userEvent.setup();
     await reachSetup(user);
 
-    expect(await screen.findByRole('dialog', { name: 'Задайте пароль' })).toBeInTheDocument();
+    expect(await screen.findByRole('dialog', { name: SETUP_TITLE })).toBeInTheDocument();
     expect(navigate).not.toHaveBeenCalledWith('/', { replace: true });
   });
 
@@ -197,7 +261,7 @@ describe('LoginPage', () => {
 
     expect(screen.getByRole('alert')).toHaveTextContent('Пароль уже задан, войдите с паролем');
     // Окно установки закрыто.
-    expect(screen.queryByRole('dialog', { name: 'Задайте пароль' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('dialog', { name: SETUP_TITLE })).not.toBeInTheDocument();
   });
 
   it('set-password: 401 (setup-токен просрочен) → возврат к шагу логина с баннером', async () => {

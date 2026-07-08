@@ -47,6 +47,8 @@ erDiagram
         text error_message
         int position
         timestamptz last_checked_at
+        timestamptz error_since
+        boolean alert_sent
         timestamptz created_at
         timestamptz updated_at
     }
@@ -272,13 +274,17 @@ CREATE INDEX ix_ai_keys_provider_position ON ai_keys (provider, position);
 | `port` | `integer` | `NOT NULL`, CHECK 1–65535 | Порт прокси. |
 | `username` | `text` | `NULL` | Логин прокси (опц.). **Не секрет** — возвращается в API как есть. `NULL` — без авторизации. |
 | `password_encrypted` | `bytea` | `NULL` | Fernet-ciphertext пароля прокси (опц.). `NULL` — пароль не задан. Plaintext никогда не хранится и не логируется. |
-| `check_status` | `text` | `NOT NULL`, `DEFAULT 'pending'`, CHECK | Статус проверки: `pending` \| `working` \| `error`. Источник состояния переходов (переживает рестарт). |
+| `check_status` | `text` | `NOT NULL`, `DEFAULT 'pending'`, CHECK | Статус проверки: `pending` \| `working` \| `error`. Источник состояния переходов (переживает рестарт). **Переходит в `error` немедленно** при первом провале (UI показывает реальность сразу); отправка 🔴-алерта — отложенно (grace-порог, см. `error_since`/`alert_sent`). |
 | `error_message` | `text` | `NULL` | Причина при `error` (рус.): «Таймаут подключения»/«Прокси недоступен»/«Ошибка прокси». |
 | `position` | `integer` | `NOT NULL`, `DEFAULT 0` | Порядок карточки в **едином списке** (drag-and-drop, как серверы). См. [«Колонка `position`»](#колонка-position-порядок-карточек). |
 | `last_checked_at` | `timestamptz` | `NULL` | Время последней конклюзивной проверки (`working`/`error`), обновляется монитором. |
+| `error_since` | `timestamptz` | `NULL` | **Начало текущего непрерывного эпизода недоступности** ([ADR-027](adr/ADR-027-proxies-alert-grace.md); миграция `0014`). Ставится при переходе `pending\|working → error`; сбрасывается в `NULL` при `working`. База grace-порога `PROXY_ALERT_AFTER_SEC` (30 мин) перед 🔴. |
+| `alert_sent` | `boolean` | `NOT NULL`, `DEFAULT false` | **Отправлен ли 🔴 для текущего эпизода** недоступности ([ADR-027](adr/ADR-027-proxies-alert-grace.md); миграция `0014`). `true` после отправки; сбрасывается в `false` при `working`. Гейтит recovery-🟢 (шлётся только если `alert_sent` был `true`) и защищает от повторного 🔴. |
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
 
+> **Grace-порог алерта (нормативно, [ADR-027](adr/ADR-027-proxies-alert-grace.md)).** По образцу бэков ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)): `check_status='error'` выставляется немедленно (реальность в UI), но Telegram-🔴 шлётся только если прокси недоступен непрерывно **≥ `PROXY_ALERT_AFTER_SEC` (30 мин)**; монитор ведёт `error_since` (начало эпизода) и `alert_sent` (был ли 🔴). Устраняет ложные алерты прокси при кратковременных флапах. Переживает рестарт backend (персистентно). Immediate-модель прокси из [ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md) снята — прокси и бэки унифицированы. Чистая функция перехода — [modules/proxies](modules/proxies/README.md#переходы-статуса-и-алерты-нормативно).
+>
 > Пароль хранится **только** в `password_encrypted` (Fernet). В API он не раскрывается ни фрагментами, ни маской — только производный флаг `has_password` (`= password_encrypted IS NOT NULL`). `username` — plaintext (не секрет). Детали — [05-security.md](05-security.md#защита-паролей-прокси), [modules/proxies](modules/proxies/README.md#безопасность-пароля-нормативно).
 
 ### Перечисление `check_status`
@@ -289,15 +295,17 @@ CREATE INDEX ix_ai_keys_provider_position ON ai_keys (provider, position);
 stateDiagram-v2
     [*] --> pending: POST /api/proxies
     pending --> working: проверка 2xx/3xx (молча)
-    pending --> error: проверка провалилась (🔴 алерт)
-    working --> error: проверка провалилась (🔴 алерт)
-    error --> working: проверка 2xx/3xx (🟢 recovery)
-    error --> error: всё ещё недоступен (молча, обновляется error_message)
+    pending --> error: проверка провалилась (старт grace; 🔴 позже)
+    working --> error: проверка провалилась (старт grace; 🔴 позже)
+    error --> working: проверка 2xx/3xx (🟢 recovery, если 🔴 был)
+    error --> error: недоступен; 🔴 при непрерывных ≥30 мин (grace)
     working --> [*]: DELETE
     error --> [*]: DELETE
 ```
 
 > В отличие от `ai_keys`, у прокси **нет** исхода `unknown`: недоступность прокси и есть отслеживаемое событие. Транзиентность гасится ретраями внутри одной проверки (см. [modules/proxies](modules/proxies/README.md#проверка-доступности-прокси-нормативно)).
+>
+> **Grace-порог алерта ([ADR-027](adr/ADR-027-proxies-alert-grace.md)).** `check_status→error` — немедленно (реальность в UI), но 🔴 откладывается на непрерывные ≥ `PROXY_ALERT_AFTER_SEC` (30 мин), recovery-🟢 — только если 🔴 был отправлен; состояние эпизода — `error_since`/`alert_sent` (как у бэков). Матрица идентична бэковой — [modules/backends](modules/backends/README.md#переходы-статуса-и-алерты-нормативно).
 
 ### DDL (концепт миграции)
 
@@ -325,6 +333,8 @@ CREATE INDEX ix_proxies_position ON proxies (position);
 ```
 
 > Индекс `ix_proxies_position` — список прокси отдаётся `ORDER BY position ASC, created_at DESC, id` (единый список, как серверы). Отдельный индекс по `created_at` не нужен (тай-брейк на ≤ десятков строк).
+>
+> **Амендмент [ADR-027](adr/ADR-027-proxies-alert-grace.md).** DDL выше — базовая миграция `0006_create_proxies` (историческая). Поля grace-порога алерта **`error_since timestamptz NULL`** и **`alert_sent boolean NOT NULL DEFAULT false`** добавляются миграцией **`0014_proxies_alert_grace`** (см. [«Миграция `0014_proxies_alert_grace`»](#миграция-0014_proxies_alert_grace-концепт)). Таблица полей отражает состояние **после** `0014`.
 
 ### Шифрование `password_encrypted`
 
@@ -453,6 +463,7 @@ erDiagram
         text password_hash
         uuid role_id FK
         boolean is_active
+        timestamptz first_login_at
         timestamptz created_at
         timestamptz updated_at
     }
@@ -499,9 +510,12 @@ erDiagram
 | `telegram` | `text` | `NULL`, UNIQUE-when-present | **Опциональный** телеграм-ник пользователя ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md); заменяет прежний `email` из [ADR-022](adr/ADR-022-teams-nav-categories.md)). `NULL` — телеграм не задан. Уникален **только среди заданных** (частичный уникальный индекс `uq_users_telegram WHERE telegram IS NOT NULL`) — дубликат → `409 telegram_taken`. Формат валидируется на Pydantic (`422`, см. [«Правило `telegram`»](#правило-telegram-телеграм-ник-нормативно)); хранится нормализованным (без ведущего `@`, lower-case). **Второй допустимый идентификатор входа**. Не секрет. |
 | `password_hash` | `text` | `NULL` | bcrypt-хэш пароля ([05-security.md](05-security.md#хэширование-паролей-bcrypt)). **`NULL` = беспарольный пользователь** (пароль ещё не задан — модель «открытого первого входа», [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). Непустой — bcrypt-хэш. Plaintext никогда не хранится/не логируется/не возвращается. |
 | `role_id` | `uuid` | `NOT NULL`, FK → `roles(id)` `ON DELETE RESTRICT` | Роль пользователя. Удаление назначенной роли запрещено (`409 role_in_use`). |
-| `is_active` | `boolean` | `NOT NULL`, `DEFAULT true` | Активен ли пользователь. `false` → вход запрещён, а действующий JWT аннулируется на следующем запросе (`401`, свежая загрузка из БД). |
+| `is_active` | `boolean` | `NOT NULL`, `DEFAULT true` | Активен ли пользователь. `false` → вход запрещён, а действующий JWT аннулируется на следующем запросе (`401`, свежая загрузка из БД). Приоритетен для статуса: `false` → `status="inactive"` независимо от `first_login_at`. |
+| `first_login_at` | `timestamptz` | `NULL` | **Момент первого успешного входа** ([ADR-028](adr/ADR-028-user-status-first-login.md); миграция `0015`). `NULL` = ещё ни разу не входил. Проставляется приложением при **первом** успешном входе — идемпотентно (`if first_login_at is None`): в парольной ветке `POST /api/auth/login` (после bcrypt-проверки) и в `POST /api/auth/set-password` (беспарольный после установки сразу залогинен). Наружу **не отдаётся** — источник производного `UserListItem.status` ([04-api.md](04-api.md#схема-userlistitem)). |
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
+
+> **Тристатус пользователя (нормативно, [ADR-028](adr/ADR-028-user-status-first-login.md)).** UI-статус — производное поле `UserListItem.status ∈ {"pending","active","inactive"}` (не колонка БД): `is_active=false` → `"inactive"` («Неактивен»); `is_active=true` И `first_login_at IS NULL` → `"pending"` («Ожидает входа»); `is_active=true` И `first_login_at IS NOT NULL` → `"active"` («Активен»). «Активен» — только после первого входа. Вычисляется на сервере в схеме ответа.
 
 #### Правило `username` (кириллица-допускающее, нормативно)
 
@@ -546,7 +560,7 @@ CREATE TABLE users (
 CREATE INDEX ix_users_role_id ON users (role_id);
 ```
 
-> **Эволюция колонок `users` (нормативно).** Базовая миграция `0008` создаёт `users` **с `password_hash NOT NULL` и без контактной колонки**. Затем: `0010_add_user_email` добавляет `email text NULL` + `uq_users_email` ([ADR-022](adr/ADR-022-teams-nav-categories.md); историческая запись). **`0011_user_passwordless_telegram` ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) заменяет `email` → `telegram`** (rename колонки + swap частичного уникального индекса на `uq_users_telegram`) **и снимает `NOT NULL` с `password_hash`** (беспарольные пользователи). Целевое состояние (таблица полей выше) отражает результат после `0011` — см. [«Миграция `0011_user_passwordless_telegram`»](#миграция-0011_user_passwordless_telegram-концепт).
+> **Эволюция колонок `users` (нормативно).** Базовая миграция `0008` создаёт `users` **с `password_hash NOT NULL` и без контактной колонки**. Затем: `0010_add_user_email` добавляет `email text NULL` + `uq_users_email` ([ADR-022](adr/ADR-022-teams-nav-categories.md); историческая запись). **`0011_user_passwordless_telegram` ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) заменяет `email` → `telegram`** (rename колонки + swap частичного уникального индекса на `uq_users_telegram`) **и снимает `NOT NULL` с `password_hash`** (беспарольные пользователи). Затем **`0015_users_first_login` ([ADR-028](adr/ADR-028-user-status-first-login.md)) добавляет `first_login_at timestamptz NULL`** (метка первого входа — для тристатуса). Целевое состояние (таблица полей выше) отражает результат после `0015` — см. [«Миграция `0011_user_passwordless_telegram`»](#миграция-0011_user_passwordless_telegram-концепт), [«Миграция `0015_users_first_login`»](#миграция-0015_users_first_login-концепт).
 
 ### Индексы и обоснование
 - `UNIQUE(roles.name)` — детерминированный `409 role_name_taken`.
@@ -761,6 +775,35 @@ ALTER TABLE backends ADD COLUMN alert_sent boolean NOT NULL DEFAULT false;
 ```
 
 **`downgrade()`** — `ALTER TABLE backends DROP COLUMN alert_sent; ALTER TABLE backends DROP COLUMN error_since;`
+
+## Миграция `0014_proxies_alert_grace` (концепт)
+
+> Реализуется через Alembic. `down_revision = "0013_backends_alert_grace"`. Решение — [ADR-027](adr/ADR-027-proxies-alert-grace.md). **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат. По образцу `0013_backends_alert_grace`.
+
+**`upgrade()`** — добавить в `proxies` поля grace-порога алерта недоступности (30 мин):
+
+```sql
+ALTER TABLE proxies ADD COLUMN error_since timestamptz;
+ALTER TABLE proxies ADD COLUMN alert_sent boolean NOT NULL DEFAULT false;
+```
+
+**`downgrade()`** — `ALTER TABLE proxies DROP COLUMN alert_sent; ALTER TABLE proxies DROP COLUMN error_since;`
+
+Backfill не требуется (`DEFAULT`/`NULL`). `check_status→error` остаётся немедленным (реальность в UI), но 🔴 откладывается на непрерывную недоступность ≥ `PROXY_ALERT_AFTER_SEC` (30 мин).
+
+## Миграция `0015_users_first_login` (концепт)
+
+> Реализуется через Alembic. `down_revision = "0014_proxies_alert_grace"`. Решение — [ADR-028](adr/ADR-028-user-status-first-login.md). **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат.
+
+**`upgrade()`** — добавить в `users` метку первого входа (для тристатуса «Ожидает входа»/«Активен»/«Неактивен»):
+
+```sql
+ALTER TABLE users ADD COLUMN first_login_at timestamptz;
+```
+
+**`downgrade()`** — `ALTER TABLE users DROP COLUMN first_login_at;`
+
+Backfill не требуется (`NULL` = ещё не входил; на проде БД-пользователей 0). Метка проставляется приложением при **первом** успешном входе (парольная ветка `login` + `set-password`), идемпотентно (`if first_login_at is None`).
 
 ---
 

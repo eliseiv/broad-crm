@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Literal
 
 from sqlalchemy.exc import IntegrityError
 
@@ -258,6 +259,19 @@ class UserService:
         return requested
 
     @staticmethod
+    def _derive_status(user: User) -> Literal["pending", "active", "inactive"]:
+        """Производный тристатус (ADR-028, нормативно, приоритет `is_active`):
+
+        `is_active=false` → `"inactive"`; `is_active=true` И `first_login_at IS NULL` →
+        `"pending"`; иначе (активен И входил хотя бы раз) → `"active"`.
+        """
+        if not user.is_active:
+            return "inactive"
+        if user.first_login_at is None:
+            return "pending"
+        return "active"
+
+    @staticmethod
     def _to_item(user: User) -> UserListItem:
         """Собирает элемент ответа (пароль никогда не включается; teams — CRM-команды)."""
         return UserListItem(
@@ -268,6 +282,7 @@ class UserService:
             role_id=user.role_id,
             role_name=user.role.name,
             is_active=user.is_active,
+            status=UserService._derive_status(user),
             teams=[TeamRef(id=team.id, name=team.name) for team in user.teams],
             created_at=user.created_at,
             updated_at=user.updated_at,

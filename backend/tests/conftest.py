@@ -122,6 +122,7 @@ class _FakeUser:
         updated_at: datetime,
         db: RbacFakeDb,
         telegram: str | None = None,
+        first_login_at: datetime | None = None,
     ) -> None:
         self.id = id
         self.username = username
@@ -130,6 +131,9 @@ class _FakeUser:
         self._role = role
         self.role_id = role.id if role is not None else None
         self.is_active = is_active
+        # ADR-028: метка первого успешного входа (NULL = ещё не входил). Источник
+        # производного `UserListItem.status`; иначе `_to_item`/`_derive_status` падает.
+        self.first_login_at = first_login_at
         self.created_at = created_at
         self.updated_at = updated_at
         self._db = db
@@ -469,6 +473,7 @@ class RbacFakeDb:
         is_active: bool = True,
         password_hash: str | None = "x",
         telegram: str | None = None,
+        first_login_at: datetime | None = None,
     ) -> Any:
         now = datetime.now(UTC)
         user = _FakeUser(
@@ -481,6 +486,7 @@ class RbacFakeDb:
             created_at=now,
             updated_at=now,
             db=self,
+            first_login_at=first_login_at,
         )
         self.users[user.id] = user
         return user

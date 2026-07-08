@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Integer,
@@ -82,6 +83,10 @@ class Proxy(Base):
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     position: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     last_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Grace-порог алерта недоступности (ADR-027, миграция 0014). `error_since` — начало
+    # текущего непрерывного эпизода недоступности; `alert_sent` — отправлен ли 🔴 для него.
+    error_since: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    alert_sent: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

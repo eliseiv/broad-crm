@@ -91,9 +91,15 @@ class ProxyRepository:
         status: str,
         error_message: str | None,
         last_checked_at: datetime,
+        error_since: datetime | None,
+        alert_sent: bool,
     ) -> None:
-        """Атомарно обновляет результат проверки (check_status, error_message,
-        last_checked_at, updated_at) одним UPDATE (modules/proxies)."""
+        """Атомарно обновляет результат проверки одним UPDATE (modules/proxies, ADR-027).
+
+        Помимо check_status/error_message/last_checked_at обновляет grace-состояние
+        эпизода недоступности (`error_since`/`alert_sent`), персистентно переживающее
+        рестарт backend.
+        """
         stmt = (
             update(Proxy)
             .where(Proxy.id == proxy_id)
@@ -101,6 +107,8 @@ class ProxyRepository:
                 check_status=status,
                 error_message=error_message,
                 last_checked_at=last_checked_at,
+                error_since=error_since,
+                alert_sent=alert_sent,
                 updated_at=func.now(),
             )
         )

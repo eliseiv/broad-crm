@@ -54,11 +54,6 @@ function TeamsList() {
 
   return (
     <>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-text-primary">Команды</h1>
-        <p className="mt-1 text-[13px] text-text-secondary">CRM-команды: лидер и участники.</p>
-      </div>
-
       <div className="mb-4 flex items-center justify-end">
         {canCreate && (
           <Button size="sm" onClick={openAdd} disabled={usersQuery.isLoading}>

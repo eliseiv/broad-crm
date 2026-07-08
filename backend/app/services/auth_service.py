@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import secrets
 import uuid
+from datetime import UTC, datetime
 
 from app.config import Settings
 from app.domain.telegram import normalize_telegram
@@ -91,6 +92,10 @@ class AuthService:
             if user.password_hash is not None:
                 # Парольный: bcrypt-проверка.
                 if verify_password(candidate_password, user.password_hash):
+                    # Первый успешный вход: метка проставляется идемпотентно (ADR-028).
+                    if user.first_login_at is None:
+                        user.first_login_at = datetime.now(UTC)
+                        await self._users.session.commit()
                     token, expires_in = issue_access_token(
                         sub=user.username,
                         role=user.role.name,
@@ -140,6 +145,10 @@ class AuthService:
             raise password_already_set()
 
         user.password_hash = hash_password(password)
+        # Установка пароля «первого входа» = первый вход беспарольного (ADR-025):
+        # проставляем метку первого входа идемпотентно (ADR-028).
+        if user.first_login_at is None:
+            user.first_login_at = datetime.now(UTC)
         await self._users.session.commit()
 
         token, expires_in = issue_access_token(

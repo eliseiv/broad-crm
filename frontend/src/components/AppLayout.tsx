@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import { LogOut, ServerCog } from 'lucide-react';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
@@ -76,6 +77,18 @@ export function AppLayout() {
   };
   const canSee = (page: string) => Boolean(access[page]);
 
+  // Только видимые категории (≥1 доступного пункта) — между ними ставится
+  // разделитель «|» (ADR-029); скрытые категории не порождают висячих разделителей.
+  const visibleCategories = CATEGORIES.map((category) => {
+    const visibleLeaves = category.leaves.filter((leaf) => canSee(leaf.page));
+    if (visibleLeaves.length === 0) return null;
+    return {
+      label: category.label,
+      active: visibleLeaves.some((leaf) => location.pathname.startsWith(leaf.to)),
+      items: visibleLeaves.map(({ to, label }): NavMenuItem => ({ to, label })),
+    };
+  }).filter((c): c is { label: string; active: boolean; items: NavMenuItem[] } => c !== null);
+
   // Два режима shell по маршруту (08-design-system.md «Full-bleed layout»):
   //  • /mail (full-bleed) — фиксированная высота; скролл внутри панелей master-detail.
   //  • не-mail — обычный поток документа (min-h-screen), ширину держит внутренний div.
@@ -106,21 +119,16 @@ export function AppLayout() {
               <ServerCog className="h-[18px] w-[18px]" aria-hidden="true" />
             </span>
             <nav className="flex items-center gap-1" aria-label="Основная навигация">
-              {CATEGORIES.map((category) => {
-                // Пункты категории, доступные пользователю (08-design-system.md:
-                // пункт виден ⇔ есть доступ). Категория видна ⇔ ≥1 доступного пункта.
-                const visibleLeaves = category.leaves.filter((leaf) => canSee(leaf.page));
-                if (visibleLeaves.length === 0) return null;
-                const active = visibleLeaves.some((leaf) => location.pathname.startsWith(leaf.to));
-                return (
-                  <NavMenu
-                    key={category.label}
-                    label={category.label}
-                    active={active}
-                    items={visibleLeaves.map(({ to, label }) => ({ to, label }))}
-                  />
-                );
-              })}
+              {visibleCategories.map((category, index) => (
+                <Fragment key={category.label}>
+                  {index > 0 && (
+                    <span aria-hidden="true" className="select-none px-1 text-text-secondary">
+                      |
+                    </span>
+                  )}
+                  <NavMenu label={category.label} active={category.active} items={category.items} />
+                </Fragment>
+              ))}
             </nav>
           </div>
           <div className="flex items-center gap-3">

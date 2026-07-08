@@ -12,12 +12,13 @@ type Step = 'username' | 'password';
 const GENERIC_ERROR = 'Неверный логин или пароль';
 
 /**
- * Двухшаговый вход (08-design-system.md «Экран входа»). Идентификатор = логин
- * ИЛИ телеграм-ник (ADR-025); поле «Пароль» на клиенте НЕ обязательно —
- * беспарольный пользователь оставляет его пустым. Если login отвечает
- * `password_setup_required` — показывается окно «Задайте пароль» (модель
- * «открытого первого входа», ADR-025): пользователь задаёт пароль ≥8 →
- * POST /api/auth/set-password → сразу залогинен.
+ * Двухшаговый вход (08-design-system.md «Экран входа», ADR-029). Идентификатор =
+ * логин ИЛИ телеграм-ник (ADR-025). На шаге «Логин» кнопка «Далее» делает пробный
+ * `login({username, password:''})`: если ответ `password_setup_required` —
+ * беспарольный пользователь сразу видит окно «Придумайте пароль» (БЕЗ показа поля
+ * пароля), где сам придумывает пароль ≥8 → POST /api/auth/set-password → залогинен.
+ * Иначе (у пользователя есть пароль → сервер отклоняет пустой пароль) —
+ * показывается шаг «Пароль», где пользователь вводит пароль и жмёт «Войти».
  */
 export function LoginPage() {
   const navigate = useNavigate();
@@ -36,7 +37,7 @@ export function LoginPage() {
   // Кросс-шаговое уведомление (напр. «Сессия установки истекла» после закрытия окна).
   const [banner, setBanner] = useState<string | null>(null);
 
-  // Окно «Задайте пароль» (открыто ⇔ setupToken !== null).
+  // Окно «Придумайте пароль» (открыто ⇔ setupToken !== null, ADR-029).
   const [setupToken, setSetupToken] = useState<string | null>(null);
   const [newPassword, setNewPassword] = useState('');
   const [newPasswordError, setNewPasswordError] = useState<string | null>(null);
@@ -58,6 +59,13 @@ export function LoginPage() {
     window.setTimeout(() => setShake(false), 450);
   };
 
+  const openSetup = (token: string) => {
+    setNewPassword('');
+    setNewPasswordError(null);
+    setSetupError(null);
+    setSetupToken(token);
+  };
+
   const handleNext = (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim()) {
@@ -65,8 +73,30 @@ export function LoginPage() {
       return;
     }
     setUsernameError(null);
+    setFormError(null);
     setBanner(null);
-    setStep('password');
+    // Пробный вход с пустым паролем (ADR-029): беспарольный пользователь →
+    // `password_setup_required` → сразу окно «Придумайте пароль» (поле пароля не
+    // показываем); пользователь с паролем → сервер отклоняет пустой пароль →
+    // переходим на шаг «Пароль», где он вводит свой пароль.
+    loginMutation.mutate(
+      { username: username.trim(), password: '' },
+      {
+        onSuccess: (data) => {
+          if (data.password_setup_required) openSetup(data.setup_token);
+          else navigate('/', { replace: true });
+        },
+        onError: (err) => {
+          if (err instanceof ApiError && err.status === 429) {
+            setUsernameError('Слишком много попыток входа. Попробуйте позже.');
+            return;
+          }
+          // Пустой пароль отклонён (401) / прочая ошибка → у пользователя есть
+          // пароль: показываем шаг «Пароль» для ручного ввода.
+          setStep('password');
+        },
+      },
+    );
   };
 
   const handleBack = () => {
@@ -86,15 +116,10 @@ export function LoginPage() {
       { username: username.trim(), password },
       {
         onSuccess: (data) => {
-          if (data.password_setup_required) {
-            // Открываем окно «Задайте пароль» с limited-scope setup-токеном.
-            setNewPassword('');
-            setNewPasswordError(null);
-            setSetupError(null);
-            setSetupToken(data.setup_token);
-          } else {
-            navigate('/', { replace: true });
-          }
+          // Резервный путь: если беспарольный пользователь дошёл до шага «Пароль»
+          // и отправил пустой пароль — открываем окно «Придумайте пароль».
+          if (data.password_setup_required) openSetup(data.setup_token);
+          else navigate('/', { replace: true });
         },
         onError: (err) => {
           if (err instanceof ApiError && err.status === 429) {
@@ -173,13 +198,14 @@ export function LoginPage() {
                 error={usernameError}
                 autoFocus
                 autoComplete="username"
+                disabled={loginMutation.isPending}
                 onChange={(e) => {
                   setUsername(e.target.value);
                   if (usernameError) setUsernameError(null);
                   if (banner) setBanner(null);
                 }}
               />
-              <Button type="submit" fullWidth>
+              <Button type="submit" fullWidth loading={loginMutation.isPending}>
                 Далее
                 <ArrowRight className="h-4 w-4" />
               </Button>
@@ -249,8 +275,8 @@ export function LoginPage() {
       <Modal
         open={setupToken !== null}
         onOpenChange={(next) => !next && closeSetup()}
-        title="Задайте пароль"
-        description="У вашей учётной записи ещё нет пароля. Задайте его для входа."
+        title="Придумайте пароль"
+        description="У вашей учётной записи ещё нет пароля. Придумайте его для входа."
         dismissible={!setPasswordMutation.isPending}
         footer={
           <>

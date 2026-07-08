@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, Field
 
@@ -62,8 +63,10 @@ class UserListItem(BaseModel):
     """Элемент GET /api/users и тело 201 POST / 200 PATCH (04-api.md#users).
 
     Пароль (`password`/`password_hash`) в ответах отсутствует всегда — только
-    производный `has_password`. `teams` — CRM-команды пользователя (ADR-022),
-    не mail-«команды».
+    производный `has_password`. `status` — производный тристатус (ADR-028): `is_active`
+    приоритетен (`false` → `"inactive"`), затем факт первого входа (`first_login_at`);
+    сама метка `first_login_at` наружу не отдаётся. `teams` — CRM-команды пользователя
+    (ADR-022), не mail-«команды».
     """
 
     id: uuid.UUID
@@ -73,6 +76,7 @@ class UserListItem(BaseModel):
     role_id: uuid.UUID
     role_name: str
     is_active: bool
+    status: Literal["pending", "active", "inactive"]
     teams: list[TeamRef]
     created_at: datetime
     updated_at: datetime

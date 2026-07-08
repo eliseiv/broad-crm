@@ -66,6 +66,10 @@ class User(Base):
         nullable=False,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    # Момент ПЕРВОГО успешного входа (ADR-028, миграция 0015). NULL = ещё ни разу не
+    # входил. Проставляется идемпотентно (`if None`) в парольной ветке login и в
+    # set-password. Наружу не отдаётся — источник производного UserListItem.status.
+    first_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

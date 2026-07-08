@@ -28,10 +28,10 @@
 | Исход `unknown` | нет | **нет** (как у прокси) |
 | Интервал (default) | `PROXY_CHECK_INTERVAL_SEC=60` | `BACKEND_CHECK_INTERVAL_SEC=60` |
 | Overall-deadline проверки | `PROXY_CHECK_DEADLINE_SEC=30` | `BACKEND_CHECK_DEADLINE_SEC=30` ([ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
-| Модель алерта недоступности | **немедленно** при первом `error` | **grace-порог 30 мин** непрерывной недоступности перед 🔴 (`BACKEND_ALERT_AFTER_SEC=1800`, поля `error_since`/`alert_sent` — [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
+| Модель алерта недоступности | **grace-порог 30 мин** непрерывной недоступности перед 🔴 (`PROXY_ALERT_AFTER_SEC=1800`, поля `error_since`/`alert_sent` — [ADR-027](../../adr/ADR-027-proxies-alert-grace.md); ранее была immediate — снято) | **grace-порог 30 мин** непрерывной недоступности перед 🔴 (`BACKEND_ALERT_AFTER_SEC=1800`, поля `error_since`/`alert_sent` — [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
 | Re-check при `PATCH` | смена `proxy_type`/`host`/`port`/`username`/`password` | смена **`domain`** (только оно связано с подключением) |
 
-Всё остальное (статус в БД, `error→working` recovery, монитор стартует всегда, Telegram гейтится `notifier_enabled`, немедленная проверка при создании, единый список с reorder как у серверов) — как у прокси. **Отличие модели алерта:** у бэков 🔴 откладывается на grace-порог 30 мин (у прокси — немедленно); `check_status` в обоих случаях меняется сразу (реальность в UI).
+Всё остальное (статус в БД, `error→working` recovery, монитор стартует всегда, Telegram гейтится `notifier_enabled`, немедленная проверка при создании, единый список с reorder как у серверов) — как у прокси. **Модель алерта у прокси и бэков теперь единая** ([ADR-027](../../adr/ADR-027-proxies-alert-grace.md)): 🔴 откладывается на grace-порог 30 мин у обеих сущностей (`check_status` в обоих случаях меняется сразу — реальность в UI). Прежнее отличие «прокси — немедленно» из [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md) снято.
 
 ## Безопасность (нормативно)
 

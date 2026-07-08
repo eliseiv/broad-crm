@@ -504,6 +504,13 @@ export interface UserListItem {
   /** Имя роли (денормализовано для UI-списка). */
   role_name: string;
   is_active: boolean;
+  /**
+   * Производный тристатус (ADR-028): `"inactive"` (`is_active==false`);
+   * `"pending"` (активен, но ещё ни разу не входил, `first_login_at IS NULL`);
+   * `"active"` (активен И входил хотя бы раз). Приоритет `is_active`. UI-лейблы:
+   * «Неактивен» / «Ожидает входа» / «Активен». Метка `first_login_at` наружу не отдаётся.
+   */
+  status: 'pending' | 'active' | 'inactive';
   /** CRM-команды пользователя (может быть пустым) — для группировки списка. */
   teams: TeamRef[];
   created_at: string;

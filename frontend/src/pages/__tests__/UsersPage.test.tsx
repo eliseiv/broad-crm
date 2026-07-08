@@ -62,6 +62,7 @@ function makeUser(
     role_id: 'r2',
     role_name: 'Оператор',
     is_active: true,
+    status: 'active',
     teams: [],
     created_at: '2026-07-07T09:00:00Z',
     updated_at: '2026-07-07T09:00:00Z',
@@ -113,6 +114,15 @@ describe('UsersPage (пользователи по командам, ADR-022/025
     expect(screen.getByText('Пока нет пользователей')).toBeInTheDocument();
   });
 
+  it('не рендерит H1-заголовок страницы (убран, ADR-029)', () => {
+    state.users = { items: [] };
+
+    render(<UsersPage />, { wrapper });
+
+    // Внутристраничный H1 «Пользователи» + подпись убраны — раздел обозначен навигацией.
+    expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
+  });
+
   it('does NOT render a roles section or «Добавить роль» (moved to «Роли», ADR-022)', () => {
     state.users = { items: [] };
 
@@ -131,7 +141,7 @@ describe('UsersPage (пользователи по командам, ADR-022/025
           telegram: 'nikita_01',
           teams: [{ id: 't1', name: 'Продажи' }],
         }),
-        makeUser({ id: 'u2', username: 'Пётр', is_active: false }),
+        makeUser({ id: 'u2', username: 'Пётр', is_active: false, status: 'inactive' }),
       ],
     };
 
@@ -151,6 +161,25 @@ describe('UsersPage (пользователи по командам, ADR-022/025
     expect(screen.getByText('Активен')).toBeInTheDocument();
     expect(screen.getByText('Неактивен')).toBeInTheDocument();
     expect(screen.getAllByText('Оператор').length).toBeGreaterThan(0);
+  });
+
+  it('рендерит тристатус-бейдж (ADR-028): «Ожидает входа» / «Активен» / «Неактивен»', () => {
+    state.users = {
+      items: [
+        makeUser({ id: 'u1', username: 'Ожидающий', is_active: true, status: 'pending' }),
+        makeUser({ id: 'u2', username: 'Активный', is_active: true, status: 'active' }),
+        makeUser({ id: 'u3', username: 'Выключенный', is_active: false, status: 'inactive' }),
+      ],
+    };
+
+    render(<UsersPage />, { wrapper });
+
+    const pending = screen.getByText('Ожидающий').closest('[role="button"]') as HTMLElement;
+    const active = screen.getByText('Активный').closest('[role="button"]') as HTMLElement;
+    const inactive = screen.getByText('Выключенный').closest('[role="button"]') as HTMLElement;
+    expect(within(pending).getByText('Ожидает входа')).toBeInTheDocument();
+    expect(within(active).getByText('Активен')).toBeInTheDocument();
+    expect(within(inactive).getByText('Неактивен')).toBeInTheDocument();
   });
 
   it('показывает бейдж «Без пароля» для беспарольного и не показывает для парольного (ADR-025)', () => {

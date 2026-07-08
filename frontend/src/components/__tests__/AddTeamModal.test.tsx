@@ -28,6 +28,7 @@ function makeUser(id: string, username: string): UserListItem {
     role_id: 'r1',
     role_name: 'Оператор',
     is_active: true,
+    status: 'active',
     teams: [],
     created_at: '2026-07-07T09:00:00Z',
     updated_at: '2026-07-07T09:00:00Z',
@@ -50,15 +51,78 @@ const TEAM: TeamListItem = {
   updated_at: '2026-07-08T09:00:00Z',
 };
 
-describe('AddTeamModal (создание/редактирование команды, ADR-026)', () => {
+describe('AddTeamModal (лидер из участников, ADR-026/029)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('лидер опционален: по умолчанию «Без лидера»', () => {
+  it('пустой состав: выбор лидера недоступен, без опции «Без лидера»', () => {
     render(<AddTeamModal open onOpenChange={vi.fn()} users={USERS} mode="add" />);
+
     const leaderSelect = screen.getByLabelText('Лидер') as HTMLSelectElement;
-    // Дефолт — «Без лидера» (пустое значение); участники не отмечены.
+    // Пока участники не выбраны — лидер недоступен (пусто, placeholder).
     expect(leaderSelect.value).toBe('');
+    expect(leaderSelect).toBeDisabled();
+    expect(screen.getByRole('option', { name: 'Сначала выберите участников' })).toBeInTheDocument();
+    // Опции «Без лидера» в Select больше нет (ADR-029).
+    expect(screen.queryByRole('option', { name: 'Без лидера' })).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: 'Никита' })).not.toBeChecked();
+  });
+
+  it('первый добавленный участник авто-становится лидером (ADR-029)', async () => {
+    const user = userEvent.setup();
+    render(<AddTeamModal open onOpenChange={vi.fn()} users={USERS} mode="add" />);
+
+    await user.click(screen.getByRole('checkbox', { name: 'Никита' }));
+
+    const leaderSelect = screen.getByLabelText('Лидер') as HTMLSelectElement;
+    expect(leaderSelect).not.toBeDisabled();
+    expect(leaderSelect.value).toBe('u1'); // первый добавленный = лидер
+    // В Select лидера — только выбранные участники, без «Без лидера».
+    expect(screen.queryByRole('option', { name: 'Без лидера' })).not.toBeInTheDocument();
+  });
+
+  it('снятие текущего лидера из состава → лидером становится следующий участник', async () => {
+    const user = userEvent.setup();
+    render(<AddTeamModal open onOpenChange={vi.fn()} users={USERS} mode="add" />);
+
+    await user.click(screen.getByRole('checkbox', { name: 'Никита' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Мария' }));
+    const leaderSelect = screen.getByLabelText('Лидер') as HTMLSelectElement;
+    expect(leaderSelect.value).toBe('u1'); // первый остаётся лидером
+
+    // Снимаем лидера (Никита) из состава → лидерство переходит следующему (Мария).
+    await user.click(screen.getByRole('checkbox', { name: 'Никита' }));
+    expect(leaderSelect.value).toBe('u2');
+  });
+
+  it('пустой состав после снятия всех участников → без лидера', async () => {
+    const user = userEvent.setup();
+    render(<AddTeamModal open onOpenChange={vi.fn()} users={USERS} mode="add" />);
+
+    await user.click(screen.getByRole('checkbox', { name: 'Никита' }));
+    expect((screen.getByLabelText('Лидер') as HTMLSelectElement).value).toBe('u1');
+
+    await user.click(screen.getByRole('checkbox', { name: 'Никита' }));
+    const leaderSelect = screen.getByLabelText('Лидер') as HTMLSelectElement;
+    expect(leaderSelect.value).toBe(''); // пустой состав → без лидера
+    expect(leaderSelect).toBeDisabled();
+  });
+
+  it('create: member_ids включает лидера (полный состав, ADR-029)', async () => {
+    const user = userEvent.setup();
+    mutations.create.mockImplementation((_payload, opts) => opts.onSuccess());
+
+    render(<AddTeamModal open onOpenChange={vi.fn()} users={USERS} mode="add" />);
+
+    await user.type(screen.getByLabelText('Название'), 'Продажи');
+    await user.click(screen.getByRole('checkbox', { name: 'Никита' })); // лидер (первый)
+    await user.click(screen.getByRole('checkbox', { name: 'Мария' }));
+    await user.click(screen.getByRole('button', { name: 'Добавить' }));
+
+    const [payload] = mutations.create.mock.calls[0];
+    expect(payload.name).toBe('Продажи');
+    expect(payload.leader_id).toBe('u1');
+    // Лидер входит в member_ids (полный состав).
+    expect([...payload.member_ids].sort()).toEqual(['u1', 'u2']);
   });
 
   it('create: пустая команда без лидера → payload {name, member_ids: []}', async () => {
@@ -70,31 +134,9 @@ describe('AddTeamModal (создание/редактирование коман
     await user.type(screen.getByLabelText('Название'), 'Пустая');
     await user.click(screen.getByRole('button', { name: 'Добавить' }));
 
-    // leader_id не передаётся (команда без лидера / авто-назначение на сервере).
+    // leader_id не передаётся (пустой состав → без лидера).
     expect(mutations.create).toHaveBeenCalledWith(
       { name: 'Пустая', member_ids: [] },
-      expect.any(Object),
-    );
-  });
-
-  it('create: выбранный лидер зафиксирован в участниках и не дублируется в member_ids', async () => {
-    const user = userEvent.setup();
-    mutations.create.mockImplementation((_payload, opts) => opts.onSuccess());
-
-    render(<AddTeamModal open onOpenChange={vi.fn()} users={USERS} mode="add" />);
-
-    await user.type(screen.getByLabelText('Название'), 'Продажи');
-    await user.selectOptions(screen.getByLabelText('Лидер'), 'u1');
-    // Лидер (Никита) заблокирован как участник (checked+disabled).
-    const leaderMember = screen.getByRole('checkbox', { name: 'Никита' });
-    expect(leaderMember).toBeChecked();
-    expect(leaderMember).toBeDisabled();
-    // Добавляем участника Марию.
-    await user.click(screen.getByRole('checkbox', { name: 'Мария' }));
-    await user.click(screen.getByRole('button', { name: 'Добавить' }));
-
-    expect(mutations.create).toHaveBeenCalledWith(
-      { name: 'Продажи', member_ids: ['u2'], leader_id: 'u1' },
       expect.any(Object),
     );
   });
@@ -124,6 +166,17 @@ describe('AddTeamModal (создание/редактирование коман
     expect(screen.getByText('Команда с таким названием уже существует')).toBeInTheDocument();
   });
 
+  it('edit: источник кандидатов в лидеры — участники, без опции «Без лидера»', () => {
+    render(<AddTeamModal open onOpenChange={vi.fn()} users={USERS} mode="edit" team={TEAM} />);
+
+    const leaderSelect = screen.getByLabelText('Лидер') as HTMLSelectElement;
+    expect(leaderSelect.value).toBe('u1'); // текущий лидер
+    expect(screen.queryByRole('option', { name: 'Без лидера' })).not.toBeInTheDocument();
+    // Опции лидера = участники команды.
+    expect(screen.getByRole('option', { name: 'Никита' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Мария' })).toBeInTheDocument();
+  });
+
   it('edit: отправляет ТОЛЬКО изменённые поля (смена только названия → PATCH {name})', async () => {
     const user = userEvent.setup();
     mutations.update.mockImplementation((_payload, opts) => opts.onSuccess());
@@ -138,17 +191,20 @@ describe('AddTeamModal (создание/редактирование коман
     expect(mutations.update).toHaveBeenCalledWith({ name: 'Продажи EU' }, expect.any(Object));
   });
 
-  it('edit: снятие лидера через «Без лидера» → PATCH { leader_id: null } (ADR-026)', async () => {
+  it('edit: снятие всех участников → PATCH { leader_id: null, member_ids: [] } (ADR-029)', async () => {
     const user = userEvent.setup();
     mutations.update.mockImplementation((_payload, opts) => opts.onSuccess());
 
     render(<AddTeamModal open onOpenChange={vi.fn()} users={USERS} mode="edit" team={TEAM} />);
 
-    await user.selectOptions(screen.getByLabelText('Лидер'), '');
+    // Пустой состав — единственный легитимный кейс «без лидера» (ADR-029).
+    await user.click(screen.getByRole('checkbox', { name: 'Никита' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Мария' }));
     await user.click(screen.getByRole('button', { name: 'Сохранить' }));
 
     const [payload] = mutations.update.mock.calls[0];
     expect(payload.leader_id).toBeNull();
+    expect(payload.member_ids).toEqual([]);
   });
 
   it('edit: без изменений закрывает форму без вызова API', async () => {

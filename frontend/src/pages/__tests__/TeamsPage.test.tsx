@@ -59,6 +59,7 @@ const USERS: UserListResponse = {
       role_id: 'r1',
       role_name: 'Оператор',
       is_active: true,
+      status: 'active',
       teams: [],
       created_at: '2026-07-07T09:00:00Z',
       updated_at: '2026-07-07T09:00:00Z',
@@ -71,6 +72,7 @@ const USERS: UserListResponse = {
       role_id: 'r1',
       role_name: 'Оператор',
       is_active: true,
+      status: 'active',
       teams: [],
       created_at: '2026-07-07T09:01:00Z',
       updated_at: '2026-07-07T09:01:00Z',
@@ -111,6 +113,12 @@ describe('TeamsPage (CRM-команды, гейтинг, ADR-022)', () => {
     render(<TeamsPage />, { wrapper });
     expect(screen.getByText('Недостаточно прав')).toBeInTheDocument();
     expect(screen.queryByText('Продажи')).not.toBeInTheDocument();
+  });
+
+  it('не рендерит H1-заголовок страницы (убран, ADR-029)', () => {
+    render(<TeamsPage />, { wrapper });
+    // Внутристраничный H1 «Команды» + подпись убраны — раздел обозначен навигацией.
+    expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
   });
 
   it('рендерит команду: название, лидер и «N участников» (плюрализация member_count)', () => {

@@ -66,11 +66,6 @@ function RolesList() {
 
   return (
     <>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-text-primary">Роли</h1>
-        <p className="mt-1 text-[13px] text-text-secondary">Роли и матрица прав по разделам.</p>
-      </div>
-
       <div className="mb-4 flex items-center justify-end">
         {canCreate && (
           <Button size="sm" onClick={openAdd} disabled={catalogQuery.isLoading}>

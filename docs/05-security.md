@@ -6,7 +6,7 @@
 
 1. **Сначала супер-админ (`.env`).** Логин/пароль сравниваются constant-time с `ADMIN_USER`/`ADMIN_PASSWORD`. В БД супер-админ НЕ хранится; **всегда парольный** (беспарольным не бывает). Успех → JWT: `sub=ADMIN_USER`, `role="admin"`, `superadmin=true` (без `uid`).
 2. **Иначе БД-пользователь.** Идентификатор входа (`username` в запросе) сопоставляется с `users.username` **точно**, иначе с нормализованным `users.telegram` — **вход по Логину ИЛИ Телеграму** ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). При `is_active=true`:
-   - `password_hash IS NOT NULL` (парольный) → `verify_password` (bcrypt). Успех → JWT: `sub=username`, `uid=users.id`, `role=role.name`, `superadmin=false`.
+   - `password_hash IS NOT NULL` (парольный) → `verify_password` (bcrypt). Успех → JWT: `sub=username`, `uid=users.id`, `role=role.name`, `superadmin=false`. При успехе сервер идемпотентно проставляет `users.first_login_at = now()`, если `NULL` (метка **первого входа** для тристатуса — [ADR-028](adr/ADR-028-user-status-first-login.md)).
    - `password_hash IS NULL` (**беспарольный**) → вход не выполняется; возвращается `password_setup_required: true` + limited-scope setup-token (см. [«Модель открытого первого входа»](#модель-открытого-первого-входа-нормативно)).
 3. Неудача парольной ветки (не найден / `is_active=false` / неверный пароль) → единое `401 invalid_credentials`.
 
@@ -26,7 +26,7 @@
 **Поток:**
 1. Админ создаёт пользователя без пароля (`password_hash = NULL`).
 2. Пользователь вводит свой Логин/Телеграм (без пароля) → `POST /api/auth/login` возвращает `password_setup_required: true` + **setup-token** (limited-scope JWT, `type:"pwd_setup"`, `uid`, TTL `PWD_SETUP_TOKEN_EXPIRES_MIN`=10 мин, **без** `role`/прав).
-3. Пользователь задаёт пароль (≥ 8) → `POST /api/auth/set-password` (Bearer setup-token) → `password_hash` устанавливается (bcrypt), выдаётся обычный access-token (сразу залогинен).
+3. Пользователь **придумывает** пароль (≥ 8, свой — без генератора/случайного) на экране **«Придумайте пароль»** ([ADR-029](adr/ADR-029-ui-login-password-nav-team-form.md)) → `POST /api/auth/set-password` (Bearer setup-token) → `password_hash` устанавливается (bcrypt), выдаётся обычный access-token (сразу залогинен). Так как это первый вход — сервер идемпотентно проставляет `users.first_login_at = now()`, если `NULL` ([ADR-028](adr/ADR-028-user-status-first-login.md)).
 4. После установки вход только по паролю; setup-ветка больше не срабатывает.
 
 **Границы беспарольного принципала (что может / не может):**

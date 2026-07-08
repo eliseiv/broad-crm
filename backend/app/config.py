@@ -97,6 +97,9 @@ class Settings(BaseSettings):
     proxy_check_deadline_sec: float = 30.0
     # Эталонный URL проверки связности через прокси (лёгкий 204 No Content).
     proxy_check_url: str = "https://www.gstatic.com/generate_204"
+    # Grace-порог: непрерывная недоступность прокси (сек) перед 🔴-алертом (30 мин, ADR-027).
+    # check_status→error немедленно; откладывается только уведомление (error_since/alert_sent).
+    proxy_alert_after_sec: int = 1800
 
     # --- Монитор доступности бэков (modules/backends, ADR-020) ---
     # Интервал периодической проверки всех бэков; монитор стартует всегда.

@@ -1,10 +1,14 @@
-"""Фоновый монитор доступности прокси (modules/proxies, ADR-019).
+"""Фоновый монитор доступности прокси (modules/proxies, ADR-019, ADR-027).
 
 Отдельная asyncio-задача (по образцу AiKeyMonitorService, ADR-010). Состояние
 переходов берётся из БД `proxies.check_status` (персистентно, переживает рестарт).
 Монитор стартует ВСЕГДА; Telegram-отправка гейтится `notifier_enabled` (клиент
 передаётся как None при отключённом боте) — `check_status` для UI обновляется
 независимо от бота. У прокси НЕТ исхода `unknown`.
+
+**ADR-027:** grace-порог `PROXY_ALERT_AFTER_SEC` (перенос модели бэков, ADR-024):
+`check_status→error` немедленно (реальность в UI), но 🔴 шлётся только после
+непрерывной недоступности ≥ порога (персистентные `error_since`/`alert_sent`).
 """
 
 from __future__ import annotations
@@ -17,13 +21,13 @@ from typing import Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from app.config import Settings
+from app.config import Settings, get_settings
 from app.domain.notifications import build_proxy_error, build_proxy_recovery
 from app.infra.crypto import CryptoError, decrypt_secret
 from app.infra.proxy_check import REASON_TIMEOUT, ProxyCheckResult, check_proxy
 from app.infra.telegram import TelegramClient
 from app.logging import get_logger
-from app.models.proxy import ProxyStatus
+from app.models.proxy import Proxy, ProxyStatus
 from app.repositories.proxy_repository import ProxyRepository
 
 logger = get_logger(__name__)
@@ -36,7 +40,11 @@ Alert = Literal["error", "recovery"]
 
 @dataclass(frozen=True)
 class ProxySnapshot:
-    """Снимок прокси для проверки (сессия БД уже закрыта на момент HTTP-запроса)."""
+    """Снимок прокси для проверки (сессия БД уже закрыта на момент HTTP-запроса).
+
+    Несёт grace-состояние эпизода недоступности (`error_since`/`alert_sent`, ADR-027)
+    для time-aware решения об отправке 🔴.
+    """
 
     id: uuid.UUID
     name: str
@@ -46,30 +54,80 @@ class ProxySnapshot:
     username: str | None
     password_encrypted: bytes | None
     prev_status: str
+    error_since: datetime | None
+    alert_sent: bool
+
+
+@dataclass(frozen=True)
+class TransitionResult:
+    """Результат чистой функции перехода (ADR-027, time-aware grace-порог)."""
+
+    new_status: str
+    error_message: str | None
+    new_error_since: datetime | None
+    new_alert_sent: bool
+    alert: Alert | None
 
 
 def evaluate_transition(
-    old_status: str, result: ProxyCheckResult
-) -> tuple[str, str | None, Alert | None]:
-    """Чистая функция перехода статуса (modules/proxies#переходы-статуса-и-алерты).
+    prev_status: str,
+    result: ProxyCheckResult,
+    error_since: datetime | None,
+    alert_sent: bool,
+    now: datetime,
+) -> TransitionResult:
+    """Чистая функция перехода статуса с grace-порогом (modules/proxies, ADR-027).
 
-    Возвращает `(new_status, error_message, alert)`, где `alert ∈ {None,'error','recovery'}`.
-    Правило (исхода `unknown` нет):
-      - `pending|working → error` ⇒ alert `'error'`;
-      - `error → working` ⇒ alert `'recovery'`;
-      - `working|pending → working` и `error → error` ⇒ alert `None` (error_message
-        при `error → error` обновляется на актуальную причину).
-    Тестируется qa без сети/БД.
+    Time-aware: 🔴 шлётся только если прокси недоступен непрерывно ≥ `PROXY_ALERT_AFTER_SEC`
+    (`now − error_since`), иначе тихо. `error_since` ставится при `pending|working →
+    error`, сбрасывается при `working`. `alert_sent` защищает от повторного 🔴 и гейтит
+    recovery-🟢 (шлётся только если 🔴 был). Порог читается из настроек; `now` инъектится
+    (тестируется qa без сети/времени). Возвращает `TransitionResult`. Идентична бэковой.
     """
+    alert_after_sec = get_settings().proxy_alert_after_sec
+
     if result.outcome == "working":
-        alert: Alert | None = "recovery" if old_status == ProxyStatus.error.value else None
-        return ProxyStatus.working.value, None, alert
+        # error → working: 🟢 только если 🔴 был отправлен (иначе тихо, напр. флап < порога).
+        alert: Alert | None = "recovery" if alert_sent else None
+        return TransitionResult(
+            new_status=ProxyStatus.working.value,
+            error_message=None,
+            new_error_since=None,
+            new_alert_sent=False,
+            alert=alert,
+        )
 
     # result.outcome == "error"
-    alert = (
-        "error" if old_status in (ProxyStatus.pending.value, ProxyStatus.working.value) else None
+    if prev_status in (ProxyStatus.pending.value, ProxyStatus.working.value):
+        # Старт нового эпизода недоступности: статус error немедленно, 🔴 позже (grace).
+        return TransitionResult(
+            new_status=ProxyStatus.error.value,
+            error_message=result.reason,
+            new_error_since=now,
+            new_alert_sent=False,
+            alert=None,
+        )
+
+    # prev_status == error: эпизод продолжается; error_since сохраняется.
+    since = error_since if error_since is not None else now
+    elapsed = (now - since).total_seconds()
+    if not alert_sent and elapsed >= alert_after_sec:
+        # Grace-окно истекло → отправить 🔴 (однократно).
+        return TransitionResult(
+            new_status=ProxyStatus.error.value,
+            error_message=result.reason,
+            new_error_since=since,
+            new_alert_sent=True,
+            alert="error",
+        )
+    # Grace-окно ещё не истекло, либо 🔴 уже отправлен → тихо (обновить error_message).
+    return TransitionResult(
+        new_status=ProxyStatus.error.value,
+        error_message=result.reason,
+        new_error_since=since,
+        new_alert_sent=alert_sent,
+        alert=None,
     )
-    return ProxyStatus.error.value, result.reason, alert
 
 
 class ProxyMonitorService:
@@ -106,16 +164,7 @@ class ProxyMonitorService:
                 proxy = await repo.get_by_id(proxy_id)
                 if proxy is None:
                     return
-                snapshot = ProxySnapshot(
-                    id=proxy.id,
-                    name=proxy.name,
-                    proxy_type=proxy.proxy_type,
-                    host=proxy.host,
-                    port=proxy.port,
-                    username=proxy.username,
-                    password_encrypted=proxy.password_encrypted,
-                    prev_status=proxy.check_status,
-                )
+                snapshot = self._snapshot(proxy)
             await self._check_snapshot(snapshot)
         except asyncio.CancelledError:
             raise
@@ -131,19 +180,7 @@ class ProxyMonitorService:
         async with self._sessionmaker() as session:
             repo = ProxyRepository(session)
             proxies = await repo.list_all()
-            snapshots = [
-                ProxySnapshot(
-                    id=proxy.id,
-                    name=proxy.name,
-                    proxy_type=proxy.proxy_type,
-                    host=proxy.host,
-                    port=proxy.port,
-                    username=proxy.username,
-                    password_encrypted=proxy.password_encrypted,
-                    prev_status=proxy.check_status,
-                )
-                for proxy in proxies
-            ]
+            snapshots = [self._snapshot(proxy) for proxy in proxies]
         # Сессия БД закрыта — далее только расшифровка/HTTP/короткий UPDATE.
 
         if not snapshots:
@@ -156,6 +193,22 @@ class ProxyMonitorService:
                 await self._check_snapshot(snapshot)
 
         await asyncio.gather(*(_guarded(snapshot) for snapshot in snapshots))
+
+    @staticmethod
+    def _snapshot(proxy: Proxy) -> ProxySnapshot:
+        """Снимок прокси из ORM-объекта (поля читаются в открытой сессии)."""
+        return ProxySnapshot(
+            id=proxy.id,
+            name=proxy.name,
+            proxy_type=proxy.proxy_type,
+            host=proxy.host,
+            port=proxy.port,
+            username=proxy.username,
+            password_encrypted=proxy.password_encrypted,
+            prev_status=proxy.check_status,
+            error_since=proxy.error_since,
+            alert_sent=proxy.alert_sent,
+        )
 
     async def _check_snapshot(self, snapshot: ProxySnapshot) -> None:
         """Расшифровка пароля → проверка доступности → обновление БД → алерт."""
@@ -186,20 +239,29 @@ class ProxyMonitorService:
             # Без секретов: только id и причина (URL/пароль не логируются).
             logger.warning("proxy_check_error", proxy_id=str(snapshot.id), reason=result.reason)
 
-        new_status, error_message, alert = evaluate_transition(snapshot.prev_status, result)
+        now = datetime.now(UTC)
+        transition = evaluate_transition(
+            snapshot.prev_status,
+            result,
+            snapshot.error_since,
+            snapshot.alert_sent,
+            now,
+        )
 
         async with self._sessionmaker() as session:
             repo = ProxyRepository(session)
             await repo.update_check(
                 snapshot.id,
-                status=new_status,
-                error_message=error_message,
-                last_checked_at=datetime.now(UTC),
+                status=transition.new_status,
+                error_message=transition.error_message,
+                last_checked_at=now,
+                error_since=transition.new_error_since,
+                alert_sent=transition.new_alert_sent,
             )
             await session.commit()
 
-        if alert is not None:
-            await self._send_alert(alert, snapshot, error_message)
+        if transition.alert is not None:
+            await self._send_alert(transition.alert, snapshot, transition.error_message)
 
     async def _send_alert(
         self, alert: Alert, snapshot: ProxySnapshot, error_message: str | None
@@ -235,5 +297,6 @@ __all__ = [
     "Alert",
     "ProxyMonitorService",
     "ProxySnapshot",
+    "TransitionResult",
     "evaluate_transition",
 ]

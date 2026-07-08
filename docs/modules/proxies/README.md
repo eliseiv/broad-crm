@@ -63,7 +63,7 @@
    - **`null` или `""`** → **очистить** (`password_encrypted = NULL`, `has_password=false`) — убрать пароль;
    - **непустая строка** → **заменить** (re-encrypt через `encrypt_secret`).
    Форма редактирования пароль не префилит (backend не хранит и не отдаёт plaintext) — поэтому поле «Пароль» пустое; чтобы сохранить текущий пароль, поле не отправляют.
-4. **Re-check триггерится, если** изменилось хотя бы одно **связанное с подключением** поле — `proxy_type`, `host`, `port`, `username` **или** `password` (передан непустой либо явно очищен): `check_status='pending'`, `error_message=NULL`, запуск немедленной фоновой проверки (тот же путь, что `POST`; первый переход считается от `prev_status='pending'`). Первая неуспешная проверка после edit шлёт **🔴** (как для нового прокси), успешная — молча (`pending→working`).
+4. **Re-check триггерится, если** изменилось хотя бы одно **связанное с подключением** поле — `proxy_type`, `host`, `port`, `username` **или** `password` (передан непустой либо явно очищен): `check_status='pending'`, `error_message=NULL`, **`error_since=NULL`, `alert_sent=false`** (сброс grace-эпизода, [ADR-027](../../adr/ADR-027-proxies-alert-grace.md)), запуск немедленной фоновой проверки (тот же путь, что `POST`; первый переход считается от `prev_status='pending'`). Первая неуспешная проверка после edit **стартует grace-эпизод** (🔴 — только после непрерывной недоступности ≥ 30 мин), успешная — молча (`pending→working`).
 5. **Смена только `name`** — `check_status` не трогается, проверка не перезапускается.
 6. `updated_at` обновляется всегда при изменении хотя бы одного поля. `last_checked_at` при re-check не сбрасывается (остаётся временем последней конклюзивной проверки до завершения новой).
 
@@ -80,7 +80,8 @@
 3. `check_status` ∈ {`pending`,`working`,`error`}, default `pending`. `error_message` — русскоязычная причина при `error`, иначе `NULL`.
 4. `updated_at`/`last_checked_at` обновляются при каждой проверке с конклюзивным исходом (`working`/`error`) атомарным `UPDATE`. (У прокси исхода `unknown` нет — любой провал после ретраев конклюзивен, см. ниже.)
 5. **Каждая Alembic-миграция обязана иметь рабочий `downgrade()`** ([07-deployment.md](../../07-deployment.md#откат-миграций-бд), [03-data-model.md](../../03-data-model.md)).
-6. Таблица создаётся миграцией **`0006_create_proxies`** (`down_revision="0005_create_notifier_alert_log"` — текущая голова цепочки), с колонкой `position` (`integer NOT NULL DEFAULT 0`) и индексом `ix_proxies_position` ([03-data-model.md](../../03-data-model.md#миграция-0006_create_proxies-концепт)).
+6. Таблица создаётся миграцией **`0006_create_proxies`** (`down_revision="0005_create_notifier_alert_log"`), с колонкой `position` (`integer NOT NULL DEFAULT 0`) и индексом `ix_proxies_position` ([03-data-model.md](../../03-data-model.md#миграция-0006_create_proxies-концепт)). Поля grace-порога **`error_since`/`alert_sent`** добавляются миграцией **`0014_proxies_alert_grace`** (`down_revision="0013_backends_alert_grace"`, [ADR-027](../../adr/ADR-027-proxies-alert-grace.md), [03-data-model.md](../../03-data-model.md#миграция-0014_proxies_alert_grace-концепт)) с рабочим `downgrade()`.
+7. **Grace-порог алерта ([ADR-027](../../adr/ADR-027-proxies-alert-grace.md)):** `check_status→error` — немедленно; 🔴 — только после непрерывной недоступности ≥ `PROXY_ALERT_AFTER_SEC` (default 1800 с = 30 мин); recovery-🟢 — только если 🔴 был отправлен (`alert_sent`). `evaluate_transition` — time-aware (пять аргументов: `+error_since, alert_sent, now`). Grace-состояние переживает рестарт. Модель унифицирована с бэками (immediate-модель прокси из [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md) снята).
 
 ### Проверка доступности прокси (нормативно)
 
@@ -117,24 +118,28 @@
 - **Запуск:** в `lifespan` (`app/main.py`), рядом с AI-монитором. Монитор **стартует ВСЕГДА** (не гейтится Telegram) — обновление `check_status` для UI работает независимо от бота. Telegram-клиент передаётся как `None` при отключённом боте.
 - **Остановка:** отмена задачи при shutdown (`task.cancel()` + `suppress(CancelledError)`), как AI-монитор.
 - **Цикл:** бесконечный `while True`: одна итерация проверки всех прокси → `asyncio.sleep(PROXY_CHECK_INTERVAL_SEC)` (default 60 с). Необработанное исключение внутри итерации логируется и **не валит задачу**.
-- **Итерация (`poll_once`):** открыть короткоживущую сессию БД, получить все прокси (снимок `id, name, proxy_type, host, port, username, password_encrypted, prev_status=check_status`), закрыть сессию. Для каждого прокси (под семафором ограничения конкурентности, образец AI-монитора): расшифровать пароль (если есть), собрать URL, выполнить проверку, вычислить исход; **при конклюзивном исходе** — обновить БД (`check_status`, `error_message`, `last_checked_at`, `updated_at`) отдельным атомарным `UPDATE`; вычислить переход относительно `prev_status`, при необходимости отправить алерт (если `notifier_enabled`).
+- **Итерация (`poll_once`):** открыть короткоживущую сессию БД, получить все прокси (снимок `id, name, proxy_type, host, port, username, password_encrypted, prev_status=check_status, error_since, alert_sent`), закрыть сессию. Для каждого прокси (под семафором ограничения конкурентности, образец AI-монитора): расшифровать пароль (если есть), собрать URL, выполнить проверку, вычислить исход; **при конклюзивном исходе** — вычислить переход time-aware `evaluate_transition(prev_status, result, error_since, alert_sent, now)` и обновить БД (`check_status`, `error_message`, `last_checked_at`, `updated_at`, **`error_since`, `alert_sent`**) отдельным атомарным `UPDATE`; при необходимости отправить алерт (если `notifier_enabled`; 🔴 — только по истечении grace-порога).
 - **Немедленная проверка при создании (`POST /api/proxies`)** и при re-check (`PATCH`): та же логика проверки одного прокси (`check_one`) запускается фоново сразу после `INSERT`/`UPDATE`. Первый переход считается от `prev_status='pending'`.
 
 ### Переходы статуса и алерты (нормативно)
 
-`prev` — предыдущий `check_status` из БД, `cur` — исход текущей проверки. Чистая функция перехода `evaluate_transition(old_status, result) -> (new_status, error_message, alert)` (образец — `evaluate_transition` в `app/services/ai_key_monitor_service.py`), `alert ∈ {None, "error", "recovery"}`:
+**Grace-порог 30 минут перед 🔴 (нормативно, [ADR-027](../../adr/ADR-027-proxies-alert-grace.md)).** По образцу бэков ([ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)): `check_status` переходит в `error` **немедленно** (реальность в UI сразу), но Telegram-🔴 шлётся только если прокси недоступен **непрерывно ≥ `PROXY_ALERT_AFTER_SEC` (default 1800 с = 30 мин)** — устраняет ложные алерты прокси при кратковременных флапах. Состояние эпизода — персистентные поля `proxies.error_since` (начало недоступности) и `proxies.alert_sent` (был ли 🔴) ([03-data-model.md](../../03-data-model.md#таблица-proxies), миграция `0014_proxies_alert_grace`). Immediate-модель прокси из [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md) снята — прокси и бэки унифицированы.
 
-| `prev` | `cur` | Действие |
-|--------|-------|----------|
-| `pending` / `working` | `error` | **🔴 «Прокси не работает»** (в т.ч. первая проверка недоступного прокси) |
-| `error` | `working` | **🟢 «Прокси снова работает»** (recovery/отбой) |
-| `working` | `working` | молча |
-| `pending` | `working` | молча (первая успешная проверка — не recovery) |
-| `error` | `error` | молча (уже сломан; `error_message` обновляется на актуальную причину) |
+Чистая функция перехода (time-aware, **идентична бэковой** — [modules/backends](../backends/README.md#переходы-статуса-и-алерты-нормативно)) `evaluate_transition(prev_status, result, error_since, alert_sent, now) -> (new_status, error_message, new_error_since, new_alert_sent, alert)`, `alert ∈ {None, "error", "recovery"}`:
 
-- Telegram-отправка выполняется **только если** `settings.notifier_enabled` (`TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID` заданы). Иначе переход только фиксируется в БД (статус для UI), лог `proxy_alert_suppressed_no_telegram` (info) — не ошибка.
-- `check_status` в БД обновляется **всегда**, независимо от `notifier_enabled` и результата отправки Telegram.
-- Персистентность `check_status` гарантирует: после рестарта backend сломанный прокси не переоткрывается (нет дубль-🔴), а recovery отрабатывает корректно между рестартами.
+| `prev` | `cur` (result) | `new_status` | `error_since` | `alert_sent` | Алерт |
+|--------|----------------|--------------|---------------|--------------|-------|
+| `pending` / `working` | `error` | `error` | ← `now` (старт эпизода) | остаётся `false` | **нет** (grace-окно только началось) |
+| `error` | `error` (прошло `< 30 мин`) | `error` | без изменений | `false` | молча (обновляется `error_message`) |
+| `error` | `error` (прошло `≥ 30 мин`, `alert_sent=false`) | `error` | без изменений | → `true` | **🔴 «Прокси не работает»** |
+| `error` | `error` (`alert_sent=true`) | `error` | без изменений | `true` | молча (уже слали) |
+| `error` | `working` (`alert_sent=true`) | `working` | → `NULL` | → `false` | **🟢 «Прокси снова работает»** (отбой) |
+| `error` | `working` (`alert_sent=false`) | `working` | → `NULL` | `false` | молча (🔴 не слали, напр. флап < 30 мин) |
+| `pending` / `working` | `working` | `working` | `NULL` | `false` | молча |
+
+- Telegram-отправка выполняется **только если** `settings.notifier_enabled` (`TELEGRAM_BOT_TOKEN`+`TELEGRAM_CHAT_ID` заданы). Иначе переход только фиксируется в БД (статус + `error_since`/`alert_sent` для UI/grace), лог `proxy_alert_suppressed_no_telegram` (info) — не ошибка.
+- `check_status`/`error_since`/`alert_sent` в БД обновляются **всегда**, независимо от `notifier_enabled` и результата отправки Telegram.
+- Персистентность (`check_status` + `error_since` + `alert_sent`) переживает рестарт backend: grace-отсчёт и признак отправки корректны между рестартами (сломанный прокси не переоткрывает окно, нет дубль-🔴; recovery-🟢 шлётся только если 🔴 был отправлен).
 
 ### Формат сообщений Telegram (точно)
 
@@ -162,11 +167,11 @@
 
 ### Backend — ориентиры реализации (структура — на усмотрение)
 
-1. **Настройки** (`config.py`): `proxy_check_interval_sec: int = 60`, `proxy_check_timeout_sec: float = 10.0`, **`proxy_check_deadline_sec: float = 30.0`** (overall-deadline `asyncio.wait_for`, анти-зависание — [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)), `proxy_check_url: str = "https://www.gstatic.com/generate_204"`. `notifier_enabled` переиспользуется.
+1. **Настройки** (`config.py`): `proxy_check_interval_sec: int = 60`, `proxy_check_timeout_sec: float = 10.0`, **`proxy_check_deadline_sec: float = 30.0`** (overall-deadline `asyncio.wait_for`, анти-зависание — [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)), **`proxy_alert_after_sec: int = 1800`** (grace-порог 30 мин перед 🔴 — [ADR-027](../../adr/ADR-027-proxies-alert-grace.md)), `proxy_check_url: str = "https://www.gstatic.com/generate_204"`. `notifier_enabled` переиспользуется. Монитор ведёт grace-состояние в `proxies.error_since`/`alert_sent`.
 2. **Зависимость `httpx[socks]`** (обязательно для `socks5`): `httpx` из коробки проксирует HTTP/HTTPS, но `socks5://` требует экстру `httpx[socks]` (транзитивно `socksio`). Текущий `backend/pyproject.toml` объявляет `httpx>=0.27,<0.28` **без** этой экстры → **добавить `httpx[socks]`** (пометка для backend/devops, [ADR-019](../../adr/ADR-019-proxies-availability-monitor.md); [02-tech-stack.md](../../02-tech-stack.md#backend)). Без экстры проверка SOCKS5-прокси падает.
 3. **Проверка прокси** (`infra/`, напр. `proxy_checker.py`): чистый результат `ProxyCheckResult{outcome, reason}` (`working`/`error`) — маппинг тестируется без сети (моки httpx). Сборка URL — отдельная функция; пароль/URL не логируются.
 4. **Билдеры сообщений** (`domain/notifications.py`): `build_proxy_error(name, host, port, reason)` / `build_proxy_recovery(name, host, port)` → строка. qa проверяет побайтовое совпадение формата.
-5. **ProxyMonitorService** (`services/`): цикл + **чистая функция перехода** `evaluate_transition(prev_status, result) -> (new_status, error_message, alert)` (образец AI-монитора) для тестируемости матрицы без сети/БД. Исхода `unknown` нет.
+5. **ProxyMonitorService** (`services/`): цикл + **чистая функция перехода** (time-aware, grace) `evaluate_transition(prev_status, result, error_since, alert_sent, now) -> (new_status, error_message, new_error_since, new_alert_sent, alert)` (образец **бэк-монитора**, [modules/backends](../backends/README.md#переходы-статуса-и-алерты-нормативно)) для тестируемости матрицы без сети/БД/времени (детерминированный `now`). Исхода `unknown` нет. 🔴 — только после непрерывной недоступности ≥ `PROXY_ALERT_AFTER_SEC` ([ADR-027](../../adr/ADR-027-proxies-alert-grace.md)).
 6. **Роутер/сервис/репозиторий** (`api/`, `services/`, `repositories/`, `models/`, `schemas/`): CRUD по образцу серверов/ключей. `has_password` собирается в схеме ответа.
 7. **Запуск** — в `lifespan` (`main.py`): `asyncio.create_task` монитора при старте (всегда, рядом с AI-монитором), отмена при shutdown.
 
@@ -215,6 +220,7 @@ Loading (skeleton), empty (только `AddProxyCard` + подсказка), pe
 
 ## Changelog
 
+- 2026-07-08: **Grace-порог алерта прокси** ([ADR-027](../../adr/ADR-027-proxies-alert-grace.md), spec-ready, требует реализации): по образцу бэков ([ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) — `check_status→error` немедленно, **🔴 только после непрерывной недоступности ≥ `PROXY_ALERT_AFTER_SEC` (30 мин)**, recovery-🟢 только если 🔴 был (`alert_sent`); поля `error_since`/`alert_sent` (миграция `0014_proxies_alert_grace`), time-aware `evaluate_transition` (пять аргументов). Устраняет ложные срабатывания прокси при флапах. Immediate-модель прокси снята — прокси и бэки унифицированы. Слой проверки (deadline/httpx.Timeout) не затронут. Контракт `ProxyListItem` не меняется. Требует обновления qa-тестов матрицы под новую сигнатуру `evaluate_transition`.
 - 2026-07-07: спецификация создана (architect). Решение об отдельном in-backend-мониторе доступности прокси (по образцу AI-ключей), Fernet для пароля, отдельных полях ввода и эталонном URL проверки — [ADR-019](../../adr/ADR-019-proxies-availability-monitor.md). Отложенные пункты — [TD-028](../../100-known-tech-debt.md). Требуется добавить зависимость `httpx[socks]` (backend/devops).
 - 2026-07-08: **UI + анти-зависание** ([ADR-023](../../adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md), [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)): карточка `ProxyCard` показывает **только IP** (`host`, без порта/логина/пароля); единственная кнопка «Удалить»; проверка получила **явный `httpx.Timeout` по всем фазам** + **overall-deadline** `PROXY_CHECK_DEADLINE_SEC`=30 (`asyncio.wait_for`) — устраняет зависание проверки (кейс `138.16.43.116`). Контракт API `ProxyListItem` не изменён.
 - 2026-07-07: **Спринт 1 реализован** (backend + frontend + qa, все гейты зелёные, reviewer approve / production_ready). Закрыты все пункты DoD: модель + миграция `0006_create_proxies`, `ProxyMonitorService` (старт всегда, персистентный `check_status`), Telegram-алерты down 🔴 / recovery 🟢, CRUD API (`GET/POST/PATCH/DELETE /api/proxies`, `PATCH /api/proxies/order`, `GET /api/proxies/{id}/status`), страница `/proxies` (единый список, DnD, add/edit-модалка), `httpx[socks]`, тесты (coverage ≥90 % для проверки/перехода/билдеров). Статус модуля → `implemented`. Остаточный edge-case (алерт для прокси, удалённого в момент in-flight проверки) — [TD-028](../../100-known-tech-debt.md).

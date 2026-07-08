@@ -50,9 +50,12 @@ export function NavMenu({ label, active, items }: NavMenuProps) {
           align="start"
           sideOffset={8}
           className={cn(
-            // Вертикальный стек пунктов (по одному в строку) + «квадратная» панель 6px
-            // (ADR-023, 08-design-system.md «Навигация»).
-            'z-50 flex min-w-[180px] flex-col rounded-nav border border-border-strong bg-surface-1 p-1.5 shadow-card',
+            // Рестайл ADR-029: фон как у хэдера (bg-bg-base), БЕЗ видимой границы, БЕЗ
+            // фикс. min-width (ширина по контенту/триггеру). Вертикальный стек пунктов
+            // (по одному в строку) + «квадратная» панель 6px (ADR-023). Горизонтальный
+            // паддинг панели убран (py-only) → пункты выровнены по левому краю с
+            // названием категории (px-3 пункта == px-3 триггера).
+            'z-50 flex flex-col rounded-nav bg-bg-base py-1.5 shadow-card',
             // Анимация появления для ЗАЯКОРЕННОЙ панели: только opacity + лёгкий
             // translateY (keyframe `fade-in`), БЕЗ translate(-50%,-50%) — та центрирующая
             // анимация (`content-in`) относится к модалке и вызывала «прыжок» дропдауна.

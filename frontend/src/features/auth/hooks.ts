@@ -26,7 +26,7 @@ async function establishSession(
  * Мутация входа: при успехе-`false` кладёт токен в стор (память + sessionStorage)
  * и догружает права принципала через GET /api/auth/me (ADR-021, «Гейтинг»). При
  * `password_setup_required:true` сессия НЕ устанавливается — компонент показывает
- * окно «Задайте пароль» с setup-токеном (ADR-025). Ошибка /me не валит вход.
+ * окно «Придумайте пароль» с setup-токеном (ADR-025/ADR-029). Ошибка /me не валит вход.
  */
 export function useLogin() {
   const setSession = useAuthStore((s) => s.setSession);

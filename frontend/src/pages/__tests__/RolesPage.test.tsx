@@ -92,6 +92,13 @@ describe('RolesPage (список ролей, гейтинг, ADR-022)', () => {
     expect(screen.queryByText('Оператор')).not.toBeInTheDocument();
   });
 
+  it('не рендерит H1-заголовок страницы (убран, ADR-029)', () => {
+    render(<RolesPage />, { wrapper });
+    // Внутристраничный H1 «Роли» + подпись убраны — раздел обозначен навигацией.
+    expect(screen.queryByRole('heading', { level: 1 })).not.toBeInTheDocument();
+    expect(screen.queryByText('Роли и матрица доступа')).not.toBeInTheDocument();
+  });
+
   it('рендерит роли с числом носителей (user_count, формы мн.ч.) и сводкой прав', () => {
     render(<RolesPage />, { wrapper });
     expect(screen.getByText('Оператор')).toBeInTheDocument();
