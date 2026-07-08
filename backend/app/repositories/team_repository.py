@@ -43,11 +43,20 @@ class TeamRepository:
         return list(result.unique().scalars().all())
 
     async def get_with_members(self, team_id: uuid.UUID) -> Team | None:
-        """Команда с лидером и участниками (для тела ответа / prefill) или None."""
+        """Команда с лидером и участниками (для тела ответа / prefill) или None.
+
+        `populate_existing=True` — ПРИНУДИТЕЛЬНО перечитывает из БД уже загруженные
+        атрибуты/коллекции того же instance из identity-map. Без него повторная выборка
+        после мутации состава (`replace_members` пишет `user_teams` Core-statements'ами в
+        обход ORM-relationship) вернула бы тот же объект команды со СТАРОЙ коллекцией
+        `members`/`leader`, и ответ PATCH отражал бы состав ДО замены (leader_id верен —
+        это column-атрибут, но members/member_count/leader_username — устаревшие).
+        """
         stmt = (
             select(Team)
             .options(selectinload(Team.leader), selectinload(Team.members))
             .where(Team.id == team_id)
+            .execution_options(populate_existing=True)
         )
         result = await self._session.execute(stmt)
         return result.unique().scalar_one_or_none()
