@@ -5,7 +5,7 @@ Revises: 0014_proxies_alert_grace
 Create Date: 2026-07-08
 
 Колонка `users.first_login_at timestamptz NULL` (ADR-028,
-03-data-model.md#миграция-0015_users_first_login-концепт). `NULL` = пользователь
+03-data-model.md#миграция-0015_user_first_login-концепт). `NULL` = пользователь
 ещё ни разу не входил; непустой timestamptz = момент ПЕРВОГО успешного входа.
 Источник производного `UserListItem.status` («pending»/«active»/«inactive»).
 Метка проставляется приложением идемпотентно (`if first_login_at is None`) в

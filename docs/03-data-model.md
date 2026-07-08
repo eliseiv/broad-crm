@@ -560,7 +560,7 @@ CREATE TABLE users (
 CREATE INDEX ix_users_role_id ON users (role_id);
 ```
 
-> **Эволюция колонок `users` (нормативно).** Базовая миграция `0008` создаёт `users` **с `password_hash NOT NULL` и без контактной колонки**. Затем: `0010_add_user_email` добавляет `email text NULL` + `uq_users_email` ([ADR-022](adr/ADR-022-teams-nav-categories.md); историческая запись). **`0011_user_passwordless_telegram` ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) заменяет `email` → `telegram`** (rename колонки + swap частичного уникального индекса на `uq_users_telegram`) **и снимает `NOT NULL` с `password_hash`** (беспарольные пользователи). Затем **`0015_users_first_login` ([ADR-028](adr/ADR-028-user-status-first-login.md)) добавляет `first_login_at timestamptz NULL`** (метка первого входа — для тристатуса). Целевое состояние (таблица полей выше) отражает результат после `0015` — см. [«Миграция `0011_user_passwordless_telegram`»](#миграция-0011_user_passwordless_telegram-концепт), [«Миграция `0015_users_first_login`»](#миграция-0015_users_first_login-концепт).
+> **Эволюция колонок `users` (нормативно).** Базовая миграция `0008` создаёт `users` **с `password_hash NOT NULL` и без контактной колонки**. Затем: `0010_add_user_email` добавляет `email text NULL` + `uq_users_email` ([ADR-022](adr/ADR-022-teams-nav-categories.md); историческая запись). **`0011_user_passwordless_telegram` ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) заменяет `email` → `telegram`** (rename колонки + swap частичного уникального индекса на `uq_users_telegram`) **и снимает `NOT NULL` с `password_hash`** (беспарольные пользователи). Затем **`0015_user_first_login` ([ADR-028](adr/ADR-028-user-status-first-login.md)) добавляет `first_login_at timestamptz NULL`** (метка первого входа — для тристатуса). Целевое состояние (таблица полей выше) отражает результат после `0015` — см. [«Миграция `0011_user_passwordless_telegram`»](#миграция-0011_user_passwordless_telegram-концепт), [«Миграция `0015_user_first_login`»](#миграция-0015_user_first_login-концепт).
 
 ### Индексы и обоснование
 - `UNIQUE(roles.name)` — детерминированный `409 role_name_taken`.
@@ -791,7 +791,7 @@ ALTER TABLE proxies ADD COLUMN alert_sent boolean NOT NULL DEFAULT false;
 
 Backfill не требуется (`DEFAULT`/`NULL`). `check_status→error` остаётся немедленным (реальность в UI), но 🔴 откладывается на непрерывную недоступность ≥ `PROXY_ALERT_AFTER_SEC` (30 мин).
 
-## Миграция `0015_users_first_login` (концепт)
+## Миграция `0015_user_first_login` (концепт)
 
 > Реализуется через Alembic. `down_revision = "0014_proxies_alert_grace"`. Решение — [ADR-028](adr/ADR-028-user-status-first-login.md). **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат.
 
@@ -804,6 +804,34 @@ ALTER TABLE users ADD COLUMN first_login_at timestamptz;
 **`downgrade()`** — `ALTER TABLE users DROP COLUMN first_login_at;`
 
 Backfill не требуется (`NULL` = ещё не входил; на проде БД-пользователей 0). Метка проставляется приложением при **первом** успешном входе (парольная ветка `login` + `set-password`), идемпотентно (`if first_login_at is None`).
+
+## Миграция `0016_backfill_team_leaders` (концепт)
+
+> Реализуется через Alembic. `down_revision = "0015_user_first_login"` (текущая голова цепочки). Решение — [ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md), ретроактивный амендмент (см. раздел «Амендмент» в ADR-026). **Требование (нормативно):** `downgrade()` — **no-op** (data-fix необратим по смыслу, состояние `leader_id` до правки не восстанавливается).
+
+**Назначение.** One-time **data-fix** для stale-состояния, возникшего ДО ввода авто-назначения лидера ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)): на проде существуют команды с участниками, но `leader_id IS NULL` («Команда Ивана» — 2 участника, «Команда Мухамеда» — 1 участник), из-за чего UI показывает «Без лидера» для команд, где лидер обязан был назначиться. Форвард-поведение (авто-назначение при `POST`/`PATCH`) корректно и **не меняется** — это исключительно ретроактивная синхронизация исторических строк. Рантайм-контракт/поведение не затрагиваются.
+
+**Правило backfill (нормативно, идемпотентно).** Для каждой команды, где `leader_id IS NULL` **И** существует хотя бы один участник в `user_teams`, назначить лидером **первого участника по `(user_teams.created_at ASC, user_teams.user_id ASC)`** — тот же детерминированный порядок, что и авто-назначение в рантайме (§2 [ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md); `team_service.get_first_member` / `team_repository.get_first_member`). Команды **без участников** остаются без лидера (`leader_id = NULL`) — это легитимный кейс [ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md) §3, **не трогаются**. Инвариант «если `leader_id` задан — он ∈ участники» ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md) §5) сохраняется: назначаемый лидер берётся из состава `user_teams` этой же команды.
+
+**`upgrade()`** — коррелированный `UPDATE` (идемпотентен: повторный прогон не меняет уже проставленных лидеров благодаря предикату `leader_id IS NULL`):
+
+```sql
+UPDATE teams t
+SET leader_id = (
+        SELECT ut.user_id
+        FROM user_teams ut
+        WHERE ut.team_id = t.id
+        ORDER BY ut.created_at ASC, ut.user_id ASC
+        LIMIT 1
+    ),
+    updated_at = now()
+WHERE t.leader_id IS NULL
+  AND EXISTS (SELECT 1 FROM user_teams ut2 WHERE ut2.team_id = t.id);
+```
+
+> `updated_at = now()` бампится, чтобы правка была видима как модификация записи; на сортировку списка команд не влияет (список упорядочен по `teams.created_at DESC`, а не `updated_at`).
+
+**`downgrade()`** — **no-op** (пустой, с комментарием). Backfill необратим по смыслу: предыдущее `NULL`-состояние лидера — это баг, а не значимое состояние для отката; восстанавливать его нельзя и не нужно.
 
 ---
 

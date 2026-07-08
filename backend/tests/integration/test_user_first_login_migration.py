@@ -50,6 +50,6 @@ def test_revision_chain_single_head_0015_on_top() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
     heads = script.get_heads()
 
-    assert heads == ["0015_user_first_login"]  # одна голова — цепочка линейна
+    assert heads == ["0016_backfill_team_leaders"]  # одна голова — цепочка линейна
     rev = script.get_revision("0015_user_first_login")
     assert rev.down_revision == "0014_proxies_alert_grace"
