@@ -37,7 +37,7 @@
 - **Репозитории** (`app/repositories/sms_*.py`) — порт `app/infrastructure/repositories.py` донора: `SmsNumberRepository` (find_by_phone, list_all, list_by_team(s), upsert-sync, set fields, transfer, delete), `SmsInboundRepository` (find_by_sid, create, keyset `list_inbound`), `SmsDeliveryRepository` (try_reserve, mark_sent/failed/dead, pending), `SmsTelegramLinkRepository` (upsert, mark_dead, get_active, `recipients_for_team` = JOIN `user_teams`→`users`→`sms_telegram_links` WHERE `dead_at IS NULL`).
 - **Сервисы** (`app/services/`):
   - `sms_ingest_service.py` — порт `application/services.py`: `handle_incoming_sms` (нормализация → дедуп по SID → сохранение → fan-out), `_deliver`, `deliver_sms_to_recipient`, `format_sms_message`. Транзакционная модель — как у донора (crash-recoverable, `try_reserve` идемпотентен по UNIQUE `(inbound_sms_id, telegram_user_id)`).
-  - `sms_message_service.py` — порт `messages_service.py` + keyset-курсор: `list_messages(is_super_admin, team_ids, number_id, team_id, cursor, limit)` → страница + `next_cursor`. Видимость — по **текущей** принадлежности номера (§Видимость).
+  - `sms_message_service.py` — порт `messages_service.py` + keyset-курсор: `list_messages(sees_all_teams, team_ids, number_id, team_id, cursor, limit)` → страница + `next_cursor`. Видимость — по **текущей** принадлежности номера (§Видимость; `sees_all_teams` — [ADR-032](../../adr/ADR-032-sms-visibility-admin-full-catalog.md)).
   - `sms_number_service.py` — список/правка полей/перенос/удаление номеров.
   - `sms_sync_service.py` — порт `twilio_sync_service.py`: подтянуть все входящие номера Twilio (пагинация), upsert как unassigned (`ON CONFLICT (phone_number) DO NOTHING`), обновить `label` из `friendly_name`.
   - `sms_delivery_monitor_service.py` — фоновый retry-loop (порт `retry_pending_deliveries`) по образцу `proxy_monitor_service.py`; стартует в `lifespan` при `sms_bot_enabled`; интервал `SMS_DELIVERY_RETRY_INTERVAL_SEC`, потолок попыток `SMS_DELIVERY_MAX_ATTEMPTS`.
@@ -72,11 +72,11 @@
 
 ## Видимость по командам (нормативно)
 
-`Principal` расширяется полем **`user_id: UUID | None`** (из claim `uid`; супер-админ → `None`). `SmsScope` (фабрика в `deps.py`):
-- **супер-админ** (`is_superadmin`) → видит **все** SMS/номера; опц. фильтры `number_id`/`team_id` применяются как есть.
-- **не-админ** → `team_ids` пользователя из `user_teams`; видимые номера = `sms_phone_numbers.team_id ∈ team_ids` (по **текущей** принадлежности, не по снимку). SMS — только на видимые `to_number`. Запрос `number_id`/`team_id` вне scope → **пустой результат** (анти-энумерация, не `403`/`404`).
+`Principal` расширяется полем **`user_id: UUID | None`** (из claim `uid`; супер-админ → `None`). `SmsScope` (фабрика `get_sms_scope` в `deps.py`) несёт флаг **`sees_all_teams`** ([ADR-032](../../adr/ADR-032-sms-visibility-admin-full-catalog.md)):
+- **admin-уровень** (`sees_all_teams = is_superadmin ИЛИ роль владеет полным каталогом прав` — `permissions_subset(full_catalog_permissions(), permissions)`; консольный супер-админ, seed-`admin`, кастомная «Админ» с полным каталогом) → видит **все** SMS/номера; опц. фильтры `number_id`/`team_id` применяются как есть. Признак устойчив к переименованию роли, без нового права/миграции.
+- **прочие роли** (неполный каталог: PM, «Пользователь» и т.п.) → `team_ids` пользователя из `user_teams`; видимые номера = `sms_phone_numbers.team_id ∈ team_ids` (по **текущей** принадлежности, не по снимку). SMS — только на видимые `to_number`. Запрос `number_id`/`team_id` вне scope → **пустой результат** (анти-энумерация, не `403`/`404`). Правило симметрично для сообщений и номеров.
 
-**Снимок `sms_inbound.team_id`** пишется на момент приёма (определяет получателей fan-out) и обнуляется `ON DELETE SET NULL` при удалении команды; **для отображения** (бейдж команды, пилюли) карточка использует **текущий** номер (`sms_phone_numbers` по `to_number`). SMS на unassigned-номер (`team_id IS NULL`) или на удалённый номер видны **только супер-админу**.
+**Снимок `sms_inbound.team_id`** пишется на момент приёма (определяет получателей fan-out) и обнуляется `ON DELETE SET NULL` при удалении команды; **для отображения** (бейдж команды, пилюли) карточка использует **текущий** номер (`sms_phone_numbers` по `to_number`). SMS на unassigned-номер (`team_id IS NULL`) или на удалённый номер видны **только actor'у admin-уровня** (`sees_all_teams`).
 
 ## Приём SMS и fan-out (нормативно)
 
@@ -168,7 +168,7 @@
 
 ## Каскады удаления (нормативно)
 
-- **Удаление номера** (`DELETE /api/sms/numbers/{id}`): удаляется строка `sms_phone_numbers`; **`sms_inbound` не затрагивается** (нет FK inbound→number, связь по строке `to_number`) → история SMS сохраняется. Такие SMS (номера больше нет) видны **только супер-админу**.
+- **Удаление номера** (`DELETE /api/sms/numbers/{id}`): удаляется строка `sms_phone_numbers`; **`sms_inbound` не затрагивается** (нет FK inbound→number, связь по строке `to_number`) → история SMS сохраняется. Такие SMS (номера больше нет) видны **только actor'у admin-уровня** (`sees_all_teams`, [ADR-032](../../adr/ADR-032-sms-visibility-admin-full-catalog.md)).
 - **Удаление пользователя**: `sms_telegram_links` (`user_id`) и `sms_deliveries` (`user_id`) — `ON DELETE CASCADE`; `sms_phone_numbers.added_by_user_id` — `SET NULL`. `sms_inbound` не затрагивается.
 - **Удаление команды**: `sms_phone_numbers.team_id` — `SET NULL` (номера → unassigned-пул); `sms_inbound.team_id` (снимок) — `SET NULL`; `sms_deliveries` не затрагиваются.
 - **Удаление `sms_inbound`** (не через API): `sms_deliveries` (`inbound_sms_id`) — `ON DELETE CASCADE`.

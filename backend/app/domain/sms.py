@@ -24,16 +24,17 @@ from urllib.parse import parse_qsl
 
 @dataclass(frozen=True)
 class SmsScope:
-    """Ролевая видимость SMS/номеров (ADR-030 §6, 05-security.md).
+    """Ролевая видимость SMS/номеров (ADR-032, ADR-030 §6, 05-security.md).
 
-    Супер-админ (`is_super_admin`) → видит всё (`team_ids` не используется). Не-админ
-    → видимость по **текущей** принадлежности номера команде (`team_id ∈ team_ids`);
-    вне scope: read/list → пусто, мутация → 403 (анти-энумерация). Вычисляется
-    фабрикой `get_sms_scope` в `api/deps.py`; хранится здесь, чтобы разорвать цикл
-    импорта deps ↔ сервисы SMS.
+    `sees_all_teams` — «видит все команды» ⇔ `is_superadmin` ИЛИ роль владеет полным
+    каталогом прав (ADR-032). При True → видит всё (`team_ids` не используется).
+    Иначе — видимость по **текущей** принадлежности номера команде (`team_id ∈
+    team_ids`); вне scope: read/list → пусто, мутация → 403 (анти-энумерация).
+    Вычисляется фабрикой `get_sms_scope` в `api/deps.py`; хранится здесь, чтобы
+    разорвать цикл импорта deps ↔ сервисы SMS.
     """
 
-    is_super_admin: bool
+    sees_all_teams: bool
     team_ids: frozenset[uuid.UUID]
 
 

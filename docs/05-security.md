@@ -144,8 +144,8 @@
 Модуль «СМС» требует видимость сообщений по командам ([ADR-030](adr/ADR-030-sms-module-full-merge.md) §6). Для этого `Principal` расширяется полем **`user_id: uuid.UUID | None`**:
 
 - БД-пользователь → `user_id` из claim `uid` (UUID); стоимость нулевая — `users`-ряд уже загружается в `get_current_principal`.
-- **Супер-админ** (`.env`, `superadmin=true`) → `user_id = None` (он не строка в `users`); видит **все** SMS/номера (scope не сужается).
-- `SmsScope` (фабрика в `deps.py`): не-админ → `team_ids` из `user_teams` пользователя → фильтр видимости SMS/номеров по **текущей** принадлежности номера команде (`sms_phone_numbers.team_id ∈ team_ids`). Запрос вне scope → **пустой результат** (анти-энумерация, не `403`/`404`).
+- **Видимость SMS по роли (нормативно, [ADR-032](adr/ADR-032-sms-visibility-admin-full-catalog.md)).** «Видит все команды» ⇔ **`is_superadmin` ИЛИ роль владеет полным каталогом прав**: `sees_all_teams = principal.is_superadmin or permissions_subset(full_catalog_permissions(), principal.permissions)`. Такой актор (консольный супер-админ; seed-роль `admin`; кастомная admin-роль, напр. «Админ», при полном каталоге) видит **все** SMS/номера (scope не сужается). Признак устойчив к переименованию роли (не завязан на редактируемое имя) и не требует нового права/миграции.
+- **Прочие роли** (неполный каталог: PM, «Пользователь» и т.п.) → видимость **только по своим командам**: `SmsScope` (фабрика `get_sms_scope` в `deps.py`) берёт `team_ids` из `user_teams` пользователя → фильтр SMS/номеров по **текущей** принадлежности номера команде (`sms_phone_numbers.team_id ∈ team_ids`). Запрос вне scope → **пустой результат** (анти-энумерация, не `403`/`404`). Правило симметрично для сообщений и номеров (`GET /api/sms/messages` и `GET /api/sms/numbers`).
 - Побочный эффект: `POST /api/sms/telegram/link` требует `user_id` (супер-админ без `uid` не может привязать линк к строке `users` → `403 forbidden`).
 
 Поле не влияет на прочие эндпоинты (существующая логика RBAC не читает `user_id`).

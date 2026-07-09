@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db import get_session, get_sessionmaker
-from app.domain.permissions import full_catalog_permissions
+from app.domain.permissions import full_catalog_permissions, permissions_subset
 from app.domain.sms import SmsScope
 from app.errors import forbidden, unauthorized
 from app.infra.jwt import SetupTokenClaims, TokenError, decode_access_token, decode_setup_token
@@ -210,14 +210,23 @@ def get_team_service(session: DbSession) -> TeamService:
 
 
 async def get_sms_scope(principal: PrincipalDep, session: DbSession) -> SmsScope:
-    """Фабрика scope: команды пользователя из `user_teams` (супер-админ → пустой набор)."""
-    if principal.is_superadmin:
-        return SmsScope(is_super_admin=True, team_ids=frozenset())
+    """Фабрика scope: «видит все команды» ⇔ супер-админ ИЛИ полный каталог прав (ADR-032).
+
+    `sees_all_teams = principal.is_superadmin or permissions_subset(full_catalog_permissions(),
+    principal.permissions)` — при полном каталоге прав роль считается admin-уровнем и
+    видит SMS всех команд. Иначе — видимость по командам из `user_teams`
+    (`user_id=None` → пустой набор).
+    """
+    sees_all_teams = principal.is_superadmin or permissions_subset(
+        full_catalog_permissions(), principal.permissions
+    )
+    if sees_all_teams:
+        return SmsScope(sees_all_teams=True, team_ids=frozenset())
     if principal.user_id is None:
-        return SmsScope(is_super_admin=False, team_ids=frozenset())
+        return SmsScope(sees_all_teams=False, team_ids=frozenset())
     stmt = select(user_teams.c.team_id).where(user_teams.c.user_id == principal.user_id)
     result = await session.execute(stmt)
-    return SmsScope(is_super_admin=False, team_ids=frozenset(result.scalars().all()))
+    return SmsScope(sees_all_teams=False, team_ids=frozenset(result.scalars().all()))
 
 
 def get_sms_message_service(session: DbSession) -> SmsMessageService:

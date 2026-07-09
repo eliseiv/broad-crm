@@ -93,7 +93,7 @@ class SmsMessageService:
         constraints: list[set[str]] = []
 
         # Базовый scope не-админа: номера его команд (по текущей принадлежности).
-        if not scope.is_super_admin:
+        if not scope.sees_all_teams:
             if not scope.team_ids:
                 return []
             scoped = await numbers.list_by_teams(scope.team_ids)

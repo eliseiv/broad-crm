@@ -116,6 +116,136 @@ async def test_numbers_gate_forbidden_without_view() -> None:
     assert resp.json()["error"]["code"] == "forbidden"
 
 
+# --- Матрица видимости sees_all_teams (ADR-032) -----------------------------
+#
+# sees_all_teams = is_superadmin ИЛИ полный каталог прав. True → видит SMS/номера
+# ВСЕХ команд + мутации на любом номере. False (неполный каталог) → только свои
+# команды (read вне scope → пусто, мутация → 403). Super-admin (.env) покрыт выше
+# (test_numbers_superadmin_sees_all_including_unassigned).
+
+
+async def test_numbers_full_catalog_db_user_sees_all_teams() -> None:
+    # БД-пользователь (is_superadmin=False) с ПОЛНЫМ каталогом прав → sees_all_teams=True:
+    # видит номера команд, в которых НЕ состоит, и unassigned.
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s, name="Админ")
+            user = await seed_user(s, role)  # НЕ состоит ни в одной команде
+            team_a = await seed_team(s)
+            team_b = await seed_team(s)
+            await seed_number(s, phone_number="+13106660001", team_id=team_a.id)
+            await seed_number(s, phone_number="+13106660002", team_id=team_b.id)
+            await seed_number(s, phone_number="+13106660003", team_id=None)
+            user_id = user.id
+            await s.commit()
+        # permissions=None → build_principal подставляет full_catalog_permissions().
+        principal = build_principal(user_id=user_id, is_superadmin=False)
+        app = build_app(sm, principal)
+        async with client(app) as c:
+            resp = await c.get("/api/sms/numbers")
+
+    assert resp.status_code == 200
+    phones = {n["phone_number"] for n in resp.json()["numbers"]}
+    assert phones == {"+13106660001", "+13106660002", "+13106660003"}
+
+
+async def test_messages_full_catalog_db_user_sees_all_teams() -> None:
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s, name="Админ")
+            user = await seed_user(s, role)
+            team_a = await seed_team(s)
+            team_b = await seed_team(s)
+            await seed_number(s, phone_number="+13106660010", team_id=team_a.id)
+            await seed_number(s, phone_number="+13106660011", team_id=team_b.id)
+            await seed_inbound(
+                s, from_number="+79160000010", to_number="+13106660010", team_id=team_a.id
+            )
+            await seed_inbound(
+                s, from_number="+79160000011", to_number="+13106660011", team_id=team_b.id
+            )
+            user_id = user.id
+            await s.commit()
+        principal = build_principal(user_id=user_id, is_superadmin=False)
+        app = build_app(sm, principal)
+        async with client(app) as c:
+            resp = await c.get("/api/sms/messages")
+
+    assert resp.status_code == 200
+    to = {m["to_number"] for m in resp.json()["messages"]}
+    assert to == {"+13106660010", "+13106660011"}
+
+
+async def test_full_catalog_db_user_mutates_any_team_number_no_403() -> None:
+    # sees_all_teams=True оперирует номером ЛЮБОЙ команды (не своей) без 403.
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s, name="Админ")
+            user = await seed_user(s, role)  # не член команды
+            other_team = await seed_team(s, name="Чужая")
+            target_team = await seed_team(s, name="Целевая")
+            n_patch = await seed_number(s, phone_number="+13106660020", team_id=other_team.id)
+            n_transfer = await seed_number(s, phone_number="+13106660021", team_id=other_team.id)
+            n_delete = await seed_number(s, phone_number="+13106660022", team_id=other_team.id)
+            ids = (n_patch.id, n_transfer.id, n_delete.id, target_team.id)
+            user_id = user.id
+            await s.commit()
+        patch_id, transfer_id, delete_id, target_team_id = ids
+        principal = build_principal(user_id=user_id, is_superadmin=False)
+        app = build_app(sm, principal)
+        async with client(app) as c:
+            patched = await c.patch(f"/api/sms/numbers/{patch_id}", json={"login": "x"})
+            transferred = await c.post(
+                f"/api/sms/numbers/{transfer_id}/transfer",
+                json={"team_id": str(target_team_id)},
+            )
+            deleted = await c.delete(f"/api/sms/numbers/{delete_id}")
+
+    assert patched.status_code == 200
+    assert transferred.status_code == 200
+    assert transferred.json()["team"]["id"] == str(target_team_id)
+    assert deleted.status_code == 204
+
+
+async def test_partial_catalog_db_user_mutation_other_team_is_403() -> None:
+    # Частичный каталог (только sms:*) → sees_all_teams=False → мутация чужого номера → 403.
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s, name="Оператор", permissions=_SMS_VIEW)
+            user = await seed_user(s, role)
+            my_team = await seed_team(s)
+            other_team = await seed_team(s)
+            await add_membership(s, user.id, my_team.id)
+            other_number = await seed_number(s, phone_number="+13106660030", team_id=other_team.id)
+            other_id, user_id = other_number.id, user.id
+            await s.commit()
+        principal = build_principal(user_id=user_id, is_superadmin=False, permissions=_SMS_VIEW)
+        app = build_app(sm, principal)
+        async with client(app) as c:
+            resp = await c.patch(f"/api/sms/numbers/{other_id}", json={"login": "x"})
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "forbidden"
+
+
+async def test_non_superadmin_no_user_id_empty_scope() -> None:
+    # is_superadmin=False, user_id=None, частичный каталог → пустой scope (нет команд).
+    async with sms_db() as sm:
+        async with sm() as s:
+            team = await seed_team(s)
+            await seed_number(s, phone_number="+13106660040", team_id=team.id)
+            await seed_inbound(
+                s, from_number="+79160000040", to_number="+13106660040", team_id=team.id
+            )
+            await s.commit()
+        principal = build_principal(user_id=None, is_superadmin=False, permissions=_SMS_VIEW)
+        app = build_app(sm, principal)
+        async with client(app) as c:
+            numbers = await c.get("/api/sms/numbers")
+            messages = await c.get("/api/sms/messages")
+    assert numbers.status_code == 200 and numbers.json()["numbers"] == []
+    assert messages.status_code == 200 and messages.json()["messages"] == []
+
+
 # --- PATCH /api/sms/numbers/{id} (presence-семантика) -----------------------
 
 

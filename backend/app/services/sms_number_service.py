@@ -36,8 +36,8 @@ class SmsNumberService:
         self._teams = teams
 
     async def list_numbers(self, scope: SmsScope) -> SmsNumbersResponse:
-        """Список видимых номеров: супер-админ — все; не-админ — номера своих команд."""
-        if scope.is_super_admin:
+        """Список видимых номеров: admin-уровень — все; иначе — номера своих команд."""
+        if scope.sees_all_teams:
             rows = await self._numbers.list_all()
         elif not scope.team_ids:
             rows = []
@@ -121,7 +121,7 @@ class SmsNumberService:
     @staticmethod
     def _require_mutation_scope(scope: SmsScope, number: SmsPhoneNumber) -> None:
         """Мутация вне scope → 403 forbidden (unassigned-номер не-админу недоступен)."""
-        if scope.is_super_admin:
+        if scope.sees_all_teams:
             return
         if number.team_id is None or number.team_id not in scope.team_ids:
             raise forbidden()

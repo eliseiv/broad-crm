@@ -980,7 +980,7 @@ CREATE INDEX ix_sms_telegram_links_user_id ON sms_telegram_links (user_id);
 - `ix_sms_telegram_links_user_id` — резолв получателей команды (`recipients_for_team`).
 
 ### Политика удаления
-- **Номер** — hard delete; **`sms_inbound` не затрагивается** (нет FK inbound→number — связь по строке `to_number`), история SMS сохраняется. SMS удалённого номера видны только супер-админу.
+- **Номер** — hard delete; **`sms_inbound` не затрагивается** (нет FK inbound→number — связь по строке `to_number`), история SMS сохраняется. SMS удалённого номера видны только actor'у admin-уровня (`sees_all_teams` — `is_superadmin` ИЛИ полный каталог прав, [ADR-032](adr/ADR-032-sms-visibility-admin-full-catalog.md)).
 - **Пользователь** — hard delete; `sms_telegram_links`/`sms_deliveries` (`user_id`) — `ON DELETE CASCADE`; `sms_phone_numbers.added_by_user_id` — `SET NULL`; `sms_inbound` не затрагивается.
 - **Команда** — hard delete; `sms_phone_numbers.team_id`/`sms_inbound.team_id` — `SET NULL` (номера → пул, снимок обнуляется); `sms_deliveries` не затрагиваются.
 - **`sms_inbound`** (не через API) — `sms_deliveries` (`inbound_sms_id`) `ON DELETE CASCADE`.
