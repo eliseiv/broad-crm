@@ -11,6 +11,14 @@ const deleteMutation = vi.hoisted(() => ({ mutate: vi.fn(), isPending: false }))
 vi.mock('@/features/ai-keys/hooks', () => ({
   aiKeysKey: ['ai-keys'],
   useAiKeyStatus: () => ({ data: undefined }),
+  // AiKeyDetailModal (рендерится AiKeyCard) вызывает ленивый reverse-lookup «Бэки» (ADR-040).
+  useAiKeyBackends: () => ({
+    data: undefined,
+    isLoading: false,
+    isError: false,
+    isFetching: false,
+    refetch: vi.fn(),
+  }),
   useDeleteAiKey: () => deleteMutation,
   // EditAiKeyDialog (внутри AddAiKeyModal, рендерится AiKeyCard) вызывает useUpdateAiKey.
   useUpdateAiKey: () => ({ mutate: vi.fn(), isPending: false }),
@@ -33,6 +41,7 @@ function makeKey(overrides: Partial<AiKey> = {}): AiKey {
     check_status: 'working' as AiKeyStatus,
     error_message: null,
     position: 0,
+    backend_count: 0,
     last_checked_at: '2026-07-01T10:15:00Z',
     created_at: '2026-07-01T09:00:00Z',
     ...overrides,

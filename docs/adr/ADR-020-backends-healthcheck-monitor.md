@@ -2,6 +2,7 @@
 
 - Статус: accepted
 - Дата: 2026-07-07
+- **Амендирован:** [ADR-040](ADR-040-backend-relations-secrets-reverse-lookup.md) — бэк перестал быть «без секрета/связей»: добавлены опциональные связи `server_id`/`ai_key_id` (FK, `ON DELETE SET NULL`) и **секреты** `api_key`/`admin_api_key` (Fernet at-rest, reveal под `backends:edit`), миграция `0019`. Пункт 3 контекста ниже («секрета у сущности нет») действует лишь для исходной модели Спринта 2. · [ADR-039](ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md) — страница «Бэки»: клиентский поиск + пустое состояние без текста.
 
 ## Контекст
 

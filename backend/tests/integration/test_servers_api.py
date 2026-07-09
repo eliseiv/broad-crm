@@ -45,6 +45,7 @@ class FakeServersService:
                 online=False,
                 uptime_seconds=None,
                 last_updated=now,
+                backend_count=0,
                 metrics=None,
             ),
             ServerListItem(
@@ -58,6 +59,7 @@ class FakeServersService:
                 online=False,
                 uptime_seconds=None,
                 last_updated=now - timedelta(minutes=5),
+                backend_count=0,
                 metrics=None,
             ),
         ]

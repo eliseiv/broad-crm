@@ -101,8 +101,18 @@ class FakeMonitor:
         self.checked.append(ai_key_id)
 
 
+class _FakeBackends:
+    async def count_by_ai_keys(self, ai_key_ids: Any) -> dict[Any, int]:
+        return {}
+
+    async def list_by_ai_key(self, ai_key_id: Any) -> list[Any]:
+        return []
+
+
 def _service(repo: FakeAiKeyRepo, monitor: FakeMonitor) -> AiKeyService:
-    return AiKeyService(repository=cast(Any, repo), monitor=cast(Any, monitor))
+    return AiKeyService(
+        repository=cast(Any, repo), monitor=cast(Any, monitor), backends=cast(Any, _FakeBackends())
+    )
 
 
 # --------------------------------------------------------------- update: секрет

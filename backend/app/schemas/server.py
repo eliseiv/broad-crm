@@ -80,6 +80,9 @@ class ServerListItem(BaseModel):
     uptime_seconds: int | None
     last_updated: datetime | None
     metrics: ServerMetrics | None
+    # Число бэков, связанных с сервером (COUNT по backends.server_id, ADR-040) — для
+    # свёрнутой секции «Бэки» в detail-view сервера («Бэков: N») без доп. запроса.
+    backend_count: int
 
 
 class ServerListResponse(BaseModel):

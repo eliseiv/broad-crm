@@ -1,17 +1,21 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState } from 'react';
 
 /**
- * Светлая/тёмная тема (08-design-system.md «Темизация», ADR-033).
- * Носитель — `data-theme` на `<html>`. Дефолт — СИСТЕМНАЯ тема ОС
- * (`prefers-color-scheme`); явный выбор пользователя пишется в
- * `localStorage['crm-theme']` и переопределяет систему («залипает»).
+ * Светлая/тёмная тема (08-design-system.md «Темизация», ADR-033/ADR-041).
+ * Носитель — `data-theme` на `<html>`. Дефолт при отсутствии сохранённого выбора —
+ * СВЕТЛАЯ (`light`, ADR-041), НЕ `prefers-color-scheme`. Явный выбор пользователя
+ * пишется в `localStorage['crm-theme']` и переопределяет дефолт («залипает»);
+ * за сменой темы ОС приложение больше НЕ следует (подписка снята, ADR-041).
  */
 export type Theme = 'light' | 'dark';
 
 const STORAGE_KEY = 'crm-theme';
 const MEDIA_QUERY = '(prefers-color-scheme: dark)';
 
-/** Системная тема ОС на данный момент. */
+/** Дефолтная тема при отсутствии сохранённого выбора (ADR-041). */
+const DEFAULT_THEME: Theme = 'light';
+
+/** Системная тема ОС на данный момент (в дефолт темы больше не входит, ADR-041). */
 export function systemTheme(): Theme {
   return typeof window !== 'undefined' && window.matchMedia(MEDIA_QUERY).matches ? 'dark' : 'light';
 }
@@ -26,9 +30,9 @@ export function getStoredTheme(): Theme | null {
   }
 }
 
-/** Итоговая тема: сохранённый выбор → иначе системная. */
+/** Итоговая тема: сохранённый выбор → иначе дефолт `light` (ADR-041). */
 export function resolveTheme(): Theme {
-  return getStoredTheme() ?? systemTheme();
+  return getStoredTheme() ?? DEFAULT_THEME;
 }
 
 /** Фон страницы (bg-base) по теме — для браузерного `theme-color` (08-design-system). */
@@ -56,27 +60,14 @@ export function persistTheme(theme: Theme): void {
 
 /**
  * Хук темы для хэдера `AppLayout`. Инициализируется текущим `data-theme`
- * (проставлен no-FOUC-скриптом в `index.html`). Пока нет явного выбора —
- * следует за сменой темы ОС в реальном времени; после первого явного выбора
- * (`toggle`) сохранённое значение имеет приоритет и ОС больше не влияет.
+ * (проставлен no-FOUC-скриптом в `index.html`). За сменой темы ОС приложение НЕ
+ * следует (ADR-041): дефолт при отсутствии выбора — `light`, подписка на
+ * `matchMedia` снята. `toggle` пишет явный выбор в `localStorage` и «залипает».
  */
 export function useTheme(): { theme: Theme; toggle: () => void } {
   const [theme, setThemeState] = useState<Theme>(
     () => (document.documentElement.dataset.theme as Theme | undefined) ?? resolveTheme(),
   );
-
-  // Следование за ОС — только пока явного выбора нет (localStorage пуст).
-  useEffect(() => {
-    const mq = window.matchMedia(MEDIA_QUERY);
-    const handler = (e: MediaQueryListEvent) => {
-      if (getStoredTheme() !== null) return; // явный выбор приоритетнее ОС
-      const next: Theme = e.matches ? 'dark' : 'light';
-      applyTheme(next);
-      setThemeState(next);
-    };
-    mq.addEventListener('change', handler);
-    return () => mq.removeEventListener('change', handler);
-  }, []);
 
   const toggle = useCallback(() => {
     setThemeState((prev) => {

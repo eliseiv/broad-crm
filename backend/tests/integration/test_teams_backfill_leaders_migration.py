@@ -225,7 +225,7 @@ def test_0016_sits_on_top_of_0015_single_head() -> None:
     """Ревизия 0016 висит поверх 0015 и является единственной головой цепочки."""
     script = ScriptDirectory.from_config(_alembic_config())
     # Единственная голова цепочки — теперь 0018 (ADR-038 добавил teams.mail_group_id поверх 0017).
-    assert script.get_heads() == ["0018_teams_mail_group_id"]
+    assert script.get_heads() == ["0020_backends_domain_canon"]
     rev = script.get_revision(_REV_0016)
     assert rev.down_revision == _REV_0015
 

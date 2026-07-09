@@ -1,6 +1,9 @@
+import { useState } from 'react';
+import { BackendsDetailSection } from '@/components/BackendsDetailSection';
 import { DetailEditPencil, DetailRow, SecretRevealField } from '@/components/DetailFields';
 import { Modal } from '@/components/ui/Modal';
 import { revealAiKeyValue } from '@/features/ai-keys/api';
+import { useAiKeyBackends } from '@/features/ai-keys/hooks';
 import type { AiKey, AiProvider } from '@/types/api';
 
 /** Локализованное имя провайдера (08-design-system.md, словарь). */
@@ -22,7 +25,8 @@ interface AiKeyDetailModalProps {
 /**
  * Read-only detail-модалка ИИ-ключа (08-design-system.md «Detail-view», ADR-035).
  * Поля: Название / Провайдер / Ключ (маска `key_masked`) + reveal полного ключа
- * по требованию под `ai-keys:edit`. Карандаш под `ai-keys:edit`.
+ * по требованию под `ai-keys:edit`. Снизу — сворачиваемая секция «Бэки» (`backend_count`,
+ * ленивый reverse-lookup, ADR-040). Карандаш под `ai-keys:edit`.
  */
 export function AiKeyDetailModal({
   open,
@@ -31,6 +35,9 @@ export function AiKeyDetailModal({
   canEdit,
   onEdit,
 }: AiKeyDetailModalProps) {
+  const [backendsOpen, setBackendsOpen] = useState(false);
+  const backendsQuery = useAiKeyBackends(aiKey.id, backendsOpen);
+
   return (
     <Modal
       open={open}
@@ -49,6 +56,14 @@ export function AiKeyDetailModal({
           reveal={(signal) => revealAiKeyValue(aiKey.id, signal)}
           showAria="Показать ключ"
           hideAria="Скрыть ключ"
+        />
+
+        <BackendsDetailSection
+          count={aiKey.backend_count}
+          id={`ai-key-${aiKey.id}-backends`}
+          open={backendsOpen}
+          onToggle={() => setBackendsOpen((v) => !v)}
+          query={backendsQuery}
         />
       </div>
     </Modal>

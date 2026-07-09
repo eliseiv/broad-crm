@@ -2,6 +2,7 @@
 
 - Статус: accepted
 - Дата: 2026-06-28
+- **Амендирован:** [ADR-040](ADR-040-backend-relations-secrets-reverse-lookup.md) — тем же примитивом Fernet/`FERNET_KEY` шифруются **два новых секрета бэка** `api_key`/`admin_api_key` (`backends.api_key_encrypted`/`admin_api_key_encrypted`), по образцу SSH-пароля/пароля прокси/AI-ключа.
 
 ## Контекст
 

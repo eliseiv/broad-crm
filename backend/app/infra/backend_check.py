@@ -1,12 +1,15 @@
-"""Проверка доступности бэка `GET https://{domain}/health` (modules/backends, ADR-020).
+"""Проверка доступности бэка `GET {domain}health` (modules/backends, ADR-020/ADR-042).
 
-Нормализация домена (принять с/без схемы, с завершающим `/` → «голый» `host[:port]`)
-и валидация формата — чистые функции, тестируются без сети. Проверка: прямой
-`GET https://{domain}/health` через `httpx.AsyncClient(verify=True,
+Нормализация домена к канону `https://<host>/` (принять с/без схемы, с путём/
+завершающим `/` → извлечь host → собрать `https://<host>/`) и валидация формата —
+чистые функции, тестируются без сети. URL проверки строится **дописыванием** `health`
+к канону (`domain + "health"`), а НЕ склейкой `https://{domain}/health` — иначе с
+новым каноном вышел бы битый `https://https://…//health` (ADR-042, анти-двойная-схема).
+Проверка: прямой `GET {domain}health` через `httpx.AsyncClient(verify=True,
 follow_redirects=False)` с ограниченными ретраями. Строго `2xx` → `working`;
 таймаут/сеть/не-2xx (после ретраев) → `error` с русской причиной. У бэков НЕТ
 исхода `unknown`: недоступность бэка и есть событие. Путь `/health` и схема
-`https://` фиксированы. Секретов нет; URL не секретен, но тела ответов не логируются.
+`https://` фиксированы; секреты бэка в URL/лог не пишутся, тела ответов не логируются.
 """
 
 from __future__ import annotations
@@ -27,9 +30,11 @@ REASON_TIMEOUT = "Таймаут подключения"
 REASON_UNREACHABLE = "Бэк недоступен"
 REASON_BACKEND_ERROR = "Ошибка бэка"
 
-# Фиксированы (не конфигурируются, ADR-020).
+# Фиксированы (не конфигурируются, ADR-020/ADR-042). Канон домена — `https://<host>/`;
+# суффикс здоровья дописывается к нему (`domain + "health"`), поэтому без ведущего `/`.
 HEALTH_SCHEME = "https"
 HEALTH_PATH = "/health"
+_HEALTH_SUFFIX = "health"
 
 # Backoff между попытками на транзиентных ошибках; попыток = len + 1 (т.е. 3).
 _BACKOFF_DELAYS_SEC = (0.2, 0.5)
@@ -47,11 +52,12 @@ class BackendCheckResult:
     reason: str | None
 
 
-def normalize_domain(raw: str) -> str:
-    """Нормализует домен → «голый» `host[:port]` (modules/backends, чистая функция).
+def extract_host(raw: str) -> str:
+    """Извлекает `host[:port]` из ввода (шаги 1–4 нормализации, чистая функция).
 
     1. Trim пробелов. 2. Снять схему `http(s)://` (регистронезависимо). 3. Снять
     всё с первого `/` (путь/query/fragment). 4. Привести к нижнему регистру.
+    Валидацию формата host выполняет `is_valid_domain`; сборку канона — `normalize_domain`.
     """
     value = raw.strip()
     lowered = value.lower()
@@ -65,17 +71,29 @@ def normalize_domain(raw: str) -> str:
     return value.lower()
 
 
-def is_valid_domain(domain: str) -> bool:
-    """Валидирует нормализованный домен: `host[:port]`, валидные DNS-метки, порт 1..65535.
+def normalize_domain(raw: str) -> str:
+    """Нормализует домен → канон `https://<host>/` (ADR-042, чистая функция, не валидирует).
 
-    Ожидает уже нормализованный вход (без схемы/пути, нижний регистр). Пустой host,
-    пробелы/`/`, невалидные метки или порт вне диапазона → False.
+    Извлекает `host[:port]` (`extract_host`) и собирает канон `https://<host>/`.
+    Примеры: `lumorixsite.shop` → `https://lumorixsite.shop/`;
+    `HTTP://API.Example.com:8443/path?x=1` → `https://api.example.com:8443/`.
     """
-    if not domain:
+    return f"{HEALTH_SCHEME}://{extract_host(raw)}/"
+
+
+def is_valid_domain(domain: str) -> bool:
+    """Валидирует host домена: валидные DNS-метки + опциональный `:port` (1..65535).
+
+    Принимает как канон `https://<host>/`, так и голый `host[:port]` — host извлекается
+    через `extract_host`. Пустой host, пробелы/`/` внутри host, невалидные метки или
+    порт вне диапазона → False.
+    """
+    host_port = extract_host(domain)
+    if not host_port:
         return False
-    host = domain
-    if ":" in domain:
-        host, _, port_str = domain.rpartition(":")
+    host = host_port
+    if ":" in host_port:
+        host, _, port_str = host_port.rpartition(":")
         if not port_str.isdigit():
             return False
         port = int(port_str)
@@ -87,8 +105,13 @@ def is_valid_domain(domain: str) -> bool:
 
 
 def build_health_url(domain: str) -> str:
-    """Собирает URL проверки здоровья: `https://{domain}/health` (схема/путь фиксированы)."""
-    return f"{HEALTH_SCHEME}://{domain}{HEALTH_PATH}"
+    """Собирает URL проверки здоровья из канона: `domain + "health"` (ADR-042).
+
+    `domain` — канон `https://<host>/`, поэтому health-URL строится дописыванием
+    `health` (а НЕ склейкой `https://{domain}/health`, дающей битую двойную схему):
+    `https://<host>/` → `https://<host>/health`.
+    """
+    return f"{domain}{_HEALTH_SUFFIX}"
 
 
 async def check_backend(domain: str) -> BackendCheckResult:
@@ -152,6 +175,7 @@ __all__ = [
     "CheckOutcome",
     "build_health_url",
     "check_backend",
+    "extract_host",
     "is_valid_domain",
     "normalize_domain",
 ]

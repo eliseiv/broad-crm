@@ -33,13 +33,14 @@
 
 ### Endpoints (все под JWT, префикс `/api`)
 
-- `GET /api/ai-keys` → список `AiKeyListItem` + `position` (см. [04-api.md](../../04-api.md#get-apiai-keys)). Сортировка `position ASC, created_at DESC, id`. Плоский список; группировка по провайдеру — на frontend. Пагинации нет.
+- `GET /api/ai-keys` → список `AiKeyListItem` + `position` + **`backend_count`** (число бэков, использующих ключ, `COUNT` по `backends.ai_key_id` — для секции «Бэки» detail-view, [ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)) (см. [04-api.md](../../04-api.md#get-apiai-keys)). Сортировка `position ASC, created_at DESC, id`. Плоский список; группировка по провайдеру — на frontend. Пагинации нет.
 - `POST /api/ai-keys {name, provider, key}` → `202`; валидация, шифрование ключа (Fernet), вычисление `key_prefix`/`key_last4`, `INSERT check_status='pending'` (`position` = `DEFAULT 0`), запуск **немедленной фоновой проверки** (`asyncio.create_task`). Возвращает созданный `AiKeyListItem` (`check_status:"pending"`).
 - `PATCH /api/ai-keys/{id} {name?, provider?, key?}` → `200`; редактирование ключа. **Секретная семантика:** `key` пустой/отсутствует = не менять; непустой `key` → re-encrypt + пересчёт `key_prefix`/`key_last4`. **Re-check:** смена `provider` ИЛИ непустой `key` → `check_status='pending'`, `error_message=NULL`, немедленная фоновая проверка (первый переход от `prev='pending'`). Только смена `name` — без re-check. См. [«Редактирование ключа»](#редактирование-ключа-patch-нормативно) и [04-api.md](../../04-api.md#patch-apiai-keysid).
 - `PATCH /api/ai-keys/order {provider, ids}` → `204`; перестановка **внутри провайдер-группы** (`WHERE provider=:provider`), `position = 0..M-1` в одной транзакции. Прецеденция кодов: битое тело / нет `provider` → `400`; `provider` вне enum → `422` (до проверки id); **любой несуществующий `id` → `404` (проверяется до полноты)**; только если все `id` существуют — неполная перестановка группы / чужой провайдер → `422`. См. [04-api.md](../../04-api.md#прецеденция-ошибок-валидации-нормативно-едино-для-всех-order-эндпоинтов).
 - `GET /api/ai-keys/{id}/status` → `{id, check_status, error_message, last_checked_at}`. Лёгкий endpoint для polling статуса после добавления/редактирования.
 - `DELETE /api/ai-keys/{id}` → `204`; hard delete. Повтор → `404 ai_key_not_found`.
 - `GET /api/ai-keys/{id}/key` (гейт `require("ai-keys","edit")`) → `200 SecretRevealResponse {value}`; **on-demand reveal** полного ключа для detail-view ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)): `decrypt_secret(key_encrypted)` in-memory, `Cache-Control: no-store`, аудит `secret_revealed`. Нет права → `403`; нет ключа → `404 ai_key_not_found`. Контракт — [04-api.md](../../04-api.md#get-apiai-keysidkey), [05-security.md](../../05-security.md#reveal-секретов-по-требованию-adr-035).
+- `GET /api/ai-keys/{id}/backends` (гейт `require("ai-keys","view")`) → `200 {backends: BackendRef[]}` (`{code,name,domain}`); **reverse-lookup** бэков, использующих ключ (`backends.ai_key_id = {id}`) — для сворачиваемой секции «Бэки» в detail-view ключа ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)). Сортировка `position ASC, created_at DESC, id`. Нет ключа → `404 ai_key_not_found`. Свёрнутый счётчик — `AiKeyListItem.backend_count`. Контракт — [04-api.md](../../04-api.md#get-apiai-keysidbackends).
 
 Коды ошибок и точные схемы — [04-api.md](../../04-api.md#ai-keys). `provider` вне enum → `422 unprocessable` (code `unprocessable`, по аналогии с невалидным IP у серверов).
 
@@ -185,6 +186,7 @@ Loading (skeleton), empty (только `AddAiKeyCard` + подсказка), pe
 ## DoD
 
 - [ ] Endpoints и коды ошибок соответствуют [04-api.md](../../04-api.md#ai-keys); полный ключ отсутствует в ответах/логах.
+- [ ] **([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md), spec-ready):** `AiKeyListItem += backend_count`; `GET /api/ai-keys/{id}/backends` под `ai-keys:view` → `BackendRef[]`; секция «Бэки» в detail-view ключа (свёрнуто «Бэков: N», раскрытие — список Код/Название/Домен).
 - [ ] Ключ зашифрован Fernet (`FERNET_KEY`); `key_masked` собирается из `key_prefix`/`key_last4`; правило маски (в т.ч. `<8` символов) соблюдено.
 - [ ] Проверка провайдера использует `GET /v1/models` (токены не тратятся); маппинг статусов и правило `unknown` соблюдены (транзиентные ошибки не флипают статус и не алертят).
 - [ ] Матрица переходов и алерты соответствуют таблице; первая проверка сломанного ключа алертит (🔴), recovery `error→working` шлёт 🟢.
@@ -199,6 +201,7 @@ Loading (skeleton), empty (только `AddAiKeyCard` + подсказка), pe
 
 ## Changelog
 
+- 2026-07-10: **reverse-lookup бэков ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md), spec-ready):** `AiKeyListItem += backend_count` (число бэков, использующих ключ, `COUNT` по `backends.ai_key_id`); `GET /api/ai-keys/{id}/backends` (гейт `ai-keys:view`) → `{backends: BackendRef[]}`; в detail-view ключа (`AiKeyDetailModal`) — сворачиваемая секция **«Бэки»** (свёрнуто «Бэков: N», раскрытие → список Код/Название/Домен). Контракт reveal-ключа не меняется.
 - 2026-07-09: **detail-view + reveal полного ключа** ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md), spec-ready): клик по карточке → read-only `AiKeyDetailModal` (`key_masked` + глаз), карандаш → edit; `GET /api/ai-keys/{id}/key` (гейт `ai-keys:edit`, `decrypt_secret`, `no-store`, аудит `secret_revealed`). Контракт `AiKeyListItem` не меняется (полный ключ только через reveal).
 - 2026-07-01: спецификация создана (architect). Решение об in-backend-мониторе AI-ключей и Fernet-шифровании — [ADR-010](../../adr/ADR-010-ai-key-monitor-vnutri-backend.md); ограничения — [TD-020](../../100-known-tech-debt.md), [TD-021](../../100-known-tech-debt.md).
 - 2026-07-01: добавлены `PATCH /api/ai-keys/{id}` (edit `name`/`provider`/`key`, секрет пустой=не менять, re-check при смене provider/key), `PATCH /api/ai-keys/order` (reorder внутри провайдер-группы), UI-группировка по провайдерам, клик=edit / зажатие=drag; колонка `position` + миграция `0003`. Редактирование/ротация ключа переведены из out-of-scope в scope ([ADR-011](../../adr/ADR-011-poryadok-blokov-server-side-dnd-kit.md)); [TD-021](../../100-known-tech-debt.md) сокращён.

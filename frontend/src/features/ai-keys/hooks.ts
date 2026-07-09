@@ -4,6 +4,7 @@ import {
   createAiKey,
   deleteAiKey,
   getAiKeyStatus,
+  listAiKeyBackends,
   listAiKeys,
   reorderAiKeys,
   updateAiKey,
@@ -22,6 +23,20 @@ import type {
 
 export const aiKeysKey = ['ai-keys'] as const;
 export const aiKeyStatusKey = (id: string) => ['ai-key-status', id] as const;
+export const aiKeyBackendsKey = (id: string) => ['ai-key-backends', id] as const;
+
+/**
+ * Ленивый reverse-lookup «Бэки ключа» (ADR-040): запрос уходит только при раскрытии
+ * секции (`enabled`). Своё состояние loading/empty/error внутри секции detail-модалки.
+ */
+export function useAiKeyBackends(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: aiKeyBackendsKey(id),
+    queryFn: ({ signal }) => listAiKeyBackends(id, signal),
+    enabled,
+    retry: false,
+  });
+}
 
 /**
  * Routine-опрос списка ключей: единственный запрос GET /api/ai-keys с refetchInterval

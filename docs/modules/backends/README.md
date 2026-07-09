@@ -4,7 +4,7 @@
 
 ## Scope
 
-Управление списком бэков (backend-сервисов): добавление, список, **редактирование** (`code`/`name`/`domain`), удаление, **перестановка порядка (drag-and-drop, единый список)** и **периодическая автоматическая проверка доступности** каждого бэка запросом `GET https://{domain}/health` с уведомлением администратора в Telegram при недоступности (🔴) и восстановлении (🟢). Каждый бэк описывается тремя публичными полями — **Код** (`code`, уникален) / **Название** (`name`) / **Домен** (`domain`). Модель — [03-data-model.md](../../03-data-model.md#таблица-backends), API-контракт — [04-api.md](../../04-api.md#backends), решения — [ADR-020](../../adr/ADR-020-backends-healthcheck-monitor.md), [ADR-011](../../adr/ADR-011-poryadok-blokov-server-side-dnd-kit.md) (drag-and-drop/`position`).
+Управление списком бэков (backend-сервисов): добавление, список, **редактирование** (`code`/`name`/`domain` + доп. поля — ниже), удаление, **перестановка порядка (drag-and-drop, единый список)**, **поиск** и **группировка по одинаковому `name`** ([ADR-039](../../adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md)) и **периодическая автоматическая проверка доступности** каждого бэка запросом `GET {domain}health` (`domain` — канон `https://<host>/`, [ADR-042](../../adr/ADR-042-backend-domain-canonical-https.md)) с уведомлением администратора в Telegram при недоступности (🔴) и восстановлении (🟢). Базовые поля — **Код** (`code`, **уникален**) / **Название** (`name`, **НЕ уникален**) / **Домен** (`domain`). **Доп. опциональные поля ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)):** связи **Сервер** (`server_id` → `servers`) и **ИИ-ключ** (`ai_key_id` → `ai_keys`), секреты **API KEY**/**ADMIN API KEY** (`api_key`/`admin_api_key`, Fernet, reveal под `backends:edit`), **Git** (`git`), **Примечания** (`note`). Модель — [03-data-model.md](../../03-data-model.md#таблица-backends), API-контракт — [04-api.md](../../04-api.md#backends), решения — [ADR-020](../../adr/ADR-020-backends-healthcheck-monitor.md), [ADR-011](../../adr/ADR-011-poryadok-blokov-server-side-dnd-kit.md) (drag-and-drop/`position`).
 
 Образец модуля целиком — **прокси** ([modules/proxies](../proxies/README.md), [ADR-019](../../adr/ADR-019-proxies-availability-monitor.md)): та же схема «модель со статусом в БД + отдельный фоновый монитор + собственный `TelegramClient`». Отличия — см. [«Отличия от прокси»](#отличия-от-прокси-нормативно).
 
@@ -20,11 +20,11 @@
 
 | Аспект | Прокси | Бэки |
 |--------|--------|------|
-| Секрет | `password` (опц., Fernet, `password_encrypted`) | **нет секрета** — все поля публичны, Fernet/crypto не задействованы |
-| Идентификатор | `id` (UUID); `name` не уникален | `code` — **уникальный** бизнес-код (дубликат → `409 backend_code_taken`) |
-| Поля | `name`/`proxy_type`/`host`/`port`/`username`/`password` | **`code`/`name`/`domain`** (три публичных поля) |
-| Проверка | `GET` эталонного URL **через** `httpx.AsyncClient(proxy=...)` | `GET https://{domain}/health` **напрямую** (без прокси-туннеля), строго `2xx` |
-| Эталонный URL | `PROXY_CHECK_URL` (конфиг) | путь **фиксирован** `/health`, URL = `https://{domain}/health` |
+| Секрет | `password` (опц., Fernet, `password_encrypted`) | **два опц. секрета** `api_key`/`admin_api_key` (Fernet, `*_encrypted`, [ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)); прежде секрета не было ([ADR-020](../../adr/ADR-020-backends-healthcheck-monitor.md)) |
+| Идентификатор | `id` (UUID); `name` не уникален | `code` — **уникальный** бизнес-код (дубликат → `409 backend_code_taken`); `name` **НЕ уникален** (дубли группируются на UI, [ADR-039](../../adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md)) |
+| Поля | `name`/`proxy_type`/`host`/`port`/`username`/`password` | **`code`/`name`/`domain`** + опц. `server_id`/`ai_key_id` (FK), `api_key`/`admin_api_key` (секреты), `git`/`note` ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)) |
+| Проверка | `GET` эталонного URL **через** `httpx.AsyncClient(proxy=...)` | `GET {domain}health` **напрямую** (без прокси-туннеля), строго `2xx`; `domain` — канон `https://<host>/` ([ADR-042](../../adr/ADR-042-backend-domain-canonical-https.md)) |
+| Эталонный URL | `PROXY_CHECK_URL` (конфиг) | путь **фиксирован** `/health`, URL = `{domain}health` = `https://<host>/health` |
 | Исход `unknown` | нет | **нет** (как у прокси) |
 | Интервал (default) | `PROXY_CHECK_INTERVAL_SEC=60` | `BACKEND_CHECK_INTERVAL_SEC=60` |
 | Overall-deadline проверки | `PROXY_CHECK_DEADLINE_SEC=30` | `BACKEND_CHECK_DEADLINE_SEC=30` ([ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
@@ -35,8 +35,9 @@
 
 ## Безопасность (нормативно)
 
-- У бэка **нет секрета**: `code`, `name`, `domain` — публичные поля, хранятся plaintext, возвращаются в API как есть. Fernet/`FERNET_KEY`/`crypto.py` не используются.
-- В логах монитора собранный URL (`https://{domain}/health`) не секретен, но лог ошибок остаётся без чувствительных данных (образец structlog-фильтра, [05-security.md](../../05-security.md)). Логируется `backend_check_error` (warning) с `code`/`domain`/причиной — без тел ответов.
+- **Публичные поля:** `code`, `name`, `domain`, `git`, `note`, `server_id`, `ai_key_id` — plaintext, возвращаются в API как есть.
+- **Секреты ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)):** `api_key`, `admin_api_key` шифруются **Fernet** (`FERNET_KEY`, `encrypt_secret`/`decrypt_secret`); в БД — `api_key_encrypted`/`admin_api_key_encrypted bytea NULL`. В обычных ответах — только `has_api_key`/`has_admin_api_key`; plaintext — только on-demand reveal `GET /api/backends/{id}/api-key` · `/admin-api-key` под `backends:edit` (`no-store`, аудит `secret_revealed`, `404 secret_not_set` если не задан — [ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md), [05-security.md](../../05-security.md#защита-api-ключей-бэка-adr-040)). Prior [ADR-020](../../adr/ADR-020-backends-healthcheck-monitor.md) «у бэка нет секрета» — снят.
+- В логах монитора собранный URL (`{domain}health` = `https://<host>/health`) не секретен, но лог ошибок остаётся без чувствительных данных; `api_key`/`admin_api_key` в лог **не** пишутся (фильтр секретов). Логируется `backend_check_error` (warning) с `code`/`domain`/причиной — без тел ответов/секретов.
 
 ## Backend — ТЗ
 
@@ -45,24 +46,28 @@
 ### Endpoints (все под JWT, префикс `/api`)
 
 - `GET /api/backends` → список `BackendListItem`. Сортировка `position ASC, created_at DESC, id`. Единый плоский список. Пагинации нет. См. [04-api.md](../../04-api.md#get-apibackends).
-- `POST /api/backends {code, name, domain}` → `202`; валидация, нормализация домена, проверка уникальности `code` (дубль → `409 backend_code_taken`), `INSERT check_status='pending'` (`position` = `DEFAULT 0`), запуск **немедленной фоновой проверки** (`asyncio.create_task`). Возвращает созданный `BackendListItem` (`check_status:"pending"`). См. [04-api.md](../../04-api.md#post-apibackends).
+- `POST /api/backends {code, name, domain, server_id?, ai_key_id?, api_key?, admin_api_key?, git?, note?}` → `202`; валидация, канонизация домена к `https://<host>/`, проверка уникальности `code` (дубль → `409 backend_code_taken`) и существования `server_id`/`ai_key_id` (несуществующий → `422`), шифрование секретов (Fernet), `INSERT check_status='pending'` (`position` = `DEFAULT 0`), запуск **немедленной фоновой проверки** (`asyncio.create_task`). Возвращает созданный `BackendListItem` (`check_status:"pending"`). См. [04-api.md](../../04-api.md#post-apibackends).
 - `PATCH /api/backends/order {ids}` → `204`; перестановка **единого списка** (как `PATCH /api/servers/order`), `position = 0..N-1` в одной транзакции. Прецеденция кодов — [04-api.md](../../04-api.md#прецеденция-ошибок-валидации-нормативно-едино-для-всех-order-эндпоинтов).
-- `PATCH /api/backends/{id} {code?, name?, domain?}` → `200`; редактирование. Уникальность `code` и **триггер re-check при смене `domain`** — см. [«Редактирование бэка»](#редактирование-бэка-patch-нормативно) и [04-api.md](../../04-api.md#patch-apibackendsid).
+- `PATCH /api/backends/{id} {code?, name?, domain?, server_id?, ai_key_id?, api_key?, admin_api_key?, git?, note?}` → `200`; редактирование (presence-семантика; секреты/FK/`git`/`note` — `null`/`""` очищает). Уникальность `code`, существование FK и **триггер re-check ТОЛЬКО при смене `domain`** — см. [«Редактирование бэка»](#редактирование-бэка-patch-нормативно) и [04-api.md](../../04-api.md#patch-apibackendsid).
 - `GET /api/backends/{id}/status` → `{id, check_status, error_message, last_checked_at}`. Лёгкий endpoint для polling статуса после добавления/редактирования.
 - `DELETE /api/backends/{id}` → `204`; hard delete. Повтор → `404 backend_not_found`.
+- **Reveal секретов ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md), по образцу [ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)):** `GET /api/backends/{id}/api-key` и `GET /api/backends/{id}/admin-api-key` → `SecretRevealResponse {value}`, гейт `backends:edit`, `Cache-Control: no-store`, аудит `secret_revealed`, `404 secret_not_set` если ключ не задан. См. [04-api.md](../../04-api.md#reveal-секретов-по-требованию-adr-035).
+- **Reverse-lookup для detail сервера/ключа ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)):** `GET /api/servers/{id}/backends` (гейт `servers:view`) и `GET /api/ai-keys/{id}/backends` (гейт `ai-keys:view`) → `{backends: BackendRef[]}` (`{code,name,domain}`). Свёрнутый счётчик секции — `ServerListItem.backend_count`/`AiKeyListItem.backend_count`. См. [04-api.md](../../04-api.md#get-apiserversidbackends).
 
 Коды ошибок и точные схемы — [04-api.md](../../04-api.md#backends). Невалидный формат `domain` → `422 unprocessable`; дубликат `code` → `409 backend_code_taken`.
 
 ### Редактирование бэка (`PATCH`, нормативно)
 
-`PATCH /api/backends/{id}` принимает `{code?, name?, domain?}` (все опциональны). «Переданное поле» определяется по множеству заданных полей запроса (`model_dump(exclude_unset=True)` / `__pydantic_fields_set__` в Pydantic v2).
+`PATCH /api/backends/{id}` принимает `{code?, name?, domain?, server_id?, ai_key_id?, api_key?, admin_api_key?, git?, note?}` (все опциональны). «Переданное поле» определяется по множеству заданных полей запроса (`model_dump(exclude_unset=True)` / `__pydantic_fields_set__` в Pydantic v2).
 
 1. **`code`** — если передан, заменяет значение (с валидацией длины). **Уникальность повторно проверяется**: смена на `code`, занятый **другим** бэком → `409 backend_code_taken`. Не передан — не меняется.
 2. **`name`** — если передан, заменяет (валидация длины). Не передан — не меняется.
-3. **`domain`** — если передан, **нормализуется** (см. ниже) и заменяет (невалидный формат → `422`). Не передан — не меняется.
-4. **Re-check триггерится, если изменился `domain`** (единственное поле, связанное с подключением): `check_status='pending'`, `error_message=NULL`, запуск немедленной фоновой проверки (тот же путь, что `POST`; первый переход считается от `prev_status='pending'`). Первая неуспешная проверка после edit шлёт **🔴** (как для нового бэка), успешная — молча (`pending→working`).
-5. **Смена только `code`/`name`** — `check_status` не трогается, проверка не перезапускается.
-6. `updated_at` обновляется всегда при изменении хотя бы одного поля. `last_checked_at` при re-check не сбрасывается.
+3. **`domain`** — если передан, **канонизируется к `https://<host>/`** ([ADR-042](../../adr/ADR-042-backend-domain-canonical-https.md), см. ниже) и заменяет (невалидный host → `422`). Не передан — не меняется.
+4. **`server_id`/`ai_key_id`** — не переданы → не менять; `null` → обнулить связь; `uuid` → проверить существование (несуществующий → `422 unprocessable`, `details[].field`) и установить.
+5. **`api_key`/`admin_api_key`** (секреты) — не переданы → не менять; непустая строка → зашифровать (Fernet) и установить; `null`/`""` → очистить (`NULL`). **`git`/`note`** (не секреты) — аналогично (непустая → установить; `null`/`""` → очистить).
+6. **Re-check триггерится ТОЛЬКО если изменился `domain`** (единственное поле, связанное с подключением): `check_status='pending'`, `error_message=NULL`, запуск немедленной фоновой проверки (тот же путь, что `POST`; первый переход считается от `prev_status='pending'`). Первая неуспешная проверка после edit шлёт **🔴** (как для нового бэка), успешная — молча (`pending→working`).
+7. **Смена только `code`/`name`/`server_id`/`ai_key_id`/`api_key`/`admin_api_key`/`git`/`note`** — `check_status` не трогается, проверка не перезапускается.
+8. `updated_at` обновляется всегда при изменении хотя бы одного поля. `last_checked_at` при re-check не сбрасывается.
 
 ### Перестановка (единый список, нормативно)
 
@@ -80,17 +85,26 @@
 
 ### Нормализация домена и проверка (нормативно)
 
-**Нормализация домена** (на входе `POST`/`PATCH`, чистая функция, тестируется без сети):
+**Нормализация домена к канону `https://<host>/` (нормативно, [ADR-042](../../adr/ADR-042-backend-domain-canonical-https.md))** — на входе `POST`/`PATCH`, чистая функция, тестируется без сети:
 
 1. Trim пробелов.
 2. Снять схему `http://` / `https://`, если присутствует (регистронезависимо).
-3. Снять всё, начиная с первого `/` (путь/query/fragment) — оставить только authority `host[:port]`.
+3. Снять всё, начиная с первого `/` (путь/query/fragment) — оставить authority `host[:port]`.
 4. Привести host к нижнему регистру.
-5. Результат (`host[:port]`) — сохраняется в `domain`.
+5. **Валидация host:** непустой `host` из валидных DNS-меток (буквы/цифры/дефис, точки-разделители) с опциональным `:port` (`1..65535`); без пробелов/`/`. Невалидный → `422 unprocessable` (`details:[{field:"domain", ...}]`).
+6. **Собрать канон:** `"https://" + host[:port] + "/"` — это значение сохраняется в `domain`.
 
-**Валидация формата** после нормализации: непустой `host` из валидных DNS-меток (буквы/цифры/дефис, точки-разделители) с опциональным `:port` (`1..65535`); в результате нет пробелов и `/`. Невалидный → `422 unprocessable` (`details:[{field:"domain", ...}]`). Примеры: `https://api.example.com/` → `api.example.com`; `API.Example.com:8443` → `api.example.com:8443`; `http://x/health` → `x`.
+Примеры: `https://lumorixsite.shop/` → `https://lumorixsite.shop/`; `https://lumorixsite.shop` → `https://lumorixsite.shop/`; `lumorixsite.shop` → `https://lumorixsite.shop/`; `HTTP://API.Example.com:8443/path?x=1` → `https://api.example.com:8443/`.
 
-**Проверка доступности** = `GET https://{domain}/health`. HTTP-клиент — `httpx.AsyncClient(timeout=<явный httpx.Timeout по всем фазам>, verify=True, follow_redirects=False)` с ограниченными ретраями на транзиентные ошибки (backoff-паттерн `app/infra/ai_provider.py` / проверки прокси). Путь `/health` и схема `https://` **фиксированы**.
+**Построение health-URL (нормативно — анти-двойная-схема, [ADR-042](../../adr/ADR-042-backend-domain-canonical-https.md)).** Так как `domain` уже содержит схему и завершающий `/`, health-URL строится **дописыванием `health`**, а НЕ склейкой `https://{domain}/health` (иначе битый `https://https://…//health`):
+
+```
+health_url = domain + "health"      # domain = "https://<host>/"  →  "https://<host>/health"
+```
+
+`https://lumorixsite.shop/` → `https://lumorixsite.shop/health`. Сборка URL — отдельная чистая функция (`app/infra/backend_check.py`), тестируется на побайтовое совпадение (в т.ч. анти-регресс двойной схемы). Путь `/health` и схема `https://` **фиксированы**.
+
+**Проверка доступности** = `GET {health_url}` (`= https://<host>/health`). HTTP-клиент — `httpx.AsyncClient(timeout=<явный httpx.Timeout по всем фазам>, verify=True, follow_redirects=False)` с ограниченными ретраями на транзиентные ошибки (backoff-паттерн `app/infra/ai_provider.py` / проверки прокси).
 
 > **Анти-зависание (нормативно, [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)).** Как у прокси: `BACKEND_CHECK_TIMEOUT_SEC` применяется как явный `httpx.Timeout(connect=t, read=t, write=t, pool=t)` (не одиночный float), а проверка одного бэка (`check_one`, вкл. все ретраи) оборачивается `asyncio.wait_for(..., BACKEND_CHECK_DEADLINE_SEC)` (default **30 с**) → при превышении исход `error` «Таймаут подключения». Проверка всегда завершается конклюзивно; `deadline` (30 с) < интервал (60 с).
 
@@ -115,7 +129,7 @@
 - **Запуск:** в `lifespan` (`app/main.py`), рядом с прокси- и AI-монитором. Монитор **стартует ВСЕГДА** (не гейтится Telegram) — обновление `check_status` для UI работает независимо от бота. Telegram-клиент передаётся как `None` при отключённом боте.
 - **Остановка:** отмена задачи при shutdown (`task.cancel()` + `suppress(CancelledError)`).
 - **Цикл:** бесконечный `while True`: одна итерация проверки всех бэков → `asyncio.sleep(BACKEND_CHECK_INTERVAL_SEC)` (default 60 с). Необработанное исключение внутри итерации логируется и **не валит задачу**.
-- **Итерация (`poll_once`):** открыть короткоживущую сессию БД, получить снимок всех бэков (`id, code, name, domain, prev_status=check_status`), закрыть сессию. Для каждого бэка (под семафором ограничения конкурентности, образец прокси-монитора): собрать URL `https://{domain}/health`, выполнить проверку, вычислить исход; **при конклюзивном исходе** — обновить БД (`check_status`, `error_message`, `last_checked_at`, `updated_at`) отдельным атомарным `UPDATE`; вычислить переход относительно `prev_status`, при необходимости отправить алерт (если `notifier_enabled`).
+- **Итерация (`poll_once`):** открыть короткоживущую сессию БД, получить снимок всех бэков (`id, code, name, domain, prev_status=check_status`), закрыть сессию. Для каждого бэка (под семафором ограничения конкурентности, образец прокси-монитора): собрать health-URL **`{domain}health`** (домен — канон `https://<host>/`, [ADR-042](../../adr/ADR-042-backend-domain-canonical-https.md); НЕ склейка `https://{domain}/health`), выполнить проверку, вычислить исход; **при конклюзивном исходе** — обновить БД (`check_status`, `error_message`, `last_checked_at`, `updated_at`) отдельным атомарным `UPDATE`; вычислить переход относительно `prev_status`, при необходимости отправить алерт (если `notifier_enabled`).
 - **Немедленная проверка при создании (`POST`)** и при re-check (`PATCH` со сменой `domain`): та же логика проверки одного бэка (`check_one`) запускается фоново сразу после `INSERT`/`UPDATE`. Первый переход считается от `prev_status='pending'`.
 
 ### Переходы статуса и алерты (нормативно)
@@ -194,21 +208,23 @@ build_backend_recovery(code: str, name: str, domain: str) -> str
 
 - Адаптивная сетка карточек (`grid-cols-1 md:grid-cols-2 xl:grid-cols-3`, gap 24px), как «Серверы»/«Прокси». Единый список (без секций), сортировка по `position`. Ячейки: `BackendCard` на каждый бэк + `AddBackendCard`.
 - `BackendCard`: имя (`name`), код (`code`, моношрифт/чип), домен (`domain`, моношрифт), статус-бейдж (**Работает** / **Не работает** / **Проверка…**), причина ошибки при `error`, **единственная** кнопка **Удалить** (одна на карточку; дубль в error/недоступном состоянии **не рендерится** — [ADR-023](../../adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)).
-- **Клик по карточке = read-only detail-модалка** `BackendDetailModal` ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)): Код/Название/Домен (секрета нет — reveal не применяется). Карандаш вверху справа → `AddBackendModal mode='edit'`. **Зажатие ~200 мс + движение = перетаскивание** (@dnd-kit, [08-design-system.md](../../08-design-system.md#перестановка-карточек-drag-and-drop)). Кнопка **Удалить** — `stopPropagation`. Паттерн — [08-design-system.md](../../08-design-system.md#detail-view-карточных-страниц-read-only--карандаш--edit-adr-035).
-- `AddBackendCard` → `AddBackendModal` (Radix Dialog) в режиме **add**: поля **Код** (`Input`), **Название** (`Input`), **Домен** (`Input`). Кнопки **Отмена** / **Добавить**. Ошибка `409 backend_code_taken` — пофилдово под полем «Код» («Код занят»).
-- **Режим edit `AddBackendModal`:** префил `code`/`name`/`domain`. Кнопка действия — **Сохранить**. Отправляются только изменённые поля. После смены `domain` карточка возвращается в **Проверка…** и polling статуса возобновляется.
-- **Перестановка:** единый `SortableContext`; на `onDragEnd` — оптимистичное обновление + `PATCH /api/backends/order {ids}`; при ошибке — откат и инвалидация `GET /api/backends`.
+- **Клик по карточке = read-only detail-модалка** `BackendDetailModal` ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)): Код/Название/Домен (`https://host/`) + **Сервер**/**ИИ-ключ** (имена связей / «—»), **API KEY**/**ADMIN API KEY** (`••••` + глаз-reveal под `backends:edit`, если `has_*`), **Git**/**Примечания** ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)). Карандаш вверху справа → `AddBackendModal mode='edit'`. **Зажатие ~200 мс + движение = перетаскивание** (@dnd-kit, [08-design-system.md](../../08-design-system.md#перестановка-карточек-drag-and-drop)). Кнопка **Удалить** — `stopPropagation`. Паттерн — [08-design-system.md](../../08-design-system.md#detail-view-карточных-страниц-read-only--карандаш--edit-adr-035).
+- **Поиск ([ADR-039](../../adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md)):** поле над сеткой (плейсхолдер «Поиск по бэкам…»), **клиентский** фильтр по загруженному списку — подстрока (регистронезависимо) в `code`/`name`/`domain`; без совпадений — «Ничего не найдено». По образцу поиска `/sms`.
+- **Группировка по `name` ([ADR-039](../../adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md)):** бэки с полностью совпадающим `name` кластеризуются (контейнер + заголовок «`name` · N»); singletons — обычные карточки. Клиентская, поверх `position`-порядка; применяется после фильтра поиска. Детали/согласование с DnD — [08-design-system.md](../../08-design-system.md#группировка-по-одинаковому-name-adr-039).
+- `AddBackendCard` → `AddBackendModal` (Radix Dialog) в режиме **add**: основные поля **Код**/**Название**/**Домен** + **сворачиваемая секция «Информация»** (опц., [ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)): **Сервер** (`Select`), **ИИ-ключ** (`Select`), **API KEY**, **ADMIN API KEY** (маска+глаз), **Git**, **Примечания** (`Textarea`, последнее поле). Кнопки **Отмена** / **Добавить**. Ошибка `409 backend_code_taken` — пофилдово под «Код»; несуществующий `server_id`/`ai_key_id` → `422` инлайн.
+- **Режим edit `AddBackendModal`:** префил `code`/`name`/`domain`/`server_id`/`ai_key_id`/`git`/`note`; поля секретов пустые («Оставьте пустым, чтобы не менять»; очистка секрета через UI не выполняется — [TD-035](../../100-known-tech-debt.md)). Кнопка действия — **Сохранить**. Отправляются только изменённые поля. После смены `domain` карточка возвращается в **Проверка…** и polling статуса возобновляется; смена связей/секретов/`git`/`note` статус не меняет.
+- **Перестановка:** единый `SortableContext`; на `onDragEnd` — оптимистичное обновление + `PATCH /api/backends/order {ids}`; при ошибке — откат и инвалидация `GET /api/backends`. Группировка по `name` — презентационный слой поверх порядка.
 - Данные и polling — через feature-слой `features/backends` (`api.ts`, `hooks.ts`) на TanStack Query, по образцу `features/proxies`/`features/servers`. Типы — в `types/api.ts`. Статус `pending` → «Проверка…», лёгкий polling `GET /api/backends/{id}/status` до выхода из `pending`.
 
 ### Состояния UI
 
-Loading (skeleton), empty (только `AddBackendCard` + подсказка), pending («Проверка…», спиннер), error (акцентная граница + причина + «Удалить»), toast «Бэк добавлен» / «Бэк обновлён» / «Бэк удалён», `409` «Код занят» пофилдово, обработка `422`/сетевых ошибок — по образцу прокси/серверов ([08-design-system.md](../../08-design-system.md#состояния-ui-обязательны)).
+Loading (skeleton), **empty (только `AddBackendCard`, БЕЗ текста-подсказки — [ADR-039](../../adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md))**, «Ничего не найдено» (поиск без совпадений), pending («Проверка…», спиннер), error (акцентная граница + причина + «Удалить»), toast «Бэк добавлен» / «Бэк обновлён» / «Бэк удалён», `409` «Код занят» пофилдово, обработка `422`/сетевых ошибок — по образцу прокси/серверов ([08-design-system.md](../../08-design-system.md#состояния-ui-обязательны)).
 
 ## DoD
 
 - [x] Endpoints и коды ошибок соответствуют [04-api.md](../../04-api.md#backends); `code` уникален (дубль → `409 backend_code_taken`); прецеденция `400`/`422` → `409`.
-- [x] Нормализация домена (с/без схемы, завершающий `/`, path → authority) и валидация формата (`422` на невалидном); в БД хранится «голый» `host[:port]`.
-- [x] Проверка идёт `GET https://{domain}/health` (`follow_redirects=False`, `verify=True`); строго `2xx` → `working`; таймаут/сеть/не-2xx (после ретраев) → `error` с рус. причиной, содержащей код статуса при не-2xx.
+- [x] Нормализация домена к **канону `https://<host>/`** ([ADR-042](../../adr/ADR-042-backend-domain-canonical-https.md); с/без схемы, path → authority, host lower-case) и валидация формата host (`422` на невалидном); в БД хранится канон `https://<host>/`.
+- [x] Проверка идёт `GET {domain}health` (= `https://<host>/health`; **дописывание `health`**, не склейка; `follow_redirects=False`, `verify=True`); строго `2xx` → `working`; таймаут/сеть/не-2xx (после ретраев) → `error` с рус. причиной, содержащей код статуса при не-2xx.
 - [x] Формат обоих сообщений Telegram побайтово соответствует спецификации (`build_backend_error`/`build_backend_recovery`, блок `Бэк "<name>" [<code>] <domain>`).
 - [x] `PATCH /api/backends/{id}`: смена `code` проверяет уникальность (`409`); re-check только при смене `domain`; смена `code`/`name` статус не трогает.
 
@@ -218,7 +234,9 @@ Loading (skeleton), empty (только `AddBackendCard` + подсказка), 
 - [ ] Монитор пишет `check_status`/`error_since`/`alert_sent` независимо от бота; grace-состояние переживает рестарт.
 - [ ] Alembic-миграция `0013_backends_alert_grace` (`error_since`/`alert_sent`) с рабочим `downgrade()`.
 - [ ] Единственная кнопка «Удалить» на карточке (дубль в error-состоянии убран).
-- [ ] **([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md), spec-ready):** клик по карточке → read-only `BackendDetailModal` (Код/Название/Домен, секрета нет) → карандаш `AddBackendModal mode='edit'`. Reveal не применяется (секрета нет).
+- [ ] **([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)/[ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md), spec-ready):** клик по карточке → read-only `BackendDetailModal` (Код/Название/Домен + Сервер/ИИ-ключ/Git/Примечания + API KEY/ADMIN API KEY через reveal под `backends:edit`) → карандаш `AddBackendModal mode='edit'` (с секцией «Информация»).
+- [ ] **([ADR-039](../../adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md), spec-ready):** поиск по `code`/`name`/`domain` (клиентский), группировка карточек по одинаковому `name` (кластер «name · N»), пустое состояние без текста-подсказки.
+- [ ] **([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md), spec-ready):** reveal-эндпоинты `api-key`/`admin-api-key` под `backends:edit`; reverse-lookup `GET /api/servers/{id}/backends` и `GET /api/ai-keys/{id}/backends`; `server_id`/`ai_key_id` FK (`SET NULL`), секреты Fernet, `git`/`note`; миграция `0019`; канон домена `https://<host>/` + миграция `0020` ([ADR-042](../../adr/ADR-042-backend-domain-canonical-https.md)).
 - [x] `PATCH /api/backends/order`: перестановка единого списка; полная перестановка валидируется (иначе `422`); несуществующий `id` → `404 backend_not_found`.
 - [x] Frontend: вкладка «Бэки» в `AppLayout`, `BackendsPage` (единый список), `BackendCard`/`AddBackendCard`/`AddBackendModal` (add+edit), `409` пофилдово, drag-and-drop (клик=edit / зажатие=drag — **историческая идиома Спринта 2; со [ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md) короткий клик=detail-view, edit по карандашу — см. spec-ready-пункт ниже**), все состояния UI, русские строки из словаря.
 - [x] Coverage ≥90 % для функций нормализации/проверки/перехода/билдеров сообщений ([06-testing-strategy.md](../../06-testing-strategy.md)).
@@ -226,7 +244,8 @@ Loading (skeleton), empty (только `AddBackendCard` + подсказка), 
 
 ## Changelog
 
-- 2026-07-09: **detail-view** ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md), spec-ready): клик по карточке → read-only `BackendDetailModal` (Код/Название/Домен), карандаш → edit. Секрета нет → reveal не применяется. Контракт `BackendListItem` не меняется.
+- 2026-07-09: **связи + секреты + доп. поля + канон домена + поиск/группировка/пустое состояние** ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)/[ADR-042](../../adr/ADR-042-backend-domain-canonical-https.md)/[ADR-039](../../adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md), spec-ready). `backends += server_id`/`ai_key_id` (FK `SET NULL`), `api_key`/`admin_api_key` (**секреты**, Fernet, reveal под `backends:edit` — **разворот «секрета нет» из [ADR-020](../../adr/ADR-020-backends-healthcheck-monitor.md)**), `git`/`note` (не секреты), миграция `0019`. Домен → **канон `https://<host>/`** ([ADR-042](../../adr/ADR-042-backend-domain-canonical-https.md), миграция `0020`); health-URL = `{domain}health` (не склейка). `BackendListItem += server_id/server_name/ai_key_id/ai_key_name/has_api_key/has_admin_api_key/git/note`; reveal `GET /api/backends/{id}/api-key`·`/admin-api-key`; reverse-lookup `GET /api/servers|ai-keys/{id}/backends`. UI: секция «Информация» в форме, detail с reveal, поиск по `code`/`name`/`domain`, группировка по `name`, пустое состояние без текста. Отменяет прежнюю запись «секрета нет → reveal не применяется».
+- 2026-07-09: **detail-view** ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md), spec-ready): клик по карточке → read-only `BackendDetailModal` (Код/Название/Домен), карандаш → edit. ~~Секрета нет → reveal не применяется~~ (снято [ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md), см. выше). Контракт `BackendListItem` не меняется (расширен [ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)).
 - 2026-07-08: **спецификация правок [ADR-023](../../adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)/[ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)** (architect, требуют реализации): overall-deadline проверки `BACKEND_CHECK_DEADLINE_SEC`=30 (анти-зависание) + явный `httpx.Timeout` по всем фазам; **grace-порог 30 мин** непрерывной недоступности перед 🔴 (`BACKEND_ALERT_AFTER_SEC`=1800, поля `error_since`/`alert_sent`, миграция `0013_backends_alert_grace`, time-aware `evaluate_transition`); единственная кнопка «Удалить» на карточке. Устраняет ложные алерты при перезагрузке бэка (1–2 мин). Модель алерта у бэков теперь отличается от прокси (немедленно) — grace-порог.
 - 2026-07-07: модуль реализован (Спринт 2) — backend + frontend + qa завершены, reviewer approve/production_ready. Статус `implemented`, DoD выполнен. Косметические minor architect-reviewer (полный список причин `error_message` в 03-data-model/04-api, переход `pending → [*]: DELETE` в state-диаграмме) синхронизированы (architect).
 - 2026-07-07: backend-реализация (backend). Модель `Backend`/миграция `0007_create_backends`; схемы/репозиторий/сервис (CRUD + 409 `backend_code_taken` + нормализация домена → 422 + re-check при смене `domain`); `infra/backend_check.py` (нормализация/валидация домена, `GET https://{domain}/health`, строго 2xx); `BackendMonitorService` (стартует всегда, Telegram гейтится `notifier_enabled`); билдеры `build_backend_error`/`build_backend_recovery`. Frontend — отдельной задачей.

@@ -68,7 +68,7 @@
 
 ## Reveal секретов по требованию ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md))
 
-Секреты сущностей (`ssh_password` сервера, `password` прокси, полный `key` ИИ-ключа) **никогда** не отдаются в общих list/detail-ответах. Раскрытие — **только** по явному действию через выделенный per-resource эндпоинт, гейт **`require("<page>", "edit")`** соответствующей страницы (супер-админ/роль `admin` — всегда). Решение и обоснование гейта/аудита — [05-security.md](05-security.md#reveal-секретов-по-требованию-adr-035), [ADR-035](adr/ADR-035-detail-view-secret-reveal.md).
+Секреты сущностей (`ssh_password` сервера, `password` прокси, полный `key` ИИ-ключа, `api_key`/`admin_api_key` бэка — [ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)) **никогда** не отдаются в общих list/detail-ответах. Раскрытие — **только** по явному действию через выделенный per-resource эндпоинт, гейт **`require("<page>", "edit")`** соответствующей страницы (супер-админ/роль `admin` — всегда). Решение и обоснование гейта/аудита — [05-security.md](05-security.md#reveal-секретов-по-требованию-adr-035), [ADR-035](adr/ADR-035-detail-view-secret-reveal.md).
 
 Эндпоинты:
 
@@ -77,6 +77,8 @@
 | `GET /api/servers/{id}/ssh-password` | `ssh_password` (расшифровка `ssh_password_encrypted`) | `servers:edit` | секрет всегда есть (`NOT NULL`) |
 | `GET /api/proxies/{id}/password` | `password` (расшифровка `password_encrypted`) | `proxies:edit` | нет пароля → `404 secret_not_set` |
 | `GET /api/ai-keys/{id}/key` | полный `key` (расшифровка `key_encrypted`) | `ai-keys:edit` | секрет всегда есть |
+| `GET /api/backends/{id}/api-key` | `api_key` (расшифровка `api_key_encrypted`) | `backends:edit` | не задан (`has_api_key=false`) → `404 secret_not_set` |
+| `GET /api/backends/{id}/admin-api-key` | `admin_api_key` (расшифровка `admin_api_key_encrypted`) | `backends:edit` | не задан (`has_admin_api_key=false`) → `404 secret_not_set` |
 
 ### Схема `SecretRevealResponse`
 ```json
@@ -89,8 +91,8 @@
 **Общие правила (нормативно):**
 - **Response 200** — `SecretRevealResponse`, заголовок ответа **`Cache-Control: no-store`** обязателен (секрет не кэшируется прокси/браузером).
 - HTTP-метод **GET**: секрет — в теле ответа, **не** в URL (в URL только `id`) → в access-логах секрета нет.
-- Каждый успешный reveal порождает аудит-лог `secret_revealed` (`actor`/`resource_type`/`resource_id`/`at`, **без** значения) — [05-security.md](05-security.md#reveal-секретов-по-требованию-adr-035).
-- **Ошибки (общие для всех трёх):** `401 unauthorized`; `403 forbidden` (нет права `<page>:edit`); `404 <resource>_not_found` (`server_not_found`/`proxy_not_found`/`ai_key_not_found`); для `GET /api/proxies/{id}/password` дополнительно `404 secret_not_set` (у прокси нет пароля, `has_password=false`).
+- Каждый успешный reveal порождает аудит-лог `secret_revealed` (`actor`/`resource_type`/`resource_id`/`at`, **без** значения; `resource_type` ∈ `server`/`proxy`/`ai_key`/`backend`) — [05-security.md](05-security.md#reveal-секретов-по-требованию-adr-035).
+- **Ошибки (общие):** `401 unauthorized`; `403 forbidden` (нет права `<page>:edit`); `404 <resource>_not_found` (`server_not_found`/`proxy_not_found`/`ai_key_not_found`/`backend_not_found`); дополнительно `404 secret_not_set`, когда секрет не задан — для `GET /api/proxies/{id}/password` (`has_password=false`) и для `GET /api/backends/{id}/api-key`/`/admin-api-key` (`has_api_key`/`has_admin_api_key`=false).
 
 ---
 
@@ -115,7 +117,7 @@
 ```
 | Поле | Тип | Правила |
 |------|-----|---------|
-| `username` | string | required, 1–128. **Идентификатор входа** — логин **или** телеграм-ник ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). Имя поля сохранено для совместимости; семантика расширена |
+| `username` | string | required, 1–128. **Идентификатор входа** — логин **или** телеграм-ник ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). Телеграм-ник принимается **и с ведущим `@`, и без** — сервер нормализует (`normalize_telegram`: снять `@`, lower-case) перед сопоставлением с `users.telegram` ([ADR-041](adr/ADR-041-login-theme-session-ux.md)). Имя поля сохранено для совместимости; семантика расширена |
 | `password` | string? | **опц.**, 1–256. Для парольного пользователя — обязателен по смыслу (пустой → `401`); для беспарольного — игнорируется (ответ `password_setup_required`) |
 
 **Response 200** — дискриминированный по `password_setup_required` (схема `LoginResponse`):
@@ -217,6 +219,7 @@
       "exporter_port": 9100,
       "provision_status": "online",
       "position": 0,
+      "backend_count": 2,
       "online": true,
       "uptime_seconds": 1323120,
       "last_updated": "2026-06-28T18:55:00Z",
@@ -232,6 +235,7 @@
 - `online` — из Prometheus `up`. Если `provision_status != online` или `up == 0` → `online=false`, `metrics` могут быть `null`.
 - `ssh_user` — string, SSH-логин целевого сервера ([03-data-model.md](03-data-model.md#таблица-servers)). **Не секрет** (по аналогии с `username` прокси, [ADR-019](adr/ADR-019-proxies-availability-monitor.md)); отображается в read-only detail-view сервера ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md)). SSH-пароль здесь **не** отдаётся — только через reveal-эндпоинт [`GET /api/servers/{id}/ssh-password`](#get-apiserversidssh-password).
 - `position` — `integer`, порядок карточки (drag-and-drop). Меньше = выше. Изменяется через `PATCH /api/servers/order`.
+- `backend_count` — `integer` ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)); число бэков, связанных с сервером (`COUNT` по `backends.server_id`). Для свёрнутой секции «Бэки» в detail-view сервера («Бэков: N») без вызова `GET /api/servers/{id}/backends`.
 - `zone` ∈ {`green`,`yellow`,`red`} вычисляется backend по порогам (см. ниже) для единообразия с UI.
 - Для серверов в `pending`/`installing`/`error` поля `metrics`, `uptime_seconds` = `null`.
 
@@ -367,6 +371,7 @@ Reveal SSH-пароля сервера по требованию (для detail-
   "check_status": "working",
   "error_message": null,
   "position": 0,
+  "backend_count": 1,
   "last_checked_at": "2026-07-01T10:15:00Z",
   "created_at": "2026-07-01T09:00:00Z",
   "updated_at": "2026-07-01T10:15:00Z"
@@ -375,6 +380,7 @@ Reveal SSH-пароля сервера по требованию (для detail-
 
 - `provider` ∈ {`openai`,`anthropic`}.
 - `position` — `integer`, порядок карточки **внутри провайдер-группы** (drag-and-drop). Меньше = выше. Изменяется через `PATCH /api/ai-keys/order`.
+- `backend_count` — `integer` ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)); число бэков, использующих ключ (`COUNT` по `backends.ai_key_id`). Для свёрнутой секции «Бэки» в detail-view ИИ-ключа («Бэков: N») без вызова `GET /api/ai-keys/{id}/backends`.
 - `key_masked` — производное: `"<первые4>…<последние4>"` (разделитель `…` U+2026), например `sk-p…bA3T`. Для ключа короче 8 символов — полная маска `"********"`. Правило — [modules/ai-keys](modules/ai-keys/README.md#правило-маски-key_masked). Backend НИКОГДА не отдаёт полный ключ или его расшифровку.
 - `check_status` ∈ {`pending`,`working`,`error`}. `error_message` — рус. причина при `error` (иначе `null`).
 
@@ -604,7 +610,15 @@ Reveal пароля прокси по требованию (для detail-view).
   "id": "7a1e...b9",
   "code": "api-eu",
   "name": "API EU",
-  "domain": "api.example.com",
+  "domain": "https://api.example.com/",
+  "server_id": "8f1d...e2",
+  "server_name": "Server 01",
+  "ai_key_id": "3f2a...c1",
+  "ai_key_name": "OpenAI Prod",
+  "has_api_key": true,
+  "has_admin_api_key": false,
+  "git": "https://github.com/acme/api-eu",
+  "note": "Прод-инстанс во Франкфурте",
   "check_status": "working",
   "error_message": null,
   "position": 0,
@@ -615,8 +629,12 @@ Reveal пароля прокси по требованию (для detail-view).
 ```
 
 - `code` — string (1–64), **уникален** по реестру. Бизнес-код сервиса.
-- `name` — string (1–64), отображаемое имя.
-- `domain` — string (1–255), нормализованный домен (`host[:port]`, без схемы/пути). URL проверки — `https://{domain}/health`.
+- `name` — string (1–64), отображаемое имя. **НЕ уникален** (дубли допускаются; на `/backends` бэки с одинаковым `name` группируются — [ADR-039](adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md)).
+- `domain` — string (1–255), **каноничный домен `https://<host>/`** ([ADR-042](adr/ADR-042-backend-domain-canonical-https.md)). URL проверки — `{domain}health` (= `https://<host>/health`).
+- `server_id` — `uuid \| null` ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)); сервер CRM, на котором лежит бэк (`null` — не задан/связь обнулена). `server_name` — `string \| null`, имя связанного сервера для отображения (join `servers.name`; `null` при `server_id=null`).
+- `ai_key_id` — `uuid \| null`; ИИ-ключ CRM, используемый бэком. `ai_key_name` — `string \| null`, имя связанного ключа (join `ai_keys.name`).
+- `has_api_key` / `has_admin_api_key` — `boolean` ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)); заданы ли секреты (`*_encrypted IS NOT NULL`). **Сами секреты в схеме НЕ отдаются** — только on-demand reveal `GET /api/backends/{id}/api-key` · `/admin-api-key` под `backends:edit` ([reveal](#reveal-секретов-по-требованию-adr-035)).
+- `git` — `string \| null` ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)); ссылка на репозиторий. **НЕ секрет** — отдаётся как есть. `note` — `string \| null`; свободные примечания. **НЕ секрет** — отдаётся как есть.
 - `position` — `integer`, порядок карточки в **едином списке** (drag-and-drop). Меньше = выше. Изменяется через `PATCH /api/backends/order`.
 - `check_status` ∈ {`pending`,`working`,`error`}. `error_message` — рус. причина при `error` (иначе `null`): «Таймаут подключения»/«Бэк недоступен»/«Ошибка бэка (HTTP N)»/«Ошибка бэка».
 
@@ -631,7 +649,7 @@ Reveal пароля прокси по требованию (для detail-view).
 
 **Response 200** — `BackendListResponse`:
 ```json
-{ "items": [ { "id": "7a1e...b9", "code": "api-eu", "name": "API EU", "domain": "api.example.com", "check_status": "working", "error_message": null, "position": 0, "last_checked_at": "2026-07-07T10:15:00Z", "created_at": "2026-07-07T09:00:00Z", "updated_at": "2026-07-07T10:15:00Z" } ] }
+{ "items": [ { "id": "7a1e...b9", "code": "api-eu", "name": "API EU", "domain": "https://api.example.com/", "server_id": "8f1d...e2", "server_name": "Server 01", "ai_key_id": null, "ai_key_name": null, "has_api_key": true, "has_admin_api_key": false, "check_status": "working", "error_message": null, "position": 0, "last_checked_at": "2026-07-07T10:15:00Z", "created_at": "2026-07-07T09:00:00Z", "updated_at": "2026-07-07T10:15:00Z" } ] }
 ```
 **Ошибки:** `401 unauthorized`.
 
@@ -640,48 +658,60 @@ Reveal пароля прокси по требованию (для detail-view).
 
 **Request** — `BackendCreateRequest`
 ```json
-{ "code": "api-eu", "name": "API EU", "domain": "api.example.com" }
+{ "code": "api-eu", "name": "API EU", "domain": "https://api.example.com/", "server_id": "8f1d...e2", "ai_key_id": null, "api_key": "sk-backend-...", "admin_api_key": null, "git": "https://github.com/acme/api-eu", "note": "Прод-инстанс" }
 ```
 | Поле | Тип | Правила |
 |------|-----|---------|
 | `code` | string | required, 1–64. **Уникален** — дубликат → `409 backend_code_taken` |
-| `name` | string | required, 1–64 |
-| `domain` | string | required, 1–255. Нормализуется (принять с/без схемы `http(s)://`, с завершающим `/`; итог — `host[:port]`). Невалидный формат домена → `422 unprocessable` |
+| `name` | string | required, 1–64. НЕ уникален |
+| `domain` | string | required, 1–255. **Канонизируется к `https://<host>/`** ([ADR-042](adr/ADR-042-backend-domain-canonical-https.md)): принять с/без схемы `http(s)://`, с путём/завершающим `/`; снять схему и путь, извлечь host (lower-case), собрать `https://<host>/`. Невалидный формат хоста → `422 unprocessable` |
+| `server_id` | uuid? | опц. ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)). `null`/отсутствует → без связи; uuid — проверяется существование (несуществующий `server_id` → `422 unprocessable`, `details[].field="server_id"`) |
+| `ai_key_id` | uuid? | опц. `null`/отсутствует → без связи; uuid — проверяется существование (несуществующий → `422 unprocessable`, `details[].field="ai_key_id"`) |
+| `api_key` | string? | опц. **секрет**. Непустая строка → шифруется (Fernet) и сохраняется; `null`/`""`/отсутствует → не задан. В ответах не отдаётся (только `has_api_key`) |
+| `admin_api_key` | string? | опц. **секрет**. Аналогично `api_key` (флаг `has_admin_api_key`) |
+| `git` | string? | опц. **не секрет**. Ссылка на репозиторий (URL); `null`/`""`/отсутствует → не задан. Отдаётся в ответах |
+| `note` | string? | опц. **не секрет**. Свободные примечания; `null`/`""`/отсутствует → не задан. Отдаётся в ответах |
 
 **Response 202 Accepted** — созданный `BackendListItem` с `check_status:"pending"`:
 ```json
-{ "id": "7a1e...b9", "code": "api-eu", "name": "API EU", "domain": "api.example.com", "check_status": "pending", "error_message": null, "position": 0, "last_checked_at": null, "created_at": "2026-07-07T09:00:00Z", "updated_at": "2026-07-07T09:00:00Z" }
+{ "id": "7a1e...b9", "code": "api-eu", "name": "API EU", "domain": "https://api.example.com/", "server_id": "8f1d...e2", "server_name": "Server 01", "ai_key_id": null, "ai_key_name": null, "has_api_key": true, "has_admin_api_key": false, "git": "https://github.com/acme/api-eu", "note": "Прод-инстанс", "check_status": "pending", "error_message": null, "position": 0, "last_checked_at": null, "created_at": "2026-07-07T09:00:00Z", "updated_at": "2026-07-07T09:00:00Z" }
 ```
 > `202`, т.к. проверка асинхронна; статус отслеживается через `GET /api/backends/{id}/status`. `position` берёт `DEFAULT 0` — новая карточка вверху списка.
 
-**Прецеденция ошибок (нормативно):** схемная валидация Pydantic (`400 validation_error` — битое тело/длины; `422 unprocessable` — невалидный формат домена) выполняется **до** проверки уникальности `code` (`409 backend_code_taken`). Если тело валидно, но `code` занят → `409`.
+**Прецеденция ошибок (нормативно):** схемная валидация Pydantic (`400 validation_error` — битое тело/длины; `422 unprocessable` — невалидный формат домена **или** несуществующий `server_id`/`ai_key_id`) выполняется **до** проверки уникальности `code` (`409 backend_code_taken`). Если тело валидно, но `code` занят → `409`.
 
-**Ошибки:** `400 validation_error`, `422 unprocessable` (невалидный формат `domain`), `409 backend_code_taken` (дубликат `code`), `401 unauthorized`.
+**Ошибки:** `400 validation_error`, `422 unprocessable` (невалидный формат `domain` / несуществующий `server_id`/`ai_key_id`), `409 backend_code_taken` (дубликат `code`), `401 unauthorized`.
 
 ### PATCH `/api/backends/{id}`
-Редактирование бэка. Требует JWT. Изменяемые поля — `code`, `name`, `domain`. **Все поля опциональны**; передаются только изменяемые. «Переданное поле» определяется по множеству заданных полей запроса (Pydantic v2 `model_dump(exclude_unset=True)` / `__pydantic_fields_set__`).
+Редактирование бэка. Требует JWT. Изменяемые поля — `code`, `name`, `domain`, `server_id`, `ai_key_id`, `api_key`, `admin_api_key`, `git`, `note`. **Все поля опциональны**; передаются только изменяемые. «Переданное поле» определяется по множеству заданных полей запроса (Pydantic v2 `model_dump(exclude_unset=True)` / `__pydantic_fields_set__`).
 
 **Request** — `BackendUpdateRequest`
 ```json
-{ "code": "api-eu", "name": "API EU (Frankfurt)", "domain": "api-eu.example.com" }
+{ "name": "API EU (Frankfurt)", "domain": "https://api-eu.example.com/", "server_id": null, "api_key": "sk-new-..." }
 ```
-| Поле | Тип | Правила |
+| Поле | Тип | Правила (presence-семантика) |
 |------|-----|---------|
-| `code` | string? | опц., 1–64. Не передано → не менять; передано → заменить (**уникальность** проверяется; смена на занятый другим бэком `code` → `409 backend_code_taken`) |
-| `name` | string? | опц., 1–64. Не передано → не менять |
-| `domain` | string? | опц., 1–255. Не передано → не менять; передано → нормализовать и заменить (невалидный формат → `422`) |
+| `code` | string? | Не передано → не менять; передано → заменить (**уникальность** проверяется; смена на занятый другим бэком `code` → `409 backend_code_taken`) |
+| `name` | string? | Не передано → не менять; передано → заменить (1–64) |
+| `domain` | string? | Не передано → не менять; передано → **канонизировать к `https://<host>/`** ([ADR-042](adr/ADR-042-backend-domain-canonical-https.md)) и заменить (невалидный формат → `422`) |
+| `server_id` | uuid? | Не передано → не менять; `null` → **обнулить** связь; uuid — проверить существование (`422` если нет) и установить |
+| `ai_key_id` | uuid? | Не передано → не менять; `null` → **обнулить** связь; uuid — проверить существование (`422` если нет) и установить |
+| `api_key` | string? | **секрет.** Не передано → не менять; непустая строка → зашифровать и установить; `null`/`""` → **очистить** (в `NULL`, `has_api_key=false`) |
+| `admin_api_key` | string? | **секрет.** Аналогично `api_key` (флаг `has_admin_api_key`) |
+| `git` | string? | **не секрет.** Не передано → не менять; непустая строка → установить; `null`/`""` → очистить |
+| `note` | string? | **не секрет.** Не передано → не менять; непустая строка → установить; `null`/`""` → очистить |
 
-**Триггер повторной проверки (нормативно):** если изменился **`domain`** → `check_status='pending'`, `error_message=NULL`, и запускается **немедленная фоновая проверка** (`asyncio.create_task`, тот же путь, что при `POST`). Первый переход считается от `prev_status='pending'` — неуспешная проверка после edit шлёт 🔴, как для нового бэка ([modules/backends](modules/backends/README.md#переходы-статуса-и-алерты-нормативно)). Если изменились только `code`/`name` — проверка НЕ перезапускается, `check_status` сохраняется. `updated_at` обновляется при изменении хотя бы одного поля.
+**Триггер повторной проверки (нормативно):** проверка перезапускается **только** при изменении **`domain`** (единственное поле, связанное с подключением): `check_status='pending'`, `error_message=NULL`, немедленная фоновая проверка (`asyncio.create_task`, тот же путь, что при `POST`; первый переход от `prev_status='pending'`, [modules/backends](modules/backends/README.md#переходы-статуса-и-алерты-нормативно)). Изменение только `code`/`name`/`server_id`/`ai_key_id`/`api_key`/`admin_api_key` проверку **НЕ** перезапускает, `check_status` сохраняется. `updated_at` обновляется при изменении хотя бы одного поля.
 
 **Response 200** — обновлённый `BackendListItem`:
 ```json
-{ "id": "7a1e...b9", "code": "api-eu", "name": "API EU (Frankfurt)", "domain": "api-eu.example.com", "check_status": "pending", "error_message": null, "position": 0, "last_checked_at": "2026-07-07T10:15:00Z", "created_at": "2026-07-07T09:00:00Z", "updated_at": "2026-07-07T12:00:00Z" }
+{ "id": "7a1e...b9", "code": "api-eu", "name": "API EU (Frankfurt)", "domain": "https://api-eu.example.com/", "server_id": null, "server_name": null, "ai_key_id": null, "ai_key_name": null, "has_api_key": true, "has_admin_api_key": false, "git": "https://github.com/acme/api-eu", "note": "Прод-инстанс", "check_status": "pending", "error_message": null, "position": 0, "last_checked_at": "2026-07-07T10:15:00Z", "created_at": "2026-07-07T09:00:00Z", "updated_at": "2026-07-07T12:00:00Z" }
 ```
 > При смене домена `check_status` в ответе = `pending`; frontend опрашивает `GET /api/backends/{id}/status` до выхода из `pending`. `last_checked_at` не сбрасывается.
 
-**Прецеденция ошибок (нормативно):** `404 backend_not_found` (нет такого `id`) → схемная валидация (`400`/`422`) → уникальность `code` (`409 backend_code_taken`).
+**Прецеденция ошибок (нормативно):** `404 backend_not_found` (нет такого `id`) → схемная валидация (`400`/`422`, вкл. несуществующий `server_id`/`ai_key_id`) → уникальность `code` (`409 backend_code_taken`).
 
-**Ошибки:** `401 unauthorized`, `404 backend_not_found`, `422 unprocessable` (невалидный формат `domain`), `400 validation_error` (длины `code`/`name`/`domain`), `409 backend_code_taken` (смена `code` на занятый другим бэком).
+**Ошибки:** `401 unauthorized`, `404 backend_not_found`, `422 unprocessable` (невалидный формат `domain` / несуществующий `server_id`/`ai_key_id`), `400 validation_error` (длины `code`/`name`), `409 backend_code_taken` (смена `code` на занятый другим бэком).
 
 ### GET `/api/backends/{id}/status`
 Лёгкий endpoint статуса проверки (для polling после добавления/редактирования). Требует JWT.
@@ -698,6 +728,52 @@ Reveal пароля прокси по требованию (для detail-view).
 **Response 204** (без тела).
 
 **Ошибки:** `401`, `404 backend_not_found`.
+
+### GET `/api/backends/{id}/api-key`
+Reveal **API KEY** бэка по требованию (для detail-view). Гейт **`require("backends","edit")`** (супер-админ/`admin` — всегда). Расшифровка `api_key_encrypted` (`decrypt_secret`) в памяти обработчика. Общие правила reveal (метод, `Cache-Control: no-store`, аудит) — [«Reveal секретов»](#reveal-секретов-по-требованию-adr-035). Решение — [ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md).
+
+**Response 200** — `SecretRevealResponse`:
+```json
+{ "value": "sk-backend-..." }
+```
+**Ошибки:** `401 unauthorized`, `403 forbidden` (нет `backends:edit`), `404 backend_not_found`, `404 secret_not_set` (`has_api_key=false`).
+
+### GET `/api/backends/{id}/admin-api-key`
+Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require("backends","edit")`**. Расшифровка `admin_api_key_encrypted` в памяти обработчика. Общие правила reveal — [«Reveal секретов»](#reveal-секретов-по-требованию-adr-035).
+
+**Response 200** — `SecretRevealResponse`:
+```json
+{ "value": "sk-admin-backend-..." }
+```
+**Ошибки:** `401 unauthorized`, `403 forbidden`, `404 backend_not_found`, `404 secret_not_set` (`has_admin_api_key=false`).
+
+### Схема `BackendRef` (reverse-lookup)
+Компактная ссылка на бэк для списков «бэки сервера»/«бэки ключа» ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)). Только идентификация — секреты/связи не отдаются.
+```json
+{ "code": "api-eu", "name": "API EU", "domain": "https://api.example.com/" }
+```
+
+### GET `/api/servers/{id}/backends`
+Список бэков, связанных с сервером (`backends.server_id = {id}`) — для сворачиваемой секции «Бэки» в detail-view сервера (ленивая загрузка, [ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)). Гейт **`require("servers","view")`**.
+
+**Response 200** — `BackendRefListResponse`:
+```json
+{ "backends": [ { "code": "api-eu", "name": "API EU", "domain": "https://api.example.com/" } ] }
+```
+- Элементы — `BackendRef`. Сортировка `position ASC, created_at DESC, id`. Пагинации нет (NFR-1). Свёрнутый счётчик секции — `ServerListItem.backend_count` (без вызова этого эндпоинта).
+
+**Ошибки:** `401 unauthorized`, `403 forbidden`, `404 server_not_found`.
+
+### GET `/api/ai-keys/{id}/backends`
+Список бэков, использующих ИИ-ключ (`backends.ai_key_id = {id}`) — для сворачиваемой секции «Бэки» в detail-view ИИ-ключа ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)). Гейт **`require("ai-keys","view")`**.
+
+**Response 200** — `BackendRefListResponse`:
+```json
+{ "backends": [ { "code": "api-eu", "name": "API EU", "domain": "https://api.example.com/" } ] }
+```
+- Элементы — `BackendRef`. Сортировка `position ASC, created_at DESC, id`. Свёрнутый счётчик — `AiKeyListItem.backend_count`.
+
+**Ошибки:** `401 unauthorized`, `403 forbidden`, `404 ai_key_not_found`.
 
 ---
 
@@ -720,17 +796,18 @@ Reveal пароля прокси по требованию (для detail-view).
 
 | HTTP | `code` | Когда |
 |------|--------|-------|
-| `400` | `validation_error` | Невалидные параметры/тело (`limit` вне 1..200; взаимоисключение режимов пагинации; взаимоисключение фильтров `field="filter"`; ошибка соединения при `test` без валидных кред; проброс внешнего `400`) |
+| `400` | `validation_error` | Невалидные параметры/тело (`limit` вне 1..200; взаимоисключение режимов пагинации `before_id`@`asc`/`since_id`@`desc`; битое тело при `test`/create; проброс внешнего `400`). Фильтры `mail_account_id`/`group_id` **комбинируемы** (AND, `ADR-0039`) — их совместная передача НЕ ошибка |
 | `403` | `forbidden` | Мутация/синк ящика вне `MailScope` (не-admin, ящик чужой группы); нет действия в правах роли (RBAC `require`) |
 | `404` | `mail_message_not_found` | Письмо не найдено (проброс `404` от внешнего сервиса при reply) |
-| `404` | `mail_mailbox_not_found` | Ящик не найден (`PATCH`/`DELETE`/`sync` по неизвестному `id`; проброс внешнего `404`) |
+| `404` | `mail_mailbox_not_found` | Ящик не найден (`PATCH`/`DELETE`/`sync` по неизвестному `id`; проброс внешнего `404` `not_found`) |
+| `404` | `mail_group_not_found` | Выбранная команда/группа mail-агрегатора не существует (`POST /api/mail/mailboxes` или `PATCH .../{id}` со сменой `group_id` на несуществующую группу; проброс внешнего `404` `group_not_found`, [ADR-038](adr/ADR-038-mail-headless-integration.md), внешний контракт агрегатора `ADR-0039` §2). Отличается от `mail_mailbox_not_found` (неизвестный `id` ящика) — CRM различает 404 по контексту |
 | `404` | `mail_tag_not_found` | Тег/правило не найдены (проброс внешнего `404`) |
 | `409` | `mail_conflict` | Дубликат ящика (email уже заведён) или тега (имя занято) — проброс внешнего `409` |
-| `422` | `unprocessable` | Семантически некорректное тело (пустой `body` reply, невалидный `color`/`type` правила — проброс внешнего `422`) |
-| `502` | `mail_unavailable` | Внешний сервис `postapp.store` недоступен/таймаут/вернул `5xx` (исчерпаны ретраи); ошибка IMAP/SMTP-соединения при create/test (проброс внешнего `502`) |
+| `422` | `unprocessable` | Семантически некорректное тело (пустой `body` reply, невалидный `color`/`type` правила) **или сбой IMAP/SMTP-логина/коннекта при `test`/create/`PATCH` кредов** (проброс внешнего `422` `imap_login_failed`/`smtp_login_failed`/`invalid_host`) |
+| `502` | `mail_unavailable` | Внешний сервис `postapp.store` недоступен/таймаут/вернул `5xx` (исчерпаны ретраи). **Сбой проверки IMAP/SMTP-соединения при `test`/create — это `422` (см. выше), не `502`** |
 | `503` | `mail_not_configured` | Почта не настроена (`MAIL_API_KEY` пуст → `mail_enabled=false`); все эндпоинты |
 
-Фабрики `mail_unavailable`, `mail_message_not_found`, `mail_not_configured`, `mail_mailbox_not_found`, `mail_tag_not_found`, `mail_conflict` — в `app/errors.py`. Тело ошибки внешнего сервиса в ответ CRM дословно не пробрасывается (только нормативный `code` + рус. `message`).
+Фабрики `mail_unavailable`, `mail_message_not_found`, `mail_not_configured`, `mail_mailbox_not_found`, `mail_group_not_found`, `mail_tag_not_found`, `mail_conflict` — в `app/errors.py`. Тело ошибки внешнего сервиса в ответ CRM дословно не пробрасывается (только нормативный `code` + рус. `message`).
 
 **Ретраи (нормативно, `mail_client.py`).** GET-методы ретраятся на транзиентных `{429,500,502,503,504}` + `Connect*`/read-timeout (backoff `(0.2, 0.5)`). Мутирующие `POST/PATCH/DELETE` (create/update/delete/sync ящика, reply, CRUD тегов/правил, apply, `test`) ретраятся **только** на `ConnectError`/`ConnectTimeout` — защита от двойной записи; read-timeout/`5xx` на write → сразу `502 mail_unavailable`.
 
@@ -790,7 +867,7 @@ Reveal пароля прокси по требованию (для detail-view).
 
 > **Проброс во внешний API (нормативно).** CRM всегда передаёт `order` во внешний `GET /api/external/messages` **явно** (не полагается на внешний default `asc`). CRM default `order=desc` отличается от внешнего default `asc` осознанно — отражает основной сценарий страницы (newest-first); frontend всё равно шлёт `order=desc` явно. `since_id`/`next_since_id` — маппинг asc-режима 1:1; `before_id`/`next_before_id` — маппинг desc-режима 1:1.
 >
-> **Серверные фильтры `mail_account_id`/`group_id` (нормативно, external ADR-0037).** Опциональны и **взаимоисключающи**: оба переданы → `400 validation_error` (CRM валидирует локально до вызова внешнего API, `details:[{field:"filter", message:"…"}]`; внешний `400` взаимоисключения также маппится в `400`). Работают **совместно** с любым режимом пагинации (`order`/`since_id`/`before_id`/`limit`) — фильтр применяется на стороне внешнего сервиса ко **всему** набору, курсоры не меняются. **Несуществующий / чужой / non-canonical `id`** (ящика или команды) → внешний сервис возвращает **пустую страницу** (`messages:[]`), а не `404`; CRM проксирует её как обычный `200`. Даёт серверную фильтрацию ленты по ящику **или** команде (частично снимает [TD-024](100-known-tech-debt.md) — [ADR-017](adr/ADR-017-dashboard-client-aggregation-mail-server-filters.md)).
+> **Серверные фильтры `mail_account_id`/`group_id` (нормативно, `ADR-0039` §3 — supersede взаимоисключения ADR-0037).** Опциональны и **AND-комбинируемы** (не взаимоисключающи; кода `field=filter` больше нет). Эффективный набор ящиков = пересечение canonical ∩ (ящики выбранных групп, если `group_id` задан) ∩ (`mail_account_id`, если задан). Работают **совместно** с любым режимом пагинации — фильтр применяется на стороне внешнего сервиса ко **всему** набору, курсоры не меняются. **Несуществующий / чужой / non-canonical `id`** (ящика или команды) → просто не добавляется в пересечение → **пустая страница** (`messages:[]`), не `404`; CRM проксирует как `200`. **Ролевая видимость (не-админ):** CRM инъектирует `group_id`=`MailScope.group_ids` (или пересечение с выбранной командой) вместе с пользовательским `mail_account_id`; AND в external гарантирует, что чужой ящик даёт пустую страницу (анти-энумерация без локального кэша каталога, [ADR-038](adr/ADR-038-mail-headless-integration.md) §3). Даёт серверную фильтрацию ленты по ящику **и/или** команде (частично снимает [TD-024](100-known-tech-debt.md)).
 
 **Response 200** — схема `MailListResponse` (единая для обоих режимов; заполнен курсор запрошенного режима, второй — `null`):
 ```json
@@ -813,7 +890,7 @@ Reveal пароля прокси по требованию (для detail-view).
 - **asc (совместимость):** `order=asc` (+опц. `since_id`) — keyset вперёд по `id ASC`, как прежде.
 - **Server-side фильтров/поиска нет** (внешний API их не предоставляет) — остаток [TD-024](100-known-tech-debt.md); newest-first backward-пагинацией снят.
 
-**Ошибки:** `401 unauthorized`, `400 validation_error` (`limit` вне 1..200; взаимоисключение режимов: `before_id` при `order=asc` ИЛИ `since_id` при `order=desc`; **взаимоисключение фильтров:** `mail_account_id` И `group_id` одновременно, `field="filter"`; внешний `400` взаимоисключения также → `400`), `502 mail_unavailable`, `503 mail_not_configured`.
+**Ошибки:** `401 unauthorized`, `400 validation_error` (`limit` вне 1..200; взаимоисключение режимов: `before_id` при `order=asc` ИЛИ `since_id` при `order=desc`), `502 mail_unavailable`, `503 mail_not_configured`. Фильтры `mail_account_id`+`group_id` **комбинируемы** (AND) — не дают `400`.
 
 ### POST `/api/mail/messages/{id}/reply`
 Ответ на письмо (прокси к внешнему `POST /api/external/messages/{id}/reply`). Требует JWT.
@@ -937,7 +1014,7 @@ Reveal пароля прокси по требованию (для detail-view).
 | `smtp_host` | string | required |
 | `smtp_port` | integer | required, `1..65535` |
 | `smtp_ssl` | boolean | required (взаимоисключ. с `smtp_starttls`) |
-| `smtp_starttls` | boolean | required (взаимоисключ. с `smtp_ssl` → `409`/`400` внешнего сервиса) |
+| `smtp_starttls` | boolean | required (взаимоисключ. с `smtp_ssl`; на пути `test` внешний сервис отдаёт `422` `smtp_login_failed`, на create/`PATCH` — `409 conflict`) |
 | `smtp_username` | string \| null? | опц.; `null` → берётся `email` |
 | `password` | string | required, IMAP-пароль (транзит) |
 | `smtp_password` | string \| null? | опц.; `null` → берётся `password` |
@@ -946,7 +1023,7 @@ Reveal пароля прокси по требованию (для detail-view).
 ```json
 { "imap_ok": true, "smtp_ok": true }
 ```
-**Ошибки:** `401`, `403 forbidden` (нет `mail:create`), `400 validation_error`, `502 mail_unavailable` (соединение не удалось), `503 mail_not_configured`.
+**Ошибки:** `401`, `403 forbidden` (нет `mail:create`), `400 validation_error` (битое тело), `422 unprocessable` (IMAP/SMTP-логин/коннект не удался — проброс внешнего `422` `imap_login_failed`/`smtp_login_failed`/`invalid_host`), `502 mail_unavailable` (внешний сервис `postapp.store` недоступен), `503 mail_not_configured`.
 
 ### POST `/api/mail/mailboxes`
 Создание ящика (прокси к внешнему `POST /api/external/mailboxes`). Требует JWT (`mail:create`). Внешний сервис перед сохранением проверяет соединение и SSRF-guard хостов; владелец ящика в агрегаторе — техпользователь `crm-service` (`ADR-0039` §Q-0039-1). Ответ — `Cache-Control: no-store`.
@@ -959,7 +1036,7 @@ Reveal пароля прокси по требованию (для detail-view).
 
 **Response 201** — схема `MailMailbox` (расширенная, с полями статуса; пароля нет).
 
-**Ошибки:** `401`, `403 forbidden` (нет `mail:create` ИЛИ `group_id` вне `MailScope`), `400 validation_error`, `409 mail_conflict` (email уже заведён), `422 unprocessable`, `502 mail_unavailable`, `503 mail_not_configured`.
+**Ошибки:** `401`, `403 forbidden` (нет `mail:create` ИЛИ `group_id` вне `MailScope`), `400 validation_error`, `404 mail_group_not_found` (переданная `group_id` не существует в агрегаторе — проброс внешнего `group_not_found`), `409 mail_conflict` (email уже заведён), `422 unprocessable`, `502 mail_unavailable`, `503 mail_not_configured`.
 
 ### PATCH `/api/mail/mailboxes/{id}`
 Правка ящика (прокси к внешнему `PATCH /api/external/mailboxes/{id}`). Требует JWT (`mail:edit`). Ответ — `Cache-Control: no-store`. Для не-admin: ящик `{id}` обязан принадлежать группе из `MailScope.group_ids`, иначе `403 forbidden`.
@@ -976,7 +1053,7 @@ Reveal пароля прокси по требованию (для detail-view).
 | `is_active` | boolean? | активация/деактивация ящика |
 | `group_id` | integer \| null? | `ge=1`, смена команды (перенос). Для не-admin — целевая группа ∈ `MailScope.group_ids`, иначе `403` |
 
-**Response 200** — схема `MailMailbox` (расширенная). **Ошибки:** `401`, `403 forbidden`, `400 validation_error`, `404 mail_mailbox_not_found`, `409 mail_conflict`, `422 unprocessable`, `502 mail_unavailable`, `503 mail_not_configured`.
+**Response 200** — схема `MailMailbox` (расширенная). **Ошибки:** `401`, `403 forbidden`, `400 validation_error`, `404 mail_mailbox_not_found` (неизвестный `id` ящика) / `404 mail_group_not_found` (смена `group_id` на несуществующую группу — проброс внешнего `group_not_found`), `409 mail_conflict`, `422 unprocessable`, `502 mail_unavailable`, `503 mail_not_configured`.
 
 ### DELETE `/api/mail/mailboxes/{id}`
 Удаление ящика (прокси к внешнему `DELETE /api/external/mailboxes/{id}`). Требует JWT (`mail:delete`). Для не-admin — ящик ∈ `MailScope`. **Response 204.** **Ошибки:** `401`, `403 forbidden`, `404 mail_mailbox_not_found`, `502 mail_unavailable`, `503 mail_not_configured`.

@@ -45,6 +45,7 @@ class FakeAiKeyService:
                 last_checked_at=now,
                 created_at=now,
                 updated_at=now,
+                backend_count=0,
             )
         ]
         self.deleted: set[uuid.UUID] = set()
@@ -62,6 +63,7 @@ class FakeAiKeyService:
             last_checked_at=None,
             created_at=now,
             updated_at=now,
+            backend_count=0,
         )
 
     async def list_keys(self) -> AiKeyListResponse:

@@ -4,6 +4,7 @@ import {
   createServer,
   deleteServer,
   getServerStatus,
+  listServerBackends,
   listServers,
   reorderServers,
   updateServer,
@@ -20,6 +21,20 @@ import type {
 
 export const serversKey = ['servers'] as const;
 export const serverStatusKey = (id: string) => ['server-status', id] as const;
+export const serverBackendsKey = (id: string) => ['server-backends', id] as const;
+
+/**
+ * Ленивый reverse-lookup «Бэки сервера» (ADR-040): запрос уходит только при раскрытии
+ * секции (`enabled`). Своё состояние loading/empty/error внутри секции detail-модалки.
+ */
+export function useServerBackends(id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: serverBackendsKey(id),
+    queryFn: ({ signal }) => listServerBackends(id, signal),
+    enabled,
+    retry: false,
+  });
+}
 
 /**
  * Routine-метрики: единственный запрос GET /api/servers с refetchInterval.

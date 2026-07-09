@@ -5,6 +5,7 @@ import type {
   BackendStatusResponse,
   CreateBackendRequest,
   ReorderBackendsRequest,
+  SecretRevealResponse,
   UpdateBackendRequest,
 } from '@/types/api';
 
@@ -32,4 +33,24 @@ export function getBackendStatus(id: string, signal?: AbortSignal): Promise<Back
 
 export function deleteBackend(id: string): Promise<void> {
   return apiRequest<void>(`/backends/${id}`, { method: 'DELETE' });
+}
+
+/**
+ * Reveal API KEY бэка по требованию (04-api.md, ADR-040/ADR-035). Гейт `backends:edit`.
+ * Секрет НЕ кэшируется (вызывается напрямую из detail-модалки, не через react-query;
+ * backend отдаёт `Cache-Control: no-store`) — значение живёт только в локальном стейте.
+ */
+export function revealBackendApiKey(
+  id: string,
+  signal?: AbortSignal,
+): Promise<SecretRevealResponse> {
+  return apiRequest<SecretRevealResponse>(`/backends/${id}/api-key`, { signal });
+}
+
+/** Reveal ADMIN API KEY бэка по требованию (04-api.md, ADR-040). Гейт `backends:edit`. */
+export function revealBackendAdminApiKey(
+  id: string,
+  signal?: AbortSignal,
+): Promise<SecretRevealResponse> {
+  return apiRequest<SecretRevealResponse>(`/backends/${id}/admin-api-key`, { signal });
 }

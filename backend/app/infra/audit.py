@@ -23,8 +23,8 @@ def log_secret_revealed(principal: Principal, *, resource_type: str, resource_id
     """Пишет аудит-событие `secret_revealed` при успешном reveal (ADR-035, нормативно).
 
     Поля: `actor` (username принципала), `user_id` (UUID БД-пользователя или None
-    у супер-админа), `resource_type` (`server`/`proxy`/`ai_key`), `resource_id`, `at`.
-    Само значение секрета НЕ передаётся и НЕ логируется.
+    у супер-админа), `resource_type` (`server`/`proxy`/`ai_key`/`backend`),
+    `resource_id`, `at`. Само значение секрета НЕ передаётся и НЕ логируется.
     """
     logger.info(
         "secret_revealed",

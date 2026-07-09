@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Clock, Loader2, Server as ServerIcon, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
-import { AddServerModal } from '@/components/AddServerModal';
 import { ServerDetailModal } from '@/components/ServerDetailModal';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -41,7 +40,6 @@ export function ServerCard({ server, canEdit = true, canDelete = true }: ServerC
   const deleteMutation = useDeleteServer();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
-  const [editOpen, setEditOpen] = useState(false);
 
   const status: ProvisionStatus = statusQuery.data?.provision_status ?? server.provision_status;
   const errorMessage = statusQuery.data?.error_message ?? null;
@@ -236,13 +234,7 @@ export function ServerCard({ server, canEdit = true, canDelete = true }: ServerC
         onOpenChange={setDetailOpen}
         server={server}
         canEdit={canEdit}
-        onEdit={() => {
-          setDetailOpen(false);
-          setEditOpen(true);
-        }}
       />
-
-      <AddServerModal mode="edit" server={server} open={editOpen} onOpenChange={setEditOpen} />
     </>
   );
 }

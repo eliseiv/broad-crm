@@ -42,6 +42,7 @@ function server(id: string, position: number): Server {
     exporter_port: 9100,
     provision_status: 'online',
     position,
+    backend_count: 0,
     online: false,
     uptime_seconds: null,
     last_updated: null,
@@ -58,6 +59,7 @@ function aiKey(id: string, provider: AiKey['provider'], position: number): AiKey
     check_status: 'working',
     error_message: null,
     position,
+    backend_count: 0,
     last_checked_at: null,
     created_at: '2026-07-01T09:00:00Z',
   };

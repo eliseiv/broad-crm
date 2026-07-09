@@ -61,6 +61,14 @@ function backend(overrides: Partial<Backend> = {}): Backend {
     code: 'api-eu',
     name: 'API EU',
     domain: 'api.example.com',
+    server_id: null,
+    server_name: null,
+    ai_key_id: null,
+    ai_key_name: null,
+    has_api_key: false,
+    has_admin_api_key: false,
+    git: null,
+    note: null,
     check_status: 'working',
     error_message: null,
     position: 0,
@@ -93,10 +101,9 @@ describe('BackendsPage', () => {
 
     backendsHook.value = { ...backendsHook.value, isLoading: false, data: { items: [] } };
     rerender(<BackendsPage />);
-    expect(screen.getByText('Пока нет бэков')).toBeInTheDocument();
-    expect(screen.getByText('Добавьте первый бэк')).toBeInTheDocument();
-    // Пустое состояние показывает карточку добавления (AddBackendCard).
+    // Пустое состояние (ADR-039) — ТОЛЬКО карточка добавления, без пояснительного текста.
     expect(screen.getByText('Подключить новый бэк для мониторинга')).toBeInTheDocument();
+    expect(screen.queryByText('Пока нет бэков')).not.toBeInTheDocument();
 
     backendsHook.value = { ...backendsHook.value, data: { items: [backend()] } };
     rerender(<BackendsPage />);
@@ -156,5 +163,86 @@ describe('BackendsPage', () => {
     expect(screen.getByText(NO_SECTION_ACCESS_HINT)).toBeInTheDocument();
     // Контент списка скрыт (guard короткозамыкает до рендера списка бэков).
     expect(screen.queryByText('API EU')).not.toBeInTheDocument();
+  });
+});
+
+describe('BackendsPage — группировка и поиск (ADR-039)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    loginSuperadmin();
+    backendsHook.value = {
+      data: undefined,
+      isLoading: false,
+      isError: false,
+      error: null,
+      refetch: vi.fn(),
+      isFetching: false,
+    };
+  });
+
+  it('группирует бэки с одинаковым name в кластер «name · N»', () => {
+    backendsHook.value = {
+      ...backendsHook.value,
+      data: {
+        items: [
+          backend({ id: 'b1', code: 'api-eu', name: 'API', domain: 'https://eu/', position: 0 }),
+          backend({ id: 'b2', code: 'api-us', name: 'API', domain: 'https://us/', position: 1 }),
+          backend({ id: 'b3', code: 'web', name: 'Web', domain: 'https://web/', position: 2 }),
+        ],
+      },
+    };
+    render(<BackendsPage />, { wrapper });
+
+    // Кластер из двух «API» → групповой заголовок «API · 2».
+    expect(screen.getByRole('heading', { name: 'API · 2' })).toBeInTheDocument();
+    // Одиночный «Web» группового заголовка не получает.
+    expect(screen.queryByRole('heading', { name: /^Web · / })).not.toBeInTheDocument();
+  });
+
+  it('поиск фильтрует по code/name/domain (регистронезависимо)', async () => {
+    const user = userEvent.setup();
+    backendsHook.value = {
+      ...backendsHook.value,
+      data: {
+        items: [
+          backend({
+            id: 'b1',
+            code: 'api-eu',
+            name: 'API EU',
+            domain: 'https://eu.example/',
+            position: 0,
+          }),
+          backend({
+            id: 'b2',
+            code: 'web-app',
+            name: 'Web App',
+            domain: 'https://web.example/',
+            position: 1,
+          }),
+        ],
+      },
+    };
+    render(<BackendsPage />, { wrapper });
+
+    expect(screen.getByText('API EU')).toBeInTheDocument();
+    expect(screen.getByText('Web App')).toBeInTheDocument();
+
+    await user.type(screen.getByLabelText('Поиск по бэкам'), 'WEB');
+    expect(screen.getByText('Web App')).toBeInTheDocument();
+    expect(screen.queryByText('API EU')).not.toBeInTheDocument();
+  });
+
+  it('поиск без совпадений → «Ничего не найдено»', async () => {
+    const user = userEvent.setup();
+    backendsHook.value = {
+      ...backendsHook.value,
+      data: {
+        items: [backend({ id: 'b1', code: 'api-eu', name: 'API EU', domain: 'https://eu/' })],
+      },
+    };
+    render(<BackendsPage />, { wrapper });
+
+    await user.type(screen.getByLabelText('Поиск по бэкам'), 'zzz-nomatch');
+    expect(screen.getByText('Ничего не найдено')).toBeInTheDocument();
   });
 });

@@ -54,6 +54,6 @@ def test_revision_chain_single_head_with_0013_on_top() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
     heads = script.get_heads()
 
-    assert heads == ["0018_teams_mail_group_id"]  # одна голова — цепочка линейна (ADR-038)
+    assert heads == ["0020_backends_domain_canon"]  # одна голова — цепочка линейна (ADR-038)
     rev = script.get_revision("0013_backends_alert_grace")
     assert rev.down_revision == "0012_teams_optional_leader"

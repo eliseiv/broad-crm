@@ -34,6 +34,11 @@ export interface Server {
   provision_status: ProvisionStatus;
   /** Порядок карточки (drag-and-drop). Меньше = выше. 04-api.md. */
   position: number;
+  /**
+   * Число бэков, связанных с сервером (COUNT по `backends.server_id`, 04-api.md, ADR-040).
+   * Для свёрнутой секции «Бэки» detail-view сервера («Бэков: N») без вызова reverse-lookup.
+   */
+  backend_count: number;
   online: boolean;
   uptime_seconds: number | null;
   last_updated: string | null;
@@ -183,6 +188,11 @@ export interface AiKey {
   error_message: string | null;
   /** Порядок карточки внутри провайдер-группы (drag-and-drop). Меньше = выше. 04-api.md. */
   position: number;
+  /**
+   * Число бэков, использующих ключ (COUNT по `backends.ai_key_id`, 04-api.md, ADR-040).
+   * Для свёрнутой секции «Бэки» detail-view ИИ-ключа («Бэков: N») без вызова reverse-lookup.
+   */
+  backend_count: number;
   last_checked_at: string | null;
   created_at: string;
 }
@@ -572,16 +582,34 @@ export interface ProxyStatusResponse {
 export type BackendCheckStatus = 'pending' | 'working' | 'error';
 
 /**
- * Элемент списка бэков (04-api.md, схема `BackendListItem`). Секрета у сущности нет —
- * все поля (`code`/`name`/`domain`) публичны и возвращаются как есть. `code` уникален.
+ * Элемент списка бэков (04-api.md, схема `BackendListItem`). `code`/`name`/`domain`/`git`/`note`
+ * публичны; секреты (`api_key`/`admin_api_key`) НЕ отдаются — только флаги `has_*` + on-demand
+ * reveal (ADR-040). Связи `server_id`/`ai_key_id` (+ денормализованные имена для отображения).
+ * `code` уникален; `name` — нет (дубли группируются, ADR-039).
  */
 export interface Backend {
   id: string;
   /** Бизнес-код сервиса (1–64), уникален по реестру. */
   code: string;
   name: string;
-  /** Нормализованный домен (`host[:port]`, без схемы/пути). Проверка — `https://{domain}/health`. */
+  /** Каноничный домен (`https://<host>/`, ADR-042). Проверка — `{domain}health`. */
   domain: string;
+  /** Сервер CRM, на котором лежит бэк (ADR-040); `null` — не задан. */
+  server_id: string | null;
+  /** Имя связанного сервера для отображения (join `servers.name`); `null` при `server_id=null`. */
+  server_name: string | null;
+  /** ИИ-ключ CRM, используемый бэком (ADR-040); `null` — не задан. */
+  ai_key_id: string | null;
+  /** Имя связанного ИИ-ключа (join `ai_keys.name`); `null` при `ai_key_id=null`. */
+  ai_key_name: string | null;
+  /** Задан ли API KEY (`api_key_encrypted IS NOT NULL`, ADR-040). Сам секрет не отдаётся. */
+  has_api_key: boolean;
+  /** Задан ли ADMIN API KEY (`admin_api_key_encrypted IS NOT NULL`, ADR-040). */
+  has_admin_api_key: boolean;
+  /** Ссылка на репозиторий (URL, не секрет, ADR-040); `null` — не задан. */
+  git: string | null;
+  /** Свободные примечания (не секрет, ADR-040); `null` — не заданы. */
+  note: string | null;
   check_status: BackendCheckStatus;
   /** Рус. причина при check_status='error', иначе null. */
   error_message: string | null;
@@ -599,23 +627,57 @@ export interface BackendListResponse {
 
 /**
  * Тело POST /api/backends (04-api.md, `BackendCreateRequest`). `code` уникален —
- * дубликат → 409 backend_code_taken. `domain` принимается с/без схемы, нормализуется на backend.
+ * дубликат → 409 backend_code_taken. `domain` принимается с/без схемы, канонизируется на backend.
+ * Секция «Информация» (ADR-040) — все поля опциональны: FK `server_id`/`ai_key_id`
+ * (несуществующий → 422), секреты `api_key`/`admin_api_key` (шифруются), `git`/`note` (не секреты).
  */
 export interface CreateBackendRequest {
   code: string;
   name: string;
   domain: string;
+  server_id?: string | null;
+  ai_key_id?: string | null;
+  api_key?: string | null;
+  admin_api_key?: string | null;
+  git?: string | null;
+  note?: string | null;
 }
 
 /**
  * Тело PATCH /api/backends/{id} (04-api.md, `BackendUpdateRequest`). Все поля опциональны —
  * передаются только изменяемые (семантика exclude_unset). Смена `code` на занятый другим
  * бэком → 409 backend_code_taken. Смена `domain` → повторная проверка (check_status='pending').
+ * FK: `null` → обнулить связь; uuid → установить (несуществующий → 422). Секреты: непустая
+ * строка → зашифровать; `null`/`""` → очистить. `git`/`note`: значение → установить; `null`/`""` → очистить.
  */
 export interface UpdateBackendRequest {
   code?: string;
   name?: string;
   domain?: string;
+  server_id?: string | null;
+  ai_key_id?: string | null;
+  api_key?: string | null;
+  admin_api_key?: string | null;
+  git?: string | null;
+  note?: string | null;
+}
+
+/**
+ * Компактная ссылка на бэк (04-api.md, схема `BackendRef`, ADR-040) для reverse-lookup
+ * списков «бэки сервера»/«бэки ключа». Только идентификация — секреты/связи не отдаются.
+ */
+export interface BackendRef {
+  code: string;
+  name: string;
+  domain: string;
+}
+
+/**
+ * Ответ GET /api/servers/{id}/backends и GET /api/ai-keys/{id}/backends
+ * (04-api.md, схема `BackendRefListResponse`, ADR-040). Сортировка position ASC.
+ */
+export interface BackendRefListResponse {
+  backends: BackendRef[];
 }
 
 /** Тело PATCH /api/backends/order — полная перестановка единого списка (04-api.md). */

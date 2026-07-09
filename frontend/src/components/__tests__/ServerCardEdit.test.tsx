@@ -39,6 +39,7 @@ function server(overrides: Partial<Server> = {}): Server {
     exporter_port: 9100,
     provision_status: 'online',
     position: 0,
+    backend_count: 0,
     online: true,
     uptime_seconds: 1323120,
     last_updated: '2026-06-28T12:00:00Z',
@@ -70,17 +71,18 @@ describe('ServerCard detail → edit (ADR-035)', () => {
     expect(hooks.updateMutate).not.toHaveBeenCalled();
   });
 
-  it('карандаш в detail-модалке открывает edit prefilled и PATCHes {name}', async () => {
+  it('карандаш в detail-модалке открывает inline-edit и PATCHes {name} (ADR-039)', async () => {
     const user = userEvent.setup();
     render(<ServerCard server={server()} />, { wrapper });
 
     await user.click(screen.getByRole('button', { name: 'Просмотр сервера Server 01' }));
-    // Карандаш «Редактировать» в шапке detail-модалки закрывает detail и открывает edit.
+    // Карандаш открывает inline-редактирование имени прямо в detail-модалке (ADR-039).
     await user.click(await screen.findByRole('button', { name: 'Редактировать' }));
 
-    expect(await screen.findByText('Изменить сервер')).toBeInTheDocument();
-    const nameInput = screen.getByLabelText('Название') as HTMLInputElement;
+    const nameInput = (await screen.findByLabelText('Название')) as HTMLInputElement;
     expect(nameInput.value).toBe('Server 01');
+    // Отдельной edit-модалки сервера больше нет (ADR-039 — edit инлайн в detail-view).
+    expect(screen.queryByText('Изменить сервер')).not.toBeInTheDocument();
 
     await user.clear(nameInput);
     await user.type(nameInput, 'Server 01 renamed');

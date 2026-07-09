@@ -33,6 +33,8 @@ class FakeBackend:
         domain: str = "api.example.com",
         check_status: str = BackendStatus.working.value,
         position: int = 0,
+        server_id: uuid.UUID | None = None,
+        ai_key_id: uuid.UUID | None = None,
     ) -> None:
         now = datetime.now(UTC)
         self.id = uuid.uuid4()
@@ -42,6 +44,13 @@ class FakeBackend:
         self.check_status = check_status
         self.error_message: str | None = "Бэк недоступен" if check_status == "error" else None
         self.position = position
+        # ADR-040/042: связи + секреты (шифртекст) + git/note.
+        self.server_id = server_id
+        self.ai_key_id = ai_key_id
+        self.api_key_encrypted: bytes | None = None
+        self.admin_api_key_encrypted: bytes | None = None
+        self.git: str | None = None
+        self.note: str | None = None
         self.last_checked_at: datetime | None = now
         self.created_at = now
         self.updated_at = now
@@ -73,19 +82,49 @@ class FakeBackendRepo:
     def session(self) -> FakeSession:
         return self._session
 
-    async def create(self, *, code: str, name: str, domain: str) -> FakeBackend:
+    async def create(
+        self,
+        *,
+        code: str,
+        name: str,
+        domain: str,
+        server_id: uuid.UUID | None = None,
+        ai_key_id: uuid.UUID | None = None,
+        api_key_encrypted: bytes | None = None,
+        admin_api_key_encrypted: bytes | None = None,
+        git: str | None = None,
+        note: str | None = None,
+    ) -> FakeBackend:
         self.captured_domain = domain
         backend = FakeBackend(
             code=code,
             name=name,
             domain=domain,
             check_status=BackendStatus.pending.value,
+            server_id=server_id,
+            ai_key_id=ai_key_id,
         )
+        backend.api_key_encrypted = api_key_encrypted
+        backend.admin_api_key_encrypted = admin_api_key_encrypted
+        backend.git = git
+        backend.note = note
         self.backends[backend.id] = backend
         return backend
 
     async def list_all(self) -> list[FakeBackend]:
         return list(self.backends.values())
+
+    async def server_names(self, server_ids: Any) -> dict[uuid.UUID, str]:
+        return {}
+
+    async def ai_key_names(self, ai_key_ids: Any) -> dict[uuid.UUID, str]:
+        return {}
+
+    async def server_exists(self, server_id: uuid.UUID) -> bool:
+        return True
+
+    async def ai_key_exists(self, ai_key_id: uuid.UUID) -> bool:
+        return True
 
     async def get_by_id(self, backend_id: uuid.UUID) -> FakeBackend | None:
         return self.backends.get(backend_id)
@@ -131,9 +170,9 @@ async def test_create_pending_normalizes_domain_and_schedules_check() -> None:
     )
     await asyncio.sleep(0)
 
-    # Домен нормализован в «голый» host перед сохранением.
-    assert repo.captured_domain == "api.example.com"
-    assert item.domain == "api.example.com"
+    # Домен нормализован в канон `https://<host>/` перед сохранением (ADR-042).
+    assert repo.captured_domain == "https://api.example.com/"
+    assert item.domain == "https://api.example.com/"
     assert item.check_status == BackendStatus.pending
     assert item.code == "api-eu"
     assert repo.session.commits == 1
@@ -196,7 +235,9 @@ async def test_list_backends_returns_items() -> None:
 
 # ---------------------------------------------------------------------- PATCH
 async def test_update_domain_change_rechecks() -> None:
-    backend = FakeBackend(domain="old.example.com", check_status=BackendStatus.working.value)
+    backend = FakeBackend(
+        domain="https://old.example.com/", check_status=BackendStatus.working.value
+    )
     repo = FakeBackendRepo([backend])
     monitor = FakeMonitor()
     service = _service(repo, monitor)
@@ -206,14 +247,16 @@ async def test_update_domain_change_rechecks() -> None:
     )
     await asyncio.sleep(0)
 
-    assert backend.domain == "new.example.com"  # нормализован
+    assert backend.domain == "https://new.example.com/"  # нормализован (канон)
     assert item.check_status == BackendStatus.pending
     assert backend.error_message is None
     assert monitor.checked == [backend.id]
 
 
 async def test_update_domain_same_after_normalize_no_recheck() -> None:
-    backend = FakeBackend(domain="api.example.com", check_status=BackendStatus.working.value)
+    backend = FakeBackend(
+        domain="https://api.example.com/", check_status=BackendStatus.working.value
+    )
     repo = FakeBackendRepo([backend])
     monitor = FakeMonitor()
     service = _service(repo, monitor)

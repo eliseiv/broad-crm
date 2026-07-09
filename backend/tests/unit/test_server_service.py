@@ -118,6 +118,16 @@ class FakeProvisioning:
         self.scheduled.append(server_id)
 
 
+class FakeBackends:
+    """Фейк BackendRepository (reverse-lookup/backend_count, ADR-040). Пусто по умолчанию."""
+
+    async def count_by_servers(self, server_ids: Any) -> dict[Any, int]:
+        return {}
+
+    async def list_by_server(self, server_id: Any) -> list[Any]:
+        return []
+
+
 def make_service(
     repo: FakeRepo | None = None,
     monitoring: FakeMonitoring | None = None,
@@ -127,6 +137,7 @@ def make_service(
         cast(Any, repo or FakeRepo()),
         cast(Any, monitoring or FakeMonitoring()),
         cast(Any, provisioning or FakeProvisioning()),
+        cast(Any, FakeBackends()),
     )
 
 

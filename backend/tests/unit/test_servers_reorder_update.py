@@ -77,9 +77,19 @@ class FakeServerRepo:
             self.servers[server_id].position = index
 
 
+class _FakeBackends:
+    async def count_by_servers(self, server_ids: Any) -> dict[Any, int]:
+        return {}
+
+    async def list_by_server(self, server_id: Any) -> list[Any]:
+        return []
+
+
 def _service(repo: FakeServerRepo) -> ServerService:
     # reorder/update используют только репозиторий; monitoring/provisioning не нужны.
-    return ServerService(cast(Any, repo), cast(Any, None), cast(Any, None))
+    return ServerService(
+        cast(Any, repo), cast(Any, None), cast(Any, None), cast(Any, _FakeBackends())
+    )
 
 
 # --------------------------------------------------------------- update_server

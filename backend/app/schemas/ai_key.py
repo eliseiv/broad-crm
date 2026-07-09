@@ -54,6 +54,9 @@ class AiKeyListItem(BaseModel):
     last_checked_at: datetime | None
     created_at: datetime
     updated_at: datetime
+    # Число бэков, использующих ключ (COUNT по backends.ai_key_id, ADR-040) — для
+    # свёрнутой секции «Бэки» в detail-view ИИ-ключа («Бэков: N») без доп. запроса.
+    backend_count: int
 
 
 class AiKeyListResponse(BaseModel):

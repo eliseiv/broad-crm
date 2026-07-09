@@ -44,6 +44,7 @@ function server(overrides: Partial<Server> = {}): Server {
     exporter_port: 9100,
     provision_status: 'online',
     position: 0,
+    backend_count: 0,
     online: true,
     uptime_seconds: 1323120,
     last_updated: '2026-06-28T12:00:00Z',

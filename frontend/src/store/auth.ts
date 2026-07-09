@@ -10,15 +10,18 @@ const SEES_ALL_MAIL_KEY = 'crm.auth.seesAllMailTeams';
 const PERMISSIONS_KEY = 'crm.auth.permissions';
 
 /**
- * Токен в памяти (Zustand). Для переживания перезагрузки — sessionStorage,
- * НЕ localStorage (05-security.md, modules/auth). Очищается на 401/logout.
- * Права принципала (role/permissions/is_superadmin) из GET /api/auth/me тоже
- * персистятся в sessionStorage (crm.auth.*), чтобы UI-гейтинг работал сразу
- * после reload до перезапроса /me (ADR-021, 08-design-system.md «Гейтинг»).
+ * Токен в памяти (Zustand). Для переживания перезагрузки/закрытия браузера и шаринга
+ * между вкладками — localStorage (ADR-041, амендмент 05-security.md/ADR-002/ADR-021):
+ * прежний sessionStorage стирался при закрытии браузера и был изолирован по вкладке
+ * (новая вкладка → редирект на /login). Токен живёт до истечения TTL JWT (24 ч);
+ * 401/logout полностью очищают crm.auth.* во всех вкладках. Права принципала
+ * (role/permissions/is_superadmin/seesAll*) из GET /api/auth/me тоже персистятся
+ * в localStorage (crm.auth.*) → синхронная регидрация в `create()` наполняет стор ДО
+ * резолва guard (ProtectedRoute видит сессию на первом рендере, в т.ч. в новой вкладке).
  */
 function readString(key: string): string | null {
   try {
-    return sessionStorage.getItem(key);
+    return localStorage.getItem(key);
   } catch {
     return null;
   }
@@ -37,12 +40,12 @@ function readPermissions(): PermissionsMap | null {
 
 function persistToken(token: string | null, username: string | null): void {
   try {
-    if (token) sessionStorage.setItem(STORAGE_KEY, token);
-    else sessionStorage.removeItem(STORAGE_KEY);
-    if (username) sessionStorage.setItem(USER_KEY, username);
-    else sessionStorage.removeItem(USER_KEY);
+    if (token) localStorage.setItem(STORAGE_KEY, token);
+    else localStorage.removeItem(STORAGE_KEY);
+    if (username) localStorage.setItem(USER_KEY, username);
+    else localStorage.removeItem(USER_KEY);
   } catch {
-    // sessionStorage недоступен (приватный режим) — работаем только в памяти.
+    // localStorage недоступен (приватный режим) — работаем только в памяти.
   }
 }
 
@@ -54,15 +57,15 @@ function persistPrincipal(
   permissions: PermissionsMap | null,
 ): void {
   try {
-    if (role) sessionStorage.setItem(ROLE_KEY, role);
-    else sessionStorage.removeItem(ROLE_KEY);
-    sessionStorage.setItem(SUPERADMIN_KEY, isSuperadmin ? '1' : '0');
-    sessionStorage.setItem(SEES_ALL_SMS_KEY, seesAllSmsTeams ? '1' : '0');
-    sessionStorage.setItem(SEES_ALL_MAIL_KEY, seesAllMailTeams ? '1' : '0');
-    if (permissions) sessionStorage.setItem(PERMISSIONS_KEY, JSON.stringify(permissions));
-    else sessionStorage.removeItem(PERMISSIONS_KEY);
+    if (role) localStorage.setItem(ROLE_KEY, role);
+    else localStorage.removeItem(ROLE_KEY);
+    localStorage.setItem(SUPERADMIN_KEY, isSuperadmin ? '1' : '0');
+    localStorage.setItem(SEES_ALL_SMS_KEY, seesAllSmsTeams ? '1' : '0');
+    localStorage.setItem(SEES_ALL_MAIL_KEY, seesAllMailTeams ? '1' : '0');
+    if (permissions) localStorage.setItem(PERMISSIONS_KEY, JSON.stringify(permissions));
+    else localStorage.removeItem(PERMISSIONS_KEY);
   } catch {
-    // sessionStorage недоступен — работаем только в памяти.
+    // localStorage недоступен — работаем только в памяти.
   }
 }
 
@@ -77,7 +80,7 @@ function clearStorage(): void {
       SEES_ALL_MAIL_KEY,
       PERMISSIONS_KEY,
     ]) {
-      sessionStorage.removeItem(key);
+      localStorage.removeItem(key);
     }
   } catch {
     // no-op

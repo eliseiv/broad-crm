@@ -4,6 +4,7 @@
 - Дата: 2026-07-09
 - Затрагивает: [modules/servers](../modules/servers/README.md), [modules/proxies](../modules/proxies/README.md), [modules/ai-keys](../modules/ai-keys/README.md), [modules/backends](../modules/backends/README.md)
 - Связан с / амендмент: [ADR-007](ADR-007-shifrovanie-fernet.md), [ADR-010](ADR-010-ai-key-monitor-vnutri-backend.md), [ADR-019](ADR-019-proxies-availability-monitor.md), [ADR-011](ADR-011-poryadok-blokov-server-side-dnd-kit.md) (клик по карточке)
+- **Амендирован:** [ADR-039](ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md) (editable-scope §6 **сервера**: карандаш открывает не отдельную `AddServerModal`, а **inline-edit** поля `name` прямо в `ServerDetailModal`) · [ADR-040](ADR-040-backend-relations-secrets-reverse-lookup.md) (у **бэка** появились секреты `api_key`/`admin_api_key` → reveal-эндпоинты `GET /api/backends/{id}/api-key` и `/admin-api-key` под `backends:edit`; строка «Бэк — секрета нет» в таблицах ниже более не действует)
 
 ## Контекст
 
@@ -29,7 +30,7 @@
 | Сервер | Название (`name`), IP (`ip`), Пользователь (`ssh_user`) | **Пароль** — `****` + глаз → `GET /api/servers/{id}/ssh-password` |
 | Прокси | Название (`name`), Тип (`proxy_type`), Хост (`host`), Порт (`port`), Логин (`username`) | **Пароль** (если `has_password`) — `****` + глаз → `GET /api/proxies/{id}/password`; иначе «—» (глаза нет) |
 | ИИ-ключ | Название (`name`), Провайдер (`provider`), Ключ (`key_masked`) | **Ключ** — `key_masked` + глаз → `GET /api/ai-keys/{id}/key` (полное значение) |
-| Бэк | Код (`code`), Название (`name`), Домен (`domain`) | **секрета нет** — reveal не применяется |
+| Бэк | Код (`code`), Название (`name`), Домен (`domain`) | ~~секрета нет~~ → **амендмент [ADR-040](ADR-040-backend-relations-secrets-reverse-lookup.md):** секреты `api_key`/`admin_api_key` (reveal под `backends:edit`) + связи `server_id`/`ai_key_id` |
 
 Для сервера `ssh_user` добавляется в read-контракт (`ServerListItem += ssh_user`); колонка уже есть в БД, миграции нет. `ssh_user` — **не секрет** (по аналогии с `username` прокси, [ADR-019](ADR-019-proxies-availability-monitor.md)).
 
@@ -68,10 +69,10 @@ Reveal каждого секрета гейтится **`require("<page>", "edit
 
 ### 6. Editable-scope (что правит карандаш) — зафиксировано
 
-- **Сервер — карандаш правит ТОЛЬКО `name`** (текущий контракт `PATCH /api/servers/{id}`). `ip`/`ssh_user`/`ssh_password` **неизменяемы** через API: их смена требовала бы репровижининга агента (вне scope Этапа 1, [modules/servers](../modules/servers/README.md#out-of-scope)). Detail-view показывает `ip`/`ssh_user`/пароль (просмотр + reveal), но edit-модалка — только имя. Полноценное редактирование server-кредов — на подтверждение ([Q-UI-4](../99-open-questions.md)).
+- **Сервер — карандаш правит ТОЛЬКО `name`** (текущий контракт `PATCH /api/servers/{id}`). `ip`/`ssh_user`/`ssh_password` **неизменяемы** через API: их смена требовала бы репровижининга агента (вне scope Этапа 1, [modules/servers](../modules/servers/README.md#out-of-scope)). Detail-view показывает `ip`/`ssh_user`/пароль (просмотр + reveal). **Амендмент [ADR-039](ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md):** карандаш **не** открывает отдельную `AddServerModal mode='edit'`, а переключает `ServerDetailModal` в **inline-edit-режим** (`name` редактируется прямо в detail-view, Сохранить/Отмена, тот же `PATCH name`). Editable-scope (только `name`) не расширяется. Полноценное редактирование server-кредов — на подтверждение ([Q-UI-4](../99-open-questions.md)).
 - **Прокси — карандаш правит `name`/`proxy_type`/`host`/`port`/`username`/`password`** (существующий полный контракт `PATCH /api/proxies/{id}`). Секрет пере-вводится (пустой ⇒ не менять). Без изменений.
 - **ИИ-ключ — карандаш правит `name`/`provider`/`key`** (существующий контракт). Без изменений.
-- **Бэк — карандаш правит `code`/`name`/`domain`** (существующий контракт). Без изменений.
+- **Бэк — карандаш правит `code`/`name`/`domain`** (существующий контракт). **Амендмент [ADR-040](ADR-040-backend-relations-secrets-reverse-lookup.md):** форма edit дополнительно правит связи `server_id`/`ai_key_id` и секреты `api_key`/`admin_api_key` (секция «Информация»); карандаш по-прежнему открывает `AddBackendModal mode='edit'` (не inline — многополевая форма).
 
 ## Последствия
 

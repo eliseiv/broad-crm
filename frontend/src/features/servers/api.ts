@@ -1,5 +1,6 @@
 import { apiRequest } from '@/lib/api';
 import type {
+  BackendRefListResponse,
   CreateServerRequest,
   CreateServerResponse,
   ReorderServersRequest,
@@ -47,4 +48,16 @@ export function revealServerPassword(
   signal?: AbortSignal,
 ): Promise<SecretRevealResponse> {
   return apiRequest<SecretRevealResponse>(`/servers/${id}/ssh-password`, { signal });
+}
+
+/**
+ * Reverse-lookup: бэки, связанные с сервером (04-api.md, ADR-040). Гейт `servers:view`.
+ * Ленивая загрузка при раскрытии секции «Бэки» detail-view сервера (свёрнутый счётчик —
+ * `Server.backend_count`, без этого запроса).
+ */
+export function listServerBackends(
+  id: string,
+  signal?: AbortSignal,
+): Promise<BackendRefListResponse> {
+  return apiRequest<BackendRefListResponse>(`/servers/${id}/backends`, { signal });
 }

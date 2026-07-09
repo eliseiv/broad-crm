@@ -11,6 +11,7 @@ from app.infra.crypto import decrypt_secret, encrypt_secret
 from app.logging import get_logger
 from app.models.ai_key import AiKey, AiKeyStatus, AiProvider
 from app.repositories.ai_key_repository import AiKeyRepository
+from app.repositories.backend_repository import BackendRepository
 from app.schemas.ai_key import (
     AiKeyCreateRequest,
     AiKeyListItem,
@@ -18,6 +19,7 @@ from app.schemas.ai_key import (
     AiKeyStatusResponse,
     AiKeyUpdateRequest,
 )
+from app.schemas.backend import BackendRef, BackendRefListResponse
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 
 logger = get_logger(__name__)
@@ -30,9 +32,15 @@ _background_tasks: set[asyncio.Task[None]] = set()
 class AiKeyService:
     """CRUD реестра AI-ключей + запуск немедленной фоновой проверки при создании."""
 
-    def __init__(self, repository: AiKeyRepository, monitor: AiKeyMonitorService) -> None:
+    def __init__(
+        self,
+        repository: AiKeyRepository,
+        monitor: AiKeyMonitorService,
+        backends: BackendRepository,
+    ) -> None:
         self._repo = repository
         self._monitor = monitor
+        self._backends = backends
 
     async def create_key(self, payload: AiKeyCreateRequest) -> AiKeyListItem:
         """Шифрует ключ, сохраняет (pending) и запускает немедленную проверку."""
@@ -56,12 +64,29 @@ class AiKeyService:
         task.add_done_callback(_background_tasks.discard)
 
         logger.info("ai_key_created", ai_key_id=str(ai_key.id))
-        return self._to_list_item(ai_key)
+        # Новый ключ ещё не используется ни одним бэком → backend_count=0.
+        return self._to_list_item(ai_key, 0)
 
     async def list_keys(self) -> AiKeyListResponse:
         """Список ключей (position ASC, created_at DESC, id), полный ключ не раскрывается."""
         keys = await self._repo.list_all()
-        return AiKeyListResponse(items=[self._to_list_item(key) for key in keys])
+        counts = await self._backends.count_by_ai_keys([key.id for key in keys])
+        return AiKeyListResponse(
+            items=[self._to_list_item(key, counts.get(key.id, 0)) for key in keys]
+        )
+
+    async def list_ai_key_backends(self, ai_key_id: uuid.UUID) -> BackendRefListResponse:
+        """Список бэков, использующих ключ (reverse-lookup, ADR-040, require ai-keys:view).
+
+        Нет ключа → 404 ai_key_not_found. Сортировка `position ASC, created_at DESC, id`.
+        """
+        ai_key = await self._repo.get_by_id(ai_key_id)
+        if ai_key is None:
+            raise ai_key_not_found()
+        backends = await self._backends.list_by_ai_key(ai_key_id)
+        return BackendRefListResponse(
+            backends=[BackendRef(code=b.code, name=b.name, domain=b.domain) for b in backends]
+        )
 
     async def update_key(self, ai_key_id: uuid.UUID, payload: AiKeyUpdateRequest) -> AiKeyListItem:
         """Редактирует ключ (04-api.md, modules/ai-keys#редактирование-ключа).
@@ -112,7 +137,8 @@ class AiKeyService:
             task.add_done_callback(_background_tasks.discard)
 
         logger.info("ai_key_updated", ai_key_id=str(ai_key_id), re_check=re_check)
-        return self._to_list_item(ai_key)
+        counts = await self._backends.count_by_ai_keys([ai_key.id])
+        return self._to_list_item(ai_key, counts.get(ai_key.id, 0))
 
     async def reorder_keys(self, provider: AiProvider, ids: list[uuid.UUID]) -> None:
         """Перестановка ключей ВНУТРИ провайдер-группы: `position = 0..M-1`.
@@ -166,7 +192,7 @@ class AiKeyService:
         logger.info("ai_key_deleted", ai_key_id=str(ai_key_id))
 
     @staticmethod
-    def _to_list_item(ai_key: AiKey) -> AiKeyListItem:
+    def _to_list_item(ai_key: AiKey, backend_count: int) -> AiKeyListItem:
         """Собирает элемент ответа; `key_masked` — только маска, без полного ключа."""
         return AiKeyListItem(
             id=ai_key.id,
@@ -179,4 +205,5 @@ class AiKeyService:
             last_checked_at=ai_key.last_checked_at,
             created_at=ai_key.created_at,
             updated_at=ai_key.updated_at,
+            backend_count=backend_count,
         )

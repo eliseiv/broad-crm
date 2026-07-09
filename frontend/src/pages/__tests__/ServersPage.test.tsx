@@ -60,6 +60,7 @@ function server(): Server {
     exporter_port: 9100,
     provision_status: 'online',
     position: 0,
+    backend_count: 0,
     online: false,
     uptime_seconds: null,
     last_updated: null,

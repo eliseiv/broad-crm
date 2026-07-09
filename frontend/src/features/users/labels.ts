@@ -23,6 +23,7 @@ export const PAGE_LABEL: Record<string, string> = {
   proxies: 'Прокси',
   backends: 'Бэки',
   mail: 'Почты',
+  sms: 'СМС',
   roles: 'Роли',
   teams: 'Команды',
 };

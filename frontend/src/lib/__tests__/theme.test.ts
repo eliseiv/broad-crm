@@ -102,16 +102,16 @@ describe('lib/theme', () => {
     });
   });
 
-  describe('resolveTheme (приоритет localStorage > ОС)', () => {
-    it('без сохранённого выбора следует за ОС', () => {
-      installMatchMedia(true); // ОС тёмная
-      expect(resolveTheme()).toBe('dark');
+  describe('resolveTheme (дефолт light, без follow-OS, ADR-041)', () => {
+    it('без сохранённого выбора → дефолт light (тема ОС игнорируется)', () => {
+      installMatchMedia(true); // ОС тёмная — на дефолт больше не влияет
+      expect(resolveTheme()).toBe('light');
     });
 
-    it('сохранённый выбор приоритетнее ОС', () => {
-      installMatchMedia(true); // ОС тёмная
-      localStorage.setItem(STORAGE_KEY, 'light');
-      expect(resolveTheme()).toBe('light');
+    it('сохранённый выбор приоритетнее дефолта', () => {
+      installMatchMedia(false); // ОС светлая
+      localStorage.setItem(STORAGE_KEY, 'dark');
+      expect(resolveTheme()).toBe('dark');
     });
   });
 
@@ -137,14 +137,13 @@ describe('lib/theme', () => {
   });
 
   describe('useTheme', () => {
-    it('следует за сменой темы ОС, пока явного выбора нет', () => {
-      const mm = installMatchMedia(false); // ОС светлая
+    it('без явного выбора стартует с дефолта light и НЕ следует за сменой ОС (ADR-041)', () => {
+      const mm = installMatchMedia(true); // ОС тёмная — но подписка follow-OS снята
       const { result } = renderHook(() => useTheme());
       expect(result.current.theme).toBe('light');
 
-      act(() => mm.emitChange(true)); // ОС → тёмная
-      expect(result.current.theme).toBe('dark');
-      expect(document.documentElement.dataset.theme).toBe('dark');
+      act(() => mm.emitChange(true)); // смена темы ОС игнорируется (залипает на light)
+      expect(result.current.theme).toBe('light');
     });
 
     it('после явного выбора ОС-изменения игнорируются (залипание)', () => {

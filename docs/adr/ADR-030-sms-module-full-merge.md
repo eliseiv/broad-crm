@@ -2,6 +2,8 @@
 
 Статус: `accepted` · Дата: 2026-07-09 · Амендмент/связки: [ADR-021](ADR-021-rbac-users-roles.md) (RBAC-каталог), [ADR-022](ADR-022-teams-nav-categories.md) (CRM-команды, навигация), [ADR-009](ADR-009-in-backend-notifier-vs-alertmanager.md) (in-backend Telegram)
 
+> **Амендирован:** [ADR-039](ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md) — локализованный лейбл страницы `sms` в матрице прав `/roles` установлен **`sms → «СМС»`** (`PAGE_LABEL`); каталог прав `sms` (введён этим ADR) не меняется.
+
 ## Контекст
 
 Есть отдельный рабочий сервис SMS-агрегатора (`sms-agreagtor`): принимает входящие SMS от Twilio (webhook с проверкой подписи), хранит номера/сообщения, привязывает номера к командам и доставляет входящие операторам в Telegram (Mini App SSO + fan-out по команде + retry дохлых доставок). Стек донора идентичен CRM (Python 3.12 / FastAPI / PostgreSQL 16 / SQLAlchemy 2.0 async / Alembic). Требуется перенести сервис в CRM: страница **«СМС»** (вкладки «Сообщения»/«Номера») + доработка `/teams` (кол-во номеров команды + список номеров в detail-панели).

@@ -57,10 +57,18 @@ erDiagram
         text code
         text name
         text domain
+        uuid server_id FK "NULL, ON DELETE SET NULL"
+        uuid ai_key_id FK "NULL, ON DELETE SET NULL"
+        bytea api_key_encrypted "NULL (секрет, Fernet)"
+        bytea admin_api_key_encrypted "NULL (секрет, Fernet)"
+        text git "NULL (не секрет)"
+        text note "NULL (не секрет)"
         text check_status
         text error_message
         int position
         timestamptz last_checked_at
+        timestamptz error_since
+        boolean alert_sent
         timestamptz created_at
         timestamptz updated_at
     }
@@ -82,9 +90,11 @@ erDiagram
     }
     SERVERS ||--o| NOTIFIER_SERVER_STATE : "1:1 (ON DELETE CASCADE)"
     SERVERS ||--o{ NOTIFIER_ALERT_LOG : "1:N (ON DELETE SET NULL)"
+    SERVERS ||--o{ BACKENDS : "0..1:N (server_id, ON DELETE SET NULL)"
+    AI_KEYS ||--o{ BACKENDS : "0..1:N (ai_key_id, ON DELETE SET NULL)"
 ```
 
-`servers`, `ai_keys`, `proxies` и `backends` — независимые таблицы (связей между ними нет: один админ; метрики серверов во внешней системе; AI-ключи проверяются у внешних провайдеров; прокси проверяются прямым запросом через прокси; бэки проверяются `GET https://{домен}/health`). `backends` с нотификатором не связан (его состояние — в `backends.check_status`, отдельный монитор — [ADR-020](adr/ADR-020-backends-healthcheck-monitor.md)). `proxies` с нотификатором не связан (его состояние — в `proxies.check_status`, отдельный монитор — [ADR-019](adr/ADR-019-proxies-availability-monitor.md)). `notifier_server_state` — **1:1-расширение** `servers` (per-server состояние нотификатора), связано FK `server_id → servers.id` с `ON DELETE CASCADE`; `ai_keys` с нотификатором не связан (его состояние — в `ai_keys.check_status`). `notifier_alert_log` — **1:N append-only-лог** отправленных серверных алертов ([ADR-018](adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)), связан FK `server_id → servers.id` с **`ON DELETE SET NULL`** (лог переживает удаление сервера — в отличие от `notifier_server_state`).
+`servers`, `ai_keys`, `proxies` — независимые таблицы (метрики серверов во внешней системе; AI-ключи проверяются у внешних провайдеров; прокси проверяются прямым запросом через прокси). **`backends` со Спринта 4 ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)) имеет две ОПЦИОНАЛЬНЫЕ связи** — `server_id → servers.id` и `ai_key_id → ai_keys.id` (обе `NULL`, `ON DELETE SET NULL`: удаление сервера/ключа лишь обнуляет связь, бэк не удаляется). Обратный резолв «бэки сервера»/«бэки ключа» — по индексам `ix_backends_server_id`/`ix_backends_ai_key_id` ([04-api.md](04-api.md#backends): `GET /api/servers/{id}/backends`, `GET /api/ai-keys/{id}/backends`). Проверка доступности бэка по-прежнему — `GET {domain}health` (домен = канон `https://{host}/`, [ADR-042](adr/ADR-042-backend-domain-canonical-https.md)). `backends` с нотификатором не связан (его состояние — в `backends.check_status`, отдельный монитор — [ADR-020](adr/ADR-020-backends-healthcheck-monitor.md)). `proxies` с нотификатором не связан (его состояние — в `proxies.check_status`, отдельный монитор — [ADR-019](adr/ADR-019-proxies-availability-monitor.md)). `notifier_server_state` — **1:1-расширение** `servers` (per-server состояние нотификатора), связано FK `server_id → servers.id` с `ON DELETE CASCADE`; `ai_keys` с нотификатором не связан (его состояние — в `ai_keys.check_status`). `notifier_alert_log` — **1:N append-only-лог** отправленных серверных алертов ([ADR-018](adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)), связан FK `server_id → servers.id` с **`ON DELETE SET NULL`** (лог переживает удаление сервера — в отличие от `notifier_server_state`).
 
 ## Таблица `servers`
 
@@ -365,7 +375,13 @@ CREATE INDEX ix_proxies_position ON proxies (position);
 | `id` | `uuid` | PK, `DEFAULT gen_random_uuid()` | Идентификатор бэка. |
 | `code` | `text` | `NOT NULL`, `UNIQUE`, 1–64 симв. | Бизнес-код сервиса (уникален). Дубликат → `409 backend_code_taken`. Не секрет — возвращается в API. |
 | `name` | `text` | `NOT NULL`, 1–64 симв. | Отображаемое имя бэка. |
-| `domain` | `text` | `NOT NULL`, 1–255 симв., без схемы/пробелов/`/` | Домен бэка (нормализованный `host[:port]`, без схемы и пути). URL проверки = `https://{domain}/health`. Не секрет. |
+| `domain` | `text` | `NOT NULL`, 1–255 симв., **канон `https://<host>/`** | Домен бэка в **каноничной форме `https://<host>/`** (схема `https://` + host[:port] + завершающий `/`; путь/query не хранятся), [ADR-042](adr/ADR-042-backend-domain-canonical-https.md). URL проверки = `{domain}health` (= `https://<host>/health`; **дописывание `health`**, а не склейка `https://{domain}/health`). Не секрет. |
+| `server_id` | `uuid` | `NULL`, FK → `servers(id)` `ON DELETE SET NULL` | **Сервер CRM, на котором лежит бэк** ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md); миграция `0019`). `NULL` — не задан. Удаление сервера обнуляет связь (бэк не удаляется). |
+| `ai_key_id` | `uuid` | `NULL`, FK → `ai_keys(id)` `ON DELETE SET NULL` | **ИИ-ключ CRM, используемый бэком** ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md); миграция `0019`). `NULL` — не задан. Удаление ключа обнуляет связь. |
+| `api_key_encrypted` | `bytea` | `NULL` | **API KEY бэка — секрет** ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md); миграция `0019`). Fernet-ciphertext (`FERNET_KEY`); `NULL` — не задан. В API — только флаг `has_api_key`; plaintext не хранится/не логируется/не в обычных ответах (только on-demand reveal под `backends:edit`, [ADR-035](adr/ADR-035-detail-view-secret-reveal.md)). |
+| `admin_api_key_encrypted` | `bytea` | `NULL` | **ADMIN API KEY бэка — секрет** ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md); миграция `0019`). Fernet-ciphertext; `NULL` — не задан. В API — только флаг `has_admin_api_key`; reveal под `backends:edit`. |
+| `git` | `text` | `NULL` | **Ссылка на репозиторий (URL)** ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md); миграция `0019`). **НЕ секрет** — plaintext, отдаётся в обычных ответах. `NULL` — не задан. |
+| `note` | `text` | `NULL` | **Свободные примечания к бэку** ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md); миграция `0019`). **НЕ секрет** — plaintext, отдаётся в обычных ответах. `NULL` — не задан. |
 | `check_status` | `text` | `NOT NULL`, `DEFAULT 'pending'`, CHECK | Статус проверки: `pending` \| `working` \| `error`. Источник состояния переходов (переживает рестарт). **Переходит в `error` немедленно** при первом провале (UI показывает реальность сразу); отправка 🔴-алерта — отложенно (grace-порог, см. `error_since`/`alert_sent`). |
 | `error_message` | `text` | `NULL` | Причина при `error` (рус.): «Таймаут подключения»/«Бэк недоступен»/«Ошибка бэка (HTTP N)»/«Ошибка бэка». |
 | `position` | `integer` | `NOT NULL`, `DEFAULT 0` | Порядок карточки в **едином списке** (drag-and-drop, как серверы/прокси). См. [«Колонка `position`»](#колонка-position-порядок-карточек). |
@@ -422,12 +438,24 @@ CREATE UNIQUE INDEX uq_backends_code ON backends (code);
 CREATE INDEX ix_backends_position ON backends (position);
 ```
 
-> **Амендмент [ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md).** DDL выше — базовая миграция `0007` (историческая). Поля grace-порога алерта **`error_since timestamptz NULL`** и **`alert_sent boolean NOT NULL DEFAULT false`** добавляются миграцией **`0013_backends_alert_grace`** (см. выше). Таблица полей отражает состояние **после** `0013`.
+> **Амендменты (нормативно).** DDL выше — базовая миграция `0007` (историческая). Последующие миграции:
+> - **`0013_backends_alert_grace` ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md))** — поля grace-порога `error_since timestamptz NULL` и `alert_sent boolean NOT NULL DEFAULT false`.
+> - **`0019_backends_relations_secrets` ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md))** — `server_id uuid NULL REFERENCES servers(id) ON DELETE SET NULL`, `ai_key_id uuid NULL REFERENCES ai_keys(id) ON DELETE SET NULL`, `api_key_encrypted bytea NULL`, `admin_api_key_encrypted bytea NULL`, `git text NULL` (не секрет), `note text NULL` (не секрет) + индексы `ix_backends_server_id`, `ix_backends_ai_key_id`.
+> - **`0020_backends_domain_canon` ([ADR-042](adr/ADR-042-backend-domain-canonical-https.md))** — CHECK `ck_backends_domain` перезаписан с `'^[^\s/]+$'` (голый host) на **`'^https://[^\s/]+/$'`** (канон `https://<host>/`); backfill существующих голых доменов `UPDATE ... SET domain = 'https://' || lower(domain) || '/'` (в проде 0 бэков → no-op).
+>
+> Таблица полей выше отражает состояние **после `0020`**.
 
 ### Индексы и обоснование
 - `uq_backends_code` (UNIQUE) — нельзя добавить бэк с уже занятым `code`; даёт детерминированную ошибку конфликта (`409 backend_code_taken`).
 - `ix_backends_position` — стабильная сортировка списка `GET /api/backends` по `position ASC` (порядок drag-and-drop), тай-брейк `created_at DESC`, `id`. Отдельный индекс по `created_at` не нужен (тай-брейк на ≤ десятков строк).
-- CHECK домена `domain ~ '^[^\s/]+$'` — инвариант нормализации: в БД хранится «голый» домен (без схемы `//`, без пробелов и слэшей); полная валидация формата хоста — на уровне приложения (Pydantic, `422`).
+- `ix_backends_server_id` / `ix_backends_ai_key_id` ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md), миграция `0019`) — reverse-lookup «бэки сервера»/«бэки ключа» (`GET /api/servers/{id}/backends`, `GET /api/ai-keys/{id}/backends`) и обслуживание `ON DELETE SET NULL`.
+- CHECK домена **`domain ~ '^https://[^\s/]+/$'`** (после `0020`, [ADR-042](adr/ADR-042-backend-domain-canonical-https.md)) — «свободный» инвариант каноничной формы: схема `https://` + host без пробелов/`/` + завершающий `/`. Полная валидация формата хоста — на уровне приложения (Pydantic, `422`). (База `0007` имела `'^[^\s/]+$'` — голый host.)
+
+### Шифрование `api_key_encrypted` / `admin_api_key_encrypted` ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md))
+
+- Алгоритм — **Fernet** (`cryptography`), тот же примитив и ключ `FERNET_KEY`, что для SSH-паролей/паролей прокси/AI-ключей ([ADR-007](adr/ADR-007-shifrovanie-fernet.md)). Переиспользуются `encrypt_secret`/`decrypt_secret` (`app/infra/crypto.py`).
+- Шифрование при `POST`/`PATCH /api/backends` (только если ключ задан); в БД — только `*_encrypted bytea` (`NULL`, если ключ не задан).
+- Секреты (в любом виде) **НЕ возвращаются** в обычных ответах API — вместо них производные флаги `has_api_key`/`has_admin_api_key`. Расшифровка — только в памяти обработчика reveal-эндпоинта (`GET /api/backends/{id}/api-key` · `/admin-api-key`) под `backends:edit` ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md)). Детали — [05-security.md](05-security.md#защита-api-ключей-бэка-adr-040).
 
 ### Политика удаления
 
@@ -440,6 +468,48 @@ CREATE INDEX ix_backends_position ON backends (position);
 **`upgrade()`** — создать таблицу `backends` (DDL выше) + уникальный индекс `uq_backends_code` + индекс `ix_backends_position`. Backfill не выполняется (таблица стартует пустой).
 
 **`downgrade()`** — `DROP TABLE backends` (индексы снимаются вместе с таблицей).
+
+## Миграция `0019_backends_relations_secrets` (концепт, [ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md))
+
+> Реализуется через Alembic. `down_revision = "0018_teams_mail_group_id"` (текущая голова цепочки). Рабочий `downgrade()`.
+
+**`upgrade()`** — `ALTER TABLE backends ADD COLUMN`:
+```sql
+ALTER TABLE backends ADD COLUMN server_id uuid REFERENCES servers(id) ON DELETE SET NULL;
+ALTER TABLE backends ADD COLUMN ai_key_id uuid REFERENCES ai_keys(id) ON DELETE SET NULL;
+ALTER TABLE backends ADD COLUMN api_key_encrypted bytea;
+ALTER TABLE backends ADD COLUMN admin_api_key_encrypted bytea;
+ALTER TABLE backends ADD COLUMN git text;      -- не секрет
+ALTER TABLE backends ADD COLUMN note text;     -- не секрет
+CREATE INDEX ix_backends_server_id ON backends (server_id);
+CREATE INDEX ix_backends_ai_key_id ON backends (ai_key_id);
+```
+Backfill не выполняется (новые колонки — `NULL`). Все существующие бэки остаются без связей/секретов/`git`/`note`.
+
+**`downgrade()`** — `DROP INDEX ix_backends_ai_key_id, ix_backends_server_id;` затем `ALTER TABLE backends DROP COLUMN note, git, admin_api_key_encrypted, api_key_encrypted, ai_key_id, server_id` (FK снимаются с колонками).
+
+## Миграция `0020_backends_domain_canon` (концепт, [ADR-042](adr/ADR-042-backend-domain-canonical-https.md))
+
+> Реализуется через Alembic. `down_revision = "0019_backends_relations_secrets"`. Рабочий `downgrade()`.
+
+**`upgrade()`** — переканонизация `backends.domain` к `https://<host>/`:
+```sql
+ALTER TABLE backends DROP CONSTRAINT ck_backends_domain;
+UPDATE backends SET domain = 'https://' || lower(domain) || '/'
+    WHERE domain !~ '^https://';                              -- голые домены → канон (в проде 0 строк)
+ALTER TABLE backends ADD CONSTRAINT ck_backends_domain
+    CHECK (char_length(domain) BETWEEN 1 AND 255 AND domain ~ '^https://[^\s/]+/$');
+```
+
+**`downgrade()`** — обратно к голому host:
+```sql
+ALTER TABLE backends DROP CONSTRAINT ck_backends_domain;
+UPDATE backends SET domain = regexp_replace(regexp_replace(domain, '^https://', ''), '/$', '');
+ALTER TABLE backends ADD CONSTRAINT ck_backends_domain
+    CHECK (char_length(domain) BETWEEN 1 AND 255 AND domain ~ '^[^\s/]+$');
+```
+
+> **Влияние на данные:** в проде **0 бэков** → backfill фактически no-op; миграция всё равно переставляет CHECK (новый канон `https://<host>/` не прошёл бы старый инвариант). Правило применяется ко всем новым/редактируемым бэкам ([modules/backends](modules/backends/README.md#нормализация-домена-и-проверка-нормативно)).
 
 ---
 

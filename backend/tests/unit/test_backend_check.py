@@ -50,32 +50,41 @@ def _static(status_code: int) -> httpx.MockTransport:
 
 
 # ---------------------------------------------------------------- normalize_domain
+# ADR-042: normalize_domain → канон `https://<host>/` (host lowercased, port сохранён).
 def test_normalize_strips_https_scheme_and_path() -> None:
-    assert normalize_domain("https://api.example.com/") == "api.example.com"
+    assert normalize_domain("https://api.example.com/") == "https://api.example.com/"
 
 
 def test_normalize_strips_http_scheme_and_path() -> None:
-    assert normalize_domain("http://x/health") == "x"
+    assert normalize_domain("http://x/health") == "https://x/"
 
 
 def test_normalize_lowercases_host_keeps_port() -> None:
-    assert normalize_domain("API.Example.com:8443") == "api.example.com:8443"
+    assert normalize_domain("API.Example.com:8443") == "https://api.example.com:8443/"
 
 
 def test_normalize_trims_surrounding_whitespace() -> None:
-    assert normalize_domain("  api.example.com  ") == "api.example.com"
+    assert normalize_domain("  api.example.com  ") == "https://api.example.com/"
 
 
 def test_normalize_scheme_case_insensitive() -> None:
-    assert normalize_domain("HTTPS://API.EXAMPLE.COM/path?q=1") == "api.example.com"
+    assert normalize_domain("HTTPS://API.EXAMPLE.COM/path?q=1") == "https://api.example.com/"
 
 
 def test_normalize_without_scheme_is_lowercased() -> None:
-    assert normalize_domain("Sub.Domain.Example.Com") == "sub.domain.example.com"
+    assert normalize_domain("Sub.Domain.Example.Com") == "https://sub.domain.example.com/"
 
 
 def test_normalize_drops_query_and_fragment_via_first_slash() -> None:
-    assert normalize_domain("host/a/b?c#d") == "host"
+    assert normalize_domain("host/a/b?c#d") == "https://host/"
+
+
+def test_normalize_no_double_scheme_regression() -> None:
+    # Анти-регресс ADR-042: канон + build_health_url НЕ дают `https://https://`.
+    canon = normalize_domain("https://lumorixsite.shop")
+    assert canon == "https://lumorixsite.shop/"
+    assert build_health_url(canon) == "https://lumorixsite.shop/health"
+    assert "https://https://" not in build_health_url(canon)
 
 
 # ------------------------------------------------------------------ is_valid_domain
@@ -100,7 +109,6 @@ def test_valid_domains(domain: str) -> None:
     [
         "",  # пустой
         "api example.com",  # пробел
-        "api.example.com/health",  # слэш
         "host:0",  # порт < 1
         "host:65536",  # порт > 65535
         "host:99999",  # порт вне диапазона
@@ -126,18 +134,21 @@ def test_normalize_then_validate_examples_from_spec() -> None:
 
 # ------------------------------------------------------------------ build_health_url
 def test_build_health_url_scheme_and_path_fixed() -> None:
-    assert build_health_url("api.example.com") == "https://api.example.com/health"
+    # build_health_url принимает КАНОН `https://<host>/` и дописывает `health`.
+    assert build_health_url("https://api.example.com/") == "https://api.example.com/health"
 
 
 def test_build_health_url_keeps_port() -> None:
-    assert build_health_url("api.example.com:8443") == "https://api.example.com:8443/health"
+    assert (
+        build_health_url("https://api.example.com:8443/") == "https://api.example.com:8443/health"
+    )
 
 
 # ------------------------------------------------------ маппинг статусов check_backend
 @pytest.mark.parametrize("status_code", [200, 201, 204, 299])
 async def test_strict_2xx_is_working(monkeypatch: pytest.MonkeyPatch, status_code: int) -> None:
     _install(monkeypatch, _static(status_code))
-    result = await check_backend("api.example.com")
+    result = await check_backend("https://api.example.com/")
     assert result.outcome == "working"
     assert result.reason is None
 
@@ -148,7 +159,7 @@ async def test_3xx_is_backend_error_not_working(
 ) -> None:
     # В отличие от прокси, редиректы не принимаются: 3xx = ошибка здоровья.
     _install(monkeypatch, _static(status_code))
-    result = await check_backend("api.example.com")
+    result = await check_backend("https://api.example.com/")
     assert result.outcome == "error"
     assert result.reason == f"Ошибка бэка (HTTP {status_code})"
 
@@ -158,7 +169,7 @@ async def test_non_2xx_is_backend_error_with_status_code(
     monkeypatch: pytest.MonkeyPatch, status_code: int
 ) -> None:
     _install(monkeypatch, _static(status_code))
-    result = await check_backend("api.example.com")
+    result = await check_backend("https://api.example.com/")
     assert result.outcome == "error"
     assert result.reason == f"Ошибка бэка (HTTP {status_code})"
 
@@ -174,7 +185,7 @@ async def test_timeout_exhausts_retries_then_timeout_reason(
         raise httpx.TimeoutException("timed out", request=request)
 
     _install(monkeypatch, httpx.MockTransport(handler))
-    result = await check_backend("api.example.com")
+    result = await check_backend("https://api.example.com/")
 
     assert result.outcome == "error"
     assert result.reason == REASON_TIMEOUT
@@ -192,7 +203,7 @@ async def test_connect_error_exhausts_retries_then_unreachable(
         raise httpx.ConnectError("conn refused", request=request)
 
     _install(monkeypatch, httpx.MockTransport(handler))
-    result = await check_backend("api.example.com")
+    result = await check_backend("https://api.example.com/")
 
     assert result.outcome == "error"
     assert result.reason == REASON_UNREACHABLE
@@ -205,7 +216,7 @@ async def test_transport_error_is_unreachable(monkeypatch: pytest.MonkeyPatch) -
         raise httpx.ReadError("tls handshake failed", request=request)
 
     _install(monkeypatch, httpx.MockTransport(handler))
-    result = await check_backend("api.example.com")
+    result = await check_backend("https://api.example.com/")
 
     assert result.outcome == "error"
     assert result.reason == REASON_UNREACHABLE
@@ -222,7 +233,7 @@ async def test_generic_http_error_is_backend_error_no_retry(
         raise httpx.HTTPError("unexpected protocol error")
 
     _install(monkeypatch, httpx.MockTransport(handler))
-    result = await check_backend("api.example.com")
+    result = await check_backend("https://api.example.com/")
 
     assert result.outcome == "error"
     assert result.reason == REASON_BACKEND_ERROR
@@ -240,7 +251,7 @@ async def test_transient_then_recovers_to_working(monkeypatch: pytest.MonkeyPatc
         return httpx.Response(200)
 
     _install(monkeypatch, httpx.MockTransport(handler))
-    result = await check_backend("api.example.com")
+    result = await check_backend("https://api.example.com/")
 
     assert result.outcome == "working"
     assert calls["n"] == 3
@@ -255,7 +266,7 @@ async def test_check_hits_health_url_of_domain(monkeypatch: pytest.MonkeyPatch) 
         return httpx.Response(200)
 
     _install(monkeypatch, httpx.MockTransport(handler))
-    result = await check_backend("api.example.com:8443")
+    result = await check_backend("https://api.example.com:8443/")
 
     assert result.outcome == "working"
     assert captured["url"] == "https://api.example.com:8443/health"

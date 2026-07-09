@@ -11,7 +11,7 @@ CRUD реестра серверов: создание (с запуском пр
 ## Backend — ТЗ
 
 ### Endpoints
-- `GET /api/servers[?status=]` → список с метриками (через модуль `monitoring`) + `provision_status` + `online` + `position`. Сортировка `position ASC, created_at DESC, id`. Graceful degradation при недоступности Prometheus (`metrics=null`, статус `200`).
+- `GET /api/servers[?status=]` → список с метриками (через модуль `monitoring`) + `provision_status` + `online` + `position` + **`backend_count`** (число связанных бэков, `COUNT` по `backends.server_id` — для секции «Бэки» detail-view, [ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)). Сортировка `position ASC, created_at DESC, id`. Graceful degradation при недоступности Prometheus (`metrics=null`, статус `200`).
 - `POST /api/servers {name,ip,ssh_user,ssh_password}` → `202`; валидация, шифрование пароля (Fernet, модуль crypto/infra), `INSERT status=pending` (`position` = `DEFAULT 0`), запуск фоновой задачи провижининга ([modules/provisioning](../provisioning/README.md)). Дубликат `ip` → `409 server_conflict`; невалидный IP → `422`.
 - `PATCH /api/servers/{id} {name}` (JWT) → `200`; меняет **только `name`** (1–64), обновляет `updated_at`. `ip`/SSH/провижининг не трогаются. Нет записи → `404`; пустое/длинное `name` → `400`. Контракт — [04-api.md](../../04-api.md#patch-apiserversid).
 - `PATCH /api/servers/order {ids}` (JWT) → `204`; `ids` — полная перестановка множества серверов, backend в одной транзакции присваивает `position = 0..N-1`. Прецеденция кодов: битое тело → `400`; **любой несуществующий `id` → `404` (проверяется до полноты)**; только если все `id` существуют, но список не полная перестановка → `422`. Контракт и полное правило — [04-api.md](../../04-api.md#прецеденция-ошибок-валидации-нормативно-едино-для-всех-order-эндпоинтов).
@@ -19,6 +19,7 @@ CRUD реестра серверов: создание (с запуском пр
 - `GET /api/servers/{id}/status` (JWT) → `{provision_status,error_message,updated_at}`.
 - `DELETE /api/servers/{id}` (JWT) → `204`; удалить `targets/<id>.json`, удалить запись; повтор → `404`.
 - `GET /api/servers/{id}/ssh-password` (JWT, гейт `require("servers","edit")`) → `200 SecretRevealResponse {value}`; **on-demand reveal** SSH-пароля для detail-view ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)): расшифровка `ssh_password_encrypted` (`decrypt_secret`) in-memory, заголовок `Cache-Control: no-store`, аудит-лог `secret_revealed` (без значения). Нет права → `403`; нет сервера → `404 server_not_found`. Контракт — [04-api.md](../../04-api.md#get-apiserversidssh-password), [05-security.md](../../05-security.md#reveal-секретов-по-требованию-adr-035).
+- `GET /api/servers/{id}/backends` (JWT, гейт `require("servers","view")`) → `200 {backends: BackendRef[]}` (`{code,name,domain}`); **reverse-lookup** бэков, лежащих на сервере (`backends.server_id = {id}`) — для сворачиваемой секции «Бэки» в detail-view сервера ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)). Сортировка `position ASC, created_at DESC, id`. Нет сервера → `404 server_not_found`. Свёрнутый счётчик секции — `ServerListItem.backend_count`. Контракт — [04-api.md](../../04-api.md#get-apiserversidbackends).
 
 ### Требования
 1. Слои: router → service → repository (SQLAlchemy async). Pydantic-схемы запросов/ответов = контракт.
@@ -41,7 +42,9 @@ CRUD реестра серверов: создание (с запуском пр
 ## DoD
 - [ ] Endpoints и коды ошибок соответствуют [04-api.md](../../04-api.md).
 - [ ] Пароль зашифрован в БД, отсутствует в обычных list/detail-ответах/логах; `ssh_user` присутствует в `ServerListItem`.
-- [ ] **([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)):** `GET /api/servers/{id}/ssh-password` под `servers:edit` — `SecretRevealResponse {value}`, `decrypt_secret`, `Cache-Control: no-store`, аудит `secret_revealed` (без значения); `404 server_not_found`/`403`. Frontend `ServerDetailModal` (read-only + глаз-reveal) → карандаш `AddServerModal mode='edit'` (`name`).
+- [ ] **([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)):** `GET /api/servers/{id}/ssh-password` под `servers:edit` — `SecretRevealResponse {value}`, `decrypt_secret`, `Cache-Control: no-store`, аудит `secret_revealed` (без значения); `404 server_not_found`/`403`.
+- [ ] **([ADR-039](../../adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md), spec-ready):** frontend `ServerDetailModal` — карандаш переключает поле «Название» в **inline-edit** прямо в модалке (Сохранить/Отмена, `PATCH name`); отдельная `AddServerModal mode='edit'` для сервера не используется.
+- [ ] **([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md), spec-ready):** `ServerListItem += backend_count`; `GET /api/servers/{id}/backends` под `servers:view` → `BackendRef[]`; секция «Бэки» в detail-view сервера.
 - [ ] Интеграционные тесты ([06-testing-strategy.md](../../06-testing-strategy.md)) зелёные.
 - [ ] Lint/type-check/format проходят.
 

@@ -14,6 +14,15 @@ vi.mock('@/features/backends/hooks', () => ({
   useUpdateBackend: () => updateMutation,
 }));
 
+// Секция «Информация» (ADR-040) подтягивает опции серверов/ключей через useServers/useAiKeys —
+// мокаем их пустыми списками, чтобы модалка рендерилась без QueryClientProvider.
+vi.mock('@/features/servers/hooks', () => ({
+  useServers: () => ({ data: { items: [] } }),
+}));
+vi.mock('@/features/ai-keys/hooks', () => ({
+  useAiKeys: () => ({ data: { items: [] } }),
+}));
+
 vi.mock('sonner', () => ({
   toast: {
     success: vi.fn(),
@@ -27,6 +36,14 @@ function makeBackend(overrides: Partial<Backend> = {}): Backend {
     code: 'api-eu',
     name: 'API EU',
     domain: 'api.example.com',
+    server_id: null,
+    server_name: null,
+    ai_key_id: null,
+    ai_key_name: null,
+    has_api_key: false,
+    has_admin_api_key: false,
+    git: null,
+    note: null,
     check_status: 'working',
     error_message: null,
     position: 0,

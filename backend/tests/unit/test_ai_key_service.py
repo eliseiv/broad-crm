@@ -100,7 +100,21 @@ class _FakeMonitor:
 def _service() -> tuple[AiKeyService, _FakeRepo, _FakeMonitor]:
     repo = _FakeRepo()
     monitor = _FakeMonitor()
-    return AiKeyService(repository=repo, monitor=monitor), repo, monitor  # type: ignore[arg-type]
+    return (
+        AiKeyService(repository=repo, monitor=monitor, backends=_FakeBackends()),  # type: ignore[arg-type]
+        repo,
+        monitor,
+    )
+
+
+class _FakeBackends:
+    """Фейк BackendRepository для reverse-lookup/backend_count (ADR-040)."""
+
+    async def count_by_ai_keys(self, ai_key_ids: object) -> dict[object, int]:
+        return {}
+
+    async def list_by_ai_key(self, ai_key_id: object) -> list[object]:
+        return []
 
 
 async def test_create_encrypts_key_fernet_roundtrip_and_masks() -> None:

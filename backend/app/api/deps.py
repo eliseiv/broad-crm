@@ -324,6 +324,7 @@ def get_server_service(
         repository=ServerRepository(session),
         monitoring=monitoring,
         provisioning=provisioning,
+        backends=BackendRepository(session),
     )
 
 
@@ -345,7 +346,11 @@ def get_ai_key_service(
     monitor: Annotated[AiKeyMonitorService, Depends(get_ai_key_monitor)],
 ) -> AiKeyService:
     """Сервис реестра AI-ключей."""
-    return AiKeyService(repository=AiKeyRepository(session), monitor=monitor)
+    return AiKeyService(
+        repository=AiKeyRepository(session),
+        monitor=monitor,
+        backends=BackendRepository(session),
+    )
 
 
 def get_proxy_monitor(settings: SettingsDep) -> ProxyMonitorService:

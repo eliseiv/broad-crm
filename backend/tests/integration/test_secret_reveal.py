@@ -12,8 +12,9 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
-import structlog
+import pytest
 from app.api import deps
 from app.infra.crypto import encrypt_secret
 from app.models.ai_key import AiKey
@@ -69,30 +70,52 @@ async def _seed_ai_key(session: AsyncSession) -> AiKey:
 # --- happy path: значение + no-store + аудит без значения --------------------
 
 
-async def test_reveal_server_ssh_password_returns_decrypted_and_no_store() -> None:
+class _RecordingLogger:
+    """Детерминированный перехват аудит-события (без structlog capture_logs, который
+    флейкает из-за кэширования module-логгера при cache_logger_on_first_use=True)."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict[str, Any]]] = []
+
+    def info(self, event: str, **kw: Any) -> None:
+        self.events.append((event, kw))
+
+    def warning(self, event: str, **kw: Any) -> None:
+        self.events.append((event, kw))
+
+    def error(self, event: str, **kw: Any) -> None:
+        self.events.append((event, kw))
+
+
+async def test_reveal_server_ssh_password_returns_decrypted_and_no_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import app.infra.audit as audit_mod
+
+    rec = _RecordingLogger()
+    monkeypatch.setattr(audit_mod, "logger", rec)
+
     async with sms_db() as sm:
         async with sm() as s:
             server = await _seed_server(s)
             server_id = server.id
             await s.commit()
         app = build_app(sm, build_principal())
-        with structlog.testing.capture_logs() as logs:
-            async with client(app) as c:
-                resp = await c.get(f"/api/servers/{server_id}/ssh-password")
+        async with client(app) as c:
+            resp = await c.get(f"/api/servers/{server_id}/ssh-password")
 
     assert resp.status_code == 200
     assert resp.json() == {"value": _SSH_SECRET}
     assert resp.headers["cache-control"] == "no-store"
     # Аудит-событие есть, содержит поля, но НЕ значение секрета.
-    audit = [e for e in logs if e.get("event") == "secret_revealed"]
+    audit = [kw for ev, kw in rec.events if ev == "secret_revealed"]
     assert len(audit) == 1
     ev = audit[0]
     assert ev["resource_type"] == "server"
     assert ev["resource_id"] == str(server_id)
     assert ev["actor"] == "tester"
     assert "at" in ev
-    serialized = str(logs)
-    assert _SSH_SECRET not in serialized  # значение не логируется
+    assert _SSH_SECRET not in str(rec.events)  # значение не логируется
 
 
 async def test_reveal_proxy_password_returns_decrypted() -> None:

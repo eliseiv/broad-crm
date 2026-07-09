@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 from app.api.deps import Principal, ServerServiceDep, require
 from app.infra.audit import log_secret_revealed
 from app.models.server import ProvisionStatus
+from app.schemas.backend import BackendRefListResponse
 from app.schemas.secret import SecretRevealResponse
 from app.schemas.server import (
     ServerCreatedResponse,
@@ -98,6 +99,14 @@ async def reveal_server_ssh_password(
     response.headers["Cache-Control"] = "no-store"
     log_secret_revealed(principal, resource_type="server", resource_id=str(server_id))
     return SecretRevealResponse(value=value)
+
+
+@router.get("/{server_id}/backends", response_model=BackendRefListResponse)
+async def list_server_backends(
+    server_id: uuid.UUID, service: ServerServiceDep, _p: ViewDep
+) -> BackendRefListResponse:
+    """Список бэков, связанных с сервером (reverse-lookup, ADR-040, require servers:view)."""
+    return await service.list_server_backends(server_id)
 
 
 @router.get("/{server_id}/status", response_model=ServerStatusResponse)

@@ -4,13 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark light" />
-    <meta name="theme-color" content="#0A0C10" />
+    <meta name="theme-color" content="#F2F4F7" />
     <link rel="icon" type="image/png" href="/favicon.png" />
     <title>CRM</title>
     <!--
       No-FOUC: синхронно (до бандла) ставим data-theme на <html> по правилу
-      «сохранённый выбор → иначе системная тема ОС» (08-design-system.md
-      «Темизация», ADR-033). Первая отрисовка — уже в правильной теме.
+      «сохранённый выбор → иначе СВЕТЛАЯ» (08-design-system.md «Темизация», ADR-041;
+      разворот прежнего системного дефолта ADR-033). Первая отрисовка (включая экран
+      логина) — уже в правильной теме, без вспышки; prefers-color-scheme не участвует.
     -->
     <script>
       (function () {
@@ -18,10 +19,10 @@
         try {
           t = localStorage.getItem('crm-theme');
           if (t !== 'light' && t !== 'dark') {
-            t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+            t = 'light';
           }
         } catch (e) {
-          t = 'dark';
+          t = 'light';
         }
         document.documentElement.dataset.theme = t;
         // theme-color (браузерный chrome) следует теме — значения bg-base из 08-design-system.

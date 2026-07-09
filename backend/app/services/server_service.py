@@ -18,7 +18,9 @@ from app.infra.crypto import decrypt_secret, encrypt_password
 from app.infra.prometheus import PrometheusUnavailable
 from app.logging import get_logger
 from app.models.server import ProvisionStatus, Server
+from app.repositories.backend_repository import BackendRepository
 from app.repositories.server_repository import ServerRepository
+from app.schemas.backend import BackendRef, BackendRefListResponse
 from app.schemas.server import (
     ServerCreatedResponse,
     ServerCreateRequest,
@@ -47,10 +49,12 @@ class ServerService:
         repository: ServerRepository,
         monitoring: MonitoringService,
         provisioning: ProvisioningService,
+        backends: BackendRepository,
     ) -> None:
         self._repo = repository
         self._monitoring = monitoring
         self._provisioning = provisioning
+        self._backends = backends
 
     async def create_server(self, payload: ServerCreateRequest) -> ServerCreatedResponse:
         """Создаёт сервер (pending) и запускает фоновый провижининг."""
@@ -123,12 +127,31 @@ class ServerService:
                 logger.warning("servers_list_prometheus_unavailable")
                 metrics_by_instance = {}
 
-        items = [self._to_list_item(server, metrics_by_instance) for server in servers]
+        backend_counts = await self._backends.count_by_servers([s.id for s in servers])
+        items = [
+            self._to_list_item(server, metrics_by_instance, backend_counts.get(server.id, 0))
+            for server in servers
+        ]
         return ServerListResponse(items=items)
+
+    async def list_server_backends(self, server_id: uuid.UUID) -> BackendRefListResponse:
+        """Список бэков сервера (reverse-lookup, ADR-040, require servers:view).
+
+        Нет сервера → 404 server_not_found. Сортировка `position ASC, created_at DESC, id`.
+        """
+        server = await self._repo.get_by_id(server_id)
+        if server is None:
+            raise server_not_found()
+        backends = await self._backends.list_by_server(server_id)
+        return BackendRefListResponse(
+            backends=[BackendRef(code=b.code, name=b.name, domain=b.domain) for b in backends]
+        )
 
     @staticmethod
     def _to_list_item(
-        server: Server, metrics_by_instance: dict[str, InstanceMetrics]
+        server: Server,
+        metrics_by_instance: dict[str, InstanceMetrics],
+        backend_count: int,
     ) -> ServerListItem:
         if server.provision_status != ProvisionStatus.online.value:
             return ServerListItem(
@@ -143,6 +166,7 @@ class ServerService:
                 uptime_seconds=None,
                 last_updated=None,
                 metrics=None,
+                backend_count=backend_count,
             )
 
         instance_metrics = metrics_by_instance.get(server.instance)
@@ -159,6 +183,7 @@ class ServerService:
                 uptime_seconds=None,
                 last_updated=None,
                 metrics=None,
+                backend_count=backend_count,
             )
 
         return ServerListItem(
@@ -173,6 +198,7 @@ class ServerService:
             uptime_seconds=instance_metrics.uptime_seconds,
             last_updated=instance_metrics.last_updated,
             metrics=instance_metrics.metrics,
+            backend_count=backend_count,
         )
 
     async def get_metrics(self, server_id: uuid.UUID) -> ServerMetricsResponse:

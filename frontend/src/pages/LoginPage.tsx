@@ -193,7 +193,7 @@ export function LoginPage() {
             <form onSubmit={handleNext} className="flex flex-col gap-4" noValidate>
               <Input
                 label="Логин или Телеграм"
-                placeholder="admin или @username"
+                placeholder="Логин или @username"
                 value={username}
                 error={usernameError}
                 autoFocus

@@ -3,6 +3,7 @@ import type {
   AiKey,
   AiKeyStatusResponse,
   AiKeysListResponse,
+  BackendRefListResponse,
   CreateAiKeyRequest,
   CreateAiKeyResponse,
   ReorderAiKeysRequest,
@@ -41,4 +42,16 @@ export function deleteAiKey(id: string): Promise<void> {
  */
 export function revealAiKeyValue(id: string, signal?: AbortSignal): Promise<SecretRevealResponse> {
   return apiRequest<SecretRevealResponse>(`/ai-keys/${id}/key`, { signal });
+}
+
+/**
+ * Reverse-lookup: бэки, использующие ИИ-ключ (04-api.md, ADR-040). Гейт `ai-keys:view`.
+ * Ленивая загрузка при раскрытии секции «Бэки» detail-view ключа (свёрнутый счётчик —
+ * `AiKey.backend_count`, без этого запроса).
+ */
+export function listAiKeyBackends(
+  id: string,
+  signal?: AbortSignal,
+): Promise<BackendRefListResponse> {
+  return apiRequest<BackendRefListResponse>(`/ai-keys/${id}/backends`, { signal });
 }

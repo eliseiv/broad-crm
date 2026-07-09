@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Response, status
 
 from app.api.deps import BackendServiceDep, Principal, require
+from app.infra.audit import log_secret_revealed
 from app.schemas.backend import (
     BackendCreateRequest,
     BackendListItem,
@@ -16,6 +17,7 @@ from app.schemas.backend import (
     BackendStatusResponse,
     BackendUpdateRequest,
 )
+from app.schemas.secret import SecretRevealResponse
 
 router = APIRouter(prefix="/backends", tags=["backends"])
 
@@ -65,6 +67,42 @@ async def get_backend_status(
 ) -> BackendStatusResponse:
     """Лёгкий статус проверки для polling после добавления/редактирования."""
     return await service.get_status(backend_id)
+
+
+@router.get("/{backend_id}/api-key", response_model=SecretRevealResponse)
+async def reveal_backend_api_key(
+    backend_id: uuid.UUID,
+    service: BackendServiceDep,
+    principal: EditDep,
+    response: Response,
+) -> SecretRevealResponse:
+    """On-demand reveal API KEY бэка (ADR-040, require backends:edit).
+
+    Секрет — в теле ответа (не в URL); `Cache-Control: no-store` исключает кэш.
+    Успешный reveal порождает аудит-лог `secret_revealed` (без значения).
+    """
+    value = await service.reveal_api_key(backend_id)
+    response.headers["Cache-Control"] = "no-store"
+    log_secret_revealed(principal, resource_type="backend", resource_id=str(backend_id))
+    return SecretRevealResponse(value=value)
+
+
+@router.get("/{backend_id}/admin-api-key", response_model=SecretRevealResponse)
+async def reveal_backend_admin_api_key(
+    backend_id: uuid.UUID,
+    service: BackendServiceDep,
+    principal: EditDep,
+    response: Response,
+) -> SecretRevealResponse:
+    """On-demand reveal ADMIN API KEY бэка (ADR-040, require backends:edit).
+
+    Секрет — в теле ответа (не в URL); `Cache-Control: no-store`. Успех → аудит-лог
+    `secret_revealed` (без значения).
+    """
+    value = await service.reveal_admin_api_key(backend_id)
+    response.headers["Cache-Control"] = "no-store"
+    log_secret_revealed(principal, resource_type="backend", resource_id=str(backend_id))
+    return SecretRevealResponse(value=value)
 
 
 @router.delete("/{backend_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -17,6 +17,7 @@ from app.schemas.ai_key import (
     AiKeyStatusResponse,
     AiKeyUpdateRequest,
 )
+from app.schemas.backend import BackendRefListResponse
 from app.schemas.secret import SecretRevealResponse
 
 router = APIRouter(prefix="/ai-keys", tags=["ai-keys"])
@@ -78,6 +79,14 @@ async def reveal_ai_key(
     response.headers["Cache-Control"] = "no-store"
     log_secret_revealed(principal, resource_type="ai_key", resource_id=str(ai_key_id))
     return SecretRevealResponse(value=value)
+
+
+@router.get("/{ai_key_id}/backends", response_model=BackendRefListResponse)
+async def list_ai_key_backends(
+    ai_key_id: uuid.UUID, service: AiKeyServiceDep, _p: ViewDep
+) -> BackendRefListResponse:
+    """Список бэков, использующих ключ (reverse-lookup, ADR-040, require ai-keys:view)."""
+    return await service.list_ai_key_backends(ai_key_id)
 
 
 @router.get("/{ai_key_id}/status", response_model=AiKeyStatusResponse)

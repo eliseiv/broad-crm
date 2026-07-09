@@ -45,7 +45,7 @@
 | @dnd-kit/sortable | 8.0.x | Sortable-пресет (список/группа) поверх `@dnd-kit/core` |
 | @dnd-kit/utilities | 3.2.x | Хелперы (`CSS.Transform`) для @dnd-kit |
 | React Router | 6.27.x | Роутинг (`/login`, `/servers`, `/ai-keys`, `/mail`; `/servers`, `/ai-keys`, `/mail` — под общим `AppLayout` со вкладками) |
-| Zustand | 4.5.x | Лёгкое клиентское состояние (auth/токен в памяти) |
+| Zustand | 4.5.x | Лёгкое клиентское состояние (auth/токен; персист в `localStorage`, регидрация при загрузке — [ADR-041](adr/ADR-041-login-theme-session-ux.md)) |
 | lucide-react | 0.460.x | Иконки (server, cpu, memory, hard-drive, clock) |
 | sonner | 1.7.x | Toast-уведомления |
 
