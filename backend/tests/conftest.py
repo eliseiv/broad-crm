@@ -172,9 +172,12 @@ class _FakeTeam:
         updated_at: datetime,
         db: RbacFakeDb,
         members: dict[_uuid.UUID, datetime],
+        mail_group_id: int | None = None,
     ) -> None:
         self.id = id
         self.name = name
+        # Привязка к группе mail-агрегатора (ADR-038); None — без привязки.
+        self.mail_group_id = mail_group_id
         self.leader_id = leader_id
         self.created_at = created_at
         self.updated_at = updated_at
@@ -202,10 +205,16 @@ class _FakeSession:
 
     def __init__(self) -> None:
         self.raise_integrity = False
+        # Имя нарушенного констрейнта для structured-ветки различения гонки
+        # name↔mail_group (ADR-038). None → драйвер имени не отдал (фолбэк-перепроверка).
+        self.integrity_constraint: str | None = None
 
     async def commit(self) -> None:
         if self.raise_integrity:
-            raise IntegrityError("stmt", {}, Exception("duplicate"))
+            orig = Exception("duplicate")
+            if self.integrity_constraint is not None:
+                orig.constraint_name = self.integrity_constraint  # type: ignore[attr-defined]
+            raise IntegrityError("stmt", {}, orig)
 
     async def rollback(self) -> None:
         return None
@@ -367,6 +376,13 @@ class _FakeTeamRepo:
     async def exists_by_name(self, name: str, *, exclude_id: _uuid.UUID | None = None) -> bool:
         return any(t.name == name and t.id != exclude_id for t in self._db.teams.values())
 
+    async def exists_by_mail_group_id(
+        self, mail_group_id: int, *, exclude_id: _uuid.UUID | None = None
+    ) -> bool:
+        return any(
+            t.mail_group_id == mail_group_id and t.id != exclude_id for t in self._db.teams.values()
+        )
+
     async def get_existing_ids(self, ids: set[_uuid.UUID]) -> set[_uuid.UUID]:
         return {tid for tid in ids if tid in self._db.teams}
 
@@ -379,6 +395,7 @@ class _FakeTeamRepo:
         name: str,
         leader_id: _uuid.UUID | None,
         ordered_member_ids: list[_uuid.UUID],
+        mail_group_id: int | None = None,
     ) -> Any:
         now = datetime.now(UTC)
         members: dict[_uuid.UUID, datetime] = {}
@@ -392,6 +409,7 @@ class _FakeTeamRepo:
             updated_at=now,
             db=self._db,
             members=members,
+            mail_group_id=mail_group_id,
         )
         self._db.teams[team.id] = team
         return team
@@ -560,11 +578,19 @@ class RbacFakeDb:
         self.users[user.id] = user
         return user
 
-    def add_team(self, name: str, leader: Any = None, *, members: list[Any] | None = None) -> Any:
+    def add_team(
+        self,
+        name: str,
+        leader: Any = None,
+        *,
+        members: list[Any] | None = None,
+        mail_group_id: int | None = None,
+    ) -> Any:
         """Создаёт CRM-команду; заданный лидер всегда в участниках (инвариант, ADR-026).
 
         `leader=None` → команда без лидера. Порядок добавления участников: сначала
-        `members` (в переданном порядке), затем лидер (если ещё не в составе)."""
+        `members` (в переданном порядке), затем лидер (если ещё не в составе).
+        `mail_group_id` — привязка к группе mail-агрегатора (ADR-038)."""
         now = datetime.now(UTC)
         ordered: list[Any] = list(members or [])
         if leader is not None and leader not in ordered:
@@ -581,6 +607,7 @@ class RbacFakeDb:
             updated_at=now,
             db=self,
             members=member_map,
+            mail_group_id=mail_group_id,
         )
         self.teams[team.id] = team
         return team

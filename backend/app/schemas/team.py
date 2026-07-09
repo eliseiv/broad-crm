@@ -32,6 +32,9 @@ class TeamCreateRequest(BaseModel):
     name: str
     leader_id: uuid.UUID | None = None
     member_ids: list[uuid.UUID] = Field(default_factory=list)
+    # Привязка к группе mail-агрегатора (ADR-038); опц., ge=1. null/не задан — без
+    # привязки. Занят другой командой → 409 team_mail_group_taken.
+    mail_group_id: int | None = Field(default=None, ge=1)
 
 
 class TeamUpdateRequest(BaseModel):
@@ -46,6 +49,9 @@ class TeamUpdateRequest(BaseModel):
     name: str | None = None
     leader_id: uuid.UUID | None = None
     member_ids: list[uuid.UUID] | None = None
+    # Presence-семантика (ADR-038): передано → изменить (int — привязать/сменить,
+    # null — снять привязку); не передано → не менять. ge=1. Занят → 409.
+    mail_group_id: int | None = Field(default=None, ge=1)
 
 
 class TeamListItem(BaseModel):
@@ -57,6 +63,8 @@ class TeamListItem(BaseModel):
 
     id: uuid.UUID
     name: str
+    # Привязка к группе mail-агрегатора (ADR-038); null — без привязки к почте.
+    mail_group_id: int | None
     leader_id: uuid.UUID | None
     leader_username: str | None
     member_count: int

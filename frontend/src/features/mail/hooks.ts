@@ -1,24 +1,55 @@
 import { useMemo } from 'react';
-import { useInfiniteQuery, useMutation, useQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  applyTagToExisting,
+  createMailbox,
+  createTag,
+  createTagRule,
+  deleteMailbox,
+  deleteTag,
+  deleteTagRule,
   listMail,
   listMailboxes,
+  listTags,
+  listTeamMailboxes,
   listTeams,
   MAIL_PAGE_LIMIT,
   replyMail,
+  syncMailbox,
+  testMailbox,
+  updateMailbox,
+  updateTag,
 } from '@/features/mail/api';
 import { env } from '@/lib/env';
 import { ApiError } from '@/lib/api';
-import type { MailMessage, MailReplyRequest, MailReplyResponse } from '@/types/api';
+import type {
+  MailMailbox,
+  MailMailboxCreateRequest,
+  MailMailboxSyncResponse,
+  MailMailboxTestRequest,
+  MailMailboxTestResponse,
+  MailMailboxUpdateRequest,
+  MailMessage,
+  MailReplyRequest,
+  MailReplyResponse,
+  MailTagApplyResponse,
+  MailTagCreateRequest,
+  MailTagFull,
+  MailTagRule,
+  MailTagRuleCreateRequest,
+  MailTagUpdateRequest,
+} from '@/types/api';
 
 export const mailFeedKey = ['mail', 'feed'] as const;
 export const mailTeamsKey = ['mail', 'teams'] as const;
 export const mailMailboxesKey = ['mail', 'mailboxes'] as const;
+export const mailTagsKey = ['mail', 'tags'] as const;
+export const teamMailboxesKey = ['teams', 'mailboxes'] as const;
 
 /**
- * Серверный фильтр ленты (взаимоисключающи — задан максимум один; в UI выбор одного
- * сбрасывает другой). Часть queryKey ленты: смена фильтра ре-запрашивает ленту
- * (сброс пагинации + авто-выбор свежего письма) — ADR-017, 08-design-system.md.
+ * Серверный фильтр ленты (**комбинируемы — AND, ADR-038 §3**; оба опциональны). Часть
+ * queryKey ленты: смена фильтра ре-запрашивает ленту (сброс пагинации + авто-выбор
+ * свежего письма) — ADR-017, 08-design-system.md.
  */
 export interface MailFeedFilter {
   mailAccountId?: number;
@@ -57,10 +88,6 @@ export interface MailFeedResult {
  * - Догрузка старых — `order=desc&before_id=<next_before_id>&limit=20`, пока `has_more`.
  * - Курсор следующей страницы — `next_before_id`; стоп при `has_more=false`.
  * - Дедуп по `id` и сортировка `id` DESC — на этапе flatten (страховка от пересечений).
- *
- * Опциональный фоновый poll новых (prepend `id > max`) НЕ реализован (v1-опция ADR-013):
- * useInfiniteQuery не даёт безопасного prepend без риска регрессии порядка/выбора письма.
- * Свежие письма подтягиваются при перезагрузке ленты (reload). См. summary отчёта frontend.
  */
 export function useMailFeed(filter: MailFeedFilter = {}): MailFeedResult {
   const { mailAccountId, groupId } = filter;
@@ -128,12 +155,14 @@ export function useReplyMail(messageId: number) {
 
 /**
  * Справочник команд для дропдауна «Команда» (серверный фильтр) — GET /api/mail/teams.
- * Также используется вне «Почт»; polling как у списков servers/ai-keys.
+ * `enabled` (default `true`) — фильтр «Команда» рендерится только admin-уровню
+ * (`sees_all_mail_teams`, ADR-038 §3); прочим ролям справочник не грузится (анти-энумерация).
  */
-export function useMailTeams() {
+export function useMailTeams(enabled = true) {
   return useQuery({
     queryKey: mailTeamsKey,
     queryFn: ({ signal }) => listTeams(signal),
+    enabled,
     refetchInterval: env.pollIntervalMs,
     refetchIntervalInBackground: false,
     staleTime: env.pollIntervalMs,
@@ -142,17 +171,158 @@ export function useMailTeams() {
 }
 
 /**
- * Справочник почтовых ящиков — GET /api/mail/mailboxes. Источник дропдауна «Почта»
- * (серверный фильтр) и счётчиков карточки «Почты» на «Дашборде» (клиентский подсчёт
- * is_active). Polling как у списков servers/ai-keys.
+ * Справочник почтовых ящиков (без фильтра) — GET /api/mail/mailboxes. Источник дропдауна
+ * «Почта» (серверный фильтр ленты) и счётчиков карточки «Почты» на «Дашборде» (клиентский
+ * подсчёт is_active). Polling как у списков servers/ai-keys.
  */
 export function useMailMailboxes() {
   return useQuery({
     queryKey: mailMailboxesKey,
-    queryFn: ({ signal }) => listMailboxes(signal),
+    queryFn: ({ signal }) => listMailboxes({}, signal),
     refetchInterval: env.pollIntervalMs,
     refetchIntervalInBackground: false,
     staleTime: env.pollIntervalMs,
+    retry: false,
+  });
+}
+
+/**
+ * Список ящиков для вкладки «Почты» с серверным фильтром активности (04-api.md
+ * `is_active`). `isActive` входит в queryKey — смена сегмента ре-запрашивает список.
+ * Polling обновляет статус синка (кружок). Мутации ящиков инвалидируют весь префикс
+ * `['mail','mailboxes']` (покрывает и этот, и справочник дропдауна).
+ */
+export function useMailboxesManage(isActive?: boolean) {
+  return useQuery({
+    queryKey: [...mailMailboxesKey, { is_active: isActive ?? null }] as const,
+    queryFn: ({ signal }) => listMailboxes({ isActive }, signal),
+    refetchInterval: env.pollIntervalMs,
+    refetchIntervalInBackground: false,
+    retry: false,
+  });
+}
+
+/** Инвалидация всех представлений ящиков (справочник + фильтрованный список + ящики команды). */
+function invalidateMailboxes(queryClient: ReturnType<typeof useQueryClient>): void {
+  void queryClient.invalidateQueries({ queryKey: mailMailboxesKey });
+  void queryClient.invalidateQueries({ queryKey: teamMailboxesKey });
+}
+
+/** POST /api/mail/mailboxes/test — проверка соединения (мутация без инвалидации). */
+export function useTestMailbox() {
+  return useMutation<MailMailboxTestResponse, unknown, MailMailboxTestRequest>({
+    mutationFn: (payload) => testMailbox(payload),
+  });
+}
+
+export function useCreateMailbox() {
+  const queryClient = useQueryClient();
+  return useMutation<MailMailbox, unknown, MailMailboxCreateRequest>({
+    mutationFn: (payload) => createMailbox(payload),
+    onSuccess: () => invalidateMailboxes(queryClient),
+  });
+}
+
+export function useUpdateMailbox() {
+  const queryClient = useQueryClient();
+  return useMutation<MailMailbox, unknown, { id: number; payload: MailMailboxUpdateRequest }>({
+    mutationFn: ({ id, payload }) => updateMailbox(id, payload),
+    onSuccess: () => invalidateMailboxes(queryClient),
+  });
+}
+
+export function useDeleteMailbox() {
+  const queryClient = useQueryClient();
+  return useMutation<void, unknown, number>({
+    mutationFn: (id) => deleteMailbox(id),
+    onSuccess: () => invalidateMailboxes(queryClient),
+  });
+}
+
+export function useSyncMailbox() {
+  const queryClient = useQueryClient();
+  return useMutation<MailMailboxSyncResponse, unknown, number>({
+    mutationFn: (id) => syncMailbox(id),
+    // Синк меняет last_synced_at/consecutive_failures — обновляем список после постановки.
+    onSuccess: () => invalidateMailboxes(queryClient),
+  });
+}
+
+// --- Теги (глобальный каталог, гейт mail:tags) ---
+
+/** Список глобальных тегов с правилами — GET /api/mail/tags. */
+export function useMailTags() {
+  return useQuery({
+    queryKey: mailTagsKey,
+    queryFn: ({ signal }) => listTags(signal),
+    retry: false,
+  });
+}
+
+/** Инвалидация каталога тегов и ленты (теги письма меняются при apply/правке правил). */
+function invalidateTags(queryClient: ReturnType<typeof useQueryClient>): void {
+  void queryClient.invalidateQueries({ queryKey: mailTagsKey });
+  void queryClient.invalidateQueries({ queryKey: mailFeedKey });
+}
+
+export function useCreateTag() {
+  const queryClient = useQueryClient();
+  return useMutation<MailTagFull, unknown, MailTagCreateRequest>({
+    mutationFn: (payload) => createTag(payload),
+    onSuccess: () => invalidateTags(queryClient),
+  });
+}
+
+export function useUpdateTag() {
+  const queryClient = useQueryClient();
+  return useMutation<MailTagFull, unknown, { id: number; payload: MailTagUpdateRequest }>({
+    mutationFn: ({ id, payload }) => updateTag(id, payload),
+    onSuccess: () => invalidateTags(queryClient),
+  });
+}
+
+export function useDeleteTag() {
+  const queryClient = useQueryClient();
+  return useMutation<void, unknown, number>({
+    mutationFn: (id) => deleteTag(id),
+    onSuccess: () => invalidateTags(queryClient),
+  });
+}
+
+export function useCreateTagRule() {
+  const queryClient = useQueryClient();
+  return useMutation<MailTagRule, unknown, { tagId: number; payload: MailTagRuleCreateRequest }>({
+    mutationFn: ({ tagId, payload }) => createTagRule(tagId, payload),
+    onSuccess: () => invalidateTags(queryClient),
+  });
+}
+
+export function useDeleteTagRule() {
+  const queryClient = useQueryClient();
+  return useMutation<void, unknown, { tagId: number; ruleId: number }>({
+    mutationFn: ({ tagId, ruleId }) => deleteTagRule(tagId, ruleId),
+    onSuccess: () => invalidateTags(queryClient),
+  });
+}
+
+export function useApplyTag() {
+  const queryClient = useQueryClient();
+  return useMutation<MailTagApplyResponse, unknown, number>({
+    mutationFn: (tagId) => applyTagToExisting(tagId),
+    // Применение навешивает тег на существующие письма → лента обновляется.
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: mailFeedKey }),
+  });
+}
+
+/**
+ * Ящики команды для detail-панели /teams (ленивая загрузка — запрос идёт только при
+ * `enabled`, т.е. когда секция раскрыта). Своё состояние loading/empty/error в панели.
+ */
+export function useTeamMailboxes(teamId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: [...teamMailboxesKey, teamId] as const,
+    queryFn: ({ signal }) => listTeamMailboxes(teamId, signal),
+    enabled,
     retry: false,
   });
 }

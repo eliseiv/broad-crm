@@ -111,6 +111,7 @@ function makeTeam(id: string, name: string): TeamListItem {
   return {
     id,
     name,
+    mail_group_id: null,
     leader_id: null,
     leader_username: null,
     member_count: 0,

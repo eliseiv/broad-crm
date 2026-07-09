@@ -16,7 +16,12 @@ import uuid
 from sqlalchemy.exc import IntegrityError
 
 from app.domain.identity import IdentityNameError, validate_identity_name
-from app.errors import team_name_taken, team_not_found, unprocessable
+from app.errors import (
+    team_mail_group_taken,
+    team_name_taken,
+    team_not_found,
+    unprocessable,
+)
 from app.logging import get_logger
 from app.models.team import Team
 from app.repositories.sms_number_repository import SmsNumberRepository
@@ -33,6 +38,29 @@ from app.schemas.team import (
 from app.services.sms_serialize import to_team_number_item
 
 logger = get_logger(__name__)
+
+# Имя UNIQUE-констрейнта teams.mail_group_id (миграция 0018,
+# models/team.py::UniqueConstraint) — для различения гонки name↔mail_group.
+_MAIL_GROUP_CONSTRAINT = "uq_teams_mail_group_id"
+
+
+def _violated_constraint(exc: IntegrityError) -> str | None:
+    """Имя нарушенного констрейнта из исключения драйвера (structured, без парсинга текста).
+
+    asyncpg наполняет `UniqueViolationError.constraint_name` из полей серверной
+    ошибки; SQLAlchemy оборачивает её в `IntegrityError.orig`. Идём по цепочке
+    `orig`→`__cause__` и берём первый доступный `constraint_name`. Если драйвер его не
+    отдал (None) — вызывающий переходит на структурный фолбэк (`exists_by_*`).
+    """
+    candidate: BaseException | None = exc.orig
+    for _ in range(4):
+        if candidate is None:
+            break
+        name = getattr(candidate, "constraint_name", None)
+        if isinstance(name, str) and name:
+            return name
+        candidate = getattr(candidate, "__cause__", None)
+    return None
 
 
 def _validate_name(raw: str) -> str:
@@ -75,6 +103,13 @@ class TeamService:
         numbers = await self._numbers.list_by_team(team_id)
         return TeamNumbersResponse(numbers=[to_team_number_item(n) for n in numbers])
 
+    async def get_team_mail_group_id(self, team_id: uuid.UUID) -> int | None:
+        """Резолв `teams.mail_group_id` для секции «Почты команды» (ADR-038). Нет → 404."""
+        team = await self._teams.get(team_id)
+        if team is None:
+            raise team_not_found()
+        return team.mail_group_id
+
     async def create_team(self, payload: TeamCreateRequest) -> TeamListItem:
         """Создаёт команду. Прецеденция: name-формат (422) → существование
         leader_id/member_ids (422) → уникальность name (409). Лидер (если есть) — в
@@ -88,6 +123,11 @@ class TeamService:
         if await self._teams.exists_by_name(name):
             raise team_name_taken()
 
+        if payload.mail_group_id is not None and await self._teams.exists_by_mail_group_id(
+            payload.mail_group_id
+        ):
+            raise team_mail_group_taken()
+
         ordered = list(dict.fromkeys(payload.member_ids))
         # Инвариант «лидер ∈ участники»: заданный лидер добавляется в состав.
         if payload.leader_id is not None and payload.leader_id not in ordered:
@@ -99,11 +139,19 @@ class TeamService:
 
         try:
             team = await self._teams.create(
-                name=name, leader_id=leader_id, ordered_member_ids=ordered
+                name=name,
+                leader_id=leader_id,
+                ordered_member_ids=ordered,
+                mail_group_id=payload.mail_group_id,
             )
             await self._teams.session.commit()
         except IntegrityError as exc:
             await self._teams.session.rollback()
+            if await self._is_mail_group_conflict(
+                exc, mail_group_id=payload.mail_group_id, exclude_id=None
+            ):
+                logger.info("team_create_conflict_mail_group")
+                raise team_mail_group_taken() from exc
             logger.info("team_create_conflict", name=name)
             raise team_name_taken() from exc
 
@@ -142,6 +190,22 @@ class TeamService:
                 raise team_name_taken()
             team.name = new_name
 
+        # Привязка к группе mail-агрегатора (presence-семантика, ADR-038): передано →
+        # изменить (int — привязать/сменить, null — снять); занято → 409. Захватываем
+        # plain-int локально для фолбэка гонки в IntegrityError (после rollback ORM-атрибут
+        # team.mail_group_id expired — читать нельзя в async).
+        submitted_mail_group_id: int | None = None
+        if "mail_group_id" in fields_set:
+            new_group_id = payload.mail_group_id
+            submitted_mail_group_id = new_group_id
+            if (
+                new_group_id is not None
+                and new_group_id != team.mail_group_id
+                and await self._teams.exists_by_mail_group_id(new_group_id, exclude_id=team.id)
+            ):
+                raise team_mail_group_taken()
+            team.mail_group_id = new_group_id
+
         old_leader_id = team.leader_id
 
         # Целевой состав участников (с гарантией «лидер ∈ участники», если лидер — uuid).
@@ -173,6 +237,11 @@ class TeamService:
             await self._teams.session.commit()
         except IntegrityError as exc:
             await self._teams.session.rollback()
+            if await self._is_mail_group_conflict(
+                exc, mail_group_id=submitted_mail_group_id, exclude_id=team_id
+            ):
+                logger.info("team_update_conflict_mail_group", team_id=str(team_id))
+                raise team_mail_group_taken() from exc
             logger.info("team_update_conflict", team_id=str(team_id))
             raise team_name_taken() from exc
 
@@ -214,6 +283,27 @@ class TeamService:
             return old_leader_id
         return await self._teams.get_first_member(team_id)
 
+    async def _is_mail_group_conflict(
+        self,
+        exc: IntegrityError,
+        *,
+        mail_group_id: int | None,
+        exclude_id: uuid.UUID | None,
+    ) -> bool:
+        """Сработал ли на гонке констрейнт `uq_teams_mail_group_id` (а не name-UNIQUE).
+
+        Приоритет — структурное имя констрейнта из драйвера (`_violated_constraint`).
+        Если драйвер имя не отдал (None) — фолбэк: перепроверяем занятость группы
+        (после rollback SELECT видит закоммиченного «победителя»). Так проигравший
+        гонку получает нормативный `team_mail_group_taken`, а не «имя занято».
+        """
+        constraint = _violated_constraint(exc)
+        if constraint is not None:
+            return constraint == _MAIL_GROUP_CONSTRAINT
+        return mail_group_id is not None and await self._teams.exists_by_mail_group_id(
+            mail_group_id, exclude_id=exclude_id
+        )
+
     async def _require_user_exists(self, user_id: uuid.UUID, *, field: str) -> None:
         """Проверяет существование пользователя-ссылки; иначе → 422 с полем."""
         if not await self._users.get_existing_ids({user_id}):
@@ -241,6 +331,7 @@ class TeamService:
         return TeamListItem(
             id=team.id,
             name=team.name,
+            mail_group_id=team.mail_group_id,
             leader_id=team.leader_id,
             leader_username=team.leader.username if team.leader is not None else None,
             member_count=len(team.members),

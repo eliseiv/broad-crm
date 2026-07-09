@@ -69,3 +69,6 @@ class MeResponse(BaseModel):
     is_superadmin: bool
     permissions: dict[str, list[str]]
     sees_all_sms_teams: bool
+    # Производный admin-уровень видимости почты (ADR-038 §3): тот же предикат, что
+    # backend `get_mail_scope`. Фронт решает, показывать ли фильтр «Все команды» на /mail.
+    sees_all_mail_teams: bool

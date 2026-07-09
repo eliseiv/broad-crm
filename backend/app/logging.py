@@ -14,6 +14,7 @@ from structlog.typing import EventDict, WrappedLogger
 _SENSITIVE_KEYS = frozenset(
     {
         "password",
+        "smtp_password",
         "ssh_password",
         "ssh_password_encrypted",
         "ansible_password",

@@ -1,18 +1,21 @@
-"""Unit-тесты httpx-клиента почты `app/infra/mail_client.py` (modules/mail, ADR-013/ADR-017).
+"""Unit-тесты httpx-клиента почты `app/infra/mail_client.py` (modules/mail, ADR-012/038).
 
 Внешний сервис `postapp.store` НЕ вызывается вживую: httpx-граница замокана через
 `httpx.MockTransport` (паттерн `test_ai_provider.py`/`test_infra_health_logging.py`).
 Проверяются: секрет `MAIL_API_KEY` только в заголовке `X-API-Key` и не в URL/логах
 (05-security.md); проброс `order` во внешний API всегда явно, `since_id` — только при
 `order=asc`, `before_id` — только при `order=desc`; серверные фильтры `mail_account_id`/
-`group_id` (external ADR-0037) пробрасываются взаимоисключающе; справочники teams/mailboxes
-(GET, идемпотентны); идемпотентность ретраев (list ретраит транзиентные; reply НЕ ретраит
-read-timeout/5xx — защита от двойной отправки); маппинг внешних кодов в типизированные
-исключения модуля; несовместимое тело → MailUnavailable.
+`group_id` (external ADR-0039 §3) **AND-комбинируемы** — передаются вместе; повторяемый
+`group_id` из `group_ids`; справочники teams/mailboxes/tags (GET, идемпотентны);
+идемпотентность ретраев (GET ретраит `{429,500,502,503,504}`+connect+read-timeout; write —
+только connect; read-timeout/5xx на write НЕ ретраятся — защита от двойной записи);
+постатусный маппинг внешних кодов (429/5xx → MailUnavailable; прочий 4xx → MailRejected
+со `status_code`); несовместимое тело → MailUnavailable.
 """
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -21,7 +24,6 @@ import structlog
 from app.infra import mail_client as mod
 from app.infra.mail_client import (
     MailClient,
-    MailMessageNotFound,
     MailRejected,
     MailUnavailable,
 )
@@ -39,9 +41,13 @@ _VALID_MAILBOXES = {
             "display_name": "Входящие",
             "group_id": 3,
             "is_active": True,
+            "last_synced_at": "2026-07-09T08:00:00Z",
+            "last_sync_error": None,
+            "consecutive_failures": 0,
         }
     ]
 }
+_VALID_TAGS = {"tags": []}
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, handler: httpx.MockTransport) -> None:
@@ -64,15 +70,15 @@ def _client() -> MailClient:
 
 
 async def _list(client: MailClient, **overrides: Any) -> dict[str, Any]:
-    """Вызов `list_messages` с дефолтами всех keyword-only параметров (ADR-017 добавил
-    обязательные `mail_account_id`/`group_id`) — тест переопределяет лишь нужные."""
+    """Вызов `list_messages` с дефолтами keyword-only параметров (ADR-038:
+    `group_ids` — повторяемый; `mail_account_id`+`group_ids` комбинируемы)."""
     params: dict[str, Any] = {
         "order": "desc",
         "since_id": None,
         "before_id": None,
         "limit": 50,
         "mail_account_id": None,
-        "group_id": None,
+        "group_ids": None,
     }
     params.update(overrides)
     return await client.list_messages(**params)
@@ -190,7 +196,7 @@ async def test_list_asc_omits_since_id_when_none(monkeypatch: pytest.MonkeyPatch
     assert captured["has_since"] is False
 
 
-# --------------------------------- серверные фильтры mail_account_id/group_id (ADR-017)
+# --------------------------------- серверные фильтры mail_account_id/group_ids (ADR-038)
 async def test_list_forwards_mail_account_id_filter(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
@@ -203,21 +209,21 @@ async def test_list_forwards_mail_account_id_filter(monkeypatch: pytest.MonkeyPa
     await _list(_client(), mail_account_id=7)
 
     assert captured["mail_account_id"] == "7"
-    assert captured["has_group"] is False  # взаимоисключающе — group_id не уходит
+    assert captured["has_group"] is False  # group_ids не задан → не уходит
 
 
-async def test_list_forwards_group_id_filter(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_list_forwards_group_ids_as_repeated_param(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
-        captured["group_id"] = request.url.params.get("group_id")
+        captured["group_ids"] = request.url.params.get_list("group_id")
         captured["has_mail_account"] = "mail_account_id" in request.url.params
         return httpx.Response(200, json=_VALID_LIST)
 
     _install(monkeypatch, httpx.MockTransport(handler))
-    await _list(_client(), group_id=3)
+    await _list(_client(), group_ids=[3, 5])
 
-    assert captured["group_id"] == "3"
+    assert captured["group_ids"] == ["3", "5"]  # повторяемый query-параметр group_id
     assert captured["has_mail_account"] is False
 
 
@@ -236,26 +242,24 @@ async def test_list_omits_both_filters_when_none(monkeypatch: pytest.MonkeyPatch
     assert captured["has_group"] is False
 
 
-async def test_list_mail_account_id_takes_precedence_when_both_passed(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Клиент — тонкая обёртка: при обоих (страховка от рассинхрона валидации в сервисе)
-    пробрасывает только mail_account_id (elif), group_id не уходит."""
+async def test_list_forwards_both_filters_and_combined(monkeypatch: pytest.MonkeyPatch) -> None:
+    """AND-комбинирование (ADR-038, взаимоисключение ADR-0037 снято): при обоих
+    фильтрах во внешний API уходят и `mail_account_id`, и повторяемый `group_id`."""
     captured: dict[str, object] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         captured["mail_account_id"] = request.url.params.get("mail_account_id")
-        captured["has_group"] = "group_id" in request.url.params
+        captured["group_ids"] = request.url.params.get_list("group_id")
         return httpx.Response(200, json=_VALID_LIST)
 
     _install(monkeypatch, httpx.MockTransport(handler))
-    await _list(_client(), mail_account_id=7, group_id=3)
+    await _list(_client(), mail_account_id=7, group_ids=[3])
 
     assert captured["mail_account_id"] == "7"
-    assert captured["has_group"] is False
+    assert captured["group_ids"] == ["3"]
 
 
-# ------------------------------------------ справочники teams/mailboxes (GET, ADR-017)
+# ------------------------------------------ справочники teams/mailboxes/tags (GET)
 async def test_list_teams_hits_teams_path_with_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: dict[str, object] = {}
 
@@ -296,6 +300,39 @@ async def test_list_mailboxes_hits_mailboxes_path_with_api_key(
     assert captured["method"] == "GET"
     assert captured["x_api_key"] == KEY
     assert KEY not in str(captured["url"])
+
+
+async def test_list_mailboxes_forwards_is_active_and_group_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["is_active"] = request.url.params.get("is_active")
+        captured["group_ids"] = request.url.params.get_list("group_id")
+        return httpx.Response(200, json=_VALID_MAILBOXES)
+
+    _install(monkeypatch, httpx.MockTransport(handler))
+    await _client().list_mailboxes(is_active=True, group_ids=[3, 8])
+
+    assert captured["is_active"] == "true"
+    assert captured["group_ids"] == ["3", "8"]
+
+
+async def test_list_tags_hits_tags_path_with_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["path"] = request.url.path
+        captured["method"] = request.method
+        return httpx.Response(200, json=_VALID_TAGS)
+
+    _install(monkeypatch, httpx.MockTransport(handler))
+    result = await _client().list_tags()
+
+    assert result == _VALID_TAGS
+    assert captured["path"] == "/api/external/tags"
+    assert captured["method"] == "GET"
 
 
 async def test_list_teams_retries_5xx_then_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -348,18 +385,21 @@ async def test_list_retries_5xx_then_succeeds(monkeypatch: pytest.MonkeyPatch) -
     assert calls["n"] == 3  # 1 попытка + 2 ретрая
 
 
-async def test_list_exhausts_5xx_raises_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("status_code", [429, 500, 502, 503, 504])
+async def test_list_retries_each_transient_status(
+    monkeypatch: pytest.MonkeyPatch, status_code: int
+) -> None:
     calls = {"n": 0}
 
     def handler(_request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        return httpx.Response(500)
+        return httpx.Response(status_code)
 
     _install(monkeypatch, httpx.MockTransport(handler))
     with pytest.raises(MailUnavailable):
         await _list(_client())
 
-    assert calls["n"] == 3
+    assert calls["n"] == 3  # все транзиентные ретраятся до исчерпания
 
 
 async def test_list_retries_read_timeout_then_unavailable(
@@ -394,8 +434,29 @@ async def test_list_retries_connect_error_then_recovers(monkeypatch: pytest.Monk
     assert calls["n"] == 2
 
 
-# ----------------------- reply (POST): НЕ ретраит read-timeout/5xx (без двойной отправки)
-async def test_reply_does_not_retry_read_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+# ----------------------- write (POST/PATCH/DELETE): НЕ ретраит read-timeout/5xx ------
+# Каждый write-метод обёрнут в фабрику вызова; проверяем единую политику ретраев.
+_WRITE_CALLS: dict[str, Callable[[MailClient], Awaitable[dict[str, Any]]]] = {
+    "reply": lambda c: c.reply(message_id=1, payload={"body": "x"}),
+    "test_mailbox": lambda c: c.test_mailbox({"email": "a@b.c"}),
+    "create_mailbox": lambda c: c.create_mailbox({"email": "a@b.c"}),
+    "update_mailbox": lambda c: c.update_mailbox(1, {"is_active": False}),
+    "delete_mailbox": lambda c: c.delete_mailbox(1),
+    "sync_mailbox": lambda c: c.sync_mailbox(1),
+    "create_tag": lambda c: c.create_tag({"name": "t", "color": "#2563eb"}),
+    "update_tag": lambda c: c.update_tag(1, {"name": "t"}),
+    "delete_tag": lambda c: c.delete_tag(1),
+    "create_tag_rule": lambda c: c.create_tag_rule(1, {"type": "subject_contains", "pattern": "x"}),
+    "delete_tag_rule": lambda c: c.delete_tag_rule(1, 2),
+    "apply_tag_to_existing": lambda c: c.apply_tag_to_existing(1),
+}
+
+
+@pytest.mark.parametrize("name", list(_WRITE_CALLS))
+async def test_write_does_not_retry_read_timeout(
+    monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    """Read-timeout на write: запрос мог уйти → повтор недопустим (без двойной записи)."""
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -404,13 +465,13 @@ async def test_reply_does_not_retry_read_timeout(monkeypatch: pytest.MonkeyPatch
 
     _install(monkeypatch, httpx.MockTransport(handler))
     with pytest.raises(MailUnavailable):
-        await _client().reply(message_id=1, payload={"body": "x"})
+        await _WRITE_CALLS[name](_client())
 
-    # Ровно одна отправка: письмо могло быть принято — повтор недопустим.
-    assert calls["n"] == 1
+    assert calls["n"] == 1  # ровно одна попытка
 
 
-async def test_reply_does_not_retry_5xx(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize("name", list(_WRITE_CALLS))
+async def test_write_does_not_retry_5xx(monkeypatch: pytest.MonkeyPatch, name: str) -> None:
     calls = {"n": 0}
 
     def handler(_request: httpx.Request) -> httpx.Response:
@@ -419,12 +480,12 @@ async def test_reply_does_not_retry_5xx(monkeypatch: pytest.MonkeyPatch) -> None
 
     _install(monkeypatch, httpx.MockTransport(handler))
     with pytest.raises(MailUnavailable):
-        await _client().reply(message_id=1, payload={"body": "x"})
+        await _WRITE_CALLS[name](_client())
 
-    assert calls["n"] == 1
+    assert calls["n"] == 1  # 5xx на write не ретраится
 
 
-async def test_reply_retries_connect_error_then_recovers(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_write_retries_connect_error_then_recovers(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -441,30 +502,60 @@ async def test_reply_retries_connect_error_then_recovers(monkeypatch: pytest.Mon
     assert calls["n"] == 2
 
 
-async def test_reply_exhausts_connect_error_raises_unavailable(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_write_retries_connect_timeout_exhausts(monkeypatch: pytest.MonkeyPatch) -> None:
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
         calls["n"] += 1
-        raise httpx.ConnectError("conn refused", request=request)
+        raise httpx.ConnectTimeout("conn timeout", request=request)
 
     _install(monkeypatch, httpx.MockTransport(handler))
     with pytest.raises(MailUnavailable):
-        await _client().reply(message_id=1, payload={"body": "x"})
+        await _client().create_mailbox({"email": "a@b.c"})
 
-    assert calls["n"] == 3
+    assert calls["n"] == 3  # connect-таймаут ретраится (запрос не ушёл)
+
+
+# --------------------------------------------- write: путь/метод/тело ----------------
+async def test_create_mailbox_uses_post_and_forwards_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["method"] = request.method
+        captured["path"] = request.url.path
+        captured["body"] = request.content
+        return httpx.Response(201, json=_VALID_MAILBOXES["mailboxes"][0])
+
+    _install(monkeypatch, httpx.MockTransport(handler))
+    await _client().create_mailbox({"email": "a@b.c", "password": "sekret"})
+
+    assert captured["method"] == "POST"
+    assert captured["path"] == "/api/external/mailboxes"
+    assert b"sekret" in captured["body"]  # тело (транзитный пароль) уходит в запрос
+
+
+async def test_delete_mailbox_204_returns_empty_dict(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "DELETE"
+        return httpx.Response(204)
+
+    _install(monkeypatch, httpx.MockTransport(handler))
+    assert await _client().delete_mailbox(7) == {}  # 204 → {}
 
 
 # ------------------------------------------------------------------ маппинг статусов
-async def test_404_raises_message_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_reply_404_raises_rejected_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Постатусный клиент (ADR-038): 404 → MailRejected(404); контекст маппит сервис."""
     _install(monkeypatch, httpx.MockTransport(lambda _r: httpx.Response(404, json={"d": "no"})))
-    with pytest.raises(MailMessageNotFound):
+    with pytest.raises(MailRejected) as exc:
         await _client().reply(message_id=999, payload={"body": "x"})
 
+    assert exc.value.status_code == 404
 
-@pytest.mark.parametrize("status_code", [400, 409, 422])
+
+@pytest.mark.parametrize("status_code", [400, 403, 404, 409, 422])
 async def test_other_4xx_raises_rejected(monkeypatch: pytest.MonkeyPatch, status_code: int) -> None:
     _install(
         monkeypatch,
@@ -474,6 +565,55 @@ async def test_other_4xx_raises_rejected(monkeypatch: pytest.MonkeyPatch, status
         await _list(_client())
 
     assert exc.value.status_code == status_code  # статус несётся для маппинга в сервисе
+
+
+async def test_404_group_not_found_carries_error_code(monkeypatch: pytest.MonkeyPatch) -> None:
+    """404 с телом `{"error":{"code":"group_not_found"}}` → MailRejected несёт error_code."""
+    _install(
+        monkeypatch,
+        httpx.MockTransport(
+            lambda _r: httpx.Response(404, json={"error": {"code": "group_not_found"}})
+        ),
+    )
+    with pytest.raises(MailRejected) as exc:
+        await _list(_client())
+
+    assert exc.value.status_code == 404
+    assert exc.value.error_code == "group_not_found"
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ({"error": {"code": "group_not_found"}}, "group_not_found"),
+        ({"error": {"code": "not_found", "message": "нет"}}, "not_found"),
+        ({"error": {"message": "no code key"}}, None),  # нет code
+        ({"error": {"code": 123}}, None),  # code не строка
+        ({"error": "flat"}, None),  # error не dict
+        ({"d": "no error key"}, None),  # нет error
+        ([1, 2, 3], None),  # тело не dict
+    ],
+)
+def test_extract_error_code_variants(body: Any, expected: str | None) -> None:
+    """Парсинг `error.code` из тела ошибки: код-строка → значение, иначе None."""
+    response = httpx.Response(404, json=body)
+    assert MailClient._extract_error_code(response) == expected
+
+
+def test_extract_error_code_broken_body_returns_none() -> None:
+    """Битое (не-JSON) / пустое тело → None (best-effort, не бросает)."""
+    assert MailClient._extract_error_code(httpx.Response(404, content=b"not-json")) is None
+    assert MailClient._extract_error_code(httpx.Response(404, content=b"")) is None
+
+
+@pytest.mark.parametrize("status_code", [429, 500, 503])
+async def test_429_and_5xx_raise_unavailable(
+    monkeypatch: pytest.MonkeyPatch, status_code: int
+) -> None:
+    """429/5xx (исчерпаны ретраи) → MailUnavailable, а не MailRejected (ADR-038)."""
+    _install(monkeypatch, httpx.MockTransport(lambda _r: httpx.Response(status_code)))
+    with pytest.raises(MailUnavailable):
+        await _list(_client())
 
 
 async def test_non_json_body_raises_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:

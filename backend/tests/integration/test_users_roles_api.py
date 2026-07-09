@@ -62,7 +62,7 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
     ]
     by_page = {p["page"]: p["actions"] for p in pages}
     assert by_page["dashboard"] == ["view"]
-    assert by_page["mail"] == ["view"]
+    assert by_page["mail"] == ["view", "create", "edit", "delete", "sync", "tags"]
     assert by_page["servers"] == ["view", "create", "edit", "delete"]
     assert by_page["sms"] == ["view", "edit", "transfer", "sync", "delete"]
     assert by_page["roles"] == ["view", "create", "edit", "delete"]

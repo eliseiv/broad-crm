@@ -78,6 +78,6 @@ def test_revision_chain_0005_on_top_of_0004_single_head() -> None:
     # (одна голова). Проверка головы 0008 продублирована в test_users_roles_migration.
     script = ScriptDirectory.from_config(_alembic_config())
 
-    assert script.get_heads() == ["0017_create_sms_module"]  # одна голова — цепочка линейна
+    assert script.get_heads() == ["0018_teams_mail_group_id"]  # одна голова — линейна (ADR-038)
     rev = script.get_revision("0005_create_notifier_alert_log")
     assert rev.down_revision == "0004_create_notifier_state"  # 0005 сидит поверх 0004

@@ -85,6 +85,7 @@ const TEAMS: TeamListResponse = {
     {
       id: 't1',
       name: 'Продажи',
+      mail_group_id: null,
       leader_id: 'u1',
       leader_username: 'Никита',
       member_count: 3,
@@ -136,6 +137,7 @@ describe('TeamsPage (CRM-команды, гейтинг, ADR-022)', () => {
         {
           id: 't9',
           name: 'Резерв',
+          mail_group_id: null,
           leader_id: null,
           leader_username: null,
           member_count: 0,

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db import get_session, get_sessionmaker
+from app.domain.mail import MailScope
 from app.domain.permissions import full_catalog_permissions, permissions_subset
 from app.domain.sms import SmsScope
 from app.errors import forbidden, unauthorized
@@ -23,7 +24,7 @@ from app.infra.prometheus import get_prometheus_client
 from app.infra.rate_limit import get_login_rate_limiter
 from app.infra.sms_telegram import SmsBotClient
 from app.infra.telegram import TelegramClient
-from app.models.team import user_teams
+from app.models.team import Team, user_teams
 from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.backend_repository import BackendRepository
 from app.repositories.proxy_repository import ProxyRepository
@@ -238,6 +239,40 @@ async def get_sms_scope(principal: PrincipalDep, session: DbSession) -> SmsScope
     return SmsScope(sees_all_teams=False, team_ids=frozenset(result.scalars().all()))
 
 
+def principal_sees_all_mail_teams(principal: Principal) -> bool:
+    """Admin-уровень видимости почты ⇔ супер-админ ИЛИ полный каталог прав (ADR-038 §3).
+
+    Единый предикат-источник истины: используется и mail-scope (`get_mail_scope`), и
+    производным флагом `sees_all_mail_teams` в `GET /api/auth/me`. Симметрично
+    `principal_sees_all_sms_teams`; устойчив к переименованию роли, без нового права.
+    """
+    return principal.is_superadmin or permissions_subset(
+        full_catalog_permissions(), principal.permissions
+    )
+
+
+async def get_mail_scope(principal: PrincipalDep, session: DbSession) -> MailScope:
+    """Фабрика scope почты (ADR-038 §3, образец `get_sms_scope`).
+
+    «Видит все команды» ⇔ супер-админ ИЛИ полный каталог прав. Иначе `group_ids` =
+    непустые `teams.mail_group_id` по командам пользователя из `user_teams`
+    (`user_id=None` или нет привязанных групп → пустой набор → пустая видимость).
+    """
+    sees_all_teams = principal_sees_all_mail_teams(principal)
+    if sees_all_teams:
+        return MailScope(sees_all_teams=True, group_ids=frozenset())
+    if principal.user_id is None:
+        return MailScope(sees_all_teams=False, group_ids=frozenset())
+    stmt = (
+        select(Team.mail_group_id)
+        .join(user_teams, user_teams.c.team_id == Team.id)
+        .where(user_teams.c.user_id == principal.user_id, Team.mail_group_id.is_not(None))
+    )
+    result = await session.execute(stmt)
+    group_ids = {gid for gid in result.scalars().all() if gid is not None}
+    return MailScope(sees_all_teams=False, group_ids=frozenset(group_ids))
+
+
 def get_sms_message_service(session: DbSession) -> SmsMessageService:
     """Сервис ленты входящих SMS (require sms:view + scope)."""
     return SmsMessageService(session)
@@ -392,6 +427,7 @@ AiKeyServiceDep = Annotated[AiKeyService, Depends(get_ai_key_service)]
 ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]
 BackendServiceDep = Annotated[BackendService, Depends(get_backend_service)]
 MailServiceDep = Annotated[MailService, Depends(get_mail_service)]
+MailScopeDep = Annotated[MailScope, Depends(get_mail_scope)]
 ClientIp = Annotated[str, Depends(get_client_ip)]
 SmsScopeDep = Annotated[SmsScope, Depends(get_sms_scope)]
 SmsMessageServiceDep = Annotated[SmsMessageService, Depends(get_sms_message_service)]

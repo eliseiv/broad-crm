@@ -17,6 +17,12 @@ export function loginAs(options?: {
    * каталог`): супер-админ видит все SMS-команды, ограниченная роль — нет.
    */
   seesAllSmsTeams?: boolean;
+  /**
+   * Admin-уровень видимости почты (ADR-038 §3, MeResponse.sees_all_mail_teams). По
+   * умолчанию совпадает с `isSuperadmin` (backend: `is_superadmin OR полный каталог`):
+   * супер-админ видит все почтовые команды, ограниченная роль — нет.
+   */
+  seesAllMailTeams?: boolean;
   permissions?: PermissionsMap;
 }): void {
   const {
@@ -24,6 +30,7 @@ export function loginAs(options?: {
     role = 'admin',
     isSuperadmin = true,
     seesAllSmsTeams = isSuperadmin,
+    seesAllMailTeams = isSuperadmin,
     permissions = {},
   } = options ?? {};
   const store = useAuthStore.getState();
@@ -33,6 +40,7 @@ export function loginAs(options?: {
     role,
     is_superadmin: isSuperadmin,
     sees_all_sms_teams: seesAllSmsTeams,
+    sees_all_mail_teams: seesAllMailTeams,
     permissions,
   });
 }

@@ -6,6 +6,7 @@ const USER_KEY = 'crm.auth.username';
 const ROLE_KEY = 'crm.auth.role';
 const SUPERADMIN_KEY = 'crm.auth.superadmin';
 const SEES_ALL_SMS_KEY = 'crm.auth.seesAllSmsTeams';
+const SEES_ALL_MAIL_KEY = 'crm.auth.seesAllMailTeams';
 const PERMISSIONS_KEY = 'crm.auth.permissions';
 
 /**
@@ -49,6 +50,7 @@ function persistPrincipal(
   role: string | null,
   isSuperadmin: boolean,
   seesAllSmsTeams: boolean,
+  seesAllMailTeams: boolean,
   permissions: PermissionsMap | null,
 ): void {
   try {
@@ -56,6 +58,7 @@ function persistPrincipal(
     else sessionStorage.removeItem(ROLE_KEY);
     sessionStorage.setItem(SUPERADMIN_KEY, isSuperadmin ? '1' : '0');
     sessionStorage.setItem(SEES_ALL_SMS_KEY, seesAllSmsTeams ? '1' : '0');
+    sessionStorage.setItem(SEES_ALL_MAIL_KEY, seesAllMailTeams ? '1' : '0');
     if (permissions) sessionStorage.setItem(PERMISSIONS_KEY, JSON.stringify(permissions));
     else sessionStorage.removeItem(PERMISSIONS_KEY);
   } catch {
@@ -71,6 +74,7 @@ function clearStorage(): void {
       ROLE_KEY,
       SUPERADMIN_KEY,
       SEES_ALL_SMS_KEY,
+      SEES_ALL_MAIL_KEY,
       PERMISSIONS_KEY,
     ]) {
       sessionStorage.removeItem(key);
@@ -92,6 +96,11 @@ interface AuthState {
    * на /sms. Источник — `me.sees_all_sms_teams` (backend); фронт не вычисляет сам.
    */
   seesAllSmsTeams: boolean;
+  /**
+   * Производный admin-уровень видимости почты (ADR-038): виден ли фильтр «Все команды»
+   * на /mail. Источник — `me.sees_all_mail_teams` (backend); фронт не вычисляет сам.
+   */
+  seesAllMailTeams: boolean;
   /** Права `{ page: [actions] }` из /api/auth/me; null до загрузки. */
   permissions: PermissionsMap | null;
   isAuthenticated: boolean;
@@ -108,6 +117,7 @@ export const useAuthStore = create<AuthState>((set) => {
   const initialRole = readString(ROLE_KEY);
   const initialSuperadmin = readString(SUPERADMIN_KEY) === '1';
   const initialSeesAllSms = readString(SEES_ALL_SMS_KEY) === '1';
+  const initialSeesAllMail = readString(SEES_ALL_MAIL_KEY) === '1';
   const initialPermissions = readPermissions();
   return {
     token: initialToken,
@@ -115,6 +125,7 @@ export const useAuthStore = create<AuthState>((set) => {
     role: initialRole,
     isSuperadmin: initialSuperadmin,
     seesAllSmsTeams: initialSeesAllSms,
+    seesAllMailTeams: initialSeesAllMail,
     permissions: initialPermissions,
     isAuthenticated: Boolean(initialToken),
     setSession: (token, username) => {
@@ -122,12 +133,19 @@ export const useAuthStore = create<AuthState>((set) => {
       set({ token, username, isAuthenticated: true });
     },
     setPrincipal: (me) => {
-      persistPrincipal(me.role, me.is_superadmin, me.sees_all_sms_teams, me.permissions);
+      persistPrincipal(
+        me.role,
+        me.is_superadmin,
+        me.sees_all_sms_teams,
+        me.sees_all_mail_teams,
+        me.permissions,
+      );
       set({
         username: me.username,
         role: me.role,
         isSuperadmin: me.is_superadmin,
         seesAllSmsTeams: me.sees_all_sms_teams,
+        seesAllMailTeams: me.sees_all_mail_teams,
         permissions: me.permissions,
       });
     },
@@ -139,6 +157,7 @@ export const useAuthStore = create<AuthState>((set) => {
         role: null,
         isSuperadmin: false,
         seesAllSmsTeams: false,
+        seesAllMailTeams: false,
         permissions: null,
         isAuthenticated: false,
       });

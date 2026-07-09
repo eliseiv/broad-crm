@@ -364,6 +364,46 @@ def mail_not_configured() -> AppError:
     )
 
 
+def mail_mailbox_not_found() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="mail_mailbox_not_found",
+        message="Почтовый ящик не найден",
+    )
+
+
+def mail_group_not_found() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="mail_group_not_found",
+        message="Выбранная команда не найдена",
+    )
+
+
+def mail_tag_not_found() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="mail_tag_not_found",
+        message="Тег не найден",
+    )
+
+
+def mail_conflict() -> AppError:
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="mail_conflict",
+        message="Конфликт: ящик или тег с такими данными уже существует",
+    )
+
+
+def team_mail_group_taken() -> AppError:
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="team_mail_group_taken",
+        message="Эта группа почты уже привязана к другой команде",
+    )
+
+
 def _error_body(code: str, message: str, details: Any = None) -> dict[str, Any]:
     return {"error": {"code": code, "message": message, "details": details}}
 

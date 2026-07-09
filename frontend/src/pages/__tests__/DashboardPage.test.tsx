@@ -54,6 +54,9 @@ function mailbox(id: number, isActive: boolean): MailMailbox {
     display_name: null,
     group_id: null,
     is_active: isActive,
+    last_synced_at: null,
+    last_sync_error: null,
+    consecutive_failures: 0,
   };
 }
 

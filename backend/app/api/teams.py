@@ -11,7 +11,8 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Response, status
 
-from app.api.deps import Principal, TeamServiceDep, require
+from app.api.deps import MailServiceDep, Principal, TeamServiceDep, require
+from app.schemas.mail import TeamMailboxesResponse
 from app.schemas.sms import TeamNumbersResponse
 from app.schemas.team import (
     TeamCreateRequest,
@@ -72,3 +73,19 @@ async def list_team_numbers(
 ) -> TeamNumbersResponse:
     """SMS-номера команды для detail-панели /teams (ADR-030). Нет команды → 404."""
     return await service.list_team_numbers(team_id)
+
+
+@router.get("/{team_id}/mailboxes", response_model=TeamMailboxesResponse)
+async def list_team_mailboxes(
+    team_id: uuid.UUID,
+    service: TeamServiceDep,
+    mail_service: MailServiceDep,
+    _principal: Annotated[Principal, Depends(require("teams", "view"))],
+) -> TeamMailboxesResponse:
+    """Почты команды для detail-панели /teams (ADR-038). Нет команды → 404.
+
+    Резолв `teams.mail_group_id`; NULL/`mail_enabled=false` → пустой список. Иначе
+    прокси external /mailboxes по группе; внешний сервис недоступен → 502.
+    """
+    mail_group_id = await service.get_team_mail_group_id(team_id)
+    return await mail_service.list_team_mailboxes(mail_group_id)

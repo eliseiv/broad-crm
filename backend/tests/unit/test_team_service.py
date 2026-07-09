@@ -338,6 +338,102 @@ async def test_update_leaderless_team_add_members_assigns_first_leader(db: RbacF
     assert item.leader_id == first.id
 
 
+# --- Привязка к группе mail-агрегатора (ADR-038): 409 team_mail_group_taken ---
+
+
+@pytest.mark.asyncio
+async def test_create_team_free_mail_group_ok(db: RbacFakeDb) -> None:
+    service = _service(db)
+
+    item = await service.create_team(TeamCreateRequest(name="Продажи", mail_group_id=5))
+
+    assert item.mail_group_id == 5
+
+
+@pytest.mark.asyncio
+async def test_create_team_mail_group_taken_is_409(db: RbacFakeDb) -> None:
+    leader = _user(db, "Никита")
+    db.add_team("Существующая", leader, mail_group_id=3)
+    service = _service(db)
+
+    with pytest.raises(AppError) as exc:
+        await service.create_team(TeamCreateRequest(name="Новая", mail_group_id=3))
+    assert exc.value.status_code == 409
+    assert exc.value.code == "team_mail_group_taken"
+
+
+@pytest.mark.asyncio
+async def test_create_team_race_mail_group_structured_constraint_maps_taken(
+    db: RbacFakeDb,
+) -> None:
+    """Гонка: pre-check прошёл, на commit IntegrityError с именем констрейнта
+    `uq_teams_mail_group_id` → 409 team_mail_group_taken (не team_name_taken)."""
+    service = _service(db)
+    db.session.raise_integrity = True
+    db.session.integrity_constraint = "uq_teams_mail_group_id"
+
+    with pytest.raises(AppError) as exc:
+        await service.create_team(TeamCreateRequest(name="Проигравший", mail_group_id=7))
+    assert exc.value.code == "team_mail_group_taken"
+
+
+@pytest.mark.asyncio
+async def test_create_team_race_mail_group_fallback_recheck_maps_taken(db: RbacFakeDb) -> None:
+    """Драйвер не отдал constraint_name → фолбэк перепроверяет занятость группы
+    (победитель гонки уже закоммичен) и отдаёт team_mail_group_taken."""
+    service = _service(db)
+    calls = {"n": 0}
+
+    async def flaky(mail_group_id: int, *, exclude_id: object = None) -> bool:
+        calls["n"] += 1
+        return calls["n"] > 1  # pre-check — свободно; фолбэк-перепроверка — занято
+
+    db.team_repo.exists_by_mail_group_id = flaky  # type: ignore[assignment]
+    db.session.raise_integrity = True  # integrity_constraint=None → фолбэк
+
+    with pytest.raises(AppError) as exc:
+        await service.create_team(TeamCreateRequest(name="Проигравший", mail_group_id=7))
+    assert exc.value.code == "team_mail_group_taken"
+
+
+@pytest.mark.asyncio
+async def test_create_team_race_name_conflict_still_maps_name_taken(db: RbacFakeDb) -> None:
+    """Гонка без группы (mail_group_id=None) → фолбэк не срабатывает → team_name_taken."""
+    leader = _user(db, "Никита")
+    db.session.raise_integrity = True
+    service = _service(db)
+
+    with pytest.raises(AppError) as exc:
+        await service.create_team(TeamCreateRequest(name="Гонка", leader_id=leader.id))
+    assert exc.value.code == "team_name_taken"
+
+
+@pytest.mark.asyncio
+async def test_update_team_mail_group_taken_is_409(db: RbacFakeDb) -> None:
+    leader = _user(db, "Никита")
+    db.add_team("Занявшая", leader, mail_group_id=3)
+    target = db.add_team("Цель", leader)
+    service = _service(db)
+
+    with pytest.raises(AppError) as exc:
+        await service.update_team(target.id, TeamUpdateRequest(mail_group_id=3))
+    assert exc.value.status_code == 409
+    assert exc.value.code == "team_mail_group_taken"
+
+
+@pytest.mark.asyncio
+async def test_update_team_set_and_clear_mail_group(db: RbacFakeDb) -> None:
+    leader = _user(db, "Никита")
+    team = db.add_team("Продажи", leader)
+    service = _service(db)
+
+    linked = await service.update_team(team.id, TeamUpdateRequest(mail_group_id=8))
+    assert linked.mail_group_id == 8
+
+    cleared = await service.update_team(team.id, TeamUpdateRequest(mail_group_id=None))
+    assert cleared.mail_group_id is None
+
+
 @pytest.mark.asyncio
 async def test_update_team_leader_kept_when_still_member(db: RbacFakeDb) -> None:
     leader = _user(db, "Никита")

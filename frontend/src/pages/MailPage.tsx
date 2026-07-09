@@ -5,12 +5,16 @@ import { Button } from '@/components/ui/Button';
 import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { InsufficientPermissions } from '@/components/InsufficientPermissions';
+import { MailboxesTab } from '@/components/MailboxesTab';
 import { MailDetail } from '@/components/MailDetail';
 import { MailListItem } from '@/components/MailListItem';
+import { TagsTab } from '@/components/TagsTab';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { useCanViewPage } from '@/features/auth/hooks';
+import { useCanViewPage, useSeesAllMailTeams } from '@/features/auth/hooks';
 import { useMailFeed, useMailMailboxes, useMailTeams } from '@/features/mail/hooks';
+
+type Tab = 'messages' | 'mailboxes' | 'tags';
 
 /**
  * Высота двухпанельного блока: наследуется от flex-fill `<main>` (`flex-1 min-h-0`) —
@@ -66,26 +70,109 @@ export function MailPage() {
   if (!canView) {
     return <InsufficientPermissions />;
   }
-  return <MailInbox />;
+  return <MailTabs />;
 }
 
-function MailInbox() {
-  // Серверный фильтр ленты (взаимоисключающи почта↔команда). Входит в queryKey ленты:
-  // смена фильтра ре-запрашивает ленту, сбрасывает пагинацию и авто-выбор — ADR-017.
+/**
+ * Три вкладки страницы «Почты» (08-design-system.md «Вкладки», ADR-038): «Сообщения»
+ * (master-detail ленты, переезжает как есть), «Почты» (CRUD ящиков), «Теги» (каталог).
+ * Локальный `useState<Tab>` + ARIA tablist/tab/tabpanel (не роутинг, образец SmsPage).
+ * Full-bleed: shell `h-full` flex-column; tablist `shrink-0`; панель `flex-1 min-h-0`.
+ */
+function MailTabs() {
+  const [tab, setTab] = useState<Tab>('messages');
+  const seesAllMailTeams = useSeesAllMailTeams();
+
+  const tabs: { key: Tab; label: string }[] = [
+    { key: 'messages', label: 'Сообщения' },
+    { key: 'mailboxes', label: 'Почты' },
+    { key: 'tags', label: 'Теги' },
+  ];
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      <div
+        role="tablist"
+        aria-label="Разделы почты"
+        className="flex shrink-0 items-center gap-1 border-b border-border-subtle px-3 py-2"
+      >
+        {tabs.map((t) => {
+          const active = tab === t.key;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              role="tab"
+              id={`mail-tab-${t.key}`}
+              aria-selected={active}
+              aria-controls={`mail-panel-${t.key}`}
+              onClick={() => setTab(t.key)}
+              className={cn(
+                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                active
+                  ? 'bg-surface-2 text-text-primary'
+                  : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
+              )}
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {tab === 'messages' && (
+        <div
+          role="tabpanel"
+          id="mail-panel-messages"
+          aria-labelledby="mail-tab-messages"
+          className="min-h-0 flex-1 p-3"
+        >
+          <MailInbox seesAllMailTeams={seesAllMailTeams} />
+        </div>
+      )}
+      {tab === 'mailboxes' && (
+        <div
+          role="tabpanel"
+          id="mail-panel-mailboxes"
+          aria-labelledby="mail-tab-mailboxes"
+          className="scrollbar-none min-h-0 flex-1 overflow-y-auto p-4"
+        >
+          <MailboxesTab />
+        </div>
+      )}
+      {tab === 'tags' && (
+        <div
+          role="tabpanel"
+          id="mail-panel-tags"
+          aria-labelledby="mail-tab-tags"
+          className="scrollbar-none min-h-0 flex-1 overflow-y-auto p-4"
+        >
+          <TagsTab />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
+  // Серверные фильтры ленты — комбинируемы (AND, ADR-038 §3): выбор одного НЕ сбрасывает
+  // другой. Входят в queryKey ленты: смена фильтра ре-запрашивает ленту, сбрасывает
+  // пагинацию и авто-выбор — ADR-017.
   const [mailAccountId, setMailAccountId] = useState<number | undefined>(undefined);
   const [groupId, setGroupId] = useState<number | undefined>(undefined);
 
   const { messages, phase, error, hasMore, isFetchingMore, isReloading, loadMore, reload } =
     useMailFeed({ mailAccountId, groupId });
   const mailboxesQuery = useMailMailboxes();
-  const teamsQuery = useMailTeams();
+  // Справочник команд — только admin-уровню (фильтр «Команда» рендерится по
+  // `sees_all_mail_teams`); прочим ролям не грузим (анти-энумерация, ADR-038 §3).
+  const teamsQuery = useMailTeams(seesAllMailTeams);
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Узкие вьюпорты: показываем деталь письма поверх списка (одна колонка).
   const [mobileDetail, setMobileDetail] = useState(false);
   // Клиентский фильтр «С тегами» поверх серверного набора (теги внешний API не фильтрует).
-  // Тумблер фильтрует уже загруженный набор по непустому tags[]; догрузка старых по скроллу
-  // и авто-выбор не ломаются (08-design-system.md «Фильтры ленты»).
   const [onlyTagged, setOnlyTagged] = useState(false);
 
   // Опции дропдаунов. «Все почты»/«Все команды» — первая опция (сброс серверного фильтра).
@@ -108,16 +195,14 @@ function MailInbox() {
     ];
   }, [teamsQuery.data]);
 
-  // Взаимоисключение: выбор почты сбрасывает команду и наоборот (консистентно с backend 400).
+  // Комбинируемы (AND): выбор одного не сбрасывает другой (ADR-038 §3).
   const handleMailboxChange = (e: ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
     setMailAccountId(v ? Number(v) : undefined);
-    if (v) setGroupId(undefined);
   };
   const handleTeamChange = (e: ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
     setGroupId(v ? Number(v) : undefined);
-    if (v) setMailAccountId(undefined);
   };
 
   // Авто-выбор самого свежего письма (первое в desc-ленте) при первой загрузке / смене фильтра.
@@ -135,8 +220,6 @@ function MailInbox() {
     [messages, selectedId],
   );
 
-  // Отфильтрованное представление поверх загруженного набора (выбор берётся из полного
-  // messages, поэтому скрытие выбранного фильтром не сбрасывает правую панель).
   const visibleMessages = useMemo(
     () => (onlyTagged ? messages.filter((m) => m.tags.length > 0) : messages),
     [messages, onlyTagged],
@@ -238,14 +321,16 @@ function MailInbox() {
               onChange={handleMailboxChange}
             />
           </div>
-          <div className="w-40">
-            <Select
-              aria-label="Команда"
-              options={teamOptions}
-              value={groupId != null ? String(groupId) : ''}
-              onChange={handleTeamChange}
-            />
-          </div>
+          {seesAllMailTeams && (
+            <div className="w-40">
+              <Select
+                aria-label="Команда"
+                options={teamOptions}
+                value={groupId != null ? String(groupId) : ''}
+                onChange={handleTeamChange}
+              />
+            </div>
+          )}
         </div>
 
         <div className="scrollbar-none flex min-h-0 flex-1 flex-col overflow-y-auto">

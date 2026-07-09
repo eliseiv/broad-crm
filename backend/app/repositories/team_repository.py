@@ -73,6 +73,16 @@ class TeamRepository:
         result = await self._session.execute(stmt.limit(1))
         return result.first() is not None
 
+    async def exists_by_mail_group_id(
+        self, mail_group_id: int, *, exclude_id: uuid.UUID | None = None
+    ) -> bool:
+        """Занята ли группа mail-агрегатора другой командой (409 team_mail_group_taken)."""
+        stmt = select(Team.id).where(Team.mail_group_id == mail_group_id)
+        if exclude_id is not None:
+            stmt = stmt.where(Team.id != exclude_id)
+        result = await self._session.execute(stmt.limit(1))
+        return result.first() is not None
+
     async def get_existing_ids(self, ids: set[uuid.UUID]) -> set[uuid.UUID]:
         """Подмножество `ids`, реально существующее в `teams`."""
         if not ids:
@@ -88,14 +98,20 @@ class TeamRepository:
         return set(result.scalars().all())
 
     async def create(
-        self, *, name: str, leader_id: uuid.UUID | None, ordered_member_ids: list[uuid.UUID]
+        self,
+        *,
+        name: str,
+        leader_id: uuid.UUID | None,
+        ordered_member_ids: list[uuid.UUID],
+        mail_group_id: int | None = None,
     ) -> Team:
         """Создаёт команду и записывает участников (в порядке списка) в одной транзакции.
 
         `leader_id` может быть None (команда без лидера). Инвариант «лидер ∈ участники»
         обеспечивает вызывающий сервис (лидер уже включён в `ordered_member_ids`).
+        `mail_group_id` — привязка к группе mail-агрегатора (ADR-038); None — без привязки.
         """
-        team = Team(name=name, leader_id=leader_id)
+        team = Team(name=name, leader_id=leader_id, mail_group_id=mail_group_id)
         self._session.add(team)
         await self._session.flush()
         await self._insert_members(team.id, ordered_member_ids, base=datetime.now(UTC))

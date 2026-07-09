@@ -291,8 +291,9 @@ describe('MailPage "С тегами" filter', () => {
   });
 });
 
-// Серверные фильтры «Почта»/«Команда» (дропдауны, ADR-017, 08-design-system.md
-// «Фильтры ленты»). Тумблер «С тегами» — клиентский; дропдауны — серверные, взаимоисключающи.
+// Серверные фильтры «Почта»/«Команда» (дропдауны, ADR-038, 08-design-system.md
+// «Фильтры ленты»). Тумблер «С тегами» — клиентский; дропдауны — серверные,
+// **комбинируемы (AND)**: выбор одного не сбрасывает другой (взаимоисключение снято).
 describe('MailPage server filters (Почта/Команда dropdowns)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -340,7 +341,7 @@ describe('MailPage server filters (Почта/Команда dropdowns)', () => 
     expect(getTeamSelect()).toBeInTheDocument();
   });
 
-  it('selecting a mailbox sets it and resets the team dropdown (mutual exclusion)', async () => {
+  it('selecting a mailbox after a team keeps both (AND-combinable, ADR-038)', async () => {
     const user = userEvent.setup();
     feed.value = baseFeed({ messages: [makeMessage(2)] });
     render(<MailPage />);
@@ -349,13 +350,13 @@ describe('MailPage server filters (Почта/Команда dropdowns)', () => 
     await user.selectOptions(getTeamSelect(), '3');
     expect(getTeamSelect().value).toBe('3');
 
-    // Затем выбираем почтовый ящик — команда сбрасывается в «Все команды».
+    // Затем выбираем ящик — команда НЕ сбрасывается (фильтры комбинируемы, AND).
     await user.selectOptions(getMailboxSelect(), '7');
     expect(getMailboxSelect().value).toBe('7');
-    expect(getTeamSelect().value).toBe('');
+    expect(getTeamSelect().value).toBe('3');
   });
 
-  it('selecting a team sets it and resets the mailbox dropdown (mutual exclusion)', async () => {
+  it('selecting a team after a mailbox keeps both (AND-combinable, ADR-038)', async () => {
     const user = userEvent.setup();
     feed.value = baseFeed({ messages: [makeMessage(2)] });
     render(<MailPage />);
@@ -363,9 +364,10 @@ describe('MailPage server filters (Почта/Команда dropdowns)', () => 
     await user.selectOptions(getMailboxSelect(), '7');
     expect(getMailboxSelect().value).toBe('7');
 
+    // Команда добавляется к уже выбранному ящику — ящик остаётся.
     await user.selectOptions(getTeamSelect(), '3');
     expect(getTeamSelect().value).toBe('3');
-    expect(getMailboxSelect().value).toBe('');
+    expect(getMailboxSelect().value).toBe('7');
   });
 
   it('resetting a dropdown to "Все …" clears the server filter', async () => {
@@ -467,5 +469,9 @@ describe('MailPage view-guard (mail:view)', () => {
     expect(useMailFeedSpy).toHaveBeenCalled();
     expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
     expect(screen.queryByText(INSUFFICIENT_PERMISSIONS_TITLE)).not.toBeInTheDocument();
+    // Дропдаун «Почта» доступен под mail:view; «Команда» — только admin-уровню
+    // (`sees_all_mail_teams`, ADR-038 §3): у роли mail:view он скрыт (анти-энумерация).
+    expect(screen.getByLabelText('Почта')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Команда')).not.toBeInTheDocument();
   });
 });

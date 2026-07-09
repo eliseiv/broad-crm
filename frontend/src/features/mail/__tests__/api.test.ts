@@ -57,12 +57,12 @@ describe('mail api client (ADR-013 desc/before_id)', () => {
     expect(qs.has('before_id')).toBe(false);
   });
 
-  it('forwards mail_account_id filter and never group_id when both passed (mutual exclusion)', async () => {
-    // Вызывающий гарантирует максимум один фильтр; при обоих — приоритет mail_account_id (ADR-017).
+  it('forwards mail_account_id and group_id together (AND-combinable, ADR-038)', async () => {
+    // Взаимоисключение снято (ADR-038 §3): оба фильтра комбинируемы, уходят вместе.
     await listMail({ mailAccountId: 7, groupId: 3 });
     const qs = firstCallQuery();
     expect(qs.get('mail_account_id')).toBe('7');
-    expect(qs.has('group_id')).toBe(false);
+    expect(qs.get('group_id')).toBe('3');
   });
 
   it('forwards group_id filter when only groupId is passed', async () => {

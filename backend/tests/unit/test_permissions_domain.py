@@ -20,9 +20,9 @@ def test_full_catalog_permissions_matches_catalog_and_is_independent_copy() -> N
     full = full_catalog_permissions()
 
     assert full == {page: list(actions) for page, actions in CATALOG.items()}
-    # dashboard/mail — только view; ресурсные страницы — полный набор действий.
+    # dashboard — только view; mail расширен (ADR-038 §4); ресурсные — полный набор.
     assert full["dashboard"] == ["view"]
-    assert full["mail"] == ["view"]
+    assert full["mail"] == ["view", "create", "edit", "delete", "sync", "tags"]
     assert full["servers"] == ["view", "create", "edit", "delete"]
     # Мутация результата не затрагивает исходный CATALOG (возвращается копия).
     full["servers"].append("hack")

@@ -38,9 +38,15 @@ describe('MailTags', () => {
     expect(screen.queryByText(/^\+\d/)).not.toBeInTheDocument();
   });
 
-  it('applies the pill color from tag.color', () => {
+  it('renders each tag as a MailTagChip (единый элемент, не сырой HEX как текст)', () => {
     render(<MailTags tags={[tag(1, 'важное', '#123456')]} />);
 
-    expect(screen.getByText('важное')).toHaveStyle({ color: '#123456' });
+    // Текст тега в чипе; цвет — тема-зависимый color-mix, НЕ плоский tag.color (WCAG AA).
+    const chip = screen.getByText('важное').closest('span[style]') as HTMLElement;
+    expect(chip).not.toBeNull();
+    expect(chip.style.color).not.toBe('#123456');
+    expect(chip.getAttribute('style') ?? '').toContain('color-mix');
+    // В ленте/списке чип без точки-свотча (dot только на вкладке «Теги»).
+    expect(chip.querySelector('[aria-hidden="true"]')).toBeNull();
   });
 });

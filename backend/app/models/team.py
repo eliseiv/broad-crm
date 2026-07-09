@@ -24,8 +24,10 @@ from sqlalchemy import (
     Column,
     DateTime,
     ForeignKey,
+    Integer,
     Table,
     Text,
+    UniqueConstraint,
     func,
     text,
 )
@@ -75,6 +77,9 @@ class Team(Base):
             "AND name !~ '[[:cntrl:]]'",
             name="ck_teams_name",
         ),
+        # 1:1 команда↔группа mail-агрегатора (ADR-038, миграция 0018): одна группа
+        # привязана максимум к одной команде. Дубль → 409 team_mail_group_taken.
+        UniqueConstraint("mail_group_id", name="uq_teams_mail_group_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -83,6 +88,11 @@ class Team(Base):
         server_default=text("gen_random_uuid()"),
     )
     name: Mapped[str] = mapped_column(Text, nullable=False, unique=True)
+    # Привязка к группе mail-агрегатора (`groups.id`, int), 1:1 (ADR-038, миграция
+    # 0018). NULL = команда без привязки к почте. Источник истины владения ящиком —
+    # агрегатор (`mail_accounts.group_id`); CRM хранит только соответствие для
+    # резолва `MailScope` и секции «Почты команды» на /teams.
+    mail_group_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # NULL = команда без лидера (ADR-026, миграция 0012). FK ON DELETE SET NULL —
     # предохранитель: удаление пользователя-лидера не блокируется (осмысленного
     # нового лидера проставляет авто-передача в сервисе). Инвариант «если лидер

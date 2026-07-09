@@ -1,6 +1,8 @@
 # ADR-017 · Страница «Дашборд» (клиентская агрегация) + серверные фильтры «Почт» по ящику/команде
 
-- Статус: `accepted`
+> **⚠️ Частично superseded — [ADR-038](ADR-038-mail-headless-integration.md) (2026-07-09).** Описанное ниже **взаимоисключение** фильтров `mail_account_id` × `group_id` (`400 field=filter`; «выбор одного сбрасывает другой» в UI) **отменено**: фильтры стали **AND-комбинируемыми** (mail-агрегатор ADR-0039 §3 supersede ADR-0037). Причина — headless-CRM инъектирует scope-`group_id` не-админу в каждый запрос ленты и обязан комбинировать его с пользовательским `mail_account_id`. Дропдаун «Команда» теперь admin-only (`sees_all_mail_teams`). Актуальная семантика — [04-api.md#mail](../04-api.md#mail), [08-design-system.md](../08-design-system.md#фильтры-ленты-с-тегами--почта--команда), ADR-038 §3. Остальное в этом ADR (дашборд, справочники, read-through) — в силе.
+
+- Статус: `accepted` (взаимоисключение фильтров superseded by ADR-038 / mail-агрегатор ADR-0039)
 - Дата: 2026-07-06
 - Контекст модулей: [mail](../modules/mail/README.md), UI (страница «Дашборд»)
 - Связанные: [ADR-012](ADR-012-mail-read-through-proxy.md) (read-through-прокси без хранения — **не отменяется**), [ADR-013](ADR-013-mail-newest-first-master-detail-inline-reply.md) (newest-first/master-detail — навигация уточняется), внешний контракт mail-агрегатора **ADR-0037** (external teams/mailboxes + серверные фильтры `mail_account_id`/`group_id`), [TD-024](../100-known-tech-debt.md)

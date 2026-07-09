@@ -84,6 +84,27 @@ def alembic_cfg(monkeypatch: pytest.MonkeyPatch) -> Iterator[Config]:
     get_settings.cache_clear()
 
 
+@pytest.fixture(autouse=True)
+def _restore_head_after_test(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Восстанавливает схему до head после каждого теста модуля (изоляция, ADR-038 §2).
+
+    Тесты оставляют схему на ревизии 0016 (backfill под тестом). Без восстановления
+    последующие create_all-тесты (idle `teams` с колонкой `mail_group_id` из миграции
+    0018) падают на её отсутствии — ordering-зависимость от порядка коллекции. Финализатор
+    дропает public-схему и накатывает head: чистый старт с полной моделью для следующих.
+    """
+    yield
+    if not _DB_URL:
+        return
+    monkeypatch.setenv("DATABASE_URL", _DB_URL)
+    from app.config import get_settings
+
+    get_settings.cache_clear()
+    asyncio.run(_drop_schema(_DB_URL))
+    command.upgrade(_alembic_config(), "head")
+    get_settings.cache_clear()
+
+
 # --------------------------------------------------------------------------- helpers
 
 
@@ -203,8 +224,8 @@ async def _fetch(
 def test_0016_sits_on_top_of_0015_single_head() -> None:
     """Ревизия 0016 висит поверх 0015 и является единственной головой цепочки."""
     script = ScriptDirectory.from_config(_alembic_config())
-    # Единственная голова цепочки — теперь 0017 (ADR-030 добавил SMS-миграцию поверх 0016).
-    assert script.get_heads() == ["0017_create_sms_module"]
+    # Единственная голова цепочки — теперь 0018 (ADR-038 добавил teams.mail_group_id поверх 0017).
+    assert script.get_heads() == ["0018_teams_mail_group_id"]
     rev = script.get_revision(_REV_0016)
     assert rev.down_revision == _REV_0015
 

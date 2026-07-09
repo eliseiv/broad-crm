@@ -100,6 +100,15 @@ export function useSeesAllSmsTeams(): boolean {
 }
 
 /**
+ * Admin-уровень видимости почты (ADR-038): виден ли фильтр «Все команды» на /mail.
+ * Источник — `me.sees_all_mail_teams` из GET /api/auth/me (backend вычисляет
+ * `is_superadmin OR полный каталог`); фронт НЕ дублирует предикат. UI-гейтинг, только UX.
+ */
+export function useSeesAllMailTeams(): boolean {
+  return useAuthStore((s) => s.seesAllMailTeams);
+}
+
+/**
  * Доступ к странице «Пользователи» (RBAC-администрирование): супер-админ или
  * роль `admin`. Гейтится не матрицей, а признаком admin (04-api.md, ADR-021).
  */

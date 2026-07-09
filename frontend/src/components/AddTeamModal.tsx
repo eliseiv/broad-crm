@@ -9,8 +9,15 @@ import type { MultiSelectOption } from '@/components/ui/MultiSelect';
 import { Select } from '@/components/ui/Select';
 import type { SelectOption } from '@/components/ui/Select';
 import { ApiError } from '@/lib/api';
+import { useMailTeams } from '@/features/mail/hooks';
 import { useCreateTeam, useDeleteTeam, useUpdateTeam } from '@/features/teams/hooks';
-import type { TeamCreateRequest, TeamListItem, TeamUpdateRequest, UserListItem } from '@/types/api';
+import type {
+  MailTeam,
+  TeamCreateRequest,
+  TeamListItem,
+  TeamUpdateRequest,
+  UserListItem,
+} from '@/types/api';
 
 interface AddTeamModalProps {
   open: boolean;
@@ -25,7 +32,7 @@ interface AddTeamModalProps {
   canDelete?: boolean;
 }
 
-type Errors = { name?: string; leader_id?: string; member_ids?: string };
+type Errors = { name?: string; leader_id?: string; member_ids?: string; mail_group_id?: string };
 
 function userOptions(users: UserListItem[]): (SelectOption & MultiSelectOption)[] {
   return users.map((u) => ({ value: u.id, label: u.username }));
@@ -33,6 +40,16 @@ function userOptions(users: UserListItem[]): (SelectOption & MultiSelectOption)[
 
 /** Пустое значение лидера — команда без лидера (только пустой состав, ADR-026/ADR-029). */
 const NO_LEADER = '';
+/** Пустое значение почтовой группы — команда без привязки к почте (ADR-038). */
+const NO_MAIL_GROUP = '';
+
+/** Опции селектора «Почтовая группа»: «Без привязки» + группы mail-агрегатора (MailTeam). */
+function mailGroupOptions(teams: MailTeam[]): SelectOption[] {
+  return [
+    { value: NO_MAIL_GROUP, label: 'Без привязки' },
+    ...teams.map((t) => ({ value: String(t.id), label: t.name })),
+  ];
+}
 
 /** name: required, 1–64 после trim (формат — на сервере). */
 function validateName(name: string): string | undefined {
@@ -46,6 +63,13 @@ function validateName(name: string): string | undefined {
 function mapApiError(err: unknown, setErrors: (u: (prev: Errors) => Errors) => void): void {
   if (err instanceof ApiError) {
     if (err.status === 409) {
+      if (err.code === 'team_mail_group_taken') {
+        setErrors((prev) => ({
+          ...prev,
+          mail_group_id: 'Эта почтовая группа уже привязана к другой команде',
+        }));
+        return;
+      }
       setErrors((prev) => ({ ...prev, name: 'Команда с таким названием уже существует' }));
       return;
     }
@@ -108,6 +132,9 @@ function TeamFormFields({
   setLeaderId,
   memberIds,
   setMemberIds,
+  mailGroupId,
+  setMailGroupId,
+  mailTeams,
   errors,
   setErrors,
   users,
@@ -118,6 +145,9 @@ function TeamFormFields({
   setLeaderId: (v: string) => void;
   memberIds: string[];
   setMemberIds: (v: string[]) => void;
+  mailGroupId: string;
+  setMailGroupId: (v: string) => void;
+  mailTeams: MailTeam[];
   errors: Errors;
   setErrors: (u: (prev: Errors) => Errors) => void;
   users: UserListItem[];
@@ -183,6 +213,16 @@ function TeamFormFields({
           if (errors.leader_id) setErrors((p) => ({ ...p, leader_id: undefined }));
         }}
       />
+      <Select
+        label="Почтовая группа"
+        options={mailGroupOptions(mailTeams)}
+        value={mailGroupId}
+        error={errors.mail_group_id}
+        onChange={(e) => {
+          setMailGroupId(e.target.value);
+          if (errors.mail_group_id) setErrors((p) => ({ ...p, mail_group_id: undefined }));
+        }}
+      />
     </>
   );
 }
@@ -201,8 +241,11 @@ function AddTeamDialog({
   // участник авто-становится лидером (handleMembersChange в TeamFormFields).
   const [leaderId, setLeaderId] = useState(NO_LEADER);
   const [memberIds, setMemberIds] = useState<string[]>([]);
+  const [mailGroupId, setMailGroupId] = useState(NO_MAIL_GROUP);
   const [errors, setErrors] = useState<Errors>({});
   const createMutation = useCreateTeam();
+  const mailTeamsQuery = useMailTeams(open);
+  const mailTeams = mailTeamsQuery.data?.teams ?? [];
   const noUsers = users.length === 0;
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -216,6 +259,7 @@ function AddTeamDialog({
     // member_ids — полный состав (включая лидера; backend дедуплицирует, 04-api.md).
     const payload: TeamCreateRequest = { name: name.trim(), member_ids: memberIds };
     if (leaderId) payload.leader_id = leaderId;
+    if (mailGroupId) payload.mail_group_id = Number(mailGroupId);
     createMutation.mutate(payload, {
       onSuccess: () => {
         toast.success('Команда создана');
@@ -253,6 +297,9 @@ function AddTeamDialog({
           setLeaderId={setLeaderId}
           memberIds={memberIds}
           setMemberIds={setMemberIds}
+          mailGroupId={mailGroupId}
+          setMailGroupId={setMailGroupId}
+          mailTeams={mailTeams}
           errors={errors}
           setErrors={setErrors}
           users={users}
@@ -277,15 +324,19 @@ function EditTeamDialog({
 }) {
   // Текущий лидер как строка ('' — без лидера, ADR-026: leader_id может быть null).
   const currentLeader = team.leader_id ?? NO_LEADER;
+  const currentMailGroup = team.mail_group_id != null ? String(team.mail_group_id) : NO_MAIL_GROUP;
   // Полный состав (включая лидера, ADR-029) — источник кандидатов в лидеры.
   const initialMembers = team.members.map((m) => m.id);
   const [name, setName] = useState(team.name);
   const [leaderId, setLeaderId] = useState(currentLeader);
   const [memberIds, setMemberIds] = useState<string[]>(initialMembers);
+  const [mailGroupId, setMailGroupId] = useState(currentMailGroup);
   const [errors, setErrors] = useState<Errors>({});
   const [confirmOpen, setConfirmOpen] = useState(false);
   const updateMutation = useUpdateTeam(team.id);
   const deleteMutation = useDeleteTeam();
+  const mailTeamsQuery = useMailTeams(open);
+  const mailTeams = mailTeamsQuery.data?.teams ?? [];
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -305,6 +356,9 @@ function EditTeamDialog({
     if (membersChanged) payload.member_ids = memberIds;
     // Снятие лидера → null; смена/назначение → id. Лидер ∈ участники (ADR-029).
     if (leaderId !== currentLeader) payload.leader_id = leaderId === NO_LEADER ? null : leaderId;
+    // Почтовая группа (presence-семантика): изменилась → int / null (снять привязку).
+    if (mailGroupId !== currentMailGroup)
+      payload.mail_group_id = mailGroupId === NO_MAIL_GROUP ? null : Number(mailGroupId);
 
     if (Object.keys(payload).length === 0) {
       onOpenChange(false);
@@ -378,6 +432,9 @@ function EditTeamDialog({
             setLeaderId={setLeaderId}
             memberIds={memberIds}
             setMemberIds={setMemberIds}
+            mailGroupId={mailGroupId}
+            setMailGroupId={setMailGroupId}
+            mailTeams={mailTeams}
             errors={errors}
             setErrors={setErrors}
             users={users}

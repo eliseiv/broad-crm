@@ -9,6 +9,7 @@ from app.api.deps import (
     ClientIp,
     PrincipalDep,
     SetupPrincipalDep,
+    principal_sees_all_mail_teams,
     principal_sees_all_sms_teams,
 )
 from app.schemas.auth import LoginRequest, LoginResponse, MeResponse, SetPasswordRequest
@@ -49,4 +50,5 @@ async def me(principal: PrincipalDep) -> MeResponse:
         is_superadmin=principal.is_superadmin,
         permissions=principal.permissions,
         sees_all_sms_teams=principal_sees_all_sms_teams(principal),
+        sees_all_mail_teams=principal_sees_all_mail_teams(principal),
     )

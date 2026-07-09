@@ -88,6 +88,7 @@ const TEAMS: TeamListResponse = {
     {
       id: 't1',
       name: 'Продажи',
+      mail_group_id: null,
       leader_id: 'u1',
       leader_username: 'Никита',
       member_count: 1,
@@ -213,6 +214,7 @@ describe('UsersPage (пользователи по командам, ADR-022/025
         {
           id: 't2',
           name: 'Маркетинг',
+          mail_group_id: null,
           leader_id: 'u9',
           leader_username: 'Ольга',
           member_count: 1,

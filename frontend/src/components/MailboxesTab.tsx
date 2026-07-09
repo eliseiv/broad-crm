@@ -1,0 +1,209 @@
+import { useState } from 'react';
+import { AlertTriangle, Inbox, Mail, Plus, RefreshCw } from 'lucide-react';
+import { Button } from '@/components/ui/Button';
+import { Spinner } from '@/components/ui/Spinner';
+import { MailboxFormModal } from '@/components/MailboxFormModal';
+import { MailboxRow } from '@/components/MailboxRow';
+import { cn } from '@/lib/cn';
+import { ApiError } from '@/lib/api';
+import { useCan } from '@/features/auth/hooks';
+import { useMailboxesManage, useMailTeams } from '@/features/mail/hooks';
+
+/** Значение сегмента активности → query `is_active` (не задан / true / false). */
+type ActivityFilter = 'all' | 'active' | 'inactive';
+
+const SEGMENTS: { key: ActivityFilter; label: string }[] = [
+  { key: 'all', label: 'Все' },
+  { key: 'active', label: 'Активные' },
+  { key: 'inactive', label: 'Неактивные' },
+];
+
+function toIsActive(filter: ActivityFilter): boolean | undefined {
+  if (filter === 'active') return true;
+  if (filter === 'inactive') return false;
+  return undefined;
+}
+
+/** Skeleton-строки таблицы при начальной загрузке. */
+function TableSkeleton() {
+  return (
+    <div className="flex flex-col gap-2">
+      {[0, 1, 2, 3].map((i) => (
+        <div
+          key={i}
+          className="h-14 animate-pulse rounded-card border border-border-subtle bg-surface-1"
+        />
+      ))}
+    </div>
+  );
+}
+
+function CenteredState({
+  icon,
+  title,
+  hint,
+  action,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  hint?: string;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-4 rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">
+      {icon}
+      <div>
+        <p className="text-base font-semibold text-text-primary">{title}</p>
+        {hint && <p className="mt-1 text-[13px] text-text-secondary">{hint}</p>}
+      </div>
+      {action}
+    </div>
+  );
+}
+
+/**
+ * Вкладка «Почты» (08-design-system.md «Вкладка Почты», ADR-038): таблица ящиков с
+ * цветным кружком статуса, сегмент активности (Все/Активные/Неактивные), CRUD и
+ * форс-синк. Мутации гейтятся `mail:create/edit/delete/sync`; просмотр — под `mail:view`.
+ */
+export function MailboxesTab() {
+  const [filter, setFilter] = useState<ActivityFilter>('all');
+  const [addOpen, setAddOpen] = useState(false);
+
+  const canCreate = useCan('mail', 'create');
+  const canEdit = useCan('mail', 'edit');
+  const canSync = useCan('mail', 'sync');
+  const canDelete = useCan('mail', 'delete');
+
+  const query = useMailboxesManage(toIsActive(filter));
+  const teamsQuery = useMailTeams();
+  const teams = teamsQuery.data?.teams ?? [];
+  const mailboxes = query.data?.mailboxes ?? [];
+
+  const isNotConfigured = query.error instanceof ApiError && query.error.status === 503;
+
+  const segment = (
+    <div
+      role="group"
+      aria-label="Фильтр активности"
+      className="inline-flex items-center gap-1 rounded-[10px] border border-border-subtle bg-surface-1 p-1"
+    >
+      {SEGMENTS.map((s) => {
+        const active = filter === s.key;
+        return (
+          <button
+            key={s.key}
+            type="button"
+            aria-pressed={active}
+            onClick={() => setFilter(s.key)}
+            className={cn(
+              'rounded-md px-3 py-1 text-[13px] font-medium transition-colors',
+              'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+              active
+                ? 'bg-surface-3 text-text-primary'
+                : 'text-text-secondary hover:text-text-primary',
+            )}
+          >
+            {s.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const toolbar = (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      {segment}
+      {canCreate && (
+        <Button size="sm" onClick={() => setAddOpen(true)}>
+          <Plus className="h-4 w-4" />
+          Добавить почту
+        </Button>
+      )}
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-4">
+      {toolbar}
+
+      {query.isLoading && <TableSkeleton />}
+
+      {!query.isLoading && isNotConfigured && (
+        <CenteredState
+          icon={<Mail className="h-10 w-10 text-text-tertiary" aria-hidden="true" />}
+          title="Сервис почт не настроен"
+          hint="Обратитесь к администратору для настройки почтового сервиса."
+        />
+      )}
+
+      {!query.isLoading && query.isError && !isNotConfigured && (
+        <CenteredState
+          icon={<AlertTriangle className="h-10 w-10 text-status-red" aria-hidden="true" />}
+          title="Почтовый сервис временно недоступен"
+          action={
+            <Button
+              variant="outline"
+              onClick={() => void query.refetch()}
+              loading={query.isFetching}
+            >
+              <RefreshCw className="h-4 w-4" />
+              Повторить
+            </Button>
+          }
+        />
+      )}
+
+      {!query.isLoading && !query.isError && mailboxes.length === 0 && (
+        <CenteredState
+          icon={<Inbox className="h-10 w-10 text-text-tertiary" aria-hidden="true" />}
+          title={filter === 'all' ? 'Почт пока нет' : 'Ничего не найдено'}
+          hint={
+            filter === 'all' && canCreate
+              ? 'Добавьте первый почтовый ящик, чтобы получать письма.'
+              : undefined
+          }
+        />
+      )}
+
+      {!query.isLoading && !query.isError && mailboxes.length > 0 && (
+        <div className="scrollbar-none overflow-x-auto rounded-card border border-border-subtle bg-surface-1">
+          <table className="w-full min-w-[760px] border-collapse text-left">
+            <thead>
+              <tr className="text-[12px] font-medium uppercase tracking-wide text-text-tertiary">
+                <th className="px-3 py-3 font-medium">Статус</th>
+                <th className="px-3 py-3 font-medium">Почта</th>
+                <th className="px-3 py-3 font-medium">Команда</th>
+                <th className="px-3 py-3 font-medium">Синхронизация</th>
+                <th className="px-3 py-3 font-medium">
+                  <span className="sr-only">Действия</span>
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {mailboxes.map((mb) => (
+                <MailboxRow
+                  key={mb.id}
+                  mailbox={mb}
+                  teams={teams}
+                  canEdit={canEdit}
+                  canSync={canSync}
+                  canDelete={canDelete}
+                />
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {query.isFetching && !query.isLoading && (
+        <div className="flex items-center justify-center gap-2 py-1 text-[12px] text-text-secondary">
+          <Spinner className="text-text-secondary" />
+          Обновление…
+        </div>
+      )}
+
+      <MailboxFormModal open={addOpen} onOpenChange={setAddOpen} mode="add" />
+    </div>
+  );
+}

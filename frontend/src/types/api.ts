@@ -97,6 +97,13 @@ export interface MeResponse {
    * (backend — единственный источник, фронт не дублирует predicate).
    */
   sees_all_sms_teams: boolean;
+  /**
+   * Производный admin-уровень видимости почты (04-api.md, ADR-038 §3): тот же предикат
+   * `is_superadmin OR полный каталог прав`, что у SMS. `true` ⇔ актор видит все
+   * почтовые команды. Frontend по нему решает, показывать ли фильтр «Все команды» на
+   * /mail (backend — единственный источник, фронт не дублирует predicate).
+   */
+  sees_all_mail_teams: boolean;
   permissions: PermissionsMap;
 }
 
@@ -315,9 +322,11 @@ export interface MailTeamsResponse {
 }
 
 /**
- * Почтовый ящик внешнего сервиса (04-api.md, MailMailbox; external ADR-0037).
+ * Почтовый ящик внешнего сервиса (04-api.md, MailMailbox; external ADR-0037/ADR-0039).
  * `id` используется как `mail_account_id` в серверном фильтре ленты;
  * привязка к команде — через `group_id`; `is_active` — статус ящика (для дашборда).
+ * Поля статуса синка (`last_synced_at`/`last_sync_error`/`consecutive_failures`) —
+ * для кружка статуса и диагностики на вкладке «Почты» (ADR-038).
  */
 export interface MailMailbox {
   id: number;
@@ -325,11 +334,160 @@ export interface MailMailbox {
   display_name: string | null;
   group_id: number | null;
   is_active: boolean;
+  /** Время последней успешной синхронизации; `null` — ещё не синхронизировался. */
+  last_synced_at: string | null;
+  /** Текст последней ошибки синка; `null` — ошибок нет. */
+  last_sync_error: string | null;
+  /** Число подряд идущих неудачных синков (0 — здоров). */
+  consecutive_failures: number;
 }
 
 /** Ответ GET /api/mail/mailboxes (04-api.md, MailMailboxesResponse). */
 export interface MailMailboxesResponse {
   mailboxes: MailMailbox[];
+}
+
+/**
+ * Тело POST /api/mail/mailboxes/test (04-api.md, MailMailboxTestRequest). Пароли —
+ * транзитом в агрегатор (не логируются, не возвращаются, ADR-038 §5). `smtp_username`/
+ * `smtp_password` опц.: `null` → внешний сервис берёт `email`/`password`. `smtp_ssl` и
+ * `smtp_starttls` взаимоисключающи (оба обязательны).
+ */
+export interface MailMailboxTestRequest {
+  email: string;
+  imap_host: string;
+  imap_port: number;
+  imap_ssl: boolean;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_ssl: boolean;
+  smtp_starttls: boolean;
+  smtp_username?: string | null;
+  password: string;
+  smtp_password?: string | null;
+}
+
+/** Ответ 200 POST /api/mail/mailboxes/test (04-api.md, MailMailboxTestResponse). */
+export interface MailMailboxTestResponse {
+  imap_ok: boolean;
+  smtp_ok: boolean;
+}
+
+/**
+ * Тело POST /api/mail/mailboxes (04-api.md, MailMailboxCreateRequest) = поля `test`
+ * + `display_name`/`group_id` (команда `MailTeam.id`; `null` — без команды).
+ */
+export interface MailMailboxCreateRequest extends MailMailboxTestRequest {
+  display_name?: string | null;
+  group_id?: number | null;
+}
+
+/**
+ * Тело PATCH /api/mail/mailboxes/{id} (04-api.md, MailMailboxUpdateRequest). Все поля
+ * опциональны — присутствие поля = «изменить». Пароль не передан → не менять (секрет не
+ * префилится). `group_id`: int — сменить команду; `null` — снять привязку. `is_active` —
+ * активация/деактивация ящика.
+ */
+export interface MailMailboxUpdateRequest {
+  email?: string;
+  display_name?: string | null;
+  imap_host?: string;
+  imap_port?: number;
+  imap_ssl?: boolean;
+  smtp_host?: string;
+  smtp_port?: number;
+  smtp_ssl?: boolean;
+  smtp_starttls?: boolean;
+  smtp_username?: string | null;
+  password?: string;
+  smtp_password?: string | null;
+  is_active?: boolean;
+  group_id?: number | null;
+}
+
+/** Ответ 202 POST /api/mail/mailboxes/{id}/sync (04-api.md, MailMailboxSyncResponse). */
+export interface MailMailboxSyncResponse {
+  queued: boolean;
+}
+
+/** Тип правила тега (04-api.md, MailTagRule). Человекочитаемые подписи — 08-design-system.md. */
+export type MailTagRuleType =
+  | 'subject_contains'
+  | 'body_contains'
+  | 'sender_contains'
+  | 'sender_exact';
+
+/** Режим совпадения правил тега (04-api.md): `any` — любое правило, `all` — все. */
+export type MailTagMatchMode = 'any' | 'all';
+
+/** Правило тега (04-api.md, MailTagRule). */
+export interface MailTagRule {
+  id: number;
+  type: MailTagRuleType;
+  pattern: string;
+  created_at: string;
+}
+
+/**
+ * Полный тег с правилами для вкладки «Теги» (04-api.md, MailTagFull). Глобальный
+ * админский каталог. `color` — HEX из палитры 8 цветов (08-design-system.md).
+ * `is_builtin` — встроенный тег (удалять нельзя → 409; правка имени/правил разрешена).
+ */
+export interface MailTagFull {
+  id: number;
+  name: string;
+  color: string;
+  match_mode: MailTagMatchMode;
+  is_builtin: boolean;
+  rules: MailTagRule[];
+  created_at: string;
+  updated_at: string;
+}
+
+/** Ответ GET /api/mail/tags (04-api.md, MailTagsResponse). */
+export interface MailTagsResponse {
+  tags: MailTagFull[];
+}
+
+/** Тело POST /api/mail/tags (04-api.md, MailTagCreateRequest). `match_mode` опц. (default `any`). */
+export interface MailTagCreateRequest {
+  name: string;
+  color: string;
+  match_mode?: MailTagMatchMode;
+}
+
+/** Тело PATCH /api/mail/tags/{id} (04-api.md, MailTagUpdateRequest). Все поля опц. */
+export interface MailTagUpdateRequest {
+  name?: string;
+  color?: string;
+  match_mode?: MailTagMatchMode;
+}
+
+/** Тело POST /api/mail/tags/{id}/rules (04-api.md, MailTagRuleCreateRequest). */
+export interface MailTagRuleCreateRequest {
+  type: MailTagRuleType;
+  pattern: string;
+}
+
+/** Ответ 200 POST /api/mail/tags/{id}/apply-to-existing (04-api.md, MailTagApplyResponse). */
+export interface MailTagApplyResponse {
+  applied_count: number;
+}
+
+/**
+ * Ящик команды для detail-панели /teams (04-api.md, TeamMailboxItem; ADR-038).
+ * Минимальная схема без кредов/статуса синка (гейт `teams:view`, не `mail:view`).
+ */
+export interface TeamMailboxItem {
+  id: number;
+  email: string;
+  display_name: string | null;
+  is_active: boolean;
+}
+
+/** Ответ GET /api/teams/{id}/mailboxes (04-api.md, TeamMailboxesResponse). */
+export interface TeamMailboxesResponse {
+  mailboxes: TeamMailboxItem[];
 }
 
 // --- Proxies (04-api.md «Proxies», modules/proxies) ---
@@ -635,6 +793,12 @@ export interface TeamListItem {
   /** Число участников (= members.length; включает лидера, если он есть). Может быть 0. */
   member_count: number;
   /**
+   * Привязка к группе mail-агрегатора (04-api.md, ADR-038; 1:1 команда↔группа).
+   * `null` — команда без привязки к почте. Значения — из GET /api/mail/teams
+   * (`MailTeam.id`). Используется секцией «Почты команды» detail-панели /teams.
+   */
+  mail_group_id: number | null;
+  /**
    * Число SMS-номеров команды (04-api.md, COUNT sms_phone_numbers; ADR-030). Может
    * быть 0. Денормализованный агрегат для чипа «N номеров» на карточке команды;
    * список номеров — GET /api/teams/{id}/numbers.
@@ -662,6 +826,11 @@ export interface TeamCreateRequest {
   name: string;
   leader_id?: string;
   member_ids?: string[];
+  /**
+   * Привязка к группе mail-агрегатора (04-api.md, ADR-038). Опц. `MailTeam.id`;
+   * `null`/не задан — без привязки. Занято другой командой → 409 team_mail_group_taken.
+   */
+  mail_group_id?: number | null;
 }
 
 /**
@@ -674,6 +843,12 @@ export interface TeamUpdateRequest {
   name?: string;
   leader_id?: string | null;
   member_ids?: string[];
+  /**
+   * Привязка к группе mail-агрегатора (04-api.md, ADR-038; presence-семантика: передано
+   * → изменить). `integer` → привязать/сменить; `null` → снять привязку. Не передано →
+   * не менять. Занято другой командой → 409 team_mail_group_taken.
+   */
+  mail_group_id?: number | null;
 }
 
 // --- SMS (04-api.md «SMS», modules/sms, ADR-030) ---
