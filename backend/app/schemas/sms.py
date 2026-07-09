@@ -140,11 +140,11 @@ class TelegramAuthResponse(BaseModel):
 
 
 class TeamNumberItem(BaseModel):
-    """Элемент GET /api/teams/{id}/numbers (04-api.md, ADR-030 §8).
+    """Элемент GET /api/teams/{id}/numbers (04-api.md, ADR-030 §8 + ADR-034).
 
-    Минимальная схема под гейт `teams:view`: только состав номеров + ссылка на
-    команду, БЕЗ чувствительного контекста учёток (`login`/`app_name`/`note`/
-    `label`), который доступен лишь на эндпоинтах страницы «СМС» под матрицей
+    Схема под гейт `teams:view`: состав номеров + ссылка на команду + слабо-
+    чувствительный идентифицирующий контекст `login`/`app_name` (ADR-034). БЕЗ
+    `note`/`label` — они доступны лишь на эндпоинтах страницы «СМС» под матрицей
     `sms:*`. `team` — всегда запрошенная команда `{id}` (номера отфильтрованы по
     `team_id`), потому не опционален.
     """
@@ -152,6 +152,8 @@ class TeamNumberItem(BaseModel):
     id: int
     phone_number: str
     team: SmsTeamRef
+    login: str | None
+    app_name: str | None
 
 
 class TeamNumbersResponse(BaseModel):

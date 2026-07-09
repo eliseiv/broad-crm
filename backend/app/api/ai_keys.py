@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Response, status
 
 from app.api.deps import AiKeyServiceDep, Principal, require
+from app.infra.audit import log_secret_revealed
 from app.schemas.ai_key import (
     AiKeyCreateRequest,
     AiKeyListItem,
@@ -16,6 +17,7 @@ from app.schemas.ai_key import (
     AiKeyStatusResponse,
     AiKeyUpdateRequest,
 )
+from app.schemas.secret import SecretRevealResponse
 
 router = APIRouter(prefix="/ai-keys", tags=["ai-keys"])
 
@@ -57,6 +59,25 @@ async def update_ai_key(
 ) -> AiKeyListItem:
     """Редактирование ключа (name/provider/key); re-check при смене provider/key (200)."""
     return await service.update_key(ai_key_id, payload)
+
+
+@router.get("/{ai_key_id}/key", response_model=SecretRevealResponse)
+async def reveal_ai_key(
+    ai_key_id: uuid.UUID,
+    service: AiKeyServiceDep,
+    principal: EditDep,
+    response: Response,
+) -> SecretRevealResponse:
+    """On-demand reveal ПОЛНОГО ключа (ADR-035, require ai-keys:edit).
+
+    В обычных ответах — только `key_masked`; здесь — полный ключ. Секрет — в теле
+    ответа (не в URL); `Cache-Control: no-store` исключает кэш. Успех → аудит-лог
+    `secret_revealed` (без значения).
+    """
+    value = await service.reveal_key(ai_key_id)
+    response.headers["Cache-Control"] = "no-store"
+    log_secret_revealed(principal, resource_type="ai_key", resource_id=str(ai_key_id))
+    return SecretRevealResponse(value=value)
 
 
 @router.get("/{ai_key_id}/status", response_model=AiKeyStatusResponse)

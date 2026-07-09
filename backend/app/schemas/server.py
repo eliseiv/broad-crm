@@ -33,22 +33,28 @@ class ServerOrderRequest(BaseModel):
 
 
 class ServerCreatedResponse(BaseModel):
-    """Ответ 202 POST /api/servers (без пароля)."""
+    """Ответ 202 POST /api/servers (без пароля). `ssh_user` — не секрет (ADR-035)."""
 
     id: uuid.UUID
     name: str
     ip: str
+    ssh_user: str
     exporter_port: int
     provision_status: ProvisionStatus
     position: int
 
 
 class ServerSummaryResponse(BaseModel):
-    """Ответ 200 PATCH /api/servers/{id} — summary-объект сервера (без метрик)."""
+    """Ответ 200 PATCH /api/servers/{id} — summary-объект сервера (без метрик).
+
+    `ssh_user` — SSH-логин целевого сервера (не секрет, ADR-035); SSH-пароль в
+    ответе не отдаётся (только через reveal-эндпоинт).
+    """
 
     id: uuid.UUID
     name: str
     ip: str
+    ssh_user: str
     exporter_port: int
     provision_status: ProvisionStatus
     position: int
@@ -57,11 +63,16 @@ class ServerSummaryResponse(BaseModel):
 
 
 class ServerListItem(BaseModel):
-    """Элемент списка GET /api/servers с метриками и статусом."""
+    """Элемент списка GET /api/servers с метриками и статусом.
+
+    `ssh_user` — SSH-логин (не секрет, ADR-035); отображается в read-only
+    detail-view сервера. SSH-пароль здесь не отдаётся (только reveal-эндпоинт).
+    """
 
     id: uuid.UUID
     name: str
     ip: str
+    ssh_user: str
     exporter_port: int
     provision_status: ProvisionStatus
     position: int

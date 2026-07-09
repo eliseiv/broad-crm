@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Clock, Loader2, Server as ServerIcon, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { AddServerModal } from '@/components/AddServerModal';
+import { ServerDetailModal } from '@/components/ServerDetailModal';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -39,6 +40,7 @@ export function ServerCard({ server, canEdit = true, canDelete = true }: ServerC
   const statusQuery = useServerStatus(server.id, server.provision_status);
   const deleteMutation = useDeleteServer();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
 
   const status: ProvisionStatus = statusQuery.data?.provision_status ?? server.provision_status;
@@ -69,12 +71,13 @@ export function ServerCard({ server, canEdit = true, canDelete = true }: ServerC
   const isOnline = status === 'online' && server.online;
   const isOffline = status === 'online' && !server.online;
 
-  // Клик по карточке → edit (короткий клик; drag активируется зажатием — см.
-  // PointerSensor в ServersPage). Кнопки «Удалить» гасят событие (stopPropagation).
+  // Короткий клик по карточке → read-only detail-модалка (ADR-035; drag активируется
+  // зажатием — см. PointerSensor в ServersPage). Detail доступен держателю `servers:view`
+  // (страница уже под view-guard). Кнопки «Удалить» гасят событие (stopPropagation).
   const onCardKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      setEditOpen(true);
+      setDetailOpen(true);
     }
   };
   const stopForDelete = (e: React.SyntheticEvent) => e.stopPropagation();
@@ -82,15 +85,14 @@ export function ServerCard({ server, canEdit = true, canDelete = true }: ServerC
   return (
     <>
       <Card
-        interactive={canEdit}
-        role={canEdit ? 'button' : undefined}
-        tabIndex={canEdit ? 0 : undefined}
-        aria-label={canEdit ? `Изменить сервер ${server.name}` : undefined}
-        onClick={canEdit ? () => setEditOpen(true) : undefined}
-        onKeyDown={canEdit ? onCardKeyDown : undefined}
+        interactive
+        role="button"
+        tabIndex={0}
+        aria-label={`Просмотр сервера ${server.name}`}
+        onClick={() => setDetailOpen(true)}
+        onKeyDown={onCardKeyDown}
         className={cn(
-          'flex h-full flex-col gap-4 p-4 sm:p-5',
-          canEdit && 'cursor-pointer',
+          'flex h-full cursor-pointer flex-col gap-4 p-4 sm:p-5',
           isError && 'border-status-red/70',
         )}
       >
@@ -228,6 +230,17 @@ export function ServerCard({ server, canEdit = true, canDelete = true }: ServerC
           node_exporter на целевом сервере не удаляется автоматически.
         </p>
       </Modal>
+
+      <ServerDetailModal
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        server={server}
+        canEdit={canEdit}
+        onEdit={() => {
+          setDetailOpen(false);
+          setEditOpen(true);
+        }}
+      />
 
       <AddServerModal mode="edit" server={server} open={editOpen} onOpenChange={setEditOpen} />
     </>

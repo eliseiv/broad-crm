@@ -101,21 +101,47 @@ describe('ProxyCard — status badges', () => {
   });
 });
 
-describe('ProxyCard — interactions', () => {
+describe('ProxyCard — detail → edit (ADR-035)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('opens edit modal prefilled on card click', async () => {
+  it('клик по карточке открывает detail-модалку (Просмотр), НЕ edit', async () => {
     const user = userEvent.setup();
     render(<ProxyCard proxy={makeProxy()} />, { wrapper });
 
-    await user.click(screen.getByRole('button', { name: 'Изменить прокси DE Residential' }));
+    await user.click(screen.getByRole('button', { name: 'Просмотр прокси DE Residential' }));
 
-    expect(screen.getByText('Изменить прокси')).toBeInTheDocument();
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText('Просмотр')).toBeInTheDocument();
+    // Detail-поля read-only: Название / Тип / Хост / Порт / Логин.
+    expect(dialog.getByText('Хост')).toBeInTheDocument();
+    expect(dialog.getByText('user01')).toBeInTheDocument();
+    expect(screen.queryByText('Изменить прокси')).not.toBeInTheDocument();
+    expect(hooks.updateMutate).not.toHaveBeenCalled();
+  });
+
+  it('карандаш в detail-модалке открывает edit prefilled', async () => {
+    const user = userEvent.setup();
+    render(<ProxyCard proxy={makeProxy()} />, { wrapper });
+
+    await user.click(screen.getByRole('button', { name: 'Просмотр прокси DE Residential' }));
+    await user.click(await screen.findByRole('button', { name: 'Редактировать' }));
+
+    expect(await screen.findByText('Изменить прокси')).toBeInTheDocument();
     const dialog = within(screen.getByRole('dialog'));
     expect((dialog.getByLabelText('Название') as HTMLInputElement).value).toBe('DE Residential');
   });
 
-  it('delete button opens confirm dialog without opening edit (stopPropagation)', async () => {
+  it('без права proxies:edit (canEdit=false) карандаш в detail-модалке скрыт', async () => {
+    const user = userEvent.setup();
+    render(<ProxyCard proxy={makeProxy()} canEdit={false} />, { wrapper });
+
+    await user.click(screen.getByRole('button', { name: 'Просмотр прокси DE Residential' }));
+    await screen.findByText('Просмотр');
+
+    expect(screen.queryByRole('button', { name: 'Редактировать' })).not.toBeInTheDocument();
+  });
+
+  it('delete button opens confirm dialog without opening detail/edit (stopPropagation)', async () => {
     const user = userEvent.setup();
     render(<ProxyCard proxy={makeProxy()} />, { wrapper });
 

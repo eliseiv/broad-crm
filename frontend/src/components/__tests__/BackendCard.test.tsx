@@ -85,22 +85,48 @@ describe('BackendCard — status badges', () => {
   });
 });
 
-describe('BackendCard — interactions', () => {
+describe('BackendCard — detail → edit (ADR-035)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('opens edit modal prefilled on card click', async () => {
+  it('клик по карточке открывает detail-модалку (Просмотр), НЕ edit', async () => {
     const user = userEvent.setup();
     render(<BackendCard backend={makeBackend()} />, { wrapper });
 
-    await user.click(screen.getByRole('button', { name: 'Изменить бэк API EU' }));
+    await user.click(screen.getByRole('button', { name: 'Просмотр бэка API EU' }));
 
-    expect(screen.getByText('Изменить бэк')).toBeInTheDocument();
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText('Просмотр')).toBeInTheDocument();
+    // Detail-поля read-only: Код / Название / Домен (у бэка секрета нет).
+    expect(dialog.getByText('Код')).toBeInTheDocument();
+    expect(dialog.getByText('Домен')).toBeInTheDocument();
+    expect(screen.queryByText('Изменить бэк')).not.toBeInTheDocument();
+    expect(hooks.updateMutate).not.toHaveBeenCalled();
+  });
+
+  it('карандаш в detail-модалке открывает edit prefilled', async () => {
+    const user = userEvent.setup();
+    render(<BackendCard backend={makeBackend()} />, { wrapper });
+
+    await user.click(screen.getByRole('button', { name: 'Просмотр бэка API EU' }));
+    await user.click(await screen.findByRole('button', { name: 'Редактировать' }));
+
+    expect(await screen.findByText('Изменить бэк')).toBeInTheDocument();
     const dialog = within(screen.getByRole('dialog'));
     expect((dialog.getByLabelText('Код') as HTMLInputElement).value).toBe('api-eu');
     expect((dialog.getByLabelText('Домен') as HTMLInputElement).value).toBe('api.example.com');
   });
 
-  it('delete button opens confirm dialog without opening edit (stopPropagation)', async () => {
+  it('без права backends:edit (canEdit=false) карандаш в detail-модалке скрыт', async () => {
+    const user = userEvent.setup();
+    render(<BackendCard backend={makeBackend()} canEdit={false} />, { wrapper });
+
+    await user.click(screen.getByRole('button', { name: 'Просмотр бэка API EU' }));
+    await screen.findByText('Просмотр');
+
+    expect(screen.queryByRole('button', { name: 'Редактировать' })).not.toBeInTheDocument();
+  });
+
+  it('delete button opens confirm dialog without opening detail/edit (stopPropagation)', async () => {
     const user = userEvent.setup();
     render(<BackendCard backend={makeBackend()} />, { wrapper });
 

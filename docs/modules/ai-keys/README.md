@@ -39,6 +39,7 @@
 - `PATCH /api/ai-keys/order {provider, ids}` → `204`; перестановка **внутри провайдер-группы** (`WHERE provider=:provider`), `position = 0..M-1` в одной транзакции. Прецеденция кодов: битое тело / нет `provider` → `400`; `provider` вне enum → `422` (до проверки id); **любой несуществующий `id` → `404` (проверяется до полноты)**; только если все `id` существуют — неполная перестановка группы / чужой провайдер → `422`. См. [04-api.md](../../04-api.md#прецеденция-ошибок-валидации-нормативно-едино-для-всех-order-эндпоинтов).
 - `GET /api/ai-keys/{id}/status` → `{id, check_status, error_message, last_checked_at}`. Лёгкий endpoint для polling статуса после добавления/редактирования.
 - `DELETE /api/ai-keys/{id}` → `204`; hard delete. Повтор → `404 ai_key_not_found`.
+- `GET /api/ai-keys/{id}/key` (гейт `require("ai-keys","edit")`) → `200 SecretRevealResponse {value}`; **on-demand reveal** полного ключа для detail-view ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)): `decrypt_secret(key_encrypted)` in-memory, `Cache-Control: no-store`, аудит `secret_revealed`. Нет права → `403`; нет ключа → `404 ai_key_not_found`. Контракт — [04-api.md](../../04-api.md#get-apiai-keysidkey), [05-security.md](../../05-security.md#reveal-секретов-по-требованию-adr-035).
 
 Коды ошибок и точные схемы — [04-api.md](../../04-api.md#ai-keys). `provider` вне enum → `422 unprocessable` (code `unprocessable`, по аналогии с невалидным IP у серверов).
 
@@ -61,7 +62,7 @@
 
 ### Требования
 
-1. Ключ (plaintext) НИКОГДА не возвращается в ответах и не логируется (structlog-фильтр секретов, [05-security.md](../../05-security.md)).
+1. Ключ (plaintext) НИКОГДА не возвращается в обычных list/detail-ответах и не логируется (structlog-фильтр секретов, [05-security.md](../../05-security.md)). **Исключение:** on-demand reveal полного ключа под `ai-keys:edit` ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)).
 2. `key_prefix`/`key_last4` вычисляются один раз при создании; `key_masked` собирается в схеме ответа.
 3. `check_status` ∈ {`pending`,`working`,`error`}, default `pending`. `error_message` — русскоязычная причина при `error`, иначе `NULL`.
 4. `updated_at`/`last_checked_at` обновляются при каждой проверке **с конклюзивным исходом** (`working`/`error`) — атомарным `UPDATE`. Транзиентный `unknown` (сеть/таймаут/`5xx`) конклюзивной проверкой **не считается** и строку `ai_keys` не трогает (см. маппинг ниже); `last_checked_at` тем самым отражает время последней конклюзивной проверки.
@@ -166,7 +167,7 @@
 
 - **Секции по провайдерам:** страница делится на секцию **OpenAI** и секцию **Anthropic** (заголовки секций), внутри каждой — своя адаптивная сетка карточек `AiKeyCard` + `AddAiKeyCard`. Пустые секции (нет ключей провайдера) — **скрывать** (не рендерить заголовок без карточек); `AddAiKeyCard` присутствует в каждой видимой секции. UI-детали — [08-design-system.md](../../08-design-system.md#группировка-ии-ключей-по-провайдерам).
 - `AiKeyCard`: имя, provider (OpenAI/Anthropic), маска ключа (`key_masked`, моношрифт), статус-бейдж (**Работает** / **Не работает** / **Проверка…**), причина ошибки при `error`, кнопка **Удалить**.
-- **Клик по карточке = редактирование** (короткий клик открывает `AddAiKeyModal` в режиме edit). **Зажатие ~200 мс + движение = перетаскивание** (@dnd-kit, [08-design-system.md](../../08-design-system.md#перестановка-карточек-drag-and-drop)). Кнопка **Удалить** — `stopPropagation` (не открывает edit и не тащит).
+- **Клик по карточке = read-only detail-модалка** `AiKeyDetailModal` ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)): Название/Провайдер/Ключ (`key_masked`) + глаз-reveal полного ключа (под `ai-keys:edit`). Карандаш вверху справа → `AddAiKeyModal mode='edit'`. **Зажатие ~200 мс + движение = перетаскивание** (@dnd-kit, [08-design-system.md](../../08-design-system.md#перестановка-карточек-drag-and-drop)). Кнопка **Удалить** — `stopPropagation`. Паттерн — [08-design-system.md](../../08-design-system.md#detail-view-карточных-страниц-read-only--карандаш--edit-adr-035).
 - `AddAiKeyCard` → `AddAiKeyModal` (Radix Dialog) в режиме **add**: поля **Название**, **Провайдер** (Select), **Ключ** (type=password, toggle видимости). Кнопки **Отмена** / **Добавить**.
 - **Режим edit `AddAiKeyModal`:** префил `name` и `provider`; поле **Ключ пустое** с подсказкой «Оставьте пустым, чтобы не менять ключ»; иконка-глаз показывает вводимое значение. Кнопка действия — **Сохранить**. `PATCH /api/ai-keys/{id}` отправляет только изменённые поля; пустой `key` не отправляется (или отправляется `""`). После смены `provider`/`key` карточка возвращается в **Проверка…** и polling статуса возобновляется.
 - **Перестановка:** внутри секции своего провайдера через `SortableContext`; на `onDragEnd` — оптимистичное обновление + `PATCH /api/ai-keys/order {provider, ids}`; при ошибке — откат и инвалидация `GET /api/ai-keys`. Между секциями перетаскивание запрещено.
@@ -192,11 +193,12 @@ Loading (skeleton), empty (только `AddAiKeyCard` + подсказка), pe
 - [ ] Alembic-миграция `ai_keys` с рабочим `downgrade()`; колонка `position` добавлена миграцией `0003_add_position` (backfill по провайдер-группам, рабочий `downgrade()`).
 - [ ] `PATCH /api/ai-keys/{id}`: пустой `key` = не менять; непустой → re-encrypt + пересчёт маски; смена `provider`/`key` → `check_status='pending'` + немедленный re-check (первая неудача → 🔴).
 - [ ] `PATCH /api/ai-keys/order`: перестановка только внутри провайдер-группы; полная перестановка группы валидируется (иначе `422`); чужой провайдер → `422`.
-- [ ] Frontend: `AppLayout` со вкладками, `AiKeysPage` с **секциями по провайдерам**, `AiKeyCard`/`AddAiKeyCard`/`AddAiKeyModal` (add+edit режимы), примитив `Select`, drag-and-drop внутри секции (@dnd-kit, клик=edit / зажатие=drag), все состояния UI, русские строки из словаря.
+- [ ] Frontend: `AppLayout` со вкладками, `AiKeysPage` с **секциями по провайдерам**, `AiKeyCard`/`AddAiKeyCard`/`AddAiKeyModal` (add+edit режимы), **`AiKeyDetailModal`** (read-only + глаз-reveal полного ключа, [ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)), примитив `Select`, drag-and-drop внутри секции (@dnd-kit, клик=detail→карандаш=edit / зажатие=drag), все состояния UI, русские строки из словаря.
 - [ ] Coverage ≥90 % для функций проверки/перехода/билдеров сообщений ([06-testing-strategy.md](../../06-testing-strategy.md)).
 - [ ] Lint/type-check/format проходят (backend и frontend).
 
 ## Changelog
 
+- 2026-07-09: **detail-view + reveal полного ключа** ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md), spec-ready): клик по карточке → read-only `AiKeyDetailModal` (`key_masked` + глаз), карандаш → edit; `GET /api/ai-keys/{id}/key` (гейт `ai-keys:edit`, `decrypt_secret`, `no-store`, аудит `secret_revealed`). Контракт `AiKeyListItem` не меняется (полный ключ только через reveal).
 - 2026-07-01: спецификация создана (architect). Решение об in-backend-мониторе AI-ключей и Fernet-шифровании — [ADR-010](../../adr/ADR-010-ai-key-monitor-vnutri-backend.md); ограничения — [TD-020](../../100-known-tech-debt.md), [TD-021](../../100-known-tech-debt.md).
 - 2026-07-01: добавлены `PATCH /api/ai-keys/{id}` (edit `name`/`provider`/`key`, секрет пустой=не менять, re-check при смене provider/key), `PATCH /api/ai-keys/order` (reorder внутри провайдер-группы), UI-группировка по провайдерам, клик=edit / зажатие=drag; колонка `position` + миграция `0003`. Редактирование/ротация ключа переведены из out-of-scope в scope ([ADR-011](../../adr/ADR-011-poryadok-blokov-server-side-dnd-kit.md)); [TD-021](../../100-known-tech-debt.md) сокращён.

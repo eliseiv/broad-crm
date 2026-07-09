@@ -3,6 +3,7 @@ import type {
   CreateServerRequest,
   CreateServerResponse,
   ReorderServersRequest,
+  SecretRevealResponse,
   ServersListResponse,
   StatusResponse,
   UpdateServerRequest,
@@ -34,4 +35,16 @@ export function getServerStatus(id: string, signal?: AbortSignal): Promise<Statu
 
 export function deleteServer(id: string): Promise<void> {
   return apiRequest<void>(`/servers/${id}`, { method: 'DELETE' });
+}
+
+/**
+ * Reveal SSH-пароля по требованию (04-api.md, ADR-035). Гейт `servers:edit`.
+ * Секрет НЕ кэшируется (вызывается напрямую из detail-модалки, не через react-query;
+ * backend отдаёт `Cache-Control: no-store`) — значение живёт только в локальном стейте.
+ */
+export function revealServerPassword(
+  id: string,
+  signal?: AbortSignal,
+): Promise<SecretRevealResponse> {
+  return apiRequest<SecretRevealResponse>(`/servers/${id}/ssh-password`, { signal });
 }

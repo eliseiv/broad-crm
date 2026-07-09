@@ -11,7 +11,7 @@ import { Select } from '@/components/ui/Select';
 import type { SelectOption } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { cn } from '@/lib/cn';
-import { useCan, useCanViewPage } from '@/features/auth/hooks';
+import { useCan, useCanViewPage, useSeesAllSmsTeams } from '@/features/auth/hooks';
 import { useSmsMessages, useSmsNumbers, useSyncSmsNumbers } from '@/features/sms/hooks';
 import { useTeams } from '@/features/teams/hooks';
 import { ApiError } from '@/lib/api';
@@ -64,8 +64,11 @@ export function SmsPage() {
 
 function SmsContent() {
   const [tab, setTab] = useState<Tab>('messages');
+  // Фильтр «Все команды» рендерится только при admin-уровне видимости SMS (ADR-036):
+  // `me.sees_all_sms_teams`. Для прочих ролей SMS-scope и так сужает до своих команд.
+  const seesAllTeams = useSeesAllSmsTeams();
   const numbersQuery = useSmsNumbers();
-  const teamsQuery = useTeams();
+  const teamsQuery = useTeams(seesAllTeams);
 
   const numbers = numbersQuery.data?.numbers ?? [];
   const teams = teamsQuery.data?.items ?? [];
@@ -105,7 +108,7 @@ function SmsContent() {
 
       {tab === 'messages' ? (
         <div role="tabpanel" id="sms-panel-messages" aria-labelledby="sms-tab-messages">
-          <MessagesTab numbers={numbers} teams={teams} />
+          <MessagesTab numbers={numbers} teams={teams} showTeamFilter={seesAllTeams} />
         </div>
       ) : (
         <div role="tabpanel" id="sms-panel-numbers" aria-labelledby="sms-tab-numbers">
@@ -123,7 +126,16 @@ function SmsContent() {
   );
 }
 
-function MessagesTab({ numbers, teams }: { numbers: SmsNumber[]; teams: TeamListItem[] }) {
+function MessagesTab({
+  numbers,
+  teams,
+  showTeamFilter,
+}: {
+  numbers: SmsNumber[];
+  teams: TeamListItem[];
+  /** Показывать ли фильтр «Все команды» — только admin-уровню (`sees_all_sms_teams`, ADR-036). */
+  showTeamFilter: boolean;
+}) {
   const [numberId, setNumberId] = useState<number | undefined>(undefined);
   const [teamId, setTeamId] = useState<string | undefined>(undefined);
 
@@ -183,14 +195,16 @@ function MessagesTab({ numbers, teams }: { numbers: SmsNumber[]; teams: TeamList
           onChange={handleNumberChange}
         />
       </div>
-      <div className="w-48">
-        <Select
-          aria-label="Фильтр по команде"
-          options={teamOptions}
-          value={teamId ?? ''}
-          onChange={handleTeamChange}
-        />
-      </div>
+      {showTeamFilter && (
+        <div className="w-48">
+          <Select
+            aria-label="Фильтр по команде"
+            options={teamOptions}
+            value={teamId ?? ''}
+            onChange={handleTeamChange}
+          />
+        </div>
+      )}
     </div>
   );
 

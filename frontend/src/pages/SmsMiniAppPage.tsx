@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
-import { AlertTriangle, CheckCircle2, Inbox, ShieldAlert } from 'lucide-react';
+import { AlertTriangle, Inbox, ShieldAlert } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import { Pill } from '@/components/ui/Pill';
 import { Spinner } from '@/components/ui/Spinner';
+import { cn } from '@/lib/cn';
 import { SmsMessageCard } from '@/components/SmsMessageCard';
 import { ApiError } from '@/lib/api';
 import { useMiniAppAuthStore } from '@/features/sms/miniAppAuth';
@@ -18,15 +19,13 @@ import type { SmsNumber } from '@/types/api';
  */
 const T = {
   title: 'СМС — уведомления',
-  linkedBadge: 'Привязан',
-  linkedHint: 'Telegram привязан — новые SMS вашей команды приходят сюда.',
+  tabMessages: 'Сообщения',
+  tabNumbers: 'Номера',
   notProvisionedTitle: 'Доступ не настроен',
   notProvisionedHint: 'Ваш Telegram не сопоставлен с оператором CRM. Обратитесь к администратору.',
   initDataError: 'Сессия Telegram устарела — откройте приложение заново через бота',
   outsideTelegram: 'Откройте это приложение по кнопке бота в Telegram',
   networkError: 'Не удалось загрузить',
-  numbersTitle: 'Мои номера',
-  messagesTitle: 'Мои сообщения',
   loading: 'Загрузка…',
   retry: 'Повторить',
   numbersEmpty: 'Номеров нет',
@@ -241,12 +240,17 @@ function TgButton({ children, onClick }: { children: ReactNode; onClick: () => v
   );
 }
 
+/** Вкладки Mini App после SSO (08-design-system.md, ADR-037). */
+type MiniTab = 'messages' | 'numbers';
+
 /**
- * Успешный SSO: статус «Привязан» + просмотр номеров/сообщений под `sms:view`.
- * Без `sms:view` сервер отдаёт 403 → секции скрываются (только статус привязки,
- * 08-design-system.md «Просмотр недоступен (нет sms:view) — не показывается»).
+ * Успешный SSO: две вкладки «Сообщения» (дефолт) / «Номера» с контентом под `sms:view`
+ * (ADR-037). Статус-блок привязки убран — привязка технически сохраняется, из UI убрано
+ * только информационное подтверждение. Без `sms:view` сервер отдаёт 403 → панель вкладки
+ * пуста (08-design-system.md «Просмотр недоступен — вкладки пусты, без статус-блока»).
  */
 function AuthorizedView() {
+  const [tab, setTab] = useState<MiniTab>('messages');
   const numbersQuery = useMiniAppSmsNumbers(true);
   const messages = useMiniAppSmsMessages(true);
 
@@ -254,7 +258,8 @@ function AuthorizedView() {
   const numbersForbidden = numbersQuery.isError && isForbidden(numbersQuery.error);
   const messagesForbidden = messages.phase === 'error' && isForbidden(messages.error);
 
-  // Догрузка более старых сообщений (IntersectionObserver, без кнопки).
+  // Догрузка более старых сообщений (IntersectionObserver, без кнопки). Sentinel есть
+  // только на активной вкладке «Сообщения» — на «Номерах» observer не подключается.
   const sentinelRef = useRef<HTMLDivElement>(null);
   const { hasMore, loadMore } = messages;
   useEffect(() => {
@@ -268,51 +273,62 @@ function AuthorizedView() {
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [hasMore, loadMore]);
+  }, [hasMore, loadMore, tab]);
+
+  const tabs: { key: MiniTab; label: string }[] = [
+    { key: 'messages', label: T.tabMessages },
+    { key: 'numbers', label: T.tabNumbers },
+  ];
 
   return (
-    <div className="flex flex-col gap-5">
-      <Card className="flex flex-col gap-2 p-4">
-        <div className="flex items-center gap-2">
-          <CheckCircle2 className="h-4 w-4 text-status-green" aria-hidden="true" />
-          <Pill tone="green" label={T.linkedBadge} />
-        </div>
-        <p className="text-[13px] text-text-secondary">{T.linkedHint}</p>
-      </Card>
+    <div className="flex flex-col gap-4">
+      <div role="tablist" aria-label="Разделы СМС" className="flex items-center gap-1">
+        {tabs.map((t) => {
+          const active = tab === t.key;
+          return (
+            <button
+              key={t.key}
+              type="button"
+              role="tab"
+              id={`mini-tab-${t.key}`}
+              aria-selected={active}
+              aria-controls={`mini-panel-${t.key}`}
+              onClick={() => setTab(t.key)}
+              className={cn(
+                'rounded-lg px-3 py-1.5 text-sm font-medium transition-opacity hover:opacity-90',
+                'focus-visible:outline-2 focus-visible:outline-offset-2',
+              )}
+              style={
+                active
+                  ? {
+                      backgroundColor: 'var(--tg-button, #4c82fb)',
+                      color: 'var(--tg-button-text, #ffffff)',
+                      outlineColor: 'var(--tg-button, #4c82fb)',
+                    }
+                  : { color: 'var(--tg-hint, #8a8f98)', outlineColor: 'var(--tg-button, #4c82fb)' }
+              }
+            >
+              {t.label}
+            </button>
+          );
+        })}
+      </div>
 
-      {!numbersForbidden && (
-        <section className="flex flex-col gap-2.5">
-          <h2 className="text-sm font-semibold" style={{ color: 'var(--tg-text, #e6e8ec)' }}>
-            {T.numbersTitle}
-          </h2>
-          {numbersQuery.isLoading && <SectionLoading />}
-          {!numbersQuery.isLoading && numbersQuery.isError && (
-            <SectionError onRetry={() => void numbersQuery.refetch()} />
+      {tab === 'messages' ? (
+        <div
+          role="tabpanel"
+          id="mini-panel-messages"
+          aria-labelledby="mini-tab-messages"
+          className="flex flex-col gap-2.5"
+        >
+          {!messagesForbidden && messages.phase === 'loading' && <SectionLoading />}
+          {!messagesForbidden && messages.phase === 'error' && (
+            <SectionError onRetry={messages.reload} />
           )}
-          {!numbersQuery.isLoading && !numbersQuery.isError && numbers.length === 0 && (
-            <SectionEmpty text={T.numbersEmpty} />
-          )}
-          {!numbersQuery.isLoading && !numbersQuery.isError && numbers.length > 0 && (
-            <div className="flex flex-col gap-2.5">
-              {numbers.map((n) => (
-                <MiniAppNumberCard key={n.id} number={n} />
-              ))}
-            </div>
-          )}
-        </section>
-      )}
-
-      {!messagesForbidden && (
-        <section className="flex flex-col gap-2.5">
-          <h2 className="text-sm font-semibold" style={{ color: 'var(--tg-text, #e6e8ec)' }}>
-            {T.messagesTitle}
-          </h2>
-          {messages.phase === 'loading' && <SectionLoading />}
-          {messages.phase === 'error' && <SectionError onRetry={messages.reload} />}
-          {messages.phase === 'ready' && messages.messages.length === 0 && (
+          {!messagesForbidden && messages.phase === 'ready' && messages.messages.length === 0 && (
             <SectionEmpty text={T.messagesEmpty} />
           )}
-          {messages.phase === 'ready' && messages.messages.length > 0 && (
+          {!messagesForbidden && messages.phase === 'ready' && messages.messages.length > 0 && (
             <div className="flex flex-col gap-2.5">
               {messages.messages.map((m) => (
                 <SmsMessageCard key={m.id} message={m} />
@@ -326,7 +342,33 @@ function AuthorizedView() {
               )}
             </div>
           )}
-        </section>
+        </div>
+      ) : (
+        <div
+          role="tabpanel"
+          id="mini-panel-numbers"
+          aria-labelledby="mini-tab-numbers"
+          className="flex flex-col gap-2.5"
+        >
+          {!numbersForbidden && numbersQuery.isLoading && <SectionLoading />}
+          {!numbersForbidden && !numbersQuery.isLoading && numbersQuery.isError && (
+            <SectionError onRetry={() => void numbersQuery.refetch()} />
+          )}
+          {!numbersForbidden &&
+            !numbersQuery.isLoading &&
+            !numbersQuery.isError &&
+            numbers.length === 0 && <SectionEmpty text={T.numbersEmpty} />}
+          {!numbersForbidden &&
+            !numbersQuery.isLoading &&
+            !numbersQuery.isError &&
+            numbers.length > 0 && (
+              <div className="flex flex-col gap-2.5">
+                {numbers.map((n) => (
+                  <MiniAppNumberCard key={n.id} number={n} />
+                ))}
+              </div>
+            )}
+        </div>
       )}
     </div>
   );

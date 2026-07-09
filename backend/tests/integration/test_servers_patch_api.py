@@ -35,6 +35,7 @@ class FakeServersService:
             id=server_id,
             name=payload.name,
             ip="10.0.0.12",
+            ssh_user="root",
             exporter_port=9100,
             provision_status=ProvisionStatus.online,
             position=2,

@@ -37,9 +37,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 _DB_URL = os.environ.get("TEST_DATABASE_URL") or os.environ.get("DATABASE_URL") or ""
 
 # Очищаемые между тестами таблицы (CASCADE снимает и зависимые sms_deliveries и т.п.).
+# servers/proxies/ai_keys — для reveal-тестов (ADR-035): их list-таблицы имеют
+# уникальные ограничения (servers.ip), очистка исключает коллизии между тестами.
 _TRUNCATE = (
     "sms_deliveries, sms_telegram_links, sms_inbound, sms_phone_numbers, "
-    "user_teams, teams, users, roles"
+    "user_teams, teams, users, roles, servers, proxies, ai_keys"
 )
 
 

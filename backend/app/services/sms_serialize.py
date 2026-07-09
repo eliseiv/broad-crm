@@ -44,17 +44,19 @@ def to_number_item(number: SmsPhoneNumber) -> SmsNumberItem:
 
 
 def to_team_number_item(number: SmsPhoneNumber) -> TeamNumberItem:
-    """Минимальный элемент номера для `GET /api/teams/{id}/numbers` (ADR-030 §8).
+    """Элемент номера для `GET /api/teams/{id}/numbers` (ADR-030 §8 + ADR-034).
 
-    Только `id`/`phone_number`/`team` — без `login`/`app_name`/`note`/`label`
-    (авторизационное сужение под гейт `teams:view`). Требует загруженного `team`
-    (номера отфильтрованы по `team_id`, потому `team` всегда присутствует).
+    `id`/`phone_number`/`team` + слабо-чувствительные `login`/`app_name` (ADR-034);
+    БЕЗ `note`/`label` (остаются сужёнными под матрицу `sms:*`). Требует загруженного
+    `team` (номера отфильтрованы по `team_id`, потому `team` всегда присутствует).
     """
     return TeamNumberItem(
         id=number.id,
         phone_number=number.phone_number,
         # `team` всегда присутствует: номера отфильтрованы по `team_id = {id}`.
         team=to_team_ref(number),
+        login=number.login,
+        app_name=number.app_name,
     )
 
 

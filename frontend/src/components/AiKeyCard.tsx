@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Clock, KeyRound, Loader2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { AddAiKeyModal } from '@/components/AddAiKeyModal';
+import { AiKeyDetailModal } from '@/components/AiKeyDetailModal';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -32,6 +33,7 @@ export function AiKeyCard({ aiKey, canEdit = true, canDelete = true }: AiKeyCard
   const statusQuery = useAiKeyStatus(aiKey.id, aiKey.check_status);
   const deleteMutation = useDeleteAiKey();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
 
   const status: AiKeyStatus = statusQuery.data?.check_status ?? aiKey.check_status;
@@ -61,12 +63,12 @@ export function AiKeyCard({ aiKey, canEdit = true, canDelete = true }: AiKeyCard
   const isError = status === 'error';
   const isPending = status === 'pending';
 
-  // Клик по карточке → edit; кнопки «Удалить» гасят событие (stopPropagation),
-  // чтобы не открывать edit и не стартовать drag.
+  // Короткий клик по карточке → read-only detail-модалка (ADR-035); кнопки «Удалить»
+  // гасят событие (stopPropagation), чтобы не открывать detail и не стартовать drag.
   const onCardKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      setEditOpen(true);
+      setDetailOpen(true);
     }
   };
   const stopForDelete = (e: React.SyntheticEvent) => e.stopPropagation();
@@ -74,15 +76,14 @@ export function AiKeyCard({ aiKey, canEdit = true, canDelete = true }: AiKeyCard
   return (
     <>
       <Card
-        interactive={canEdit}
-        role={canEdit ? 'button' : undefined}
-        tabIndex={canEdit ? 0 : undefined}
-        aria-label={canEdit ? `Изменить ключ ${aiKey.name}` : undefined}
-        onClick={canEdit ? () => setEditOpen(true) : undefined}
-        onKeyDown={canEdit ? onCardKeyDown : undefined}
+        interactive
+        role="button"
+        tabIndex={0}
+        aria-label={`Просмотр ключа ${aiKey.name}`}
+        onClick={() => setDetailOpen(true)}
+        onKeyDown={onCardKeyDown}
         className={cn(
-          'flex h-full flex-col gap-4 p-4 sm:p-5',
-          canEdit && 'cursor-pointer',
+          'flex h-full cursor-pointer flex-col gap-4 p-4 sm:p-5',
           isError && 'border-status-red/70',
         )}
       >
@@ -191,6 +192,17 @@ export function AiKeyCard({ aiKey, canEdit = true, canDelete = true }: AiKeyCard
           Мониторинг валидности этого ключа будет прекращён.
         </p>
       </Modal>
+
+      <AiKeyDetailModal
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        aiKey={aiKey}
+        canEdit={canEdit}
+        onEdit={() => {
+          setDetailOpen(false);
+          setEditOpen(true);
+        }}
+      />
 
       <AddAiKeyModal mode="edit" aiKey={aiKey} open={editOpen} onOpenChange={setEditOpen} />
     </>

@@ -11,13 +11,16 @@ vi.mock('@/features/sms/hooks', () => ({
   useTeamNumbers: () => teamNumbers.value,
 }));
 
-// Минимальная схема TeamNumberItem (ADR-030 §8): только id/phone_number/team —
-// detail-панель /teams под гейтом teams:view НЕ получает login/app_name/note/label.
+// Схема TeamNumberItem (ADR-034): id/phone_number/team + слабо-чувствительный
+// контекст login/app_name. `note`/`label`/`is_active` по-прежнему отсутствуют
+// (доступны только под sms:*). Detail-панель /teams под гейтом teams:view.
 function makeNumber(id: number, over: Partial<TeamNumberItem> = {}): TeamNumberItem {
   return {
     id,
     phone_number: '+15557778888',
     team: { id: 't1', name: 'Продажи' },
+    login: null,
+    app_name: null,
     ...over,
   };
 }
@@ -93,5 +96,30 @@ describe('TeamDetailPanel (ленивый список номеров коман
     expect(screen.getByText('Продажи')).toBeInTheDocument();
     expect(screen.getAllByText('Никита').length).toBeGreaterThan(0);
     expect(screen.getByText('Мария')).toBeInTheDocument();
+  });
+
+  it('ready: пилюли Логин/Приложение (ADR-034); note/label не показываются', () => {
+    teamNumbers.value = query({
+      data: {
+        numbers: [makeNumber(7, { login: 'sales01', app_name: 'WhatsApp' })],
+      },
+    });
+    render(<TeamDetailPanel team={TEAM} id="panel-1" />);
+
+    // ADR-034: TeamNumberItem += login/app_name → пилюли на строке номера.
+    expect(screen.getByText('Логин: sales01')).toBeInTheDocument();
+    expect(screen.getByText('Приложение: WhatsApp')).toBeInTheDocument();
+    // note/label в схему не входят — «Примечание» пилюли нет.
+    expect(screen.queryByText(/Примечание/)).not.toBeInTheDocument();
+  });
+
+  it('ready: пустые login/app_name показываются как «-» (строка не «прыгает»)', () => {
+    teamNumbers.value = query({
+      data: { numbers: [makeNumber(7, { login: null, app_name: null })] },
+    });
+    render(<TeamDetailPanel team={TEAM} id="panel-1" />);
+
+    expect(screen.getByText('Логин: -')).toBeInTheDocument();
+    expect(screen.getByText('Приложение: -')).toBeInTheDocument();
   });
 });

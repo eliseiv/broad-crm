@@ -209,17 +209,26 @@ def get_team_service(session: DbSession) -> TeamService:
     )
 
 
+def principal_sees_all_sms_teams(principal: Principal) -> bool:
+    """Admin-уровень видимости SMS ⇔ супер-админ ИЛИ полный каталог прав (ADR-032/036).
+
+    Единый предикат-источник истины: используется и SMS-scope (`get_sms_scope`), и
+    производным флагом `sees_all_sms_teams` в `GET /api/auth/me` (ADR-036). Признак
+    устойчив к переименованию роли (не завязан на имя) и не требует нового права.
+    """
+    return principal.is_superadmin or permissions_subset(
+        full_catalog_permissions(), principal.permissions
+    )
+
+
 async def get_sms_scope(principal: PrincipalDep, session: DbSession) -> SmsScope:
     """Фабрика scope: «видит все команды» ⇔ супер-админ ИЛИ полный каталог прав (ADR-032).
 
-    `sees_all_teams = principal.is_superadmin or permissions_subset(full_catalog_permissions(),
-    principal.permissions)` — при полном каталоге прав роль считается admin-уровнем и
-    видит SMS всех команд. Иначе — видимость по командам из `user_teams`
-    (`user_id=None` → пустой набор).
+    Предикат — `principal_sees_all_sms_teams` (общий с `GET /api/auth/me`). При полном
+    каталоге прав роль считается admin-уровнем и видит SMS всех команд. Иначе —
+    видимость по командам из `user_teams` (`user_id=None` → пустой набор).
     """
-    sees_all_teams = principal.is_superadmin or permissions_subset(
-        full_catalog_permissions(), principal.permissions
-    )
+    sees_all_teams = principal_sees_all_sms_teams(principal)
     if sees_all_teams:
         return SmsScope(sees_all_teams=True, team_ids=frozenset())
     if principal.user_id is None:

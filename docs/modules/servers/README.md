@@ -6,7 +6,7 @@
 CRUD реестра серверов: создание (с запуском провижининга), список (с метриками), **редактирование `name`**, **перестановка порядка (drag-and-drop)**, статус, удаление. Модель — [03-data-model.md](../../03-data-model.md), контракт — [04-api.md](../../04-api.md#servers).
 
 ## Out of scope
-Редактирование `ip`/`ssh_user`/`ssh_password`/`exporter_port` и переустановка агента (PATCH меняет **только `name`**), повторный запуск провижининга, soft-delete/аудит ([TD-001](../../100-known-tech-debt.md), [TD-003](../../100-known-tech-debt.md)).
+Редактирование `ip`/`ssh_user`/`ssh_password`/`exporter_port` и переустановка агента (PATCH меняет **только `name`**), повторный запуск провижининга, soft-delete/аудит ([TD-001](../../100-known-tech-debt.md), [TD-003](../../100-known-tech-debt.md)). Detail-view сервера ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)) показывает `ip`/`ssh_user`/пароль (просмотр + reveal), но карандаш ведёт в edit только `name` — полноценное редактирование server-кредов остаётся вне scope ([Q-UI-4](../../99-open-questions.md)).
 
 ## Backend — ТЗ
 
@@ -18,10 +18,11 @@ CRUD реестра серверов: создание (с запуском пр
 - `GET /api/servers/{id}/metrics` (JWT) → текущие метрики; Prometheus down → `502 prometheus_unavailable`.
 - `GET /api/servers/{id}/status` (JWT) → `{provision_status,error_message,updated_at}`.
 - `DELETE /api/servers/{id}` (JWT) → `204`; удалить `targets/<id>.json`, удалить запись; повтор → `404`.
+- `GET /api/servers/{id}/ssh-password` (JWT, гейт `require("servers","edit")`) → `200 SecretRevealResponse {value}`; **on-demand reveal** SSH-пароля для detail-view ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)): расшифровка `ssh_password_encrypted` (`decrypt_secret`) in-memory, заголовок `Cache-Control: no-store`, аудит-лог `secret_revealed` (без значения). Нет права → `403`; нет сервера → `404 server_not_found`. Контракт — [04-api.md](../../04-api.md#get-apiserversidssh-password), [05-security.md](../../05-security.md#reveal-секретов-по-требованию-adr-035).
 
 ### Требования
 1. Слои: router → service → repository (SQLAlchemy async). Pydantic-схемы запросов/ответов = контракт.
-2. Пароль НИКОГДА не возвращается в ответах и не логируется.
+2. Пароль НИКОГДА не возвращается в обычных list/detail-ответах и не логируется. `ssh_user` **возвращается** в `ServerListItem`/summary (не секрет, для detail-view — [ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)). Plaintext SSH-пароль — только через reveal-эндпоинт под `servers:edit`.
 3. Валидация `ip` через `IPvAnyAddress`; нормализация перед сравнением/уникальностью.
 4. Обработка `UNIQUE(ip)` → `409`.
 5. `updated_at` обновляется при смене статуса.
@@ -39,10 +40,12 @@ CRUD реестра серверов: создание (с запуском пр
 
 ## DoD
 - [ ] Endpoints и коды ошибок соответствуют [04-api.md](../../04-api.md).
-- [ ] Пароль зашифрован в БД, отсутствует в ответах/логах.
+- [ ] Пароль зашифрован в БД, отсутствует в обычных list/detail-ответах/логах; `ssh_user` присутствует в `ServerListItem`.
+- [ ] **([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)):** `GET /api/servers/{id}/ssh-password` под `servers:edit` — `SecretRevealResponse {value}`, `decrypt_secret`, `Cache-Control: no-store`, аудит `secret_revealed` (без значения); `404 server_not_found`/`403`. Frontend `ServerDetailModal` (read-only + глаз-reveal) → карандаш `AddServerModal mode='edit'` (`name`).
 - [ ] Интеграционные тесты ([06-testing-strategy.md](../../06-testing-strategy.md)) зелёные.
 - [ ] Lint/type-check/format проходят.
 
 ## Changelog
+- 2026-07-09: **detail-view + reveal SSH-пароля** ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md), spec-ready): `ServerListItem += ssh_user` (не секрет); клик по карточке → read-only `ServerDetailModal` (Название/IP/Пользователь/Пароль `••••`), карандаш → edit (`name`); `GET /api/servers/{id}/ssh-password` (гейт `servers:edit`, `decrypt_secret`, `no-store`, аудит `secret_revealed`). Server-креды остаются нередактируемыми (репровижининг вне scope, [Q-UI-4](../../99-open-questions.md)).
 - 2026-06-28: спецификация создана (architect, bootstrap).
 - 2026-07-01: добавлены `PATCH /api/servers/{id}` (edit `name`) и `PATCH /api/servers/order` (reorder); колонка `position` + миграция `0003`; редактирование `name` переведено из out-of-scope в scope ([ADR-011](../../adr/ADR-011-poryadok-blokov-server-side-dnd-kit.md)).

@@ -68,12 +68,13 @@
 |----------|----------|
 | `dashboard` | `view` |
 | `servers` / `ai-keys` / `proxies` / `backends` | `view`, `create`, `edit`, `delete` |
-| `mail` | `view` |
+| `mail` | `view`, `create`, `edit`, `delete`, `sync`, `tags` ([ADR-038](adr/ADR-038-mail-headless-integration.md)) |
 | `sms` | `view`, `edit`, `transfer`, `sync`, `delete` ([ADR-030](adr/ADR-030-sms-module-full-merge.md)) |
 | `roles` / `teams` | `view`, `create`, `edit`, `delete` ([ADR-022](adr/ADR-022-teams-nav-categories.md)) |
 
 Порядок ключей каталога (= порядок строк матрицы в UI): `dashboard, servers, ai-keys, proxies, backends, mail, sms, roles, teams`.
 
+- **Страница `mail`** ([ADR-038](adr/ADR-038-mail-headless-integration.md)) — headless-прокси к mail-агрегатору. Действия: `view` (лента/ящики/теги/команды-почты + reply на письмо — reply НЕ расширяется, остаётся под `view` по [ADR-012](adr/ADR-012-mail-read-through-proxy.md)); `create` (`POST /mail/mailboxes`, `POST /mail/mailboxes/test`); `edit` (`PATCH /mail/mailboxes/{id}` — креды/`is_active`/`group_id`; перенос ящика между командами — это смена `group_id`, отдельного `transfer` нет); `delete` (`DELETE /mail/mailboxes/{id}`); `sync` (`POST /mail/mailboxes/{id}/sync` — дорогой форс-синк, отделён как у `sms:sync`); `tags` (управление глобальным каталогом тегов — админская функция на все команды сразу, поэтому отделена от per-mailbox `edit`: `POST/PATCH/DELETE /mail/tags`, правила, apply). Мутации ящика дополнительно ограничены `MailScope` (вне scope → `403`) — [04-api.md](04-api.md#mail). Расширение аддитивно: роли с `mail:["view"]` не затронуты.
 - **Страница `sms`** ([ADR-030](adr/ADR-030-sms-module-full-merge.md)) не имеет `create` (номера появляются автоматически из входящих SMS/`sync`). Действия: `view` (лента/номера), `edit` (`login`/`app_name`/`note`), `transfer` (команда номера), `sync` (Twilio), `delete` (удаление номера). Привязка Telegram (`POST /api/sms/telegram/link`) — **вне матрицы** `sms` (только аутентификация): доставка операторам — функция членства в команде, а не права на страницу.
 
 - Страница **«Пользователи» (`users`) в каталог не входит** — управление **пользователями** (создание/удаление, сброс паролей, назначение ролей) гейтится `require_admin` (`is_superadmin || role=="admin"`). Управление **ролями** (`/api/roles`) и **командами** (`/api/teams`) со Спринта A — под матрицей `roles:*`/`teams:*` ([ADR-022](adr/ADR-022-teams-nav-categories.md)). Оговорка: **создание/редактирование CRM-команд де-факто admin-only** — форма выбирает лидера/участников из `GET /api/users` (под `require_admin`), поэтому `teams:create`/`teams:edit` даёт полный контроль состава только вместе с admin-доступом; `teams:view` — полноценный просмотр. Осознанное следствие замыкания эскалации ([ADR-022](adr/ADR-022-teams-nav-categories.md#3-гейтинг-api-нормативно)), контракт `teams:*` не меняется.
@@ -116,8 +117,8 @@
 
 - SSH-пароль шифруется **Fernet** (`cryptography`) сразу при `POST /api/servers`; в БД — только `ssh_password_encrypted` (`bytea`).
 - Ключ `FERNET_KEY` (base64, 32 байта) — из `.env`, никогда в коде/репозитории/логах/ответах API.
-- Расшифровка — только в памяти провижининг-сервиса непосредственно перед запуском Ansible; расшифрованное значение не логируется и не покидает процесс.
-- Пароль (в любом виде) НЕ возвращается ни в одном ответе API.
+- Расшифровка — только в памяти провижининг-сервиса непосредственно перед запуском Ansible, **либо** в обработчике reveal-эндпоинта (см. ниже); расшифрованное значение не логируется и не покидает процесс.
+- Пароль (в любом виде) НЕ возвращается в обычных list/detail-ответах API. **Исключение ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md)):** выделенный reveal-эндпоинт `GET /api/servers/{id}/ssh-password` под правом `servers:edit` отдаёт plaintext по требованию — см. [«Reveal секретов по требованию»](#reveal-секретов-по-требованию-adr-035).
 - Ротация `FERNET_KEY` — `MultiFernet` (новый + старый ключ) — будущий этап ([TD-006](100-known-tech-debt.md)).
 
 ## Защита AI-ключей
@@ -126,18 +127,28 @@
 
 - Полный ключ шифруется **Fernet** тем же `FERNET_KEY` сразу при `POST /api/ai-keys`; в БД — только `key_encrypted bytea` ([03-data-model.md](03-data-model.md#таблица-ai_keys)).
 - Расшифровка — только в памяти монитора/проверки непосредственно перед HTTP-запросом к провайдеру (`GET /v1/models`); расшифрованное значение не логируется и не покидает процесс.
-- **Полный ключ (в любом виде) НЕ возвращается ни в одном ответе API.** В ответах — только маска `key_masked` (первые 4 … последние 4 символа; для ключа короче 8 символов — полная маска `********`).
+- **Полный ключ (в любом виде) НЕ возвращается в обычных list/detail-ответах API.** В них — только маска `key_masked` (первые 4 … последние 4 символа; для ключа короче 8 символов — полная маска `********`). **Исключение ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md)):** reveal-эндпоинт `GET /api/ai-keys/{id}/key` под правом `ai-keys:edit` отдаёт полный ключ по требованию — см. [«Reveal секретов по требованию»](#reveal-секретов-по-требованию-adr-035).
 - `key_prefix`/`key_last4` (по 4 plaintext-символа) хранятся ради маски и текста Telegram-алерта — осознанное раскрытие 8 символов, секрет из них не восстанавливается.
 - Ключ провайдера **не передаётся** в query-строке/URL и не пишется в structlog (фильтр секретов); заголовки `Authorization: Bearer`/`x-api-key` не логируются.
 
 ## Защита ключа почты
 
-Ключ внешнего почтового сервиса (`postapp.store`) — системный секрет того же класса, что AI-ключи и `TELEGRAM_*`. Модуль «Почты» — read-through-прокси ([ADR-012](adr/ADR-012-mail-read-through-proxy.md), [modules/mail](modules/mail/README.md)).
+Ключ внешнего почтового сервиса (`postapp.store`) — системный секрет того же класса, что AI-ключи и `TELEGRAM_*`. Модуль «Почты» — headless-прокси ([ADR-012](adr/ADR-012-mail-read-through-proxy.md), [ADR-038](adr/ADR-038-mail-headless-integration.md), [modules/mail](modules/mail/README.md)).
 
-- `MAIL_API_KEY` — **только из env**, задаётся администратором развёртывания (НЕ через UI). В БД не хранится (у модуля почты хранилища нет).
-- Ключ подставляется backend'ом **только** в заголовок `X-API-Key` исходящего запроса к `postapp.store`. **Никогда** не возвращается в ответах CRM API, не логируется (structlog-фильтр секретов), не передаётся в SPA и не попадает в query-строку/URL.
+- `MAIL_API_KEY` — **только из env**, задаётся администратором развёртывания (НЕ через UI). В БД не хранится (у модуля почты хранилища нет). Единственный системный секрет модуля (инвариант ADR-012 неизменен при переходе к write-прокси).
+- Ключ подставляется backend'ом **только** в заголовок `X-API-Key` исходящего запроса к `postapp.store`. **Никогда** не возвращается в ответах CRM API, не логируется (structlog-фильтр секретов), не передаётся в SPA и не попадает в query-строку/URL. Внешний write API агрегатора гейтится дополнительным флагом на его стороне (`EXTERNAL_WRITE_ENABLED`, mail-агрегатор ADR-0039).
 - **Фронт наружу не ходит** — SPA обращается только к `/api/mail/*` (тот же origin, CSP `connect-src 'self'`); прямой вызов `postapp.store` из браузера исключён.
 - HTML-тело письма — недоверенный контент третьих лиц — рендерится **только** в sandbox-iframe (`srcDoc` + `sandbox` без `allow-scripts`/`allow-same-origin`): скрипты письма не исполняются, доступа к origin/куки/JWT CRM нет ([ADR-012](adr/ADR-012-mail-read-through-proxy.md), [modules/mail](modules/mail/README.md#изоляция-html-тела-нормативно)). Согласуется с CSP SPA (`frame-ancestors 'none'`, `script-src 'self'`). Удалённые (remote https) изображения тела письма отрисовываются — `img-src` расширен до `'self' data: https:` ([ADR-015](adr/ADR-015-csp-img-src-remote-mail-images.md)); при этом sandbox без `allow-scripts`/`allow-same-origin` и `script-src 'self'` не изменены — грузятся только пассивные `<img>`.
+
+### Транзит IMAP/SMTP-кредов (mail, нормативно)
+
+Модуль «Почты» — headless-прокси write ([ADR-038](adr/ADR-038-mail-headless-integration.md) §5). IMAP/SMTP-пароли ящиков **в CRM не хранятся и не шифруются CRM** (Fernet CRM к почте НЕ применяется — `FERNET_KEY` служит SSH/proxy/AI-паролям, [ADR-007](adr/ADR-007-shifrovanie-fernet.md)):
+
+- Пароли (`password`, опц. `smtp_password`) приходят с фронта в `POST/PATCH /api/mail/mailboxes*` и `POST /api/mail/mailboxes/test`, проходят **транзитом** в агрегатор по HTTPS и шифруются **там** (AES-256-GCM с AAD по id строки — mail-агрегатор ADR-0005). CRM — источник истины команд/прав, агрегатор — источник истины ящиков/кредов.
+- Пароль **никогда** не логируется (structlog-фильтр на `password`/`smtp_password`), **не** возвращается в теле ответов CRM (схемы `MailMailbox`/`TeamMailboxItem` полей пароля не содержат), **не** пробрасывается обратно в SPA.
+- Эндпоинты записи (`POST/PATCH /api/mail/mailboxes*`, `test`) отвечают заголовком **`Cache-Control: no-store`** (тело запроса несёт транзитные креды; ответ не кэшируется браузером/прокси).
+- SSRF-guard хостов IMAP/SMTP выполняет **агрегатор** (`assert_public_host`); CRM креды по сети сам не валидирует — делегирует `POST /api/mail/mailboxes/test`.
+- Ретраи write-методов — **только** `ConnectError`/`ConnectTimeout` (запрос заведомо не ушёл), анти-двойная-запись — [04-api.md#mail](04-api.md#mail).
 
 ## Расширение `Principal` полем `user_id` (нормативно)
 
@@ -145,6 +156,7 @@
 
 - БД-пользователь → `user_id` из claim `uid` (UUID); стоимость нулевая — `users`-ряд уже загружается в `get_current_principal`.
 - **Видимость SMS по роли (нормативно, [ADR-032](adr/ADR-032-sms-visibility-admin-full-catalog.md)).** «Видит все команды» ⇔ **`is_superadmin` ИЛИ роль владеет полным каталогом прав**: `sees_all_teams = principal.is_superadmin or permissions_subset(full_catalog_permissions(), principal.permissions)`. Такой актор (консольный супер-админ; seed-роль `admin`; кастомная admin-роль, напр. «Админ», при полном каталоге) видит **все** SMS/номера (scope не сужается). Признак устойчив к переименованию роли (не завязан на редактируемое имя) и не требует нового права/миграции.
+- **UI-гейт фильтра «Все команды» ([ADR-036](adr/ADR-036-sms-team-filter-admin-only.md)).** Тот же предикат отдаётся фронту через `GET /api/auth/me` как производное булево **`sees_all_sms_teams`** (backend — единственный источник, фронт не дублирует `permissions_subset`). Фильтр «Все команды» на вкладке «Сообщения» `/sms` рендерится **только** при `sees_all_sms_teams === true`; для прочих ролей не рендерится (для них team-фильтр бесполезен — scope и так сужает до своих команд). Это UX; граница безопасности — серверный SMS-scope (ниже).
 - **Прочие роли** (неполный каталог: PM, «Пользователь» и т.п.) → видимость **только по своим командам**: `SmsScope` (фабрика `get_sms_scope` в `deps.py`) берёт `team_ids` из `user_teams` пользователя → фильтр SMS/номеров по **текущей** принадлежности номера команде (`sms_phone_numbers.team_id ∈ team_ids`). Запрос вне scope → **пустой результат** (анти-энумерация, не `403`/`404`). Правило симметрично для сообщений и номеров (`GET /api/sms/messages` и `GET /api/sms/numbers`).
 - Побочный эффект: `POST /api/sms/telegram/link` требует `user_id` (супер-админ без `uid` не может привязать линк к строке `users` → `403 forbidden`).
 
@@ -190,9 +202,33 @@
 
 - Пароль прокси (опциональный) шифруется **Fernet** тем же `FERNET_KEY` сразу при `POST /api/proxies`; в БД — только `password_encrypted bytea` (`NULL`, если пароль не задан) ([03-data-model.md](03-data-model.md#таблица-proxies)). Переиспользуются `encrypt_secret`/`decrypt_secret`.
 - Расшифровка — только в памяти монитора непосредственно перед сборкой URL (`scheme://user:pass@host:port`) и HTTP-запросом через прокси; расшифрованное значение и собранный URL не логируются и не покидают процесс.
-- **Пароль (в любом виде) НЕ возвращается ни в одном ответе API.** Вместо него — производный флаг `has_password: bool`; фрагменты пароля не хранятся и не раскрываются (маски по фрагментам, как у AI-ключей, здесь нет).
+- **Пароль (в любом виде) НЕ возвращается в обычных list/detail-ответах API.** Вместо него — производный флаг `has_password: bool`; фрагменты пароля не хранятся и не раскрываются (маски по фрагментам, как у AI-ключей, здесь нет). **Исключение ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md)):** reveal-эндпоинт `GET /api/proxies/{id}/password` под правом `proxies:edit` отдаёт пароль по требованию (при `has_password=true`; иначе `404 secret_not_set`) — см. [«Reveal секретов по требованию»](#reveal-секретов-по-требованию-adr-035).
 - **`username` (логин прокси) — не секрет:** хранится plaintext, возвращается в API как есть. Осознанно (нужен для отображения и сборки URL; сам по себе доступа не даёт без пароля/хоста).
 - Пароль/URL прокси **не передаются** в query-строке и не пишутся в structlog (фильтр секретов).
+
+## Reveal секретов по требованию ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md))
+
+Секреты сущностей (`ssh_password` сервера, `password` прокси, полный `key` ИИ-ключа) хранятся зашифрованными (Fernet, `FERNET_KEY`) и **не преднагружаются** в обычных ответах API. Раскрытие — только по явному действию оператора через выделенный per-resource эндпоинт (контракт — [04-api.md](04-api.md#reveal-секретов-по-требованию-adr-035)). Это осознанный контролируемый разворот принципа «секрет не возвращается никогда».
+
+**Эндпоинты и расшифровка.** `GET /api/servers/{id}/ssh-password`, `GET /api/proxies/{id}/password`, `GET /api/ai-keys/{id}/key` → `SecretRevealResponse {value}`. Расшифровка — `app/infra/crypto.decrypt_secret` в памяти обработчика непосредственно перед формированием ответа; plaintext не логируется и не сохраняется.
+
+**Гейтинг (нормативно): право `<page>:edit`.** Reveal гейтится `require("<page>","edit")` соответствующей страницы (`servers:edit`/`proxies:edit`/`ai-keys:edit`); супер-админ и роль `admin` (полный каталог) — всегда. Обоснование: держатель `edit` для прокси/ИИ-ключей уже может **перезаписать** секрет (`PATCH`, re-encrypt) → раскрытие ему симметрично; для серверов `edit` — доверенное управление серверами (введённый SSH-пароль нужен оператору). Новое право/действие в каталоге **НЕ вводится** — переиспользуется `edit` (NFR-1); каталог `app/domain/permissions.py::CATALOG` не меняется. Строгий вариант (admin-only/`delete`) отклонён ради простоты — вынесен на подтверждение ([Q-SEC-5](99-open-questions.md)).
+
+**Транспорт.** Метод **GET** (секрет — в теле ответа, не в URL: в URL только `id` → в access-логах секрета нет). Ответ обязан нести заголовок **`Cache-Control: no-store`** — секрет не кэшируется прокси/браузером.
+
+**Аудит (нормативно).** Каждый **успешный** reveal порождает структурированную запись лога `secret_revealed` со `structlog`-полями `actor` (`username`/`user_id` принципала), `resource_type` (`server`/`proxy`/`ai_key`), `resource_id`, `at` (timestamp). **Само значение секрета в лог НЕ пишется** (фильтр секретов). Это лёгкий аудит через логи; персистентная аудит-таблица действий пользователей остаётся [TD-001](100-known-tech-debt.md).
+
+**Frontend (память).** Раскрытое значение хранится **только** в локальном стейте компонента detail-модалки; **не** кладётся в TanStack Query-кэш / Zustand; скрывается по повторному клику и сбрасывается при закрытии модалки. Кнопка-глаз рендерится только при `<page>:edit` (для прокси — дополнительно только при `has_password=true`).
+
+**Что reveal НЕ ослабляет.** Обычные list/detail-ответы по-прежнему без секретов (сервер/прокси/ключ). `FERNET_KEY` из ответов не выводится. `MAIL_API_KEY`, `TELEGRAM_*`, `ADMIN_PASSWORD`, `JWT_SECRET` и прочие env-секреты reveal-эндпоинтами **не** раскрываются (это секреты окружения, не at-rest-секреты сущностей).
+
+## Видимость номеров в `GET /api/teams/{id}/numbers` ([ADR-034](adr/ADR-034-teams-number-login-app.md))
+
+Эндпоинт `GET /api/teams/{id}/numbers` (гейт `teams:view`) отдаёт схему `TeamNumberItem`. По [ADR-034](adr/ADR-034-teams-number-login-app.md) она включает `login` и `app_name` номеров команды (частичный разворот сужения [ADR-030](adr/ADR-030-sms-module-full-merge.md) §8).
+
+- **Раскрывается под `teams:view`:** `phone_number`, `team`, `login`, `app_name`. Держатель `teams:view` видит эти поля номеров **любой** команды (эндпоинт под `teams:view`, не под SMS-scope).
+- **НЕ раскрывается:** `note` (свободная заметка — может содержать чувствительный текст) и `label` (системный Twilio `friendly_name`) — только на странице «СМС» под матрицей `sms:*` и SMS-scope.
+- **Трейдофф (осознанный):** `login`/`app_name` — слабо-чувствительный идентифицирующий контекст (какой аккаунт/приложение привязаны к номеру), **не** секрет: сами по себе доступа к аккаунту не дают (нет пароля/токена). Управление командами де-факто admin-ориентировано ([ADR-022](adr/ADR-022-teams-nav-categories.md) §3), `teams:view` — доверенная роль. У номера секрета нет (пароли/ключи к номерам не относятся).
 
 ## Ansible и секреты
 
@@ -271,8 +307,9 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 | `GF_SECURITY_ADMIN_PASSWORD` | `.env` | Grafana admin |
 | `TELEGRAM_BOT_TOKEN` | `.env` | секрет, маскируется в логах; нотификатор ([modules/notifier](modules/notifier/README.md)) |
 | `TELEGRAM_CHAT_ID` | `.env` | не секрет в строгом смысле, но не в репо; вместе с токеном активирует нотификатор и Telegram-алерты AI-ключей |
-| AI-ключи (OpenAI/Anthropic) | БД (`ai_keys.key_encrypted`) | вводятся через API, шифруются `FERNET_KEY`; не в env/логах/ответах ([modules/ai-keys](modules/ai-keys/README.md)) |
-| Пароли прокси | БД (`proxies.password_encrypted`) | опциональны; вводятся через API, шифруются `FERNET_KEY`; не в env/логах/ответах (в API — только `has_password`); `username` — не секрет ([modules/proxies](modules/proxies/README.md)) |
+| AI-ключи (OpenAI/Anthropic) | БД (`ai_keys.key_encrypted`) | вводятся через API, шифруются `FERNET_KEY`; не в env/логах/обычных ответах (маска `key_masked`); полный ключ — только on-demand reveal под `ai-keys:edit` ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md), [modules/ai-keys](modules/ai-keys/README.md)) |
+| Пароли прокси | БД (`proxies.password_encrypted`) | опциональны; вводятся через API, шифруются `FERNET_KEY`; не в env/логах/обычных ответах (в API — только `has_password`); plaintext — только on-demand reveal под `proxies:edit` ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md)); `username` — не секрет ([modules/proxies](modules/proxies/README.md)) |
+| SSH-пароли серверов | БД (`servers.ssh_password_encrypted`) | вводятся при создании, шифруются `FERNET_KEY`; не в env/логах/обычных ответах; plaintext — только провижининг in-memory **или** on-demand reveal под `servers:edit` ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md)); `ssh_user` — не секрет |
 | `MAIL_API_KEY` | `.env` | секрет внешнего почтового API; только в заголовке `X-API-Key` backend→`postapp.store`; не в БД/логах/ответах/SPA/URL ([modules/mail](modules/mail/README.md)) |
 
 - `.env` — в `.gitignore`; в репозитории только `.env.example` без значений.
@@ -292,12 +329,16 @@ default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src
 | User enumeration на входе | единое сообщение об ошибке, шаг 1 без запроса; та же ошибка для несуществующего/деактивированного БД-пользователя. **Исключение:** беспарольные идентификаторы раскрываются ответом `password_setup_required` — осознанный побочный эффект «открытого первого входа» ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) |
 | Захват учётки в окне «открытого первого входа» (беспарольный пользователь) | **Осознанный принятый риск** ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)): setup-token limited-scope (только `set-password`, access-token не выдаётся до установки пароля); митигация — оперативная выдача идентификатора, короткое окно беспарольности |
 | Обход UI-гейтинга прямым запросом к API | RBAC на сервере (`403 forbidden`); UI-скрытие — только UX ([ADR-021](adr/ADR-021-rbac-users-roles.md)) |
+| Несанкционированный reveal секрета (сервер/прокси/ключ) | Гейт `require("<page>","edit")` на сервере (`403`); секрет не преднагружается (только on-demand); `Cache-Control: no-store`; аудит-лог `secret_revealed` без значения; на фронте — только локальный стейт модалки, не в кэше/сторе ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md)) |
+| Утечка секрета в кэш/логи при reveal | секрет в теле ответа (не в URL) → нет в access-логах; `no-store` исключает кэш; plaintext не логируется (фильтр секретов) ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md)) |
 | Эскалация привилегий через устаревший токен после смены роли | права грузятся из БД на каждый запрос; деактивация/смена роли применяется без пере-логина ([ADR-021](adr/ADR-021-rbac-users-roles.md)) |
 | Утечка паролей пользователей из БД/логов/API | bcrypt-хэш at-rest (`users.password_hash`); plaintext не хранится/не логируется/не в ответах ([ADR-021](adr/ADR-021-rbac-users-roles.md)) |
 | Lockout (потеря доступа через данные) | супер-админ вне БД — вход работает даже при пустой/битой таблице ролей ([ADR-008](adr/ADR-008-admin-iz-env.md) амендмент) |
 | MITM при первом SSH | принятый риск Этапа 1 ([TD-007](100-known-tech-debt.md)) |
 | SSRF/инъекции в IP-поле | строгая валидация `inet`, без выполнения произвольных команд по вводу |
 | Утечка `MAIL_API_KEY` в SPA/логи/URL | ключ только на backend, в заголовке `X-API-Key`; не в ответах/логах/SPA; фронт наружу не ходит ([modules/mail](modules/mail/README.md)) |
+| Утечка IMAP/SMTP-паролей ящиков из CRM | CRM их **не хранит** — транзит в агрегатор по HTTPS, шифрование AES-256-GCM ТАМ (Fernet CRM не задействован); пароль не в логах/ответах/SPA; эндпоинты записи `Cache-Control: no-store` ([ADR-038](adr/ADR-038-mail-headless-integration.md) §5) |
+| Энумерация чужих писем/ящиков через `/mail` | серверный `MailScope` (`group_ids` из `user_teams`→`mail_group_id`): чтение вне scope → пустой результат, мутация → `403`; фронт-гейтинг только UX ([ADR-038](adr/ADR-038-mail-headless-integration.md) §3) |
 | XSS/кража JWT через HTML-тело письма | рендер только в sandbox-iframe (без `allow-scripts`/`allow-same-origin`), CSP SPA; скрипты письма не исполняются. `img-src ... https:` ([ADR-015](adr/ADR-015-csp-img-src-remote-mail-images.md)) разрешает только пассивные `<img>` — XSS-инвариант не ослаблен ([ADR-012](adr/ADR-012-mail-read-through-proxy.md)) |
 | Трекинг-пиксели в письме (отправитель узнаёт факт открытия) | принятый компромисс remote-картинок ([ADR-015](adr/ADR-015-csp-img-src-remote-mail-images.md)) — стандартно для почтовых клиентов; referrer не утекает (`Referrer-Policy: no-referrer` + `referrerPolicy=no-referrer` на iframe), только `https:` (не `http:`); анти-трекинг-прокси отложён |
 

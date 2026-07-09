@@ -18,6 +18,8 @@
 
 ## Решение
 
+> **Амендмент [ADR-035](ADR-035-detail-view-secret-reveal.md) (2026-07-09):** короткий клик по карточке (Серверы/Прокси/ИИ-ключи/Бэки) теперь открывает **read-only `<Entity>DetailModal`** (просмотр под `<page>:view`), а переход в edit — по карандашу `Pencil` в detail-модалке (под `<page>:edit`). Разведение жестов (короткий клик vs зажатие-drag, `stopPropagation` кнопки «Удалить») сохраняется без изменений — меняется только **цель** короткого клика (detail вместо прямой edit-модалки).
+
 ### 1. Порядок хранится на сервере (`position` в БД)
 
 В таблицы `servers` и `ai_keys` добавляется колонка `position integer NOT NULL DEFAULT 0`. Списки (`GET /api/servers`, `GET /api/ai-keys`) сортируются `ORDER BY position ASC, created_at DESC, id` (тай-брейк — новые выше при равных `position`). Порядок задаётся отдельными endpoint'ами `PATCH /api/servers/order` и `PATCH /api/ai-keys/order`, принимающими полный упорядоченный список `id`; backend присваивает `position = индекс` в одной транзакции. Детали — [04-api.md](../04-api.md#перестановка-порядок-карточек), [03-data-model.md](../03-data-model.md#колонка-position-порядок-карточек).

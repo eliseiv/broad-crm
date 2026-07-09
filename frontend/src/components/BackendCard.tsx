@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Boxes, Clock, Globe, Loader2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { AddBackendModal } from '@/components/AddBackendModal';
+import { BackendDetailModal } from '@/components/BackendDetailModal';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -26,6 +27,7 @@ export function BackendCard({ backend, canEdit = true, canDelete = true }: Backe
   const statusQuery = useBackendStatus(backend.id, backend.check_status);
   const deleteMutation = useDeleteBackend();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
 
   const status: BackendCheckStatus = statusQuery.data?.check_status ?? backend.check_status;
@@ -55,12 +57,12 @@ export function BackendCard({ backend, canEdit = true, canDelete = true }: Backe
   const isError = status === 'error';
   const isPending = status === 'pending';
 
-  // Клик по карточке → edit; кнопки «Удалить» гасят событие (stopPropagation),
-  // чтобы не открывать edit и не стартовать drag.
+  // Короткий клик по карточке → read-only detail-модалка (ADR-035); кнопки «Удалить»
+  // гасят событие (stopPropagation), чтобы не открывать detail и не стартовать drag.
   const onCardKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      setEditOpen(true);
+      setDetailOpen(true);
     }
   };
   const stopForDelete = (e: React.SyntheticEvent) => e.stopPropagation();
@@ -68,15 +70,14 @@ export function BackendCard({ backend, canEdit = true, canDelete = true }: Backe
   return (
     <>
       <Card
-        interactive={canEdit}
-        role={canEdit ? 'button' : undefined}
-        tabIndex={canEdit ? 0 : undefined}
-        aria-label={canEdit ? `Изменить бэк ${backend.name}` : undefined}
-        onClick={canEdit ? () => setEditOpen(true) : undefined}
-        onKeyDown={canEdit ? onCardKeyDown : undefined}
+        interactive
+        role="button"
+        tabIndex={0}
+        aria-label={`Просмотр бэка ${backend.name}`}
+        onClick={() => setDetailOpen(true)}
+        onKeyDown={onCardKeyDown}
         className={cn(
-          'flex h-full flex-col gap-4 p-4 sm:p-5',
-          canEdit && 'cursor-pointer',
+          'flex h-full cursor-pointer flex-col gap-4 p-4 sm:p-5',
           isError && 'border-status-red/70',
         )}
       >
@@ -177,6 +178,17 @@ export function BackendCard({ backend, canEdit = true, canDelete = true }: Backe
           Мониторинг доступности этого бэка будет прекращён.
         </p>
       </Modal>
+
+      <BackendDetailModal
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        backend={backend}
+        canEdit={canEdit}
+        onEdit={() => {
+          setDetailOpen(false);
+          setEditOpen(true);
+        }}
+      />
 
       <AddBackendModal mode="edit" backend={backend} open={editOpen} onOpenChange={setEditOpen} />
     </>

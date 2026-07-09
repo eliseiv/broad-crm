@@ -4,6 +4,8 @@
 - **Дата:** 2026-07-09
 - **Амендмент:** [ADR-030](ADR-030-sms-module-full-merge.md) §6 (видимость по командам); опирается на RBAC-модель [ADR-021](ADR-021-rbac-users-roles.md) / [ADR-022](ADR-022-teams-nav-categories.md).
 
+> **UI-следствие [ADR-036](ADR-036-sms-team-filter-admin-only.md) (2026-07-09):** предикат `sees_all_teams` (`is_superadmin OR полный каталог`) отдаётся фронту через `GET /api/auth/me` как булево `sees_all_sms_teams`; фильтр «Все команды» на `/sms` рендерится **только** при `sees_all_sms_teams === true`.
+
 ## Контекст
 
 Модуль «СМС» ([ADR-030](ADR-030-sms-module-full-merge.md) §6) задавал видимость сообщений/номеров так: **«всё видит только `is_superadmin`»** (консольный `.env`-супер-админ), а **любой БД-пользователь** — только SMS/номера своих команд (`user_teams` → `sms_phone_numbers.team_id ∈ team_ids`), включая БД-пользователя с админ-ролью.

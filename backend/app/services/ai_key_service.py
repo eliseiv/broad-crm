@@ -7,7 +7,7 @@ import uuid
 
 from app.domain.ai_keys import compute_key_fragments, mask_key
 from app.errors import ai_key_not_found, unprocessable
-from app.infra.crypto import encrypt_secret
+from app.infra.crypto import decrypt_secret, encrypt_secret
 from app.logging import get_logger
 from app.models.ai_key import AiKey, AiKeyStatus, AiProvider
 from app.repositories.ai_key_repository import AiKeyRepository
@@ -144,6 +144,18 @@ class AiKeyService:
             error_message=ai_key.error_message,
             last_checked_at=ai_key.last_checked_at,
         )
+
+    async def reveal_key(self, ai_key_id: uuid.UUID) -> str:
+        """On-demand reveal ПОЛНОГО ключа (ADR-035, require ai-keys:edit).
+
+        Расшифровка `key_encrypted` в памяти обработчика (в обычных ответах — только
+        `key_masked`). Нет записи → 404 ai_key_not_found. Значение возвращается
+        роутеру и НЕ логируется здесь.
+        """
+        ai_key = await self._repo.get_by_id(ai_key_id)
+        if ai_key is None:
+            raise ai_key_not_found()
+        return decrypt_secret(ai_key.key_encrypted)
 
     async def delete_key(self, ai_key_id: uuid.UUID) -> None:
         """Hard-delete; повтор → 404 ai_key_not_found."""

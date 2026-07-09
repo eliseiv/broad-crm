@@ -593,6 +593,7 @@ CREATE INDEX ix_users_role_id ON users (role_id);
 |------|-----|-------------|----------|
 | `id` | `uuid` | PK, `DEFAULT gen_random_uuid()` | Идентификатор команды. |
 | `name` | `text` | `NOT NULL`, `UNIQUE`, CHECK (см. ниже) | Название команды. Уникально — дубликат → `409 team_name_taken`. Правило набора символов — как у `username` («свободный» DB-CHECK + Pydantic). |
+| `mail_group_id` | `integer` | **`NULL`**, `UNIQUE` | **Привязка к группе mail-агрегатора** ([ADR-038](adr/ADR-038-mail-headless-integration.md), миграция `0018`). Соответствие CRM-команда (UUID) ↔ группа агрегатора (`groups.id`, int) **1:1**. `NULL` — команда без привязки к почте. `UNIQUE` — одна группа агрегатора принадлежит максимум одной CRM-команде. **Источник истины владения ящиком — агрегатор** (`mail_accounts.group_id`); это поле — лишь маппинг команда↔группа. Принадлежность ящика команде: `mailbox.group_id == team.mail_group_id`. Резолв `MailScope.group_ids` — по `user_teams`→`mail_group_id` (без локального кэша каталога ящиков). Ограничение 1:1 — [TD-033](100-known-tech-debt.md). Не FK (группа живёт в БД внешнего сервиса, не в CRM). |
 | `leader_id` | `uuid` | **`NULL`**, FK → `users(id)` **`ON DELETE SET NULL`** | Лидер команды ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)). **`NULL` — команда без лидера.** Удаление пользователя-лидера **не блокируется** (лидерство авто-передаётся сервисом, остаток — `SET NULL`; `409 user_is_team_leader` **упразднён**). **Инвариант: если `leader_id` задан — он ∈ участники** (в `user_teams` есть строка `(leader_id, id)`) — обеспечивает сервис. |
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
@@ -639,6 +640,13 @@ CREATE INDEX ix_user_teams_team_id ON user_teams (team_id);
 ```
 
 > **Амендмент [ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md).** DDL выше — базовая миграция `0009` (историческая: `leader_id NOT NULL`, FK `ON DELETE RESTRICT`, `user_teams` без `created_at`). Миграция **`0012_teams_optional_leader`** (ниже) приводит схему к целевому состоянию: `leader_id` → nullable, FK → `ON DELETE SET NULL`, `user_teams += created_at`. Таблицы полей выше отражают состояние **после** `0012`.
+>
+> **Амендмент [ADR-038](adr/ADR-038-mail-headless-integration.md).** Миграция **`0018_teams_mail_group_id`** добавляет колонку `mail_group_id`:
+> ```sql
+> ALTER TABLE teams ADD COLUMN mail_group_id integer NULL;
+> ALTER TABLE teams ADD CONSTRAINT uq_teams_mail_group_id UNIQUE (mail_group_id);
+> ```
+> `down_revision` — текущая голова цепочки на момент реализации (S2). `downgrade()`: `ALTER TABLE teams DROP CONSTRAINT uq_teams_mail_group_id; ALTER TABLE teams DROP COLUMN mail_group_id;`. Существующие команды получают `mail_group_id = NULL` (сопоставление — ручное через `PATCH /api/teams/{id}`).
 
 ### Индексы и обоснование
 - `UNIQUE(teams.name)` — детерминированный `409 team_name_taken`.

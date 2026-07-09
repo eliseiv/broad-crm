@@ -28,6 +28,8 @@ export interface Server {
   id: string;
   name: string;
   ip: string;
+  /** SSH-логин целевого сервера (не секрет). Показывается в detail-view (ADR-035). */
+  ssh_user: string;
   exporter_port: number;
   provision_status: ProvisionStatus;
   /** Порядок карточки (drag-and-drop). Меньше = выше. 04-api.md. */
@@ -88,7 +90,25 @@ export interface MeResponse {
   username: string;
   role: string;
   is_superadmin: boolean;
+  /**
+   * Производный admin-уровень видимости SMS (04-api.md, ADR-032/ADR-036):
+   * `is_superadmin OR полный каталог прав`. `true` ⇔ актор видит все SMS-команды.
+   * Frontend по нему решает, показывать ли фильтр «Все команды» на /sms
+   * (backend — единственный источник, фронт не дублирует predicate).
+   */
+  sees_all_sms_teams: boolean;
   permissions: PermissionsMap;
+}
+
+/**
+ * Ответ reveal-эндпоинтов секрета по требованию (04-api.md, схема `SecretRevealResponse`,
+ * ADR-035): `GET /api/servers/{id}/ssh-password` · `GET /api/proxies/{id}/password` ·
+ * `GET /api/ai-keys/{id}/key`. `value` — расшифрованный секрет (plaintext). НЕ кэшируется
+ * (backend отдаёт `Cache-Control: no-store`); фронт держит значение только в локальном
+ * стейте модалки и чистит при закрытии.
+ */
+export interface SecretRevealResponse {
+  value: string;
 }
 
 export interface CreateServerRequest {
@@ -708,15 +728,20 @@ export interface SmsNumbersResponse {
 }
 
 /**
- * Элемент списка номеров команды (04-api.md, схема `TeamNumberItem`) — МИНИМАЛЬНАЯ
- * схема detail-панели /teams: только `id`/`phone_number`/`team`. БЕЗ
- * `login`/`app_name`/`note`/`label`/`is_active`/меток (не переиспользуем полный `SmsNumber`).
+ * Элемент списка номеров команды (04-api.md, схема `TeamNumberItem`; ADR-034):
+ * `id`/`phone_number`/`team` + слабо-чувствительный идентифицирующий контекст
+ * `login`/`app_name`. БЕЗ `note`/`label`/`is_active` (доступны только под `sms:*`;
+ * не переиспользуем полный `SmsNumber`).
  */
 export interface TeamNumberItem {
   id: number;
   phone_number: string;
   /** Команда номера (= запрошенная команда `{id}`). */
   team: SmsTeamRef;
+  /** Логин учётной записи номера (ADR-034); `null` — не задан. */
+  login: string | null;
+  /** Приложение номера (ADR-034); `null` — не задано. */
+  app_name: string | null;
 }
 
 /** Ответ GET /api/teams/{id}/numbers (04-api.md, схема `TeamNumbersResponse`). */

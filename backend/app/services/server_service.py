@@ -14,7 +14,7 @@ from app.errors import (
     unprocessable,
 )
 from app.infra import file_sd
-from app.infra.crypto import encrypt_password
+from app.infra.crypto import decrypt_secret, encrypt_password
 from app.infra.prometheus import PrometheusUnavailable
 from app.logging import get_logger
 from app.models.server import ProvisionStatus, Server
@@ -86,10 +86,22 @@ class ServerService:
             id=server.id,
             name=server.name,
             ip=str(server.ip),
+            ssh_user=server.ssh_user,
             exporter_port=server.exporter_port,
             provision_status=ProvisionStatus(server.provision_status),
             position=server.position,
         )
+
+    async def reveal_ssh_password(self, server_id: uuid.UUID) -> str:
+        """On-demand reveal SSH-пароля сервера (ADR-035, require servers:edit).
+
+        Расшифровка `ssh_password_encrypted` в памяти обработчика. Нет записи → 404.
+        Значение возвращается вызывающему роутеру и НЕ логируется здесь.
+        """
+        server = await self._repo.get_by_id(server_id)
+        if server is None:
+            raise server_not_found()
+        return decrypt_secret(server.ssh_password_encrypted)
 
     def _repo_default_port(self) -> int:
         from app.config import get_settings
@@ -123,6 +135,7 @@ class ServerService:
                 id=server.id,
                 name=server.name,
                 ip=str(server.ip),
+                ssh_user=server.ssh_user,
                 exporter_port=server.exporter_port,
                 provision_status=ProvisionStatus(server.provision_status),
                 position=server.position,
@@ -138,6 +151,7 @@ class ServerService:
                 id=server.id,
                 name=server.name,
                 ip=str(server.ip),
+                ssh_user=server.ssh_user,
                 exporter_port=server.exporter_port,
                 provision_status=ProvisionStatus(server.provision_status),
                 position=server.position,
@@ -151,6 +165,7 @@ class ServerService:
             id=server.id,
             name=server.name,
             ip=str(server.ip),
+            ssh_user=server.ssh_user,
             exporter_port=server.exporter_port,
             provision_status=ProvisionStatus(server.provision_status),
             position=server.position,
@@ -233,6 +248,7 @@ class ServerService:
             id=server.id,
             name=server.name,
             ip=str(server.ip),
+            ssh_user=server.ssh_user,
             exporter_port=server.exporter_port,
             provision_status=ProvisionStatus(server.provision_status),
             position=server.position,

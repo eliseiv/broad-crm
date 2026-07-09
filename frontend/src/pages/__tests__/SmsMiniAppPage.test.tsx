@@ -160,20 +160,38 @@ describe('SmsMiniAppPage (ADR-031 беспарольный Telegram-SSO)', () =>
 
   // === 1. Ветки SSO-auth ====================================================
 
-  it('200: токен сохранён в miniAppAuth, рендерится AuthorizedView («Привязан»)', async () => {
+  it('200: токен сохранён в miniAppAuth, рендерится AuthorizedView (две вкладки, без бейджа «Привязан»)', async () => {
     authMock.fn.mockResolvedValue(makeAuthResponse());
     render(<SmsMiniAppPage />);
 
-    expect(await screen.findByText('Привязан')).toBeInTheDocument();
+    // ADR-037: успех = две вкладки «Сообщения»/«Номера»; бейдж «Привязан»/hint убран.
+    expect(await screen.findByRole('tab', { name: 'Сообщения' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Номера' })).toBeInTheDocument();
+    expect(screen.queryByText('Привязан')).not.toBeInTheDocument();
     expect(
-      screen.getByText('Telegram привязан — новые SMS вашей команды приходят сюда.'),
-    ).toBeInTheDocument();
+      screen.queryByText('Telegram привязан — новые SMS вашей команды приходят сюда.'),
+    ).not.toBeInTheDocument();
     // SSO вызван с raw initData из WebApp.
     expect(authMock.fn).toHaveBeenCalledTimes(1);
     expect(authMock.fn).toHaveBeenCalledWith((tg.webApp as FakeWebApp).initData);
     // Токен и telegram_user_id записаны в изолированный стор Mini App.
     expect(useMiniAppAuthStore.getState().token).toBe('sso-access-jwt');
     expect(useMiniAppAuthStore.getState().telegramUserId).toBe(123456789);
+  });
+
+  it('ADR-037: вкладка «Сообщения» активна по умолчанию; клик по «Номера» переключает aria-selected', async () => {
+    const user = userEvent.setup();
+    authMock.fn.mockResolvedValue(makeAuthResponse());
+    render(<SmsMiniAppPage />);
+
+    const msgTab = await screen.findByRole('tab', { name: 'Сообщения' });
+    const numTab = screen.getByRole('tab', { name: 'Номера' });
+    expect(msgTab).toHaveAttribute('aria-selected', 'true');
+    expect(numTab).toHaveAttribute('aria-selected', 'false');
+
+    await user.click(numTab);
+    expect(numTab).toHaveAttribute('aria-selected', 'true');
+    expect(msgTab).toHaveAttribute('aria-selected', 'false');
   });
 
   it('401 invalid_init_data → экран «сессия устарела», токен не сохранён', async () => {
@@ -184,7 +202,7 @@ describe('SmsMiniAppPage (ADR-031 беспарольный Telegram-SSO)', () =>
       await screen.findByText('Сессия Telegram устарела — откройте приложение заново через бота'),
     ).toBeInTheDocument();
     expect(useMiniAppAuthStore.getState().token).toBeNull();
-    expect(screen.queryByText('Привязан')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Сообщения' })).not.toBeInTheDocument();
   });
 
   it('401 init_data_expired → экран «сессия устарела»', async () => {
@@ -210,7 +228,7 @@ describe('SmsMiniAppPage (ADR-031 беспарольный Telegram-SSO)', () =>
       ),
     ).toBeInTheDocument();
     expect(useMiniAppAuthStore.getState().token).toBeNull();
-    expect(screen.queryByText('Привязан')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Сообщения' })).not.toBeInTheDocument();
   });
 
   it('400 validation_error → экран «сессия устарела» (пустой/битый init_data)', async () => {
@@ -242,7 +260,7 @@ describe('SmsMiniAppPage (ADR-031 беспарольный Telegram-SSO)', () =>
     authMock.fn.mockResolvedValueOnce(makeAuthResponse());
     await user.click(screen.getByRole('button', { name: 'Повторить' }));
 
-    expect(await screen.findByText('Привязан')).toBeInTheDocument();
+    expect(await screen.findByRole('tab', { name: 'Сообщения' })).toBeInTheDocument();
     expect(authMock.fn).toHaveBeenCalledTimes(2);
     expect(authMock.fn).toHaveBeenLastCalledWith((tg.webApp as FakeWebApp).initData);
   });
@@ -260,7 +278,7 @@ describe('SmsMiniAppPage (ADR-031 беспарольный Telegram-SSO)', () =>
   it('изоляция: после 200 токен НЕ попадает в crm.auth.* и не аутентифицирует админ-стор', async () => {
     authMock.fn.mockResolvedValue(makeAuthResponse());
     render(<SmsMiniAppPage />);
-    await screen.findByText('Привязан');
+    await screen.findByRole('tab', { name: 'Сообщения' });
 
     // miniAppAuth содержит SSO-токен…
     expect(useMiniAppAuthStore.getState().token).toBe('sso-access-jwt');
@@ -271,42 +289,53 @@ describe('SmsMiniAppPage (ADR-031 беспарольный Telegram-SSO)', () =>
     expect(sessionStorage.getItem('crm.auth.username')).toBeNull();
   });
 
-  // === 3. Гейт sms:view: 403 на секциях + пустые данные ======================
+  // === 3. Гейт sms:view: 403 на вкладках + пустые данные =====================
 
-  it('sms:view 403 на numbers → секция «Мои номера» скрыта; статус привязки остаётся', async () => {
+  it('sms:view 403 на numbers → панель вкладки «Номера» пуста (без empty-заглушки)', async () => {
+    const user = userEvent.setup();
     authMock.fn.mockResolvedValue(makeAuthResponse());
     hooks.numbers = forbiddenNumbers();
     hooks.messages = readyMessages([]);
     render(<SmsMiniAppPage />);
-    await screen.findByText('Привязан');
+    await screen.findByRole('tab', { name: 'Сообщения' });
 
-    expect(screen.queryByText('Мои номера')).not.toBeInTheDocument();
-    // messages-секция под доступом остаётся видимой (пустая).
-    expect(screen.getByText('Мои сообщения')).toBeInTheDocument();
+    // Вкладка «Сообщения» под доступом — пустая заглушка видна.
     expect(screen.getByText('Сообщений пока нет')).toBeInTheDocument();
+
+    // Переключение на «Номера»: 403 → панель пуста, empty-заглушки «Номеров нет» нет.
+    await user.click(screen.getByRole('tab', { name: 'Номера' }));
+    expect(screen.queryByText('Номеров нет')).not.toBeInTheDocument();
   });
 
-  it('sms:view 403 на messages → секция «Мои сообщения» скрыта', async () => {
+  it('sms:view 403 на messages → панель вкладки «Сообщения» пуста', async () => {
+    const user = userEvent.setup();
     authMock.fn.mockResolvedValue(makeAuthResponse());
     hooks.numbers = readyNumbers([]);
     hooks.messages = forbiddenMessages();
     render(<SmsMiniAppPage />);
-    await screen.findByText('Привязан');
+    await screen.findByRole('tab', { name: 'Сообщения' });
 
-    expect(screen.queryByText('Мои сообщения')).not.toBeInTheDocument();
-    expect(screen.getByText('Мои номера')).toBeInTheDocument();
+    // Вкладка «Сообщения» под 403 — панель пуста (нет empty-заглушки).
+    expect(screen.queryByText('Сообщений пока нет')).not.toBeInTheDocument();
+
+    // Вкладка «Номера» под доступом — пустая заглушка видна.
+    await user.click(screen.getByRole('tab', { name: 'Номера' }));
     expect(screen.getByText('Номеров нет')).toBeInTheDocument();
   });
 
-  it('пустые данные обеих секций → empty-заглушки «Номеров нет» / «Сообщений пока нет»', async () => {
+  it('пустые данные обеих вкладок → empty-заглушки «Сообщений пока нет» / «Номеров нет»', async () => {
+    const user = userEvent.setup();
     authMock.fn.mockResolvedValue(makeAuthResponse());
     hooks.numbers = readyNumbers([]);
     hooks.messages = readyMessages([]);
     render(<SmsMiniAppPage />);
-    await screen.findByText('Привязан');
+    await screen.findByRole('tab', { name: 'Сообщения' });
 
-    expect(screen.getByText('Номеров нет')).toBeInTheDocument();
+    // Дефолтная вкладка «Сообщения».
     expect(screen.getByText('Сообщений пока нет')).toBeInTheDocument();
+    // Вкладка «Номера».
+    await user.click(screen.getByRole('tab', { name: 'Номера' }));
+    expect(screen.getByText('Номеров нет')).toBeInTheDocument();
   });
 
   // === 4. «Вне Telegram» =====================================================

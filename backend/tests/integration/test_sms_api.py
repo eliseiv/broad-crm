@@ -546,10 +546,10 @@ async def test_teams_number_count_batch() -> None:
 
 
 async def test_team_numbers_endpoint_minimal_schema_and_404() -> None:
-    # ADR-030 §8: GET /api/teams/{id}/numbers под гейтом teams:view отдаёт МИНИМАЛЬНУЮ
-    # схему TeamNumberItem {id, phone_number, team{id,name}} — без чувствительного
-    # контекста учёток (login/app_name/note/label/is_active/created_at/updated_at),
-    # доступного только на эндпоинтах страницы «СМС» под матрицей sms:*.
+    # ADR-030 §8 + ADR-034: GET /api/teams/{id}/numbers под гейтом teams:view отдаёт
+    # схему TeamNumberItem {id, phone_number, team{id,name}, login, app_name} — со
+    # слабо-чувствительным контекстом login/app_name (ADR-034), но БЕЗ note/label/
+    # is_active/created_at/updated_at (доступны лишь на эндпоинтах sms:*).
     async with sms_db() as sm:
         async with sm() as s:
             team = await seed_team(s, name="Продажи")
@@ -573,11 +573,13 @@ async def test_team_numbers_endpoint_minimal_schema_and_404() -> None:
     numbers = ok.json()["numbers"]
     assert [n["phone_number"] for n in numbers] == ["+13105550800"]
     item = numbers[0]
-    # Присутствует минимальный набор: id, phone_number, team{id,name}.
-    assert set(item.keys()) == {"id", "phone_number", "team"}
+    # Набор полей ADR-034: id, phone_number, team{id,name}, login, app_name.
+    assert set(item.keys()) == {"id", "phone_number", "team", "login", "app_name"}
     assert item["team"] == {"id": str(team_id), "name": "Продажи"}
-    # Чувствительный контекст учёток НЕ утекает через teams:view.
-    for leaked in ("login", "app_name", "note", "label", "is_active", "created_at", "updated_at"):
+    assert item["login"] == "acme"
+    assert item["app_name"] == "WhatsApp"
+    # note/label и служебные метки НЕ утекают через teams:view.
+    for leaked in ("note", "label", "is_active", "created_at", "updated_at"):
         assert leaked not in item
 
     assert missing.status_code == 404

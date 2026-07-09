@@ -11,17 +11,30 @@ export function loginAs(options?: {
   username?: string;
   role?: string;
   isSuperadmin?: boolean;
+  /**
+   * Admin-уровень видимости SMS (ADR-036, MeResponse.sees_all_sms_teams). По
+   * умолчанию совпадает с `isSuperadmin` (backend: `is_superadmin OR полный
+   * каталог`): супер-админ видит все SMS-команды, ограниченная роль — нет.
+   */
+  seesAllSmsTeams?: boolean;
   permissions?: PermissionsMap;
 }): void {
   const {
     username = 'admin',
     role = 'admin',
     isSuperadmin = true,
+    seesAllSmsTeams = isSuperadmin,
     permissions = {},
   } = options ?? {};
   const store = useAuthStore.getState();
   store.setSession('jwt-token', username);
-  store.setPrincipal({ username, role, is_superadmin: isSuperadmin, permissions });
+  store.setPrincipal({
+    username,
+    role,
+    is_superadmin: isSuperadmin,
+    sees_all_sms_teams: seesAllSmsTeams,
+    permissions,
+  });
 }
 
 /** Супер-админ: полный доступ ко всем вкладкам/действиям (is_superadmin=true). */

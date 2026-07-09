@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from app.api.deps import AuthServiceDep, ClientIp, PrincipalDep, SetupPrincipalDep
+from app.api.deps import (
+    AuthServiceDep,
+    ClientIp,
+    PrincipalDep,
+    SetupPrincipalDep,
+    principal_sees_all_sms_teams,
+)
 from app.schemas.auth import LoginRequest, LoginResponse, MeResponse, SetPasswordRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -42,4 +48,5 @@ async def me(principal: PrincipalDep) -> MeResponse:
         role=principal.role,
         is_superadmin=principal.is_superadmin,
         permissions=principal.permissions,
+        sees_all_sms_teams=principal_sees_all_sms_teams(principal),
     )

@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Clock, Loader2, Network, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { AddProxyModal } from '@/components/AddProxyModal';
+import { ProxyDetailModal } from '@/components/ProxyDetailModal';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
@@ -33,6 +34,7 @@ export function ProxyCard({ proxy, canEdit = true, canDelete = true }: ProxyCard
   const statusQuery = useProxyStatus(proxy.id, proxy.check_status);
   const deleteMutation = useDeleteProxy();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
 
   const status: ProxyCheckStatus = statusQuery.data?.check_status ?? proxy.check_status;
@@ -62,12 +64,12 @@ export function ProxyCard({ proxy, canEdit = true, canDelete = true }: ProxyCard
   const isError = status === 'error';
   const isPending = status === 'pending';
 
-  // Клик по карточке → edit; кнопки «Удалить» гасят событие (stopPropagation),
-  // чтобы не открывать edit и не стартовать drag.
+  // Короткий клик по карточке → read-only detail-модалка (ADR-035); кнопки «Удалить»
+  // гасят событие (stopPropagation), чтобы не открывать detail и не стартовать drag.
   const onCardKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      setEditOpen(true);
+      setDetailOpen(true);
     }
   };
   const stopForDelete = (e: React.SyntheticEvent) => e.stopPropagation();
@@ -75,15 +77,14 @@ export function ProxyCard({ proxy, canEdit = true, canDelete = true }: ProxyCard
   return (
     <>
       <Card
-        interactive={canEdit}
-        role={canEdit ? 'button' : undefined}
-        tabIndex={canEdit ? 0 : undefined}
-        aria-label={canEdit ? `Изменить прокси ${proxy.name}` : undefined}
-        onClick={canEdit ? () => setEditOpen(true) : undefined}
-        onKeyDown={canEdit ? onCardKeyDown : undefined}
+        interactive
+        role="button"
+        tabIndex={0}
+        aria-label={`Просмотр прокси ${proxy.name}`}
+        onClick={() => setDetailOpen(true)}
+        onKeyDown={onCardKeyDown}
         className={cn(
-          'flex h-full flex-col gap-4 p-4 sm:p-5',
-          canEdit && 'cursor-pointer',
+          'flex h-full cursor-pointer flex-col gap-4 p-4 sm:p-5',
           isError && 'border-status-red/70',
         )}
       >
@@ -180,6 +181,17 @@ export function ProxyCard({ proxy, canEdit = true, canDelete = true }: ProxyCard
           Мониторинг доступности этого прокси будет прекращён.
         </p>
       </Modal>
+
+      <ProxyDetailModal
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        proxy={proxy}
+        canEdit={canEdit}
+        onEdit={() => {
+          setDetailOpen(false);
+          setEditOpen(true);
+        }}
+      />
 
       <AddProxyModal mode="edit" proxy={proxy} open={editOpen} onOpenChange={setEditOpen} />
     </>

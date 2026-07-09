@@ -184,7 +184,7 @@ build_backend_recovery(code: str, name: str, domain: str) -> str
 
 ## Frontend — ТЗ
 
-Зеркалит страницу `proxies`/`servers` (единый список карточек, drag-and-drop, клик=edit); детальный UI-гайд — [08-design-system.md](../../08-design-system.md#страница-бэки). Реализация строк — русский словарь ([08-design-system.md](../../08-design-system.md#локализация-страницы-бэки)).
+Зеркалит страницу `proxies`/`servers` (единый список карточек, drag-and-drop, клик=detail→карандаш=edit — [ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)); детальный UI-гайд — [08-design-system.md](../../08-design-system.md#страница-бэки). Реализация строк — русский словарь ([08-design-system.md](../../08-design-system.md#локализация-страницы-бэки)).
 
 ### Навигация
 
@@ -194,7 +194,7 @@ build_backend_recovery(code: str, name: str, domain: str) -> str
 
 - Адаптивная сетка карточек (`grid-cols-1 md:grid-cols-2 xl:grid-cols-3`, gap 24px), как «Серверы»/«Прокси». Единый список (без секций), сортировка по `position`. Ячейки: `BackendCard` на каждый бэк + `AddBackendCard`.
 - `BackendCard`: имя (`name`), код (`code`, моношрифт/чип), домен (`domain`, моношрифт), статус-бейдж (**Работает** / **Не работает** / **Проверка…**), причина ошибки при `error`, **единственная** кнопка **Удалить** (одна на карточку; дубль в error/недоступном состоянии **не рендерится** — [ADR-023](../../adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)).
-- **Клик по карточке = редактирование** (короткий клик открывает `AddBackendModal` в режиме edit). **Зажатие ~200 мс + движение = перетаскивание** (@dnd-kit, [08-design-system.md](../../08-design-system.md#перестановка-карточек-drag-and-drop)). Кнопка **Удалить** — `stopPropagation`.
+- **Клик по карточке = read-only detail-модалка** `BackendDetailModal` ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)): Код/Название/Домен (секрета нет — reveal не применяется). Карандаш вверху справа → `AddBackendModal mode='edit'`. **Зажатие ~200 мс + движение = перетаскивание** (@dnd-kit, [08-design-system.md](../../08-design-system.md#перестановка-карточек-drag-and-drop)). Кнопка **Удалить** — `stopPropagation`. Паттерн — [08-design-system.md](../../08-design-system.md#detail-view-карточных-страниц-read-only--карандаш--edit-adr-035).
 - `AddBackendCard` → `AddBackendModal` (Radix Dialog) в режиме **add**: поля **Код** (`Input`), **Название** (`Input`), **Домен** (`Input`). Кнопки **Отмена** / **Добавить**. Ошибка `409 backend_code_taken` — пофилдово под полем «Код» («Код занят»).
 - **Режим edit `AddBackendModal`:** префил `code`/`name`/`domain`. Кнопка действия — **Сохранить**. Отправляются только изменённые поля. После смены `domain` карточка возвращается в **Проверка…** и polling статуса возобновляется.
 - **Перестановка:** единый `SortableContext`; на `onDragEnd` — оптимистичное обновление + `PATCH /api/backends/order {ids}`; при ошибке — откат и инвалидация `GET /api/backends`.
@@ -218,13 +218,15 @@ Loading (skeleton), empty (только `AddBackendCard` + подсказка), 
 - [ ] Монитор пишет `check_status`/`error_since`/`alert_sent` независимо от бота; grace-состояние переживает рестарт.
 - [ ] Alembic-миграция `0013_backends_alert_grace` (`error_since`/`alert_sent`) с рабочим `downgrade()`.
 - [ ] Единственная кнопка «Удалить» на карточке (дубль в error-состоянии убран).
+- [ ] **([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md), spec-ready):** клик по карточке → read-only `BackendDetailModal` (Код/Название/Домен, секрета нет) → карандаш `AddBackendModal mode='edit'`. Reveal не применяется (секрета нет).
 - [x] `PATCH /api/backends/order`: перестановка единого списка; полная перестановка валидируется (иначе `422`); несуществующий `id` → `404 backend_not_found`.
-- [x] Frontend: вкладка «Бэки» в `AppLayout`, `BackendsPage` (единый список), `BackendCard`/`AddBackendCard`/`AddBackendModal` (add+edit), `409` пофилдово, drag-and-drop (клик=edit / зажатие=drag), все состояния UI, русские строки из словаря.
+- [x] Frontend: вкладка «Бэки» в `AppLayout`, `BackendsPage` (единый список), `BackendCard`/`AddBackendCard`/`AddBackendModal` (add+edit), `409` пофилдово, drag-and-drop (клик=edit / зажатие=drag — **историческая идиома Спринта 2; со [ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md) короткий клик=detail-view, edit по карандашу — см. spec-ready-пункт ниже**), все состояния UI, русские строки из словаря.
 - [x] Coverage ≥90 % для функций нормализации/проверки/перехода/билдеров сообщений ([06-testing-strategy.md](../../06-testing-strategy.md)).
 - [x] Lint/type-check/format проходят (backend и frontend).
 
 ## Changelog
 
+- 2026-07-09: **detail-view** ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md), spec-ready): клик по карточке → read-only `BackendDetailModal` (Код/Название/Домен), карандаш → edit. Секрета нет → reveal не применяется. Контракт `BackendListItem` не меняется.
 - 2026-07-08: **спецификация правок [ADR-023](../../adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)/[ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)** (architect, требуют реализации): overall-deadline проверки `BACKEND_CHECK_DEADLINE_SEC`=30 (анти-зависание) + явный `httpx.Timeout` по всем фазам; **grace-порог 30 мин** непрерывной недоступности перед 🔴 (`BACKEND_ALERT_AFTER_SEC`=1800, поля `error_since`/`alert_sent`, миграция `0013_backends_alert_grace`, time-aware `evaluate_transition`); единственная кнопка «Удалить» на карточке. Устраняет ложные алерты при перезагрузке бэка (1–2 мин). Модель алерта у бэков теперь отличается от прокси (немедленно) — grace-порог.
 - 2026-07-07: модуль реализован (Спринт 2) — backend + frontend + qa завершены, reviewer approve/production_ready. Статус `implemented`, DoD выполнен. Косметические minor architect-reviewer (полный список причин `error_message` в 03-data-model/04-api, переход `pending → [*]: DELETE` в state-диаграмме) синхронизированы (architect).
 - 2026-07-07: backend-реализация (backend). Модель `Backend`/миграция `0007_create_backends`; схемы/репозиторий/сервис (CRUD + 409 `backend_code_taken` + нормализация домена → 422 + re-check при смене `domain`); `infra/backend_check.py` (нормализация/валидация домена, `GET https://{domain}/health`, строго 2xx); `BackendMonitorService` (стартует всегда, Telegram гейтится `notifier_enabled`); билдеры `build_backend_error`/`build_backend_recovery`. Frontend — отдельной задачей.

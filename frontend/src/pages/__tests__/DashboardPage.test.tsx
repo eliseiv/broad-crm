@@ -62,6 +62,7 @@ function server(id: string, online: boolean): Server {
     id,
     name: `Server ${id}`,
     ip: '10.0.0.1',
+    ssh_user: 'root',
     exporter_port: 9100,
     provision_status: 'online',
     position: 0,

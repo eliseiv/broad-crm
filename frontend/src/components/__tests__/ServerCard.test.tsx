@@ -40,6 +40,7 @@ function server(overrides: Partial<Server> = {}): Server {
     id: 'server-1',
     name: 'Server 01',
     ip: '10.0.0.10',
+    ssh_user: 'root',
     exporter_port: 9100,
     provision_status: 'online',
     position: 0,

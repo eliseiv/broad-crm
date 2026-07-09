@@ -8,6 +8,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Response, status
 
 from app.api.deps import Principal, ProxyServiceDep, require
+from app.infra.audit import log_secret_revealed
 from app.schemas.proxy import (
     ProxyCreateRequest,
     ProxyListItem,
@@ -16,6 +17,7 @@ from app.schemas.proxy import (
     ProxyStatusResponse,
     ProxyUpdateRequest,
 )
+from app.schemas.secret import SecretRevealResponse
 
 router = APIRouter(prefix="/proxies", tags=["proxies"])
 
@@ -57,6 +59,25 @@ async def update_proxy(
 ) -> ProxyListItem:
     """Редактирование прокси; re-check при смене связанного с подключением поля (200)."""
     return await service.update_proxy(proxy_id, payload)
+
+
+@router.get("/{proxy_id}/password", response_model=SecretRevealResponse)
+async def reveal_proxy_password(
+    proxy_id: uuid.UUID,
+    service: ProxyServiceDep,
+    principal: EditDep,
+    response: Response,
+) -> SecretRevealResponse:
+    """On-demand reveal пароля прокси (ADR-035, require proxies:edit).
+
+    Нет пароля (`has_password=false`) → 404 secret_not_set. Секрет — в теле ответа
+    (не в URL); `Cache-Control: no-store` исключает кэш. Успех → аудит-лог
+    `secret_revealed` (без значения).
+    """
+    value = await service.reveal_password(proxy_id)
+    response.headers["Cache-Control"] = "no-store"
+    log_secret_revealed(principal, resource_type="proxy", resource_id=str(proxy_id))
+    return SecretRevealResponse(value=value)
 
 
 @router.get("/{proxy_id}/status", response_model=ProxyStatusResponse)

@@ -91,6 +91,15 @@ export function useCan(page: string, action: string): boolean {
 }
 
 /**
+ * Admin-уровень видимости SMS (ADR-036): виден ли фильтр «Все команды» на /sms.
+ * Источник — `me.sees_all_sms_teams` из GET /api/auth/me (backend вычисляет
+ * `is_superadmin OR полный каталог`); фронт НЕ дублирует предикат. UI-гейтинг, только UX.
+ */
+export function useSeesAllSmsTeams(): boolean {
+  return useAuthStore((s) => s.seesAllSmsTeams);
+}
+
+/**
  * Доступ к странице «Пользователи» (RBAC-администрирование): супер-админ или
  * роль `admin`. Гейтится не матрицей, а признаком admin (04-api.md, ADR-021).
  */

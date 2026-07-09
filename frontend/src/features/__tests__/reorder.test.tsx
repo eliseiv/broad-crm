@@ -38,6 +38,7 @@ function server(id: string, position: number): Server {
     id,
     name: id,
     ip: '10.0.0.1',
+    ssh_user: 'root',
     exporter_port: 9100,
     provision_status: 'online',
     position,

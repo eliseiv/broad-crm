@@ -49,6 +49,7 @@
 - `PATCH /api/proxies/{id} {name?, proxy_type?, host?, port?, username?, password?}` → `200`; редактирование. **Секретная семантика пароля** и **триггер re-check** — см. [«Редактирование прокси»](#редактирование-прокси-patch-нормативно) и [04-api.md](../../04-api.md#patch-apiproxiesid).
 - `GET /api/proxies/{id}/status` → `{id, check_status, error_message, last_checked_at}`. Лёгкий endpoint для polling статуса после добавления/редактирования.
 - `DELETE /api/proxies/{id}` → `204`; hard delete. Повтор → `404 proxy_not_found`.
+- `GET /api/proxies/{id}/password` (гейт `require("proxies","edit")`) → `200 SecretRevealResponse {value}`; **on-demand reveal** пароля для detail-view ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)): `decrypt_secret(password_encrypted)` in-memory, `Cache-Control: no-store`, аудит `secret_revealed`. Нет пароля (`has_password=false`) → `404 secret_not_set`; нет права → `403`; нет прокси → `404 proxy_not_found`. Контракт — [04-api.md](../../04-api.md#get-apiproxiesidpassword), [05-security.md](../../05-security.md#reveal-секретов-по-требованию-adr-035).
 
 Коды ошибок и точные схемы — [04-api.md](../../04-api.md#proxies). `proxy_type` вне enum / `port` вне `1..65535` → `422 unprocessable` (по аналогии с невалидным IP у серверов).
 
@@ -75,7 +76,7 @@
 
 ### Требования
 
-1. Пароль (plaintext) НИКОГДА не возвращается в ответах и не логируется (structlog-фильтр секретов, [05-security.md](../../05-security.md)). `username` — не секрет, возвращается как есть.
+1. Пароль (plaintext) НИКОГДА не возвращается в обычных list/detail-ответах и не логируется (structlog-фильтр секретов, [05-security.md](../../05-security.md)). `username` — не секрет, возвращается как есть. **Исключение:** on-demand reveal-эндпоинт под `proxies:edit` ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)).
 2. `has_password` вычисляется в схеме ответа из `password_encrypted IS NOT NULL`.
 3. `check_status` ∈ {`pending`,`working`,`error`}, default `pending`. `error_message` — русскоязычная причина при `error`, иначе `NULL`.
 4. `updated_at`/`last_checked_at` обновляются при каждой проверке с конклюзивным исходом (`working`/`error`) атомарным `UPDATE`. (У прокси исхода `unknown` нет — любой провал после ретраев конклюзивен, см. ниже.)
@@ -177,7 +178,7 @@
 
 ## Frontend — ТЗ
 
-Зеркалит страницу `servers` (единый список карточек, drag-and-drop, клик=edit); детальный UI-гайд — [08-design-system.md](../../08-design-system.md#страница-прокси). Реализация строк — русский словарь ([08-design-system.md](../../08-design-system.md#локализация-страницы-прокси)).
+Зеркалит страницу `servers` (единый список карточек, drag-and-drop, клик=detail→карандаш=edit — [ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)); детальный UI-гайд — [08-design-system.md](../../08-design-system.md#страница-прокси). Реализация строк — русский словарь ([08-design-system.md](../../08-design-system.md#локализация-страницы-прокси)).
 
 ### Навигация
 
@@ -187,7 +188,7 @@
 
 - Адаптивная сетка карточек (`grid-cols-1 md:grid-cols-2 xl:grid-cols-3`, gap 24px), как «Серверы»/«ИИ - ключи». Единый список (без секций), сортировка по `position`. Ячейки: `ProxyCard` на каждый прокси + `AddProxyCard`.
 - `ProxyCard`: имя, тип (http/https/socks5), **только IP-адрес прокси** (`host`, моношрифт — **без порта, логина и пароля**, [ADR-023](../../adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md); поля `port`/`username`/`has_password` остаются в ответе API и в форме edit, но на карточке не отображаются), статус-бейдж (**Работает** / **Не работает** / **Проверка…**), причина ошибки при `error`, **единственная** кнопка **Удалить** (дубль в error-состоянии не рендерится).
-- **Клик по карточке = редактирование** (короткий клик открывает `AddProxyModal` в режиме edit). **Зажатие ~200 мс + движение = перетаскивание** (@dnd-kit, [08-design-system.md](../../08-design-system.md#перестановка-карточек-drag-and-drop)). Кнопка **Удалить** — `stopPropagation`.
+- **Клик по карточке = read-only detail-модалка** `ProxyDetailModal` ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)): Название/Тип/Хост/Порт/Логин + Пароль `••••` с глазом-reveal (под `proxies:edit`, только при `has_password`). Карандаш вверху справа → `AddProxyModal mode='edit'`. **Зажатие ~200 мс + движение = перетаскивание** (@dnd-kit, [08-design-system.md](../../08-design-system.md#перестановка-карточек-drag-and-drop)). Кнопка **Удалить** — `stopPropagation`. Паттерн — [08-design-system.md](../../08-design-system.md#detail-view-карточных-страниц-read-only--карандаш--edit-adr-035).
 - `AddProxyCard` → `AddProxyModal` (Radix Dialog) в режиме **add**: поля **Название** (`Input`), **Тип** (`Select`: http/https/socks5), **Хост** (`Input`), **Порт** (`Input`, числовой), **Логин** (`Input`, опц.), **Пароль** (`Input type=password`, toggle видимости, опц.). Кнопки **Отмена** / **Добавить**.
 - **Режим edit `AddProxyModal`:** префил `name`/`proxy_type`/`host`/`port`/`username`; поле **Пароль пустое** с подсказкой «Оставьте пустым, чтобы не менять пароль». Кнопка действия — **Сохранить**. Отправляются только изменённые поля; пустой `password` не отправляется. После смены связанного с подключением поля карточка возвращается в **Проверка…** и polling статуса возобновляется.
 - **Перестановка:** единый `SortableContext`; на `onDragEnd` — оптимистичное обновление + `PATCH /api/proxies/order {ids}`; при ошибке — откат и инвалидация `GET /api/proxies`.
@@ -214,12 +215,14 @@ Loading (skeleton), empty (только `AddProxyCard` + подсказка), pe
 - [x] Alembic-миграция `0006_create_proxies` (`down_revision="0005_create_notifier_alert_log"`) с рабочим `downgrade()`; колонка `position` + индекс `ix_proxies_position`.
 - [x] `PATCH /api/proxies/{id}`: не переданный `password` = не менять; `null`/`""` = очистить; непустой = re-encrypt; re-check при смене `proxy_type`/`host`/`port`/`username`/`password`.
 - [x] `PATCH /api/proxies/order`: перестановка единого списка; полная перестановка валидируется (иначе `422`); несуществующий `id` → `404`.
-- [x] Frontend: вкладка «Прокси» в `AppLayout`, `ProxiesPage` (единый список), `ProxyCard`/`AddProxyCard`/`AddProxyModal` (add+edit), `Select` с тремя типами, drag-and-drop (клик=edit / зажатие=drag), все состояния UI, русские строки из словаря.
+- [x] Frontend: вкладка «Прокси» в `AppLayout`, `ProxiesPage` (единый список), `ProxyCard`/`AddProxyCard`/`AddProxyModal` (add+edit), `Select` с тремя типами, drag-and-drop (клик=edit / зажатие=drag — **историческая идиома Спринта 1; со [ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md) короткий клик=detail-view, edit по карандашу — см. spec-ready-пункт ниже**), все состояния UI, русские строки из словаря.
+- [ ] **([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md), spec-ready):** клик по карточке → read-only `ProxyDetailModal` (порт/логин/пароль здесь, не на карточке) → карандаш `AddProxyModal mode='edit'`; глаз-reveal пароля под `proxies:edit` (только при `has_password`) → `GET /api/proxies/{id}/password`; backend-эндпоинт reveal (`decrypt_secret`, `no-store`, аудит `secret_revealed`, `404 secret_not_set`).
 - [x] Coverage ≥90 % для функций проверки/перехода/билдеров сообщений ([06-testing-strategy.md](../../06-testing-strategy.md)).
 - [x] Lint/type-check/format проходят (backend и frontend).
 
 ## Changelog
 
+- 2026-07-09: **detail-view + reveal пароля** ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md), spec-ready): клик по карточке → read-only `ProxyDetailModal` (порт/логин/пароль показываются здесь, не на карточке), карандаш → edit; `GET /api/proxies/{id}/password` (гейт `proxies:edit`, `decrypt_secret`, `no-store`, аудит `secret_revealed`, `404 secret_not_set` при отсутствии пароля). Контракт `ProxyListItem` не меняется.
 - 2026-07-08: **Grace-порог алерта прокси** ([ADR-027](../../adr/ADR-027-proxies-alert-grace.md), spec-ready, требует реализации): по образцу бэков ([ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) — `check_status→error` немедленно, **🔴 только после непрерывной недоступности ≥ `PROXY_ALERT_AFTER_SEC` (30 мин)**, recovery-🟢 только если 🔴 был (`alert_sent`); поля `error_since`/`alert_sent` (миграция `0014_proxies_alert_grace`), time-aware `evaluate_transition` (пять аргументов). Устраняет ложные срабатывания прокси при флапах. Immediate-модель прокси снята — прокси и бэки унифицированы. Слой проверки (deadline/httpx.Timeout) не затронут. Контракт `ProxyListItem` не меняется. Требует обновления qa-тестов матрицы под новую сигнатуру `evaluate_transition`.
 - 2026-07-07: спецификация создана (architect). Решение об отдельном in-backend-мониторе доступности прокси (по образцу AI-ключей), Fernet для пароля, отдельных полях ввода и эталонном URL проверки — [ADR-019](../../adr/ADR-019-proxies-availability-monitor.md). Отложенные пункты — [TD-028](../../100-known-tech-debt.md). Требуется добавить зависимость `httpx[socks]` (backend/devops).
 - 2026-07-08: **UI + анти-зависание** ([ADR-023](../../adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md), [ADR-024](../../adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)): карточка `ProxyCard` показывает **только IP** (`host`, без порта/логина/пароля); единственная кнопка «Удалить»; проверка получила **явный `httpx.Timeout` по всем фазам** + **overall-deadline** `PROXY_CHECK_DEADLINE_SEC`=30 (`asyncio.wait_for`) — устраняет зависание проверки (кейс `138.16.43.116`). Контракт API `ProxyListItem` не изменён.

@@ -39,17 +39,37 @@ function makeKey(overrides: Partial<AiKey> = {}): AiKey {
   };
 }
 
-describe('AiKeyCard edit', () => {
+describe('AiKeyCard detail → edit (ADR-035)', () => {
   beforeEach(() => vi.clearAllMocks());
+
+  /** Открывает detail-модалку кликом по карточке и жмёт карандаш → edit-модалка. */
+  async function openEdit(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByRole('button', { name: 'Просмотр ключа OpenAI Prod' }));
+    await user.click(await screen.findByRole('button', { name: 'Редактировать' }));
+    await screen.findByText('Изменить ключ');
+  }
+
+  it('клик по карточке открывает detail-модалку (Просмотр) с маской ключа, НЕ edit', async () => {
+    const user = userEvent.setup();
+    render(<AiKeyCard aiKey={makeKey()} />, { wrapper });
+
+    await user.click(screen.getByRole('button', { name: 'Просмотр ключа OpenAI Prod' }));
+
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText('Просмотр')).toBeInTheDocument();
+    // Поле «Ключ» detail-view показывает маску key_masked (полный ключ скрыт).
+    expect(dialog.getByText('sk-p…bA3T')).toBeInTheDocument();
+    expect(screen.queryByText('Изменить ключ')).not.toBeInTheDocument();
+    expect(hooks.updateMutate).not.toHaveBeenCalled();
+  });
 
   it('opens edit prefilled with name+provider, key empty, and does not send empty key', async () => {
     const user = userEvent.setup();
     render(<AiKeyCard aiKey={makeKey()} />, { wrapper });
 
-    await user.click(screen.getByRole('button', { name: 'Изменить ключ OpenAI Prod' }));
-    expect(screen.getByText('Изменить ключ')).toBeInTheDocument();
+    await openEdit(user);
 
-    // Поля формы — внутри диалога (на карточке есть span aria-label="Ключ" с маской).
+    // Поля формы — внутри диалога.
     const dialog = within(screen.getByRole('dialog'));
     // Префил name+provider; поле «Ключ» ПУСТОЕ (секрет не префилится).
     const nameInput = dialog.getByLabelText('Название') as HTMLInputElement;
@@ -72,7 +92,7 @@ describe('AiKeyCard edit', () => {
     const user = userEvent.setup();
     render(<AiKeyCard aiKey={makeKey()} />, { wrapper });
 
-    await user.click(screen.getByRole('button', { name: 'Изменить ключ OpenAI Prod' }));
+    await openEdit(user);
     const dialog = within(screen.getByRole('dialog'));
     await user.type(dialog.getByLabelText('Ключ'), 'sk-proj-NEW-value-9QzK');
     await user.click(screen.getByRole('button', { name: 'Сохранить' }));
@@ -81,7 +101,7 @@ describe('AiKeyCard edit', () => {
     expect(payload.key).toBe('sk-proj-NEW-value-9QzK');
   });
 
-  it('delete button does not open the edit modal (stopPropagation)', async () => {
+  it('delete button does not open detail/edit modal (stopPropagation)', async () => {
     const user = userEvent.setup();
     render(<AiKeyCard aiKey={makeKey()} />, { wrapper });
 
@@ -89,6 +109,7 @@ describe('AiKeyCard edit', () => {
 
     expect(screen.getByText('Удалить ключ?')).toBeInTheDocument();
     expect(screen.queryByText('Изменить ключ')).not.toBeInTheDocument();
+    expect(screen.queryByText('Просмотр')).not.toBeInTheDocument();
     expect(hooks.updateMutate).not.toHaveBeenCalled();
   });
 });

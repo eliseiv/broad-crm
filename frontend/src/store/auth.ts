@@ -5,6 +5,7 @@ const STORAGE_KEY = 'crm.auth.token';
 const USER_KEY = 'crm.auth.username';
 const ROLE_KEY = 'crm.auth.role';
 const SUPERADMIN_KEY = 'crm.auth.superadmin';
+const SEES_ALL_SMS_KEY = 'crm.auth.seesAllSmsTeams';
 const PERMISSIONS_KEY = 'crm.auth.permissions';
 
 /**
@@ -47,12 +48,14 @@ function persistToken(token: string | null, username: string | null): void {
 function persistPrincipal(
   role: string | null,
   isSuperadmin: boolean,
+  seesAllSmsTeams: boolean,
   permissions: PermissionsMap | null,
 ): void {
   try {
     if (role) sessionStorage.setItem(ROLE_KEY, role);
     else sessionStorage.removeItem(ROLE_KEY);
     sessionStorage.setItem(SUPERADMIN_KEY, isSuperadmin ? '1' : '0');
+    sessionStorage.setItem(SEES_ALL_SMS_KEY, seesAllSmsTeams ? '1' : '0');
     if (permissions) sessionStorage.setItem(PERMISSIONS_KEY, JSON.stringify(permissions));
     else sessionStorage.removeItem(PERMISSIONS_KEY);
   } catch {
@@ -62,7 +65,14 @@ function persistPrincipal(
 
 function clearStorage(): void {
   try {
-    for (const key of [STORAGE_KEY, USER_KEY, ROLE_KEY, SUPERADMIN_KEY, PERMISSIONS_KEY]) {
+    for (const key of [
+      STORAGE_KEY,
+      USER_KEY,
+      ROLE_KEY,
+      SUPERADMIN_KEY,
+      SEES_ALL_SMS_KEY,
+      PERMISSIONS_KEY,
+    ]) {
       sessionStorage.removeItem(key);
     }
   } catch {
@@ -77,6 +87,11 @@ interface AuthState {
   role: string | null;
   /** true — .env-супер-админ (полный доступ). */
   isSuperadmin: boolean;
+  /**
+   * Производный admin-уровень видимости SMS (ADR-036): виден ли фильтр «Все команды»
+   * на /sms. Источник — `me.sees_all_sms_teams` (backend); фронт не вычисляет сам.
+   */
+  seesAllSmsTeams: boolean;
   /** Права `{ page: [actions] }` из /api/auth/me; null до загрузки. */
   permissions: PermissionsMap | null;
   isAuthenticated: boolean;
@@ -92,12 +107,14 @@ export const useAuthStore = create<AuthState>((set) => {
   const initialUser = readString(USER_KEY);
   const initialRole = readString(ROLE_KEY);
   const initialSuperadmin = readString(SUPERADMIN_KEY) === '1';
+  const initialSeesAllSms = readString(SEES_ALL_SMS_KEY) === '1';
   const initialPermissions = readPermissions();
   return {
     token: initialToken,
     username: initialUser,
     role: initialRole,
     isSuperadmin: initialSuperadmin,
+    seesAllSmsTeams: initialSeesAllSms,
     permissions: initialPermissions,
     isAuthenticated: Boolean(initialToken),
     setSession: (token, username) => {
@@ -105,11 +122,12 @@ export const useAuthStore = create<AuthState>((set) => {
       set({ token, username, isAuthenticated: true });
     },
     setPrincipal: (me) => {
-      persistPrincipal(me.role, me.is_superadmin, me.permissions);
+      persistPrincipal(me.role, me.is_superadmin, me.sees_all_sms_teams, me.permissions);
       set({
         username: me.username,
         role: me.role,
         isSuperadmin: me.is_superadmin,
+        seesAllSmsTeams: me.sees_all_sms_teams,
         permissions: me.permissions,
       });
     },
@@ -120,6 +138,7 @@ export const useAuthStore = create<AuthState>((set) => {
         username: null,
         role: null,
         isSuperadmin: false,
+        seesAllSmsTeams: false,
         permissions: null,
         isAuthenticated: false,
       });

@@ -5,6 +5,7 @@ import type {
   ProxyListResponse,
   ProxyStatusResponse,
   ReorderProxiesRequest,
+  SecretRevealResponse,
   UpdateProxyRequest,
 } from '@/types/api';
 
@@ -32,4 +33,17 @@ export function getProxyStatus(id: string, signal?: AbortSignal): Promise<ProxyS
 
 export function deleteProxy(id: string): Promise<void> {
   return apiRequest<void>(`/proxies/${id}`, { method: 'DELETE' });
+}
+
+/**
+ * Reveal пароля прокси по требованию (04-api.md, ADR-035). Гейт `proxies:edit`
+ * (кнопка-глаз рендерится только при `has_password`). Секрет НЕ кэшируется —
+ * вызывается напрямую из detail-модалки, живёт только в локальном стейте.
+ * `404 secret_not_set` — защитный кейс (у прокси нет пароля).
+ */
+export function revealProxyPassword(
+  id: string,
+  signal?: AbortSignal,
+): Promise<SecretRevealResponse> {
+  return apiRequest<SecretRevealResponse>(`/proxies/${id}/password`, { signal });
 }

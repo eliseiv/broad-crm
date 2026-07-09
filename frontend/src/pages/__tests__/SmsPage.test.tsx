@@ -7,10 +7,12 @@ import { ApiError } from '@/lib/api';
 import type { SmsFeedResult } from '@/features/sms/hooks';
 import type { SmsMessage, SmsNumber, TeamListItem } from '@/types/api';
 
-// Гейтинг: page-level view-guard `sms:view` + действия sms:edit/transfer/delete/sync.
+// Гейтинг: page-level view-guard `sms:view` + действия sms:edit/transfer/delete/sync
+// + admin-уровень видимости SMS `sees_all_sms_teams` (ADR-036, фильтр «Все команды»).
 const auth = vi.hoisted(() => ({
   canView: true,
   can: {} as Record<string, boolean>,
+  seesAllTeams: true,
 }));
 
 // Лента SMS: spy на аргумент фильтра (комбинируемость number+team, ADR-030).
@@ -28,6 +30,7 @@ const mutations = vi.hoisted(() => ({
 vi.mock('@/features/auth/hooks', () => ({
   useCanViewPage: () => auth.canView,
   useCan: (_page: string, action: string) => auth.can[action] ?? false,
+  useSeesAllSmsTeams: () => auth.seesAllTeams,
 }));
 
 vi.mock('@/features/sms/hooks', () => ({
@@ -149,6 +152,7 @@ describe('SmsPage', () => {
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
     auth.canView = true;
     auth.can = { edit: true, transfer: true, delete: true, sync: true };
+    auth.seesAllTeams = true;
     feed.value = baseFeed();
     numbersQuery.value = numbersData([]);
     teamsQuery.value = { data: { items: [] } };
@@ -234,6 +238,24 @@ describe('SmsPage', () => {
     // За guard'ом контент не монтируется: лента SMS не запрашивается, табов нет.
     expect(useSmsMessagesSpy).not.toHaveBeenCalled();
     expect(screen.queryByRole('tab')).not.toBeInTheDocument();
+  });
+
+  it('ADR-036: sees_all_sms_teams=true → фильтр «Все команды» присутствует', () => {
+    auth.seesAllTeams = true;
+    teamsQuery.value = { data: { items: [makeTeam('t1', 'Продажи')] } };
+    render(<SmsPage />);
+
+    expect(screen.getByLabelText('Фильтр по команде')).toBeInTheDocument();
+  });
+
+  it('ADR-036: sees_all_sms_teams=false → фильтр «Все команды» скрыт (гейт админ-уровня)', () => {
+    auth.seesAllTeams = false;
+    teamsQuery.value = { data: { items: [makeTeam('t1', 'Продажи')] } };
+    render(<SmsPage />);
+
+    // Ограниченной роли селект «Все команды» недоступен; фильтр по номеру остаётся.
+    expect(screen.queryByLabelText('Фильтр по команде')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Фильтр по номеру')).toBeInTheDocument();
   });
 
   it('вкладка «Номера»: рендерит строку номера из списка', async () => {

@@ -1,20 +1,34 @@
 import { AlertTriangle, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { Pill } from '@/components/ui/Pill';
 import { Spinner } from '@/components/ui/Spinner';
 import { useTeamNumbers } from '@/features/sms/hooks';
 import type { TeamNumberItem, TeamListItem } from '@/types/api';
 
+/** `-` для пустых значений пилюль (строка не «прыгает»), 08-design-system.md. */
+function orDash(value: string | null | undefined): string {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : '-';
+}
+
 /**
- * Строка номера команды в detail-панели (08-design-system.md §detail-панель): ТОЛЬКО
- * номер телефона (минимальная схема `TeamNumberItem` — без login/app_name/note/label).
- * Номер не разрывается посреди цифр (`whitespace-nowrap`); длинный список скроллит панель.
+ * Строка номера команды в detail-панели (08-design-system.md §detail-панель, ADR-034):
+ * Номер + пилюли Логин / Приложение (схема `TeamNumberItem` += `login`/`app_name`; `note`/
+ * `label` по-прежнему не показываются). Номер не разрывается посреди цифр (`whitespace-nowrap`);
+ * пустые значения пилюль → `-`. Длинный список скроллит панель.
  */
 function NumberRow({ number }: { number: TeamNumberItem }) {
+  const login = orDash(number.login);
+  const appName = orDash(number.app_name);
   return (
-    <div className="rounded-sub border border-border-subtle bg-surface-2 px-3 py-2.5">
+    <div className="flex flex-col gap-2 rounded-sub border border-border-subtle bg-surface-2 px-3 py-2.5">
       <span className="whitespace-nowrap font-mono text-[13px] text-text-primary">
         {number.phone_number}
       </span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Pill tone="accent" label={`Логин: ${login}`} title={login} wrap />
+        <Pill tone="yellow" label={`Приложение: ${appName}`} title={appName} wrap />
+      </div>
     </div>
   );
 }

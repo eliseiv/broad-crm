@@ -5,10 +5,16 @@ import type { TeamCreateRequest, TeamUpdateRequest } from '@/types/api';
 
 export const teamsKey = ['teams'] as const;
 
-export function useTeams() {
+/**
+ * Список CRM-команд. `enabled` (default `true`) позволяет вызывающему отключить
+ * запрос, когда команды не нужны/недоступны (напр. фильтр «Все команды» на /sms
+ * рендерится только admin-уровню, ADR-036 — прочим ролям /api/teams вернул бы 403).
+ */
+export function useTeams(enabled = true) {
   return useQuery({
     queryKey: teamsKey,
     queryFn: ({ signal }) => listTeams(signal),
+    enabled,
   });
 }
 

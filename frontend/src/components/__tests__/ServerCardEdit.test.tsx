@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -35,6 +35,7 @@ function server(overrides: Partial<Server> = {}): Server {
     id: 'server-1',
     name: 'Server 01',
     ip: '10.0.0.10',
+    ssh_user: 'root',
     exporter_port: 9100,
     provision_status: 'online',
     position: 0,
@@ -50,18 +51,34 @@ function server(overrides: Partial<Server> = {}): Server {
   };
 }
 
-describe('ServerCard edit', () => {
+describe('ServerCard detail → edit (ADR-035)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('opens edit modal prefilled with name and PATCHes {name}', async () => {
+  it('клик по карточке открывает detail-модалку (Просмотр), НЕ edit', async () => {
     const user = userEvent.setup();
     render(<ServerCard server={server()} />, { wrapper });
 
-    // Клик по карточке (role=button) открывает модалку редактирования.
-    await user.click(screen.getByRole('button', { name: 'Изменить сервер Server 01' }));
-    expect(screen.getByText('Изменить сервер')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Просмотр сервера Server 01' }));
 
-    // Поле «Название» префилено текущим именем.
+    const dialog = within(await screen.findByRole('dialog'));
+    expect(dialog.getByText('Просмотр')).toBeInTheDocument();
+    // Detail-поля read-only: Название / IP / Пользователь.
+    expect(dialog.getByText('Пользователь')).toBeInTheDocument();
+    expect(dialog.getByText('root')).toBeInTheDocument();
+    // edit-модалка ещё не открыта.
+    expect(screen.queryByText('Изменить сервер')).not.toBeInTheDocument();
+    expect(hooks.updateMutate).not.toHaveBeenCalled();
+  });
+
+  it('карандаш в detail-модалке открывает edit prefilled и PATCHes {name}', async () => {
+    const user = userEvent.setup();
+    render(<ServerCard server={server()} />, { wrapper });
+
+    await user.click(screen.getByRole('button', { name: 'Просмотр сервера Server 01' }));
+    // Карандаш «Редактировать» в шапке detail-модалки закрывает detail и открывает edit.
+    await user.click(await screen.findByRole('button', { name: 'Редактировать' }));
+
+    expect(await screen.findByText('Изменить сервер')).toBeInTheDocument();
     const nameInput = screen.getByLabelText('Название') as HTMLInputElement;
     expect(nameInput.value).toBe('Server 01');
 
@@ -74,11 +91,22 @@ describe('ServerCard edit', () => {
     expect(hooks.updateMutate.mock.calls[0][0]).toEqual({ name: 'Server 01 renamed' });
   });
 
-  it('delete button does not open the edit modal (stopPropagation)', async () => {
+  it('без права servers:edit (canEdit=false) карандаш в detail-модалке скрыт', async () => {
+    const user = userEvent.setup();
+    render(<ServerCard server={server()} canEdit={false} />, { wrapper });
+
+    await user.click(screen.getByRole('button', { name: 'Просмотр сервера Server 01' }));
+    await screen.findByText('Просмотр');
+
+    // Карандаш гейтится servers:edit — без права его нет.
+    expect(screen.queryByRole('button', { name: 'Редактировать' })).not.toBeInTheDocument();
+  });
+
+  it('delete button does not open detail/edit (stopPropagation)', async () => {
     const user = userEvent.setup();
     render(<ServerCard server={server()} />, { wrapper });
 
-    // Клик по кнопке «Удалить» открывает подтверждение удаления, НЕ edit.
+    // Клик по кнопке «Удалить» открывает подтверждение удаления, НЕ detail/edit.
     await user.click(screen.getByRole('button', { name: 'Удалить сервер Server 01' }));
 
     expect(screen.getByText('Удалить сервер?')).toBeInTheDocument();

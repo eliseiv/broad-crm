@@ -6,6 +6,7 @@ import type {
   CreateAiKeyRequest,
   CreateAiKeyResponse,
   ReorderAiKeysRequest,
+  SecretRevealResponse,
   UpdateAiKeyRequest,
 } from '@/types/api';
 
@@ -31,4 +32,13 @@ export function getAiKeyStatus(id: string, signal?: AbortSignal): Promise<AiKeyS
 
 export function deleteAiKey(id: string): Promise<void> {
   return apiRequest<void>(`/ai-keys/${id}`, { method: 'DELETE' });
+}
+
+/**
+ * Reveal полного ключа по требованию (04-api.md, ADR-035). Гейт `ai-keys:edit`.
+ * Секрет НЕ кэшируется — вызывается напрямую из detail-модалки, живёт только в
+ * локальном стейте (в обычных ответах — только `key_masked`).
+ */
+export function revealAiKeyValue(id: string, signal?: AbortSignal): Promise<SecretRevealResponse> {
+  return apiRequest<SecretRevealResponse>(`/ai-keys/${id}/key`, { signal });
 }

@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from app.errors import proxy_not_found, unprocessable
-from app.infra.crypto import encrypt_secret
+from app.errors import proxy_not_found, secret_not_set, unprocessable
+from app.infra.crypto import decrypt_secret, encrypt_secret
 from app.logging import get_logger
 from app.models.proxy import Proxy, ProxyStatus, ProxyType
 from app.repositories.proxy_repository import ProxyRepository
@@ -162,6 +162,20 @@ class ProxyService:
             error_message=proxy.error_message,
             last_checked_at=proxy.last_checked_at,
         )
+
+    async def reveal_password(self, proxy_id: uuid.UUID) -> str:
+        """On-demand reveal пароля прокси (ADR-035, require proxies:edit).
+
+        Расшифровка `password_encrypted` в памяти обработчика. Нет записи → 404
+        proxy_not_found; у прокси нет пароля (`password_encrypted IS NULL`) → 404
+        secret_not_set. Значение возвращается роутеру и НЕ логируется здесь.
+        """
+        proxy = await self._repo.get_by_id(proxy_id)
+        if proxy is None:
+            raise proxy_not_found()
+        if proxy.password_encrypted is None:
+            raise secret_not_set()
+        return decrypt_secret(proxy.password_encrypted)
 
     async def delete_proxy(self, proxy_id: uuid.UUID) -> None:
         """Hard-delete; повтор → 404 proxy_not_found."""

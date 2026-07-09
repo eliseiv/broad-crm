@@ -59,9 +59,13 @@ class MeResponse(BaseModel):
 
     `permissions` — производное для UI-гейтинга (для супер-админа — полный каталог).
     Безопасность обеспечивается сервером (403), UI-гейтинг — только UX.
+    `sees_all_sms_teams` — производный admin-уровень видимости SMS (ADR-032/036):
+    `is_superadmin OR permissions_subset(full_catalog_permissions(), permissions)`;
+    backend — единственный источник (фронт не дублирует `permissions_subset`).
     """
 
     username: str
     role: str
     is_superadmin: bool
     permissions: dict[str, list[str]]
+    sees_all_sms_teams: bool

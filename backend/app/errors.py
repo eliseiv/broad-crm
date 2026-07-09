@@ -180,6 +180,14 @@ def proxy_not_found() -> AppError:
     )
 
 
+def secret_not_set() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="secret_not_set",
+        message="Секрет не задан",
+    )
+
+
 def backend_not_found() -> AppError:
     return AppError(
         status_code=status.HTTP_404_NOT_FOUND,

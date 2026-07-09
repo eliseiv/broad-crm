@@ -14,6 +14,11 @@ interface ModalProps {
   dismissible?: boolean;
   /** Ширина контента: 'md' (по умолчанию) или 'lg' (широкие формы, напр. матрица прав). */
   size?: 'md' | 'lg';
+  /**
+   * Опциональное действие в шапке справа, слева от кнопки «Закрыть» (например,
+   * карандаш-редактирование в detail-модалке, ADR-035).
+   */
+  headerAction?: ReactNode;
 }
 
 const SIZE_CLASS: Record<'md' | 'lg', string> = {
@@ -30,6 +35,7 @@ export function Modal({
   footer,
   dismissible = true,
   size = 'md',
+  headerAction,
 }: ModalProps) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -62,17 +68,20 @@ export function Modal({
                 </Dialog.Description>
               )}
             </div>
-            <Dialog.Close
-              className={cn(
-                'rounded-md p-1 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-primary',
-                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-                !dismissible && 'pointer-events-none opacity-40',
-              )}
-              aria-label="Закрыть"
-              disabled={!dismissible}
-            >
-              <X className="h-4 w-4" />
-            </Dialog.Close>
+            <div className="flex shrink-0 items-center gap-1">
+              {headerAction}
+              <Dialog.Close
+                className={cn(
+                  'rounded-md p-1 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-primary',
+                  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                  !dismissible && 'pointer-events-none opacity-40',
+                )}
+                aria-label="Закрыть"
+                disabled={!dismissible}
+              >
+                <X className="h-4 w-4" />
+              </Dialog.Close>
+            </div>
           </div>
           {children}
           {footer && <div className="mt-6 flex justify-end gap-2">{footer}</div>}
