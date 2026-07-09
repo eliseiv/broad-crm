@@ -132,12 +132,22 @@ async def seed_role(
     return role
 
 
-async def seed_user(session: AsyncSession, role: Role, *, username: str | None = None) -> User:
+async def seed_user(
+    session: AsyncSession,
+    role: Role,
+    *,
+    username: str | None = None,
+    telegram: str | None = None,
+    is_active: bool = True,
+    first_login_at: datetime | None = None,
+) -> User:
     user = User(
         username=username or f"user-{uuid.uuid4().hex[:10]}",
         role_id=role.id,
         password_hash="x",
-        is_active=True,
+        is_active=is_active,
+        telegram=telegram,
+        first_login_at=first_login_at,
     )
     session.add(user)
     await session.flush()

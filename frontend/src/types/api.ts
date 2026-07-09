@@ -774,6 +774,34 @@ export interface SmsSyncResult {
   skipped_existing: number;
 }
 
+/**
+ * Тело POST /api/sms/telegram/auth (04-api.md, схема `TelegramAuthRequest`) —
+ * беспарольный Telegram-SSO операторской Mini App. `init_data` — raw Telegram
+ * WebApp initData (аутентификатор; HMAC-SHA256 + TTL). Публичный эндпоинт.
+ */
+export interface TelegramAuthRequest {
+  init_data: string;
+}
+
+/**
+ * Ответ 200 POST /api/sms/telegram/auth (04-api.md, схема `TelegramAuthResponse`,
+ * ADR-031). Успешный SSO: выдан CRM access-JWT + авто-upsert/revive линка.
+ * Ошибки — 401 `invalid_init_data`/`init_data_expired`, 403
+ * `sms_operator_not_provisioned`, 400 `validation_error`.
+ */
+export interface TelegramAuthResponse {
+  /** Обычный CRM access-JWT (как у POST /api/auth/login). Хранится Mini App в памяти. */
+  access_token: string;
+  /** Всегда `"bearer"`. */
+  token_type: string;
+  /** TTL access-токена в секундах. */
+  expires_in: number;
+  /** Из проверенного `init_data`. */
+  telegram_user_id: number;
+  /** Всегда `true` при успехе (линк upserted/revived). */
+  linked: boolean;
+}
+
 /** Единый формат ошибки API (04-api.md). */
 export interface ApiErrorBody {
   error: {

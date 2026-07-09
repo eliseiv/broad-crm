@@ -976,6 +976,45 @@ export function usageToZone(p: number): "green" | "yellow" | "red" {
 
 Feature-слой `features/sms` (`api.ts`, `hooks.ts`) на TanStack Query по образцу `features/mail` (курсор `useInfiniteQuery`) + `features/teams` (мутации с инвалидацией): `useSmsMessages(filter)` (infinite), `useSmsNumbers()`, `useUpdateSmsNumber`, `useTransferSmsNumber`, `useDeleteSmsNumber`, `useSyncSmsNumbers`. Типы — `types/api.ts` (`SmsMessage`, `SmsMessagesResponse`, `SmsNumber`, `SmsNumbersResponse`, `SmsNumberUpdateRequest`, `SmsNumberTransferRequest`, `SmsTeamRef`; `TeamListItem += number_count`).
 
+## Операторская Telegram Mini App (СМС)
+
+Экран, который **оператор** открывает **внутри Telegram** (по кнопке SMS-бота), чтобы **беспарольно** войти (по Telegram-идентичности) и видеть свои номера/сообщения. Решение — [ADR-031](adr/ADR-031-sms-operator-mini-app.md); модуль — [modules/sms](modules/sms/README.md#операторская-telegram-mini-app-нормативно). **Отдельный** от админской страницы «СМС» экран `SmsMiniAppPage` на публичном маршруте **`/tg/sms`** (вне `AppLayout`, вне nav-shell, без page-guard/redirect). **Формы входа/пароля НЕТ** — аутентификация беспарольная (`POST /api/sms/telegram/auth` SSO → CRM-JWT).
+
+### Нативный вид Telegram (themeParams)
+- Mini App **наследует тему Telegram**, а не тёмные токены админ-SPA: применяются `Telegram.WebApp.themeParams` (`bg_color`/`secondary_bg_color`/`text_color`/`hint_color`/`link_color`/`button_color`/`button_text_color`) в CSS custom properties (`--tg-bg`/`--tg-text`/`--tg-button`/… по образцу донорского `tg.js`), подписка на `themeChanged`. Вызвать `WebApp.ready()` и `WebApp.expand()` при старте. Так экран выглядит нативно и в светлой, и в тёмной теме клиента Telegram.
+- Fallback (значение `themeParams` недоступно / открыто вне Telegram) — нейтральные тёмные токены дизайн-системы.
+- **Telegram WebApp SDK — self-hosted** (`/telegram-web-app.js`, свой origin), CSP `script-src 'self'` не ослабляется ([ADR-031](adr/ADR-031-sms-operator-mini-app.md), [05-security.md](05-security.md#операторская-mini-app-tgsms-adr-031)).
+
+### Состояния экрана (нормативно)
+| Состояние | Когда | Содержимое |
+|-----------|-------|------------|
+| **Загрузка** | SSO `POST /api/sms/telegram/auth` | индикатор «Загрузка…» |
+| **Успех** (`200`) | оператор сопоставлен, получен `access_token` | статус «Привязан» + номера/сообщения (при `sms:view`) |
+| **Не сопоставлен** (`403 sms_operator_not_provisioned`) | Telegram не сопоставлен с активным оператором | экран-подсказка «обратитесь к администратору» |
+| **Ошибка initData** (`401 invalid_init_data` / `init_data_expired`) | плохой/протухший `init_data` | сообщение + «Открыть заново через бота» |
+| **Вне Telegram** | пустой/битый `initData` (обычный браузер) | подсказка «Откройте приложение по кнопке бота в Telegram» |
+| **Сетевая ошибка** | сбой запроса | сообщение + повтор |
+
+Формы входа/пароля и экрана «Придумайте пароль» в Mini App **нет** (беспарольный SSO).
+
+### Нормативный словарь UI-строк (Mini App)
+| Ключ | Строка |
+|------|--------|
+| Заголовок экрана | **«СМС — уведомления»** |
+| Статус: привязан (бейдж) | **«Привязан»** |
+| Привязан — пояснение | **«Telegram привязан — новые SMS вашей команды приходят сюда.»** |
+| Не сопоставлен (`403 sms_operator_not_provisioned`) — заголовок | **«Доступ не настроен»** |
+| Не сопоставлен — пояснение | **«Ваш Telegram не сопоставлен с оператором CRM. Обратитесь к администратору.»** |
+| Ошибка initData | **«Сессия Telegram устарела — откройте приложение заново через бота»** |
+| Вне Telegram | **«Откройте это приложение по кнопке бота в Telegram»** |
+| Сетевая ошибка | **«Не удалось загрузить»** + повтор |
+| Заголовок «мои номера» (при `sms:view`) | **«Мои номера»** |
+| Заголовок «мои сообщения» (при `sms:view`) | **«Мои сообщения»** |
+| Просмотр недоступен (нет `sms:view`) | не показывается (только статус привязки) |
+
+- Просмотр номеров/сообщений (только под `sms:view`) переиспользует карточки/пилюли страницы «СМС» ([Страница «СМС»](#страница-смс)) — отдельных токенов не вводит.
+- Пункта навигации у Mini App **нет** (вход — только по кнопке Telegram-бота); в меню/`DefaultRoute` `/tg/sms` не участвует.
+
 ## Компонент мультивыбор (`MultiSelect`)
 
 Новый UI-примитив (в проекте его нет — существующий [`Select`](#компонент-select) одиночный). Мультивыбор из списка сущностей (чекбокс-список на базе [`Checkbox`](#компонент-checkbox) либо отдельный `MultiSelect`) — без новой обязательной зависимости (по образцу нативного `Select`/`Checkbox`; конкретная реализация — на усмотрение frontend, [02-tech-stack.md](02-tech-stack.md#frontend)).

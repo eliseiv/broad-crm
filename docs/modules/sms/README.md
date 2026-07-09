@@ -10,7 +10,7 @@
 - **Вкладка «Сообщения»** — лента входящих SMS (newest-first, keyset-курсор). Карточка: `from_number → to_number` + бейдж команды (зелёная пилюля / серая «Команды нет») + дата; пилюли `Логин:`/`Приложение:`/`Примечание:`; текст SMS. Два фильтра (взаимо-**комбинируемые**): «Все номера» + «Все команды».
 - **Вкладка «Номера»** — таблица всех видимых номеров с инлайн-правкой `login`/`app_name`/`note`, переносом в команду (`transfer`), удалением (`delete`), синхронизацией из Twilio (`sync`). Клиентский поиск по номеру.
 - **Twilio-приём** — публичный webhook `POST /api/sms/webhooks/twilio/sms` (проверка `X-Twilio-Signature`); дедуп по `MessageSid`; резолв команды по номеру-получателю; crash-recoverable fan-out.
-- **Telegram-доставка** — новый бот (`SMS_TELEGRAM_BOT_TOKEN`): fan-out входящего SMS всем операторам команды (по `user_teams` + живой линк), retry pending/failed фоновым монитором, dead-link при `403`. Привязка оператора — Mini App (`POST /api/sms/telegram/link` под JWT).
+- **Telegram-доставка** — новый бот (`SMS_TELEGRAM_BOT_TOKEN`): fan-out входящего SMS всем операторам команды (по `user_teams` + живой линк), retry pending/failed фоновым монитором, dead-link при `403`. Привязка оператора — операторская **Mini App** на маршруте `/tg/sms` (**беспарольный Telegram-SSO**: `POST /api/sms/telegram/auth` резолвит оператора по Telegram-идентичности → CRM-JWT + авто-линк), см. §«Операторская Telegram Mini App» и [ADR-031](../../adr/ADR-031-sms-operator-mini-app.md).
 - **Доработка `/teams`** — `number_count` на карточке команды + список номеров команды (`GET /api/teams/{id}/numbers`) в detail-панели.
 
 ## Out of scope (Этап 1)
@@ -58,13 +58,15 @@
 - `POST /api/sms/numbers/{id}/transfer` — назначить/снять команду, `require("sms","transfer")`.
 - `DELETE /api/sms/numbers/{id}` — удалить номер, `require("sms","delete")`.
 - `POST /api/sms/numbers/sync` — синк из Twilio, `require("sms","sync")`.
-- `POST /api/sms/telegram/link` — Mini App-привязка текущего юзера, **только JWT** (без action `sms`).
+- `POST /api/sms/telegram/link` — self-link текущего юзера, **только JWT** (без action `sms`). Mini App его **не использует** (привязка авто-происходит в SSO `telegram/auth`, [ADR-031](../../adr/ADR-031-sms-operator-mini-app.md)).
 - `GET /api/teams/{id}/numbers` — номера команды для detail-панели `/teams`, `require("teams","view")`. Отдаёт **минимальную** `TeamNumberItem` (`id`/`phone_number`/`team`) — **без** `login`/`app_name`/`note`/`label` (авторизационное сужение, [ADR-030](../../adr/ADR-030-sms-module-full-merge.md) §8).
 
 Публичные (без JWT, гейтятся подписью/секретом/HMAC), наружу через nginx:
 - `POST /api/sms/webhooks/twilio/sms` — приём SMS (подпись `X-Twilio-Signature`).
 - `POST /api/sms/telegram/webhook` — апдейты SMS-бота (секрет `X-Telegram-Bot-Api-Secret-Token`, constant-time).
-- `POST /api/sms/telegram/auth` — Mini App bootstrap (HMAC `init_data`, статус линка; сессию/cookie НЕ создаёт).
+- `POST /api/sms/telegram/auth` — **беспарольный Telegram-SSO** Mini App (HMAC `init_data` → резолв оператора → CRM-JWT + авто-линк; не сопоставлен → `403 sms_operator_not_provisioned`, [ADR-031](../../adr/ADR-031-sms-operator-mini-app.md)).
+
+Операторская Mini App (`/tg/sms`, [ADR-031](../../adr/ADR-031-sms-operator-mini-app.md)) использует **беспарольный SSO** через **пересмотренный** `POST /api/sms/telegram/auth` (initData → резолв оператора по `telegram_user_id`/`users.telegram` → авто-upsert линка + **выдача CRM-JWT**; не сопоставлен → `403 sms_operator_not_provisioned`). Просмотр номеров/сообщений — существующие `GET /api/sms/numbers`/`GET /api/sms/messages` под этим JWT и `sms:view`. Требуется backend-доработка `telegram/auth` (см. §Backend-доработка Telegram-SSO).
 
 Расширение существующего: `GET /api/teams` — новое поле `number_count` в `TeamListItem` ([04-api.md#teams](../../04-api.md#teams)).
 
@@ -100,10 +102,60 @@
 
 ## Telegram-привязка оператора (нормативно)
 
-Под JWT (без Redis/pending, [ADR-030](../../adr/ADR-030-sms-module-full-merge.md) §3):
-- **Mini App bootstrap** — `POST /api/sms/telegram/auth` (публичный, HMAC `init_data`): проверяет подпись initData, возвращает `{ linked, telegram_user_id }` (привязан ли этот Telegram к живому CRM-юзеру). Сессию/cookie **не** создаёт. Служит Mini App для выбора: показать «вы получаете SMS» либо предложить войти в CRM.
-- **Привязка** — `POST /api/sms/telegram/link` (**только аутентификация**, любой валидный JWT): проверяет initData → upsert `sms_telegram_links(telegram_user_id, user_id = principal.user_id, dead_at = NULL)` (идемпотентно, `ON CONFLICT (telegram_user_id) DO UPDATE`). Привязывает **свой** Telegram к своему CRM-юзеру. **Гейтится только JWT, не action `sms`** — доставка операторам определяется членством в команде (`user_teams`), а не правом на страницу.
+Без Redis/pending ([ADR-030](../../adr/ADR-030-sms-module-full-merge.md) §3). Основной путь Mini App — **беспарольный Telegram-SSO** ([ADR-031](../../adr/ADR-031-sms-operator-mini-app.md), см. §«Операторская Telegram Mini App»):
+- **Беспарольный SSO** — `POST /api/sms/telegram/auth` (публичный, HMAC `init_data`): резолвит CRM-оператора по `telegram_user_id`/`users.telegram`, **авто-upsert линка** (`sms_telegram_links(telegram_user_id → user_id, dead_at=NULL)`, revive при `dead_at`) и **выдаёт CRM access-JWT**. Не сопоставлен → `403 sms_operator_not_provisioned`. Это основная точка привязки оператора.
+- **Self-link** — `POST /api/sms/telegram/link` (**только аутентификация**, любой валидный JWT): проверяет initData → upsert `sms_telegram_links(telegram_user_id, user_id = principal.user_id, dead_at = NULL)` (идемпотентно, `ON CONFLICT (telegram_user_id) DO UPDATE`). Привязывает **свой** Telegram к своему CRM-юзеру (напр. из админ-SPA); **Mini App его не использует** (привязка авто-происходит в SSO). **Гейтится только JWT, не action `sms`** — доставка операторам определяется членством в команде (`user_teams`), а не правом на страницу.
 - **Webhook бота** — `POST /api/sms/telegram/webhook`: бот обрабатывает **только `/start`** → `sendMessage` с кнопкой `web_app` (`url = SMS_TELEGRAM_WEBAPP_URL`); прочие апдейты → `200` no-op. Валидация секрет-токена `X-Telegram-Bot-Api-Secret-Token` constant-time (`secrets.compare_digest`) до разбора тела; несовпадение → `403`.
+
+## Операторская Telegram Mini App (нормативно)
+
+Страница, которую **оператор** открывает **внутри Telegram** (по кнопке от SMS-бота), чтобы **беспарольно** войти (по Telegram-идентичности) и видеть свои номера/сообщения. Решение — [ADR-031](../../adr/ADR-031-sms-operator-mini-app.md). Без Mini App после cutover привязок `sms_telegram_links` нет → доставка не работает (это блокер доставки).
+
+### Маршрут и модель (ADR-031)
+- **Маршрут — выделенный публичный SPA `/tg/sms`**, вне `AppLayout` и вне page-guard'ов RBAC: **без** redirect на `/login`, **без** заглушек «Недостаточно прав», **без** админского nav-shell. Отдаётся тем же `index.html` (`try_files $uri /index.html`), React Router резолвит `/tg/sms` в компонент `SmsMiniAppPage` **вне** ветки `AppLayout` (сосед публичного `/login`). `SMS_TELEGRAM_WEBAPP_URL = https://broadappsdev.shop/tg/sms` ([07-deployment.md](../../07-deployment.md#переменные-окружения)).
+- **Онбординг — беспарольный Telegram-SSO** ([ADR-031](../../adr/ADR-031-sms-operator-mini-app.md), решение пользователя). Оператор определяется по Telegram-идентичности (сопоставление с `users.telegram`), **без пароля**; сервер выдаёт CRM-JWT и авто-привязывает линк. `init_data` — **аутентификатор** (HMAC доказывает владение `telegram_user_id` и текущим `username`). Оператор обязан иметь CRM-аккаунт с заполненным `telegram` (заводит админ) и роль с `sms:view` (иначе просмотр пуст).
+
+### Флоу end-to-end (беспарольный SSO)
+1. Оператор → боту `/start` → `POST /api/sms/telegram/webhook` → бот отвечает кнопкой `web_app` (`url = …/tg/sms`).
+2. Кнопка → Telegram открывает Mini App на `/tg/sms` (передаёт `initData`).
+3. Mini App читает `initData` (self-hosted SDK, см. §Безопасность) → `POST /api/sms/telegram/auth` (SSO).
+4. Сервер резолвит оператора (§Резолв ниже): **успех** → `{ access_token, token_type, expires_in, telegram_user_id, linked:true }`, линк upserted/revived, `first_login_at` проставлен идемпотентно ([ADR-028](../../adr/ADR-028-user-status-first-login.md)).
+5. Mini App сохраняет `access_token` в памяти auth-store → показывает статус «Привязан» + свои номера/сообщения через `GET /api/sms/numbers`/`GET /api/sms/messages` под этим JWT и `sms:view` (SMS-scope до команд оператора, §Видимость).
+6. **`403 sms_operator_not_provisioned`** → Mini App показывает «Ваш Telegram не сопоставлен с оператором CRM. Обратитесь к администратору».
+7. Привязка → fan-out входящих SMS команды оператора идёт ему в Telegram (§Приём SMS и fan-out).
+
+### Резолв оператора (нормативно)
+1. Валидировать `init_data` (HMAC + TTL). Извлечь `telegram_user_id` и `username` (может отсутствовать).
+2. **Первично — по иммутабельному `telegram_user_id`:** линк `sms_telegram_links WHERE telegram_user_id = X` (независимо от `dead_at`). Есть → `user_id`; `dead_at` не пуст → revive (`dead_at=NULL`).
+3. **Bootstrap — по username (только если линка нет):** `username` есть → `normalize_telegram(username)` → `users WHERE telegram = norm AND is_active` → upsert линк.
+4. `user_id` активен → идемпотентно `first_login_at` → выпуск access-JWT (`sub = users.username`, `uid`/`role`/`superadmin:false`) → `200`. **`sub` — ВСЕГДА `users.username` резолвнутого пользователя** (не Telegram-`username` из `init_data`, который в id-first-пути может быть `None`) — консистентно с `POST /api/auth/login`.
+5. Иначе → `403 sms_operator_not_provisioned`.
+
+**Приоритет:** `telegram_user_id` (через линк) первичен — иммутабелен, переживает смену ника; `username` — bootstrap первого контакта. Ник сменился **после** привязки → вход работает (линк по id); ник сменился **до** первой привязки и в `users.telegram` старый → нет совпадения до обновления админом. Полный контракт — [04-api.md#post-apismstelegramauth](../../04-api.md#post-apismstelegramauth).
+
+Супер-админ (`.env`, без `uid`/`telegram`) через SSO не резолвится (`403 sms_operator_not_provisioned`) и получателем доставок не является ([ADR-030](../../adr/ADR-030-sms-module-full-merge.md) §7). `POST /api/sms/telegram/link` (JWT self-link) **Mini App не использует** — привязка авто-происходит в SSO.
+
+### Требования к провижинингу операторов
+- Оператор = CRM-пользователь (`users`) с **заполненным `telegram`** (нормализованный ник совпадает с его ником в Telegram) — заводит админ.
+- Роль оператора **обязана включать `sms:view`** (иначе Mini App покажет пустой просмотр).
+- Оператор должен быть в нужной команде (`user_teams`) — иначе fan-out его не достигнет.
+- Оператор должен иметь публичный Telegram-`@username` (без ника username-bootstrap невозможен).
+
+### Открытые продуктовые развилки
+- **[Q-SMS-1](../../99-open-questions.md)** (resolved, native-only) — браузерный Telegram Web не поддержан (CSP `frame-ancestors 'none'` не ослабляется).
+- **[Q-SMS-2](../../99-open-questions.md)** (resolved) — номера/сообщения оператор видит через существующие JWT-эндпоинты под `sms:view`; отдельный initData-scoped read-эндпоинт не нужен.
+- **[Q-SMS-3](../../99-open-questions.md)** (open) — риск подмены telegram-ника до первого линка + политика авто-провижининга операторов (дефолт: ручное заведение админом).
+
+## Backend-доработка Telegram-SSO (нормативно, ADR-031)
+
+Беспарольный SSO пересматривает **существующий** `POST /api/sms/telegram/auth` (сейчас возвращает лишь `{ linked, telegram_user_id }`). Требуется:
+
+1. **Схема ответа** `TelegramAuthResponse` (`app/schemas/sms.py`) — заменить на SSO-форму: `access_token: str`, `token_type: str = "bearer"`, `expires_in: int`, `telegram_user_id: int`, `linked: bool` (полный контракт — [04-api.md#post-apismstelegramauth](../../04-api.md#post-apismstelegramauth)).
+2. **Сервис** `sms_telegram_link_service.py::auth` — реализовать резолв (§Резолв оператора): валидация initData (уже есть `verify_init_data` → `ValidatedInitData` c `telegram_user_id` и `username`); поиск линка по `telegram_user_id` (независимо от `dead_at`, revive при `dead_at`); иначе bootstrap `UserRepository.get_by_telegram(normalize_telegram(username))` (обе функции уже есть) + upsert линка; идемпотентный `first_login_at` ([ADR-028](../../adr/ADR-028-user-status-first-login.md)); выпуск JWT `issue_access_token(sub=user.username, role=user.role.name, superadmin=False, uid=str(user.id))` (уже есть). **`sub` берётся из `users.username` резолвнутого пользователя, НЕ из Telegram-`username` initData** (тот в id-first-пути может быть `None` → malformed JWT; login-флоу тоже кладёт CRM-логин). Сервису нужны зависимости `UserRepository` + `Settings` (для TTL/JWT).
+3. **Репозиторий** `SmsTelegramLinkRepository` — метод получения линка по `telegram_user_id` **независимо от `dead_at`** + revive (`dead_at=NULL`) при upsert (для шага 2).
+4. **Ошибка** `sms_operator_not_provisioned` (`app/errors.py`, `403`) — не сопоставлен активный оператор. `init_data`/`username` не логируются.
+5. **Роутер** `sms_webhooks.py::telegram_auth` — вернуть новую `TelegramAuthResponse`; остаётся публичным (CSRF/JWT-exempt).
+6. **Регистрация** SPA-маршрута `/tg/sms` вне `AppLayout` и вендоринг `telegram-web-app.js` — на стороне frontend/devops (не backend).
 
 ## Безопасность (нормативно)
 
@@ -111,6 +163,7 @@
 - **Twilio-подпись**: `POST /api/sms/webhooks/twilio/sms` валидирует `X-Twilio-Signature` по `TWILIO_AUTH_TOKEN` (при `VERIFY_TWILIO_SIGNATURE=true`); URL для подписи реконструируется **только из `SMS_PUBLIC_BASE_URL` + путь** (единственный источник истины; `X-Forwarded-*` для подписи не используется — [05-security.md](../../05-security.md#подпись-twilio-post-apismswebhookstwiliosms)). Неверная подпись → `401 invalid_twilio_signature`.
 - **Telegram-webhook-секрет**: `SMS_TELEGRAM_WEBHOOK_SECRET`, constant-time compare; `raw` тело/токены не логируются.
 - **Mini App initData**: HMAC-SHA256 (`WebAppData`-ключ из `SMS_TELEGRAM_BOT_TOKEN`) + TTL `auth_date`; `init_data` не логируется.
+- **Маршрут Mini App `/tg/sms`** ([ADR-031](../../adr/ADR-031-sms-operator-mini-app.md), [05-security.md](../../05-security.md#операторская-mini-app-tgsms-adr-031)): публичный (без JWT-redirect), вне админского SPA-shell; **Telegram WebApp SDK self-hosted** (`/telegram-web-app.js`, свой origin) — CSP `script-src 'self'` **не ослабляется**; поверхность — нативные Telegram-webview (браузерный Telegram Web вне MVP, `frame-ancestors 'none'` не ослабляется, [Q-SMS-1](../../99-open-questions.md)).
 - **Секреты** (`TWILIO_AUTH_TOKEN`, `SMS_TELEGRAM_BOT_TOKEN`, `SMS_TELEGRAM_WEBHOOK_SECRET`) — только из env, не в БД/логах/ответах API/SPA/URL.
 
 ## Каскады удаления (нормативно)
@@ -126,6 +179,15 @@
 
 ### Навигация
 - Пункт **«СМС»** (`NavLink`, маршрут `/sms`) — в категорию **«Агрегатор»** ([ADR-022](../../adr/ADR-022-teams-nav-categories.md)) рядом с «Почты». Не-full-bleed (обычный поток документа). Page-guard `useCanViewPage('sms')`; в объект `access` добавляется `sms`.
+- **Операторская Mini App — маршрут `/tg/sms` вне навигации и вне `AppLayout`** ([ADR-031](../../adr/ADR-031-sms-operator-mini-app.md)): публичный route (сосед `/login`), **без** page-guard/redirect/nav-shell. Пункта в меню нет (вход — только по кнопке Telegram-бота). См. [08-design-system.md#операторская-telegram-mini-app-смс](../../08-design-system.md#операторская-telegram-mini-app-смс).
+
+### Операторская Mini App `SmsMiniAppPage` (`/tg/sms`, ADR-031)
+- Компонент `SmsMiniAppPage` в `features/sms` (отдельный от админской `SmsPage`), рендерится публичным маршрутом `/tg/sms` **вне** `AppLayout`/auth-guard. Наружу не ходит — только `/api/*` (тот же origin).
+- **Telegram WebApp SDK — self-hosted** (`frontend/public/telegram-web-app.js`, свой origin; CSP `script-src 'self'`). Подключение — на маршруте `/tg/sms` (в `index.html` либо динамической инъекцией), не глобально в админ-shell. Обновление SDK — ручной bump вендоренного файла.
+- **SSO-bootstrap (без формы входа):** прочитать `initData` из `window.Telegram.WebApp` → `POST /api/sms/telegram/auth` → при `200` сохранить `access_token` в память auth-store и войти. Применить `themeParams` Telegram (нативный вид), `ready()`/`expand()`.
+- **Состояния:** loading (SSO) · **успех** (JWT получен: статус «Привязан» + номера/сообщения под `sms:view`) · `403 sms_operator_not_provisioned` (экран «Ваш Telegram не сопоставлен с оператором CRM — обратитесь к администратору») · `401 invalid_init_data`/`init_data_expired` (сообщение «Сессия Telegram устарела — откройте заново через бота») · «вне Telegram» (пустой/битый `initData` — подсказка «Откройте по кнопке бота в Telegram») · сетевая ошибка (сообщение + повтор). **Пароль/форма входа отсутствуют** (беспарольный SSO).
+- **Просмотр номеров/сообщений (`sms:view`):** реюз хуков `useSmsNumbers`/`useSmsMessages` (те же JWT-эндпоинты, SMS-scope) под полученным `access_token`. Без `sms:view` — просмотр пуст (показывается только статус привязки).
+- Словарь строк и токены Mini App — [08-design-system.md#операторская-telegram-mini-app-смс](../../08-design-system.md#операторская-telegram-mini-app-смс).
 
 ### Страница `SmsPage`
 - Локальные табы-тумблеры (`role="tablist"`, как в `MailPage`), default = **«Сообщения»**.
@@ -153,9 +215,15 @@
 - [ ] Секреты Twilio/SMS-бота только из env; не в БД/логах/ответах/SPA/URL. Notifier-бот (`app/infra/telegram.py`) не изменён.
 - [ ] `CATALOG["sms"] = ("view","edit","transfer","sync","delete")`; `GET /api/teams` отдаёт `number_count`.
 - [ ] Frontend: страница `/sms` (табы Сообщения/Номера), фильтры, инлайн-правка, перенос/удаление/синк, все состояния UI, словарь из [08-design-system.md](../../08-design-system.md#страница-смс); `/teams` — `number_count` на карточке + detail-панель со списком номеров; тёмная тема, без layout-регрессии `/teams` и `/mail`.
+- [ ] Backend: беспарольный Telegram-SSO — пересмотр `POST /api/sms/telegram/auth` ([ADR-031](../../adr/ADR-031-sms-operator-mini-app.md), §Backend-доработка Telegram-SSO): резолв по `telegram_user_id`/`users.telegram`, авто-upsert+revive линка, идемпотентный `first_login_at`, выпуск CRM-JWT; новая `TelegramAuthResponse`; `403 sms_operator_not_provisioned`; репозиторный lookup по `telegram_user_id` независимо от `dead_at`. Контракт/коды — строго по [04-api.md#post-apismstelegramauth](../../04-api.md#post-apismstelegramauth).
+- [ ] Frontend: операторская Mini App — публичный маршрут `/tg/sms` (`SmsMiniAppPage`) **вне `AppLayout`/RBAC-guard** ([ADR-031](../../adr/ADR-031-sms-operator-mini-app.md)); **self-hosted** Telegram WebApp SDK (`frontend/public/telegram-web-app.js`, CSP `script-src 'self'` не ослабляется); беспарольный SSO-флоу (`auth` → JWT → просмотр под `sms:view`); `themeParams`/`ready`/`expand`; все состояния (успех / `sms_operator_not_provisioned` / `invalid_init_data` / `init_data_expired` / вне-Telegram / сеть); **без формы пароля**; словарь — [08-design-system.md#операторская-telegram-mini-app-смс](../../08-design-system.md#операторская-telegram-mini-app-смс).
+- [ ] Config/devops: `SMS_TELEGRAM_WEBAPP_URL = https://broadappsdev.shop/tg/sms` (не плейсхолдер `…/sms`); домен Mini App зарегистрирован в @BotFather; `setWebhook` SMS-бота настроен ([07-deployment.md](../../07-deployment.md#reverse-proxy-nginx--требования)).
+- [ ] Провижининг операторов: у оператора заполнен `users.telegram` (нормализованный ник = его ник в Telegram), роль включает `sms:view`, состоит в нужной команде (`user_teams`), имеет публичный `@username`.
 - [ ] Twilio SDK в `pyproject.toml` ([02-tech-stack.md](../../02-tech-stack.md#backend)); namespaced-env в `.env.example` (корневой) + [07-deployment.md](../../07-deployment.md#переменные-окружения); nginx открывает наружу два webhook-пути с пробросом `X-Forwarded-Proto/Host`.
 - [ ] Lint/type-check/format проходят (backend и frontend).
 
 ## Changelog
 
+- 2026-07-09: операторская Telegram Mini App (architect, [ADR-031](../../adr/ADR-031-sms-operator-mini-app.md)). Выделенный публичный маршрут `/tg/sms` вне `AppLayout`/RBAC-guard; онбординг — **беспарольный Telegram-SSO** (ревизия по решению пользователя): `POST /api/sms/telegram/auth` резолвит оператора по иммутабельному `telegram_user_id`, иначе bootstrap по `users.telegram = normalize(username)` → авто-upsert линка + выдача CRM-JWT; не сопоставлен → `403 sms_operator_not_provisioned`. Просмотр номеров/сообщений — существующие JWT-эндпоинты под `sms:view` (роль оператора обязана включать `sms:view`). Self-hosted Telegram WebApp SDK (CSP `script-src 'self'` не ослабляется); только нативные Telegram-webview ([Q-SMS-1](../../99-open-questions.md) resolved native-only, [Q-SMS-2](../../99-open-questions.md) resolved JWT+`sms:view`, [Q-SMS-3](../../99-open-questions.md) риск подмены ника/провижининг). `SMS_TELEGRAM_WEBAPP_URL → …/tg/sms`. Backend-доработка `telegram/auth` (SSO) требуется.
+  - (черновая JWT-редакция того же дня заменена этой беспарольной по решению пользователя.)
 - 2026-07-09: спецификация создана (architect, [ADR-030](../../adr/ADR-030-sms-module-full-merge.md)). Полное слияние SMS-агрегатора в CRM: 4 таблицы (PK BIGINT + внешние FK UUID), Twilio-приём + отдельный SMS-delivery Telegram-бот (fan-out по команде/retry/dead-links), отказ от Redis (Mini App-привязка под JWT), новые поля номера `login`/`app_name`/`note` (системный `label`), видимость по текущей принадлежности номера, RBAC-страница `sms:view/edit/transfer/sync/delete`, `Principal.user_id`. Импорт исторических данных — TD (не мигрируем).

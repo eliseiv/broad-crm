@@ -7,6 +7,7 @@ import type {
   SmsNumberUpdateRequest,
   SmsSyncResult,
   TeamNumbersResponse,
+  TelegramAuthResponse,
 } from '@/types/api';
 
 /** Размер страницы ленты SMS (04-api.md: limit 1..100, default 50). */
@@ -30,6 +31,7 @@ export interface ListSmsMessagesParams {
 export function listSmsMessages(
   params: ListSmsMessagesParams = {},
   signal?: AbortSignal,
+  authToken?: string,
 ): Promise<SmsMessagesResponse> {
   const { numberId, teamId, cursor, limit = SMS_PAGE_LIMIT } = params;
   const qs = new URLSearchParams();
@@ -37,12 +39,19 @@ export function listSmsMessages(
   if (teamId !== undefined) qs.set('team_id', teamId);
   if (cursor !== undefined) qs.set('cursor', cursor);
   qs.set('limit', String(limit));
-  return apiRequest<SmsMessagesResponse>(`/sms/messages?${qs.toString()}`, { signal });
+  return apiRequest<SmsMessagesResponse>(`/sms/messages?${qs.toString()}`, { signal, authToken });
 }
 
-/** GET /api/sms/numbers — список номеров (без пагинации; клиентский поиск). */
-export function listSmsNumbers(signal?: AbortSignal): Promise<SmsNumbersResponse> {
-  return apiRequest<SmsNumbersResponse>('/sms/numbers', { signal });
+/**
+ * GET /api/sms/numbers — список номеров (без пагинации; клиентский поиск).
+ * `authToken` — явный Bearer (операторская Mini App использует изолированный SSO-JWT
+ * вместо токена админ-стора, ADR-031); без него — токен сессии из auth-стора.
+ */
+export function listSmsNumbers(
+  signal?: AbortSignal,
+  authToken?: string,
+): Promise<SmsNumbersResponse> {
+  return apiRequest<SmsNumbersResponse>('/sms/numbers', { signal, authToken });
 }
 
 /** PATCH /api/sms/numbers/{id} — правка login/app_name/note (presence-семантика). */
@@ -74,4 +83,22 @@ export function listTeamNumbers(
   signal?: AbortSignal,
 ): Promise<TeamNumbersResponse> {
   return apiRequest<TeamNumbersResponse>(`/teams/${teamId}/numbers`, { signal });
+}
+
+/**
+ * POST /api/sms/telegram/auth — беспарольный Telegram-SSO операторской Mini App
+ * (ADR-031, 04-api.md#post-apismstelegramauth). Публичный (гейт — HMAC `init_data`),
+ * поэтому `skipAuth: true` (без Bearer, без сброса сессии админ-стора на 401). При
+ * успехе отдаёт CRM access-JWT; Mini App держит его изолированно (miniAppAuth).
+ */
+export function telegramAuth(
+  initData: string,
+  signal?: AbortSignal,
+): Promise<TelegramAuthResponse> {
+  return apiRequest<TelegramAuthResponse>('/sms/telegram/auth', {
+    method: 'POST',
+    body: { init_data: initData },
+    skipAuth: true,
+    signal,
+  });
 }

@@ -31,7 +31,10 @@ export function SmsMessageCard({ message }: SmsMessageCardProps) {
 
   return (
     <Card className="flex flex-col gap-2.5 p-4">
-      <div className="flex items-start justify-between gap-3">
+      {/* Шапка переносится на узких вьюпортах (≤~390px): при нехватке ширины таймстамп
+          уходит на отдельную строку (flex-wrap) вместо перекрытия nowrap-номера. На
+          десктопе всё умещается в одну строку — номер слева, дата справа (justify-between). */}
+      <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           <span className="inline-flex items-center gap-1.5 font-mono text-[13px] text-text-primary">
             <span className="whitespace-nowrap">{message.from_number}</span>

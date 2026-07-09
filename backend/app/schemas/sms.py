@@ -117,16 +117,26 @@ class TelegramLinkResponse(BaseModel):
 
 
 class TelegramAuthRequest(BaseModel):
-    """Тело POST /api/sms/telegram/auth (публичный Mini App bootstrap, HMAC)."""
+    """Тело POST /api/sms/telegram/auth (публичный беспарольный Telegram-SSO, HMAC)."""
 
     init_data: str
 
 
 class TelegramAuthResponse(BaseModel):
-    """Ответ 200 POST /api/sms/telegram/auth (статус привязки, без сессии/cookie)."""
+    """Ответ 200 POST /api/sms/telegram/auth — беспарольный Telegram-SSO (ADR-031).
 
-    linked: bool
+    Выдаёт CRM access-JWT (как `POST /api/auth/login`): `access_token` c `sub`=
+    `users.username` резолвнутого оператора, `uid`/`role`/`superadmin:false`;
+    `expires_in` — TTL access-токена в секундах; `linked` всегда `true` при успехе
+    (линк upserted/revived на этот `telegram_user_id`). Контракт —
+    04-api.md#post-apismstelegramauth.
+    """
+
+    access_token: str
+    token_type: str = "bearer"
+    expires_in: int
     telegram_user_id: int
+    linked: bool
 
 
 class TeamNumberItem(BaseModel):

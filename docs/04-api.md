@@ -40,6 +40,7 @@
 | 401 | `invalid_init_data` | Невалидный HMAC/структура Telegram `init_data` ([SMS](#sms)) |
 | 401 | `init_data_expired` | Протух `auth_date` в Telegram `init_data` ([SMS](#sms)) |
 | 403 | `invalid_webhook_secret` | Неверный секрет-токен Telegram-webhook SMS-бота ([SMS](#sms)) |
+| 403 | `sms_operator_not_provisioned` | Беспарольный Telegram-SSO (`POST /api/sms/telegram/auth`) не сопоставил Telegram ни с одним активным CRM-оператором ([SMS](#sms), [ADR-031](adr/ADR-031-sms-operator-mini-app.md)) |
 | 409 | `server_conflict` | Сервер с таким `ip` уже существует |
 | 409 | `backend_code_taken` | Бэк с таким `code` уже существует ([Backends](#backends)) |
 | 409 | `username_taken` | Пользователь с таким `username` уже существует ([Users](#users)) |
@@ -1468,7 +1469,9 @@ On-demand синхронизация входящих номеров Twilio-ак
 **Ошибки:** `401 unauthorized`, `403 forbidden`, `502 twilio_error` (сбой Twilio API), `503 twilio_not_configured`.
 
 ### POST `/api/sms/telegram/link`
-Привязка Telegram-аккаунта оператора к его CRM-пользователю (Mini App). **Auth — только JWT** (любой валидный access-токен; вне матрицы `sms`, [ADR-030](adr/ADR-030-sms-module-full-merge.md) §7). Требует `Principal.user_id` (супер-админ без `uid` привязать линк не может → `403 forbidden`).
+Привязка Telegram-аккаунта оператора к его CRM-пользователю. **Auth — только JWT** (любой валидный access-токен; вне матрицы `sms`, [ADR-030](adr/ADR-030-sms-module-full-merge.md) §7). Требует `Principal.user_id` (супер-админ без `uid` привязать линк не может → `403 forbidden`).
+
+> **Вне критического пути Mini App (ADR-031).** В беспарольной модели операторская Mini App (`/tg/sms`) привязывается **автоматически** внутри Telegram-SSO (`POST /api/sms/telegram/auth`, см. ниже) — отдельный вызов `link` ей не нужен. Этот эндпоинт остаётся валидным для self-link аутентифицированного CRM-пользователя (напр. из админ-SPA); Mini App его не использует.
 
 **Request** — схема `TelegramLinkRequest`:
 ```json
@@ -1484,20 +1487,44 @@ On-demand синхронизация входящих номеров Twilio-ак
 **Ошибки:** `401 unauthorized` (нет JWT), `403 forbidden` (супер-админ без `uid`), `401 invalid_init_data`, `401 init_data_expired`, `400 validation_error`.
 
 ### POST `/api/sms/telegram/auth`
-Mini App bootstrap. **Публичный**, CSRF/JWT-exempt (гейт — HMAC `init_data`). Сессию/cookie **не** создаёт (Redis/pending упразднены, [ADR-030](adr/ADR-030-sms-module-full-merge.md) §3). Служит Mini App для определения статуса привязки текущего Telegram.
+**Беспарольный Telegram-SSO** операторской Mini App (`/tg/sms`, [ADR-031](adr/ADR-031-sms-operator-mini-app.md)). **Публичный**, CSRF/JWT-exempt (гейт — HMAC `init_data`). Определяет CRM-оператора по Telegram-идентичности и **выдаёт CRM access-JWT** (как `POST /api/auth/login`), авто-привязывая линк. Redis/pending не используются — SSO stateless ([ADR-030](adr/ADR-030-sms-module-full-merge.md) §3).
+
+**Резолв оператора (нормативно):**
+1. Валидировать `init_data` (HMAC-SHA256 `WebAppData` из `SMS_TELEGRAM_BOT_TOKEN` + TTL `auth_date`). Извлечь `telegram_user_id` и `username` (из `user`-payload initData; может отсутствовать).
+2. **Первично — по иммутабельному `telegram_user_id`:** линк `sms_telegram_links WHERE telegram_user_id = X` (независимо от `dead_at`). Есть → `user_id` линка; `dead_at IS NOT NULL` → revive (`dead_at=NULL`).
+3. **Bootstrap — по username (только если линка нет):** `username` присутствует → `normalize_telegram(username)` → `users WHERE telegram = norm AND is_active`. Найден → upsert линк (`telegram_user_id → user_id`, `dead_at=NULL`).
+4. `user_id` получен и пользователь активен → идемпотентно `first_login_at=now()` если `NULL` ([ADR-028](adr/ADR-028-user-status-first-login.md)) → выпуск access-JWT (`uid`, `role`, `superadmin:false`, `type:"access"`) → `200`.
+5. Иначе → `403 sms_operator_not_provisioned`.
+
+**Приоритет:** `telegram_user_id` (через линк) первичен (иммутабелен, переживает смену ника); `username` — только bootstrap первого контакта. После первой привязки резолв идёт по `telegram_user_id`, устаревший `users.telegram` не мешает.
 
 **Request** — схема `TelegramAuthRequest`: `{ "init_data": "<raw initData>" }`.
 
-**Response 200** — `TelegramAuthResponse`:
+**Response 200** — схема `TelegramAuthResponse` (успешный SSO):
 ```json
-{ "linked": false, "telegram_user_id": 123456789 }
+{
+  "access_token": "eyJ...",
+  "token_type": "bearer",
+  "expires_in": 86400,
+  "telegram_user_id": 123456789,
+  "linked": true
+}
 ```
 | Поле | Тип | Примечание |
 |------|-----|-----------|
-| `linked` | boolean | Привязан ли этот `telegram_user_id` к живому CRM-юзеру (`sms_telegram_links` с `dead_at IS NULL`) |
+| `access_token` | string | Обычный CRM access-JWT — как у `POST /api/auth/login`: `sub`=**`users.username`** резолвнутого CRM-пользователя (не Telegram-`username` из `init_data`; тот в id-first-пути может быть `None`), `uid`=`users.id`, `role`=`role.name`, `superadmin:false`, `type:"access"`. Хранится Mini App в памяти auth-store |
+| `token_type` | string | `"bearer"` |
+| `expires_in` | integer | TTL access-токена в секундах (`JWT_EXPIRES_MIN`×60; default 86400) |
 | `telegram_user_id` | integer | Из проверенного `init_data` |
+| `linked` | boolean | Всегда `true` при успехе (линк upserted/revived на этот `telegram_user_id`) |
 
-**Ошибки:** `401 invalid_init_data`, `401 init_data_expired`, `400 validation_error`.
+**Ошибки:**
+- `401 invalid_init_data` — плохой HMAC/структура `init_data`.
+- `401 init_data_expired` — протух `auth_date`.
+- `403 sms_operator_not_provisioned` — Telegram не сопоставлен ни с одним **активным** CRM-оператором: нет линка по `telegram_user_id` **и** нет активного `users.telegram = normalize(username)` (в т.ч. `username` в `init_data` отсутствует, либо найденный пользователь `is_active=false`). Mini App показывает «обратитесь к администратору». `init_data` не логируется.
+- `400 validation_error` — пустой/невалидный `init_data`.
+
+> **Смена контракта относительно ADR-030.** Прежняя редакция возвращала только `{ linked, telegram_user_id }` без JWT (статус-bootstrap). По [ADR-031](adr/ADR-031-sms-operator-mini-app.md) (решение пользователя) эндпоинт стал беспарольным SSO с выдачей JWT — это нормативный источник; OpenAPI и реализация обязаны соответствовать этой (SSO) схеме.
 
 ### POST `/api/sms/webhooks/twilio/sms` (публичный)
 Приём входящего SMS от Twilio. **Публичный**, CSRF/JWT-exempt. **Auth — подпись Twilio.** `Content-Type: application/x-www-form-urlencoded`.

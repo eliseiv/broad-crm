@@ -56,6 +56,17 @@ class SmsTelegramLinkRepository:
         )
         return (await self._session.execute(stmt)).scalar_one()
 
+    async def get_by_telegram_user_id(self, telegram_user_id: int) -> SmsTelegramLink | None:
+        """Привязка по иммутабельному `telegram_user_id` НЕЗАВИСИМО от `dead_at`.
+
+        Для беспарольного SSO-резолва (ADR-031, id-first): линк ищется даже если
+        помечен мёртвым — сервис его оживляет (`dead_at=NULL`) при активном юзере.
+        """
+        stmt = select(SmsTelegramLink).where(
+            SmsTelegramLink.telegram_user_id == telegram_user_id,
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
+
     async def get_active_by_telegram_user_id(self, telegram_user_id: int) -> SmsTelegramLink | None:
         """Живая привязка (`dead_at IS NULL`) по chat_id или None."""
         stmt = select(SmsTelegramLink).where(

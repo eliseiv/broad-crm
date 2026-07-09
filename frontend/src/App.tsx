@@ -8,6 +8,7 @@ import { MailPage } from '@/pages/MailPage';
 import { ProxiesPage } from '@/pages/ProxiesPage';
 import { RolesPage } from '@/pages/RolesPage';
 import { ServersPage } from '@/pages/ServersPage';
+import { SmsMiniAppPage } from '@/pages/SmsMiniAppPage';
 import { SmsPage } from '@/pages/SmsPage';
 import { TeamsPage } from '@/pages/TeamsPage';
 import { UsersPage } from '@/pages/UsersPage';
@@ -19,6 +20,11 @@ export function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      {/* Операторская Telegram Mini App (ADR-031): ПУБЛИЧНЫЙ маршрут вне
+          `AppLayout` и вне `ProtectedRoute`/RBAC-guard — без redirect на /login,
+          без nav-shell. Вход — только по кнопке Telegram-бота; в меню/DefaultRoute
+          не участвует. Беспарольный SSO + изолированный auth-стор (miniAppAuth). */}
+      <Route path="/tg/sms" element={<SmsMiniAppPage />} />
       <Route element={<ProtectedRoute />}>
         <Route element={<AppLayout />}>
           {/* Index и fallback — permission-aware дефолт (08-design-system.md «Гейтинг»). */}

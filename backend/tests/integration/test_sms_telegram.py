@@ -2,7 +2,8 @@
 
 - `POST /api/sms/telegram/link` — под JWT: upsert линка своего Telegram; супер-админ
   без `uid` → 403; битый/протухший initData → 401.
-- `POST /api/sms/telegram/auth` — публичный статус привязки (HMAC init_data), без сессии.
+- `POST /api/sms/telegram/auth` — публичный беспарольный Telegram-SSO (ADR-031): резолв
+  оператора по Telegram-идентичности → upsert/revive линка → выдача CRM access-JWT.
 - `POST /api/sms/telegram/webhook` — секрет-токен constant-time (403 при несовпадении);
   `/start` → sendMessage с web_app-кнопкой; прочее → 200 no-op.
 initData/секреты в тестах не логируются.
@@ -18,6 +19,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from app.models.sms_telegram_link import SmsTelegramLink
+from app.models.user import User
 from sms_helpers import (
     build_app,
     build_principal,
@@ -34,9 +36,18 @@ _WEBHOOK_SECRET = "webhook-secret-xyz"
 _WEBAPP_URL = "https://crm.example.com/sms-webapp"
 
 
-def _make_init_data(*, bot_token: str = _BOT_TOKEN, telegram_user_id: int, auth_date: int) -> str:
+def _make_init_data(
+    *,
+    bot_token: str = _BOT_TOKEN,
+    telegram_user_id: int,
+    auth_date: int,
+    username: str | None = None,
+) -> str:
+    user_obj: dict[str, Any] = {"id": telegram_user_id, "first_name": "Оля"}
+    if username is not None:
+        user_obj["username"] = username
     fields: dict[str, str] = {
-        "user": json.dumps({"id": telegram_user_id, "first_name": "Оля"}),
+        "user": json.dumps(user_obj),
         "auth_date": str(auth_date),
         "query_id": "AAA",
     }
@@ -114,34 +125,249 @@ async def test_link_invalid_init_data_is_401(monkeypatch: Any) -> None:
     assert resp.json()["error"]["code"] == "invalid_init_data"
 
 
-# --- auth (публичный) -------------------------------------------------------
+# --- auth: беспарольный Telegram-SSO (ADR-031) ------------------------------
 
 
-async def test_auth_reports_linked_true_when_active_link(monkeypatch: Any) -> None:
+def _decode(token: str) -> Any:
+    """Декодирует access-JWT (тем же секретом, что выпуск) для проверки claim'ов."""
+    from app.infra.jwt import decode_access_token
+
+    return decode_access_token(token)
+
+
+async def test_auth_sso_existing_active_link_returns_jwt(monkeypatch: Any) -> None:
+    # id-first: живой линк на активного оператора → 200 + CRM access-JWT.
     _set_sms_env(monkeypatch)
     async with sms_db() as sm:
         async with sm() as s:
-            role = await seed_role(s, permissions={"sms": ["view"]})
-            user = await seed_user(s, role)
+            role = await seed_role(s, name="Оператор", permissions={"sms": ["view"]})
+            user = await seed_user(s, role, username="crm_bob")
             await seed_link(s, telegram_user_id=888001, user_id=user.id)
+            user_id = user.id
             await s.commit()
         app = build_app(sm, build_principal())
         init_data = _make_init_data(telegram_user_id=888001, auth_date=int(time.time()))
         async with client(app) as c:
             resp = await c.post("/api/sms/telegram/auth", json={"init_data": init_data})
+
     assert resp.status_code == 200
-    assert resp.json() == {"linked": True, "telegram_user_id": 888001}
+    body = resp.json()
+    assert body["token_type"] == "bearer"
+    assert body["telegram_user_id"] == 888001
+    assert body["linked"] is True
+    assert isinstance(body["expires_in"], int) and body["expires_in"] > 0
+    claims = _decode(body["access_token"])
+    assert claims.sub == "crm_bob"  # sub = users.username, НЕ Telegram
+    assert claims.uid == str(user_id)
+    assert claims.superadmin is False  # оператор не входит суперадмином
 
 
-async def test_auth_reports_linked_false_when_no_link(monkeypatch: Any) -> None:
+async def test_auth_sso_revives_dead_link(monkeypatch: Any) -> None:
+    from datetime import UTC, datetime
+
+    _set_sms_env(monkeypatch)
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s, permissions={"sms": ["view"]})
+            user = await seed_user(s, role, username="crm_dead")
+            await seed_link(s, telegram_user_id=888010, user_id=user.id, dead_at=datetime.now(UTC))
+            await s.commit()
+        app = build_app(sm, build_principal())
+        init_data = _make_init_data(telegram_user_id=888010, auth_date=int(time.time()))
+        async with client(app) as c:
+            resp = await c.post("/api/sms/telegram/auth", json={"init_data": init_data})
+        async with sm() as s:
+            link = (
+                await s.execute(
+                    select(SmsTelegramLink).where(SmsTelegramLink.telegram_user_id == 888010)
+                )
+            ).scalar_one()
+
+    assert resp.status_code == 200
+    assert resp.json()["linked"] is True
+    assert link.dead_at is None  # мёртвый линк оживлён
+
+
+async def test_auth_sso_username_bootstrap_upserts_link(monkeypatch: Any) -> None:
+    # Линка нет, но users.telegram == normalize(username из initData) → upsert линка + JWT.
+    _set_sms_env(monkeypatch)
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s, permissions={"sms": ["view"]})
+            user = await seed_user(s, role, username="crm_alice", telegram="operator_alice")
+            user_id = user.id
+            await s.commit()
+        app = build_app(sm, build_principal())
+        init_data = _make_init_data(
+            telegram_user_id=888020, auth_date=int(time.time()), username="Operator_Alice"
+        )
+        async with client(app) as c:
+            resp = await c.post("/api/sms/telegram/auth", json={"init_data": init_data})
+        async with sm() as s:
+            link = (
+                await s.execute(
+                    select(SmsTelegramLink).where(SmsTelegramLink.telegram_user_id == 888020)
+                )
+            ).scalar_one()
+
+    assert resp.status_code == 200
+    assert _decode(resp.json()["access_token"]).sub == "crm_alice"
+    assert link.user_id == user_id  # линк создан bootstrap'ом
+
+
+async def test_auth_sso_id_first_takes_precedence_over_username(monkeypatch: Any) -> None:
+    # Линк указывает на userA; username в initData совпадает с userB.telegram —
+    # первичен telegram_user_id (устаревший users.telegram не мешает).
+    _set_sms_env(monkeypatch)
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s, permissions={"sms": ["view"]})
+            user_a = await seed_user(s, role, username="crm_a")
+            await seed_user(s, role, username="crm_b", telegram="tg_b")
+            await seed_link(s, telegram_user_id=888030, user_id=user_a.id)
+            await s.commit()
+        app = build_app(sm, build_principal())
+        init_data = _make_init_data(
+            telegram_user_id=888030, auth_date=int(time.time()), username="tg_b"
+        )
+        async with client(app) as c:
+            resp = await c.post("/api/sms/telegram/auth", json={"init_data": init_data})
+
+    assert resp.status_code == 200
+    assert _decode(resp.json()["access_token"]).sub == "crm_a"  # id-first, не crm_b
+
+
+async def test_auth_sso_first_login_at_idempotent(monkeypatch: Any) -> None:
+    _set_sms_env(monkeypatch)
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s, permissions={"sms": ["view"]})
+            user = await seed_user(s, role, username="crm_first")
+            await seed_link(s, telegram_user_id=888040, user_id=user.id)
+            await s.commit()
+        app = build_app(sm, build_principal())
+        init_data = _make_init_data(telegram_user_id=888040, auth_date=int(time.time()))
+        async with client(app) as c:
+            await c.post("/api/sms/telegram/auth", json={"init_data": init_data})
+        async with sm() as s:
+            first = (
+                (await s.execute(select(User).where(User.username == "crm_first")))
+                .scalar_one()
+                .first_login_at
+            )
+        async with client(app) as c:
+            await c.post("/api/sms/telegram/auth", json={"init_data": init_data})
+        async with sm() as s:
+            second = (
+                (await s.execute(select(User).where(User.username == "crm_first")))
+                .scalar_one()
+                .first_login_at
+            )
+
+    assert first is not None
+    assert second == first  # второй вход НЕ перезаписывает first_login_at
+
+
+async def test_auth_sso_no_link_no_username_is_403(monkeypatch: Any) -> None:
     _set_sms_env(monkeypatch)
     async with sms_db() as sm:
         app = build_app(sm, build_principal())
-        init_data = _make_init_data(telegram_user_id=888002, auth_date=int(time.time()))
+        init_data = _make_init_data(telegram_user_id=888050, auth_date=int(time.time()))
         async with client(app) as c:
             resp = await c.post("/api/sms/telegram/auth", json={"init_data": init_data})
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "sms_operator_not_provisioned"
+
+
+async def test_auth_sso_username_no_match_is_403(monkeypatch: Any) -> None:
+    _set_sms_env(monkeypatch)
+    async with sms_db() as sm:
+        app = build_app(sm, build_principal())
+        init_data = _make_init_data(
+            telegram_user_id=888051, auth_date=int(time.time()), username="nobody"
+        )
+        async with client(app) as c:
+            resp = await c.post("/api/sms/telegram/auth", json={"init_data": init_data})
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "sms_operator_not_provisioned"
+
+
+async def test_auth_sso_username_matches_inactive_user_is_403(monkeypatch: Any) -> None:
+    _set_sms_env(monkeypatch)
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s, permissions={"sms": ["view"]})
+            await seed_user(s, role, username="crm_off", telegram="operator_off", is_active=False)
+            await s.commit()
+        app = build_app(sm, build_principal())
+        init_data = _make_init_data(
+            telegram_user_id=888052, auth_date=int(time.time()), username="operator_off"
+        )
+        async with client(app) as c:
+            resp = await c.post("/api/sms/telegram/auth", json={"init_data": init_data})
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "sms_operator_not_provisioned"
+
+
+async def test_auth_sso_link_to_inactive_user_is_403(monkeypatch: Any) -> None:
+    _set_sms_env(monkeypatch)
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s, permissions={"sms": ["view"]})
+            user = await seed_user(s, role, username="crm_disabled", is_active=False)
+            await seed_link(s, telegram_user_id=888053, user_id=user.id)
+            await s.commit()
+        app = build_app(sm, build_principal())
+        init_data = _make_init_data(telegram_user_id=888053, auth_date=int(time.time()))
+        async with client(app) as c:
+            resp = await c.post("/api/sms/telegram/auth", json={"init_data": init_data})
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "sms_operator_not_provisioned"
+
+
+async def test_auth_empty_init_data_is_400(monkeypatch: Any) -> None:
+    _set_sms_env(monkeypatch)
+    async with sms_db() as sm:
+        app = build_app(sm, build_principal())
+        async with client(app) as c:
+            resp = await c.post("/api/sms/telegram/auth", json={"init_data": ""})
+    assert resp.status_code == 400
+    assert resp.json()["error"]["code"] == "validation_error"
+
+
+async def test_auth_invalid_hmac_is_401(monkeypatch: Any) -> None:
+    _set_sms_env(monkeypatch)
+    async with sms_db() as sm:
+        app = build_app(sm, build_principal())
+        bad = _make_init_data(bot_token="999:WRONG", telegram_user_id=1, auth_date=int(time.time()))
+        async with client(app) as c:
+            resp = await c.post("/api/sms/telegram/auth", json={"init_data": bad})
+    assert resp.status_code == 401
+    assert resp.json()["error"]["code"] == "invalid_init_data"
+
+
+async def test_auth_init_data_and_username_not_logged(monkeypatch: Any) -> None:
+    import structlog
+
+    _set_sms_env(monkeypatch)
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s, permissions={"sms": ["view"]})
+            user = await seed_user(s, role, username="crm_secret")
+            await seed_link(s, telegram_user_id=888060, user_id=user.id)
+            await s.commit()
+        app = build_app(sm, build_principal())
+        init_data = _make_init_data(
+            telegram_user_id=888060, auth_date=int(time.time()), username="SECRET_TG_NAME"
+        )
+        with structlog.testing.capture_logs() as logs:
+            async with client(app) as c:
+                resp = await c.post("/api/sms/telegram/auth", json={"init_data": init_data})
+
     assert resp.status_code == 200
-    assert resp.json() == {"linked": False, "telegram_user_id": 888002}
+    serialized = json.dumps(logs, default=str, ensure_ascii=False)
+    assert init_data not in serialized
+    assert "SECRET_TG_NAME" not in serialized
 
 
 async def test_auth_expired_init_data_is_401(monkeypatch: Any) -> None:

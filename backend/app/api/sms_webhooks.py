@@ -5,7 +5,8 @@
   `SMS_PUBLIC_BASE_URL` — единственный источник);
 - `POST /api/sms/telegram/webhook` — секрет `X-Telegram-Bot-Api-Secret-Token`
   (constant-time до разбора тела);
-- `POST /api/sms/telegram/auth` — HMAC `init_data` (статус привязки, без сессии/cookie).
+- `POST /api/sms/telegram/auth` — HMAC `init_data` (беспарольный Telegram-SSO:
+  резолв оператора → CRM-JWT + авто-линк, ADR-031).
 
 Секреты и `raw` тело Twilio/Telegram (init_data/Update) не логируются.
 """
@@ -156,9 +157,11 @@ async def telegram_auth(
     payload: TelegramAuthRequest,
     service: SmsTelegramLinkServiceDep,
 ) -> TelegramAuthResponse:
-    """Публичный Mini App bootstrap: статус привязки текущего Telegram (HMAC init_data).
+    """Публичный беспарольный Telegram-SSO Mini App (HMAC init_data, ADR-031).
 
-    Сессию/cookie НЕ создаёт. Плохой HMAC → 401 invalid_init_data; протухло → 401
-    init_data_expired.
+    Резолвит CRM-оператора по Telegram-идентичности → авто-upsert/revive линка →
+    выдаёт CRM access-JWT (`TelegramAuthResponse`). Не сопоставлен → 403
+    sms_operator_not_provisioned; плохой HMAC → 401 invalid_init_data; протухло →
+    401 init_data_expired; пустой init_data → 400 validation_error. CSRF/JWT-exempt.
     """
     return await service.auth(payload.init_data)

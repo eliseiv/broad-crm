@@ -212,6 +212,14 @@ def sms_team_not_found() -> AppError:
     )
 
 
+def sms_operator_not_provisioned() -> AppError:
+    return AppError(
+        status_code=status.HTTP_403_FORBIDDEN,
+        code="sms_operator_not_provisioned",
+        message="Ваш Telegram не сопоставлен с оператором CRM",
+    )
+
+
 def invalid_twilio_signature() -> AppError:
     return AppError(
         status_code=status.HTTP_401_UNAUTHORIZED,

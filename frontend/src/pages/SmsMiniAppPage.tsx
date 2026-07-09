@@ -1,0 +1,390 @@
+import { useCallback, useEffect, useRef, useState } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
+import { AlertTriangle, CheckCircle2, Inbox, ShieldAlert } from 'lucide-react';
+import { Card } from '@/components/ui/Card';
+import { Pill } from '@/components/ui/Pill';
+import { Spinner } from '@/components/ui/Spinner';
+import { SmsMessageCard } from '@/components/SmsMessageCard';
+import { ApiError } from '@/lib/api';
+import { useMiniAppAuthStore } from '@/features/sms/miniAppAuth';
+import { useMiniAppSmsMessages, useMiniAppSmsNumbers } from '@/features/sms/miniAppHooks';
+import { telegramAuth } from '@/features/sms/api';
+import { applyTelegramTheme, loadTelegramSdk } from '@/features/sms/telegramSdk';
+import type { SmsNumber } from '@/types/api';
+
+/**
+ * Нормативный словарь UI-строк Mini App (08-design-system.md «Операторская Telegram
+ * Mini App (СМС)»). ЕДИНЫЙ источник строк — не выдумывать.
+ */
+const T = {
+  title: 'СМС — уведомления',
+  linkedBadge: 'Привязан',
+  linkedHint: 'Telegram привязан — новые SMS вашей команды приходят сюда.',
+  notProvisionedTitle: 'Доступ не настроен',
+  notProvisionedHint: 'Ваш Telegram не сопоставлен с оператором CRM. Обратитесь к администратору.',
+  initDataError: 'Сессия Telegram устарела — откройте приложение заново через бота',
+  outsideTelegram: 'Откройте это приложение по кнопке бота в Telegram',
+  networkError: 'Не удалось загрузить',
+  numbersTitle: 'Мои номера',
+  messagesTitle: 'Мои сообщения',
+  loading: 'Загрузка…',
+  retry: 'Повторить',
+  numbersEmpty: 'Номеров нет',
+  messagesEmpty: 'Сообщений пока нет',
+} as const;
+
+/**
+ * Фазы экрана Mini App (08-design-system.md «Состояния экрана»):
+ * loading (SSO) · success · not_provisioned (403) · initData (401/400) ·
+ * outside (пустой initData) · network (сеть/5xx + повтор).
+ */
+type Phase = 'loading' | 'success' | 'not_provisioned' | 'initData' | 'outside' | 'network';
+
+/** `'-'` для пустых значений пилюль (не «прыгает», как в SmsMessageCard). */
+function orDash(value: string | null | undefined): string {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : '-';
+}
+
+function isForbidden(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 403;
+}
+
+/** ApiError SSO → фаза экрана (04-api.md#post-apismstelegramauth). */
+function mapAuthError(err: unknown): Phase {
+  if (err instanceof ApiError) {
+    if (err.status === 403 && err.code === 'sms_operator_not_provisioned') return 'not_provisioned';
+    // 401 invalid_init_data / init_data_expired · 400 validation_error (пустой/битый init_data).
+    if (err.status === 401 || err.status === 400) return 'initData';
+    return 'network';
+  }
+  return 'network';
+}
+
+/** Инлайновые стили нативной темы Telegram (var(--tg-*) с fallback). */
+const chromeStyle: CSSProperties = {
+  backgroundColor: 'var(--tg-bg, #0a0c10)',
+  color: 'var(--tg-text, #e6e8ec)',
+};
+
+export function SmsMiniAppPage() {
+  const [phase, setPhase] = useState<Phase>('loading');
+  const setSession = useMiniAppAuthStore((s) => s.setSession);
+  const initDataRef = useRef<string | null>(null);
+  const startedRef = useRef(false);
+
+  const runAuth = useCallback(
+    async (initData: string) => {
+      setPhase('loading');
+      try {
+        const res = await telegramAuth(initData);
+        setSession(res.access_token, res.telegram_user_id);
+        setPhase('success');
+      } catch (err) {
+        setPhase(mapAuthError(err));
+      }
+    },
+    [setSession],
+  );
+
+  useEffect(() => {
+    // StrictMode dev double-mount / повторный вход — SSO стартуем один раз.
+    if (startedRef.current) return;
+    startedRef.current = true;
+
+    let disposed = false;
+    let themeCleanup: (() => void) | undefined;
+
+    loadTelegramSdk()
+      .then((wa) => {
+        if (disposed) return;
+        // Вне Telegram (обычный браузер) — пустой/битый initData.
+        if (!wa || !wa.initData) {
+          applyTelegramTheme(undefined);
+          setPhase('outside');
+          return;
+        }
+        try {
+          wa.ready();
+          wa.expand();
+        } catch {
+          // ready/expand best-effort — не критично для SSO.
+        }
+        applyTelegramTheme(wa);
+        const onThemeChanged = () => applyTelegramTheme(wa);
+        wa.onEvent?.('themeChanged', onThemeChanged);
+        themeCleanup = () => wa.offEvent?.('themeChanged', onThemeChanged);
+
+        initDataRef.current = wa.initData;
+        void runAuth(wa.initData);
+      })
+      .catch(() => {
+        if (!disposed) {
+          applyTelegramTheme(undefined);
+          setPhase('network');
+        }
+      });
+
+    return () => {
+      disposed = true;
+      themeCleanup?.();
+    };
+  }, [runAuth]);
+
+  const retryAuth = () => {
+    if (initDataRef.current) void runAuth(initDataRef.current);
+  };
+
+  return (
+    <div className="min-h-screen w-full px-4 py-5" style={chromeStyle}>
+      <div className="mx-auto flex w-full max-w-xl flex-col gap-4">
+        <h1 className="text-lg font-semibold" style={{ color: 'var(--tg-text, #e6e8ec)' }}>
+          {T.title}
+        </h1>
+
+        {phase === 'loading' && <LoadingState />}
+        {phase === 'outside' && <MessageState icon="info" text={T.outsideTelegram} />}
+        {phase === 'initData' && <MessageState icon="warn" text={T.initDataError} />}
+        {phase === 'not_provisioned' && <NotProvisionedState />}
+        {phase === 'network' && (
+          <MessageState icon="warn" text={T.networkError} onRetry={retryAuth} />
+        )}
+        {phase === 'success' && <AuthorizedView />}
+      </div>
+    </div>
+  );
+}
+
+/** Индикатор загрузки (SSO). */
+function LoadingState() {
+  return (
+    <div
+      className="flex items-center justify-center gap-2 py-16 text-sm"
+      style={{ color: 'var(--tg-hint, #8a8f98)' }}
+      role="status"
+    >
+      <Spinner className="h-5 w-5" />
+      {T.loading}
+    </div>
+  );
+}
+
+/** Экран-сообщение (вне Telegram / initData / сеть) с опциональным повтором. */
+function MessageState({
+  icon,
+  text,
+  onRetry,
+}: {
+  icon: 'info' | 'warn';
+  text: string;
+  onRetry?: () => void;
+}) {
+  return (
+    <div className="flex flex-col items-center justify-center gap-4 py-14 text-center">
+      {icon === 'warn' ? (
+        <AlertTriangle
+          className="h-10 w-10"
+          style={{ color: 'var(--tg-hint, #8a8f98)' }}
+          aria-hidden="true"
+        />
+      ) : (
+        <Inbox
+          className="h-10 w-10"
+          style={{ color: 'var(--tg-hint, #8a8f98)' }}
+          aria-hidden="true"
+        />
+      )}
+      <p className="max-w-sm text-[15px] font-medium" style={{ color: 'var(--tg-text, #e6e8ec)' }}>
+        {text}
+      </p>
+      {onRetry && <TgButton onClick={onRetry}>{T.retry}</TgButton>}
+    </div>
+  );
+}
+
+/** Экран «Доступ не настроен» (403 sms_operator_not_provisioned). */
+function NotProvisionedState() {
+  return (
+    <div className="flex flex-col items-center justify-center gap-4 py-14 text-center">
+      <ShieldAlert
+        className="h-10 w-10"
+        style={{ color: 'var(--tg-hint, #8a8f98)' }}
+        aria-hidden="true"
+      />
+      <div className="max-w-sm">
+        <p className="text-[15px] font-semibold" style={{ color: 'var(--tg-text, #e6e8ec)' }}>
+          {T.notProvisionedTitle}
+        </p>
+        <p className="mt-1.5 text-[13px]" style={{ color: 'var(--tg-hint, #8a8f98)' }}>
+          {T.notProvisionedHint}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** Нативная кнопка Telegram (button_color/button_text_color). */
+function TgButton({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2"
+      style={{
+        backgroundColor: 'var(--tg-button, #4c82fb)',
+        color: 'var(--tg-button-text, #ffffff)',
+        outlineColor: 'var(--tg-button, #4c82fb)',
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+/**
+ * Успешный SSO: статус «Привязан» + просмотр номеров/сообщений под `sms:view`.
+ * Без `sms:view` сервер отдаёт 403 → секции скрываются (только статус привязки,
+ * 08-design-system.md «Просмотр недоступен (нет sms:view) — не показывается»).
+ */
+function AuthorizedView() {
+  const numbersQuery = useMiniAppSmsNumbers(true);
+  const messages = useMiniAppSmsMessages(true);
+
+  const numbers = numbersQuery.data?.numbers ?? [];
+  const numbersForbidden = numbersQuery.isError && isForbidden(numbersQuery.error);
+  const messagesForbidden = messages.phase === 'error' && isForbidden(messages.error);
+
+  // Догрузка более старых сообщений (IntersectionObserver, без кнопки).
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const { hasMore, loadMore } = messages;
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!node || !hasMore) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) loadMore();
+      },
+      { rootMargin: '200px' },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [hasMore, loadMore]);
+
+  return (
+    <div className="flex flex-col gap-5">
+      <Card className="flex flex-col gap-2 p-4">
+        <div className="flex items-center gap-2">
+          <CheckCircle2 className="h-4 w-4 text-status-green" aria-hidden="true" />
+          <Pill tone="green" label={T.linkedBadge} />
+        </div>
+        <p className="text-[13px] text-text-secondary">{T.linkedHint}</p>
+      </Card>
+
+      {!numbersForbidden && (
+        <section className="flex flex-col gap-2.5">
+          <h2 className="text-sm font-semibold" style={{ color: 'var(--tg-text, #e6e8ec)' }}>
+            {T.numbersTitle}
+          </h2>
+          {numbersQuery.isLoading && <SectionLoading />}
+          {!numbersQuery.isLoading && numbersQuery.isError && (
+            <SectionError onRetry={() => void numbersQuery.refetch()} />
+          )}
+          {!numbersQuery.isLoading && !numbersQuery.isError && numbers.length === 0 && (
+            <SectionEmpty text={T.numbersEmpty} />
+          )}
+          {!numbersQuery.isLoading && !numbersQuery.isError && numbers.length > 0 && (
+            <div className="flex flex-col gap-2.5">
+              {numbers.map((n) => (
+                <MiniAppNumberCard key={n.id} number={n} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {!messagesForbidden && (
+        <section className="flex flex-col gap-2.5">
+          <h2 className="text-sm font-semibold" style={{ color: 'var(--tg-text, #e6e8ec)' }}>
+            {T.messagesTitle}
+          </h2>
+          {messages.phase === 'loading' && <SectionLoading />}
+          {messages.phase === 'error' && <SectionError onRetry={messages.reload} />}
+          {messages.phase === 'ready' && messages.messages.length === 0 && (
+            <SectionEmpty text={T.messagesEmpty} />
+          )}
+          {messages.phase === 'ready' && messages.messages.length > 0 && (
+            <div className="flex flex-col gap-2.5">
+              {messages.messages.map((m) => (
+                <SmsMessageCard key={m.id} message={m} />
+              ))}
+              <div ref={sentinelRef} aria-hidden="true" className="h-px" />
+              {messages.isFetchingMore && (
+                <div className="flex items-center justify-center gap-2 py-3 text-[12px] text-text-secondary">
+                  <Spinner className="text-text-secondary" />
+                  {T.loading}
+                </div>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+    </div>
+  );
+}
+
+/** Read-only карточка номера оператора (пилюли страницы «СМС», без правки). */
+function MiniAppNumberCard({ number }: { number: SmsNumber }) {
+  const team = number.team;
+  const login = orDash(number.login);
+  const appName = orDash(number.app_name);
+  const note = orDash(number.note);
+  return (
+    <Card className="flex flex-col gap-2.5 p-4">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="whitespace-nowrap font-mono text-[13px] text-text-primary">
+          {number.phone_number}
+        </span>
+        {team ? (
+          <Pill tone="green" label={team.name} title={team.name} />
+        ) : (
+          <Pill tone="neutral" label="Команды нет" />
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Pill tone="accent" label={`Логин: ${login}`} title={login} wrap />
+        <Pill tone="yellow" label={`Приложение: ${appName}`} title={appName} wrap />
+        <Pill tone="neutral" label={`Примечание: ${note}`} title={note} wrap />
+      </div>
+    </Card>
+  );
+}
+
+function SectionLoading() {
+  return (
+    <div className="flex flex-col gap-2.5" aria-hidden="true">
+      {[0, 1].map((i) => (
+        <div
+          key={i}
+          className="h-20 animate-pulse rounded-card border border-border-subtle bg-surface-1"
+        />
+      ))}
+    </div>
+  );
+}
+
+function SectionEmpty({ text }: { text: string }) {
+  return (
+    <div className="rounded-card border border-border-subtle bg-surface-1 px-4 py-8 text-center text-[13px] text-text-secondary">
+      {text}
+    </div>
+  );
+}
+
+function SectionError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-card border border-border-subtle bg-surface-1 px-4 py-8 text-center">
+      <p className="text-[13px] text-text-secondary">{T.networkError}</p>
+      <TgButton onClick={onRetry}>{T.retry}</TgButton>
+    </div>
+  );
+}
