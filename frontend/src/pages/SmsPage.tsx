@@ -336,7 +336,10 @@ function NumbersTab({
                 <th className="px-3 py-3 font-medium">Приложение</th>
                 <th className="px-3 py-3 font-medium">Примечание</th>
                 <th className="px-3 py-3 font-medium">Команда</th>
-                <th className="px-3 py-3 font-medium">Действия</th>
+                {/* Удаление — компактная иконка Trash2 без текстового заголовка (ADR-033) */}
+                <th className="px-3 py-3 font-medium">
+                  <span className="sr-only">Удаление</span>
+                </th>
               </tr>
             </thead>
             <tbody>

@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { ArrowRightLeft, Trash2 } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { InlineEditField } from '@/components/InlineEditField';
 import { Button } from '@/components/ui/Button';
@@ -26,9 +26,11 @@ function errorMessage(err: unknown, fallback: string): string {
 }
 
 /**
- * Строка таблицы «Номера» (08-design-system.md «Вкладка Номера»): номер + системный
- * `label`, инлайн-поля login/app_name/note, перенос в команду и удаление. Контролы
- * гейтятся правами (useCan sms:edit/transfer/delete) — без права не рендерятся.
+ * Строка таблицы «Номера» (08-design-system.md «Вкладка Номера», ADR-033): номер +
+ * системный `label`, инлайн-поля login/app_name/note, перенос в команду (Select в
+ * колонке «Команда» коммитит перенос сразу при выборе) и удаление (компактная
+ * иконка Trash2 без лейбл-колонки). Контролы гейтятся правами (useCan
+ * sms:edit/transfer/delete) — без права не рендерятся.
  */
 export function SmsNumberRow({
   number,
@@ -38,12 +40,18 @@ export function SmsNumberRow({
   canDelete,
 }: SmsNumberRowProps) {
   const currentTeamId = number.team?.id ?? NO_TEAM;
-  const [targetTeamId, setTargetTeamId] = useState(currentTeamId);
+  // Локальное значение Select для мгновенного фидбэка; синхронизируется с
+  // серверным состоянием (props) после успешного переноса / инвалидации.
+  const [selectedTeamId, setSelectedTeamId] = useState(currentTeamId);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
   const updateMutation = useUpdateSmsNumber();
   const transferMutation = useTransferSmsNumber();
   const deleteMutation = useDeleteSmsNumber();
+
+  useEffect(() => {
+    setSelectedTeamId(currentTeamId);
+  }, [currentTeamId]);
 
   const saveField = (field: keyof SmsNumberUpdateRequest, next: string) => {
     // Presence-семантика: ключ всегда присутствует; пустая строка → затирание (NULL).
@@ -61,12 +69,18 @@ export function SmsNumberRow({
     ...teams.map((t) => ({ value: t.id, label: t.name })),
   ];
 
-  const handleTransfer = () => {
+  // Перенос коммитится сразу при выборе значения в Select (без кнопки «Перенести»).
+  const handleTransferChange = (nextTeamId: string) => {
+    if (nextTeamId === currentTeamId) return;
+    setSelectedTeamId(nextTeamId);
     transferMutation.mutate(
-      { id: number.id, payload: { team_id: targetTeamId === NO_TEAM ? null : targetTeamId } },
+      { id: number.id, payload: { team_id: nextTeamId === NO_TEAM ? null : nextTeamId } },
       {
         onSuccess: () => toast.success('Номер перенесён'),
-        onError: (err) => toast.error(errorMessage(err, 'Не удалось перенести номер')),
+        onError: (err) => {
+          setSelectedTeamId(currentTeamId); // откат к серверному состоянию
+          toast.error(errorMessage(err, 'Не удалось перенести номер'));
+        },
       },
     );
   };
@@ -80,8 +94,6 @@ export function SmsNumberRow({
       onError: (err) => toast.error(errorMessage(err, 'Не удалось удалить номер')),
     });
   };
-
-  const transferDisabled = targetTeamId === currentTeamId || transferMutation.isPending;
 
   return (
     <tr className="border-t border-border-subtle align-top">
@@ -129,8 +141,9 @@ export function SmsNumberRow({
             <Select
               aria-label={`Команда номера ${number.phone_number}`}
               options={teamOptions}
-              value={targetTeamId}
-              onChange={(e) => setTargetTeamId(e.target.value)}
+              value={selectedTeamId}
+              disabled={transferMutation.isPending}
+              onChange={(e) => handleTransferChange(e.target.value)}
             />
           </div>
         ) : (
@@ -140,58 +153,48 @@ export function SmsNumberRow({
         )}
       </td>
       <td className="px-3 py-3">
-        <div className="flex items-center gap-2">
-          {canTransfer && (
+        {canDelete && (
+          <>
             <Button
-              variant="outline"
-              size="sm"
-              onClick={handleTransfer}
-              disabled={transferDisabled}
-              loading={transferMutation.isPending}
-            >
-              <ArrowRightLeft className="h-4 w-4" />
-              Перенести
-            </Button>
-          )}
-          {canDelete && (
-            <Button
-              variant="danger"
+              variant="ghost"
               size="sm"
               onClick={() => setConfirmOpen(true)}
+              className="text-text-tertiary hover:text-status-red"
               aria-label={`Удалить номер ${number.phone_number}`}
             >
               <Trash2 className="h-4 w-4" />
-              Удалить
             </Button>
-          )}
-        </div>
 
-        {canDelete && (
-          <Modal
-            open={confirmOpen}
-            onOpenChange={(next) => !deleteMutation.isPending && setConfirmOpen(next)}
-            title="Удалить номер?"
-            description={`Удалить номер ${number.phone_number}? История SMS сохранится.`}
-            dismissible={!deleteMutation.isPending}
-            footer={
-              <>
-                <Button
-                  variant="ghost"
-                  onClick={() => setConfirmOpen(false)}
-                  disabled={deleteMutation.isPending}
-                >
-                  Отмена
-                </Button>
-                <Button variant="danger" loading={deleteMutation.isPending} onClick={handleDelete}>
-                  Удалить
-                </Button>
-              </>
-            }
-          >
-            <p className="text-sm text-text-secondary">
-              Номер будет удалён из списка. Ранее полученные SMS останутся в истории.
-            </p>
-          </Modal>
+            <Modal
+              open={confirmOpen}
+              onOpenChange={(next) => !deleteMutation.isPending && setConfirmOpen(next)}
+              title="Удалить номер?"
+              description={`Удалить номер ${number.phone_number}? История SMS сохранится.`}
+              dismissible={!deleteMutation.isPending}
+              footer={
+                <>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setConfirmOpen(false)}
+                    disabled={deleteMutation.isPending}
+                  >
+                    Отмена
+                  </Button>
+                  <Button
+                    variant="danger"
+                    loading={deleteMutation.isPending}
+                    onClick={handleDelete}
+                  >
+                    Удалить
+                  </Button>
+                </>
+              }
+            >
+              <p className="text-sm text-text-secondary">
+                Номер будет удалён из списка. Ранее полученные SMS останутся в истории.
+              </p>
+            </Modal>
+          </>
         )}
       </td>
     </tr>

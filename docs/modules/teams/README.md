@@ -74,7 +74,7 @@
 Детальный UI-гайд — [08-design-system.md](../../08-design-system.md#страница-команды); русский словарь — [08-design-system.md](../../08-design-system.md#локализация-страниц-пользователи--роли--команды).
 
 ### Навигация
-- Пункт **«Команды»** (`/teams`) — в категории **«Пользователи»** нового категоризированного меню ([08-design-system.md](../../08-design-system.md#навигация-категории-дропдауны-applayout)). Защищённый маршрут внутри `AppLayout`, не-full-bleed ветка. Page-level view-guard `teams:view` ([ADR-021](../../adr/ADR-021-rbac-users-roles.md) §Последствия, [ADR-022](../../adr/ADR-022-teams-nav-categories.md)).
+- Пункт **«Команды»** (`/teams`) — пункт **плоской навигации** ([ADR-033](../../adr/ADR-033-flat-nav-theme-toggle-numbers-table.md); ранее — категория «Пользователи», [ADR-022](../../adr/ADR-022-teams-nav-categories.md)) ([08-design-system.md](../../08-design-system.md#навигация-плоская-applayout)). Защищённый маршрут внутри `AppLayout`, не-full-bleed ветка. Page-level view-guard `teams:view` ([ADR-021](../../adr/ADR-021-rbac-users-roles.md) §Последствия, [ADR-022](../../adr/ADR-022-teams-nav-categories.md)).
 
 ### Страница `TeamsPage`
 - Список команд (`GET /api/teams`): по команде — **Название**, **Лидер** (`leader_username`; при `null` — **«Без лидера»**), «**N участников**» (`member_count`, может быть `0`). Кнопка «Добавить команду» — по `useCan('teams','create')`.

@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import type { ReactElement } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SmsNumberRow } from '@/components/SmsNumberRow';
+import { ApiError } from '@/lib/api';
 import type { SmsNumber, TeamListItem } from '@/types/api';
 
 const mutations = vi.hoisted(() => ({
@@ -77,8 +78,20 @@ function renderRow(over: RowOverrides = {}) {
   );
 }
 
-describe('SmsNumberRow', () => {
-  beforeEach(() => vi.clearAllMocks());
+describe('SmsNumberRow (ADR-033: без колонки «Действия»)', () => {
+  beforeEach(() => {
+    // mockReset — сбрасывает и вызовы, и реализации (revert-тест ставит onError-impl).
+    mutations.update.mockReset();
+    mutations.transfer.mockReset();
+    mutations.del.mockReset();
+  });
+
+  it('карандаши инлайн-правки видны постоянно при canEdit', () => {
+    renderRow();
+    expect(screen.getByRole('button', { name: 'Изменить: Логин' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Изменить: Приложение' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Изменить: Примечание' })).toBeInTheDocument();
+  });
 
   it('инлайн-правка: Pencil раскрывает input, Check сохраняет с новым значением', async () => {
     const user = userEvent.setup();
@@ -122,7 +135,63 @@ describe('SmsNumberRow', () => {
     expect(mutations.update).not.toHaveBeenCalled();
   });
 
-  it('удаление: кнопка открывает confirm-модалку, подтверждение вызывает delete с id', async () => {
+  it('перенос: onChange Select мгновенно коммитит перенос (transfer с team_id)', async () => {
+    const user = userEvent.setup();
+    renderRow({ number: makeNumber(1, { phone_number: '+15550001' }) });
+
+    // Колонки «Действия»/кнопки «Перенести» нет — коммит сразу по выбору значения.
+    expect(screen.queryByRole('button', { name: /Перенести/ })).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText('Команда номера +15550001'), 't1');
+
+    expect(mutations.transfer).toHaveBeenCalledWith(
+      { id: 1, payload: { team_id: 't1' } },
+      expect.anything(),
+    );
+  });
+
+  it('перенос: выбор «Без команды» у номера с командой шлёт team_id=null (снятие)', async () => {
+    const user = userEvent.setup();
+    renderRow({
+      number: makeNumber(1, { phone_number: '+15550001', team: { id: 't1', name: 'Продажи' } }),
+    });
+
+    const select = screen.getByLabelText('Команда номера +15550001') as HTMLSelectElement;
+    expect(select.value).toBe('t1');
+
+    await user.selectOptions(select, '');
+
+    expect(mutations.transfer).toHaveBeenCalledWith(
+      { id: 1, payload: { team_id: null } },
+      expect.anything(),
+    );
+  });
+
+  it('перенос: при ошибке значение Select откатывается к серверному состоянию', async () => {
+    const user = userEvent.setup();
+    // Мутация синхронно вызывает onError → компонент откатывает selectedTeamId.
+    mutations.transfer.mockImplementation((_vars, opts) => {
+      opts.onError(new ApiError(409, 'conflict', 'Команда занята'));
+    });
+    renderRow({
+      number: makeNumber(1, { phone_number: '+15550001', team: { id: 't1', name: 'Продажи' } }),
+    });
+
+    const select = screen.getByLabelText('Команда номера +15550001') as HTMLSelectElement;
+    expect(select.value).toBe('t1');
+
+    await user.selectOptions(select, 't2');
+
+    // Перенос был инициирован...
+    expect(mutations.transfer).toHaveBeenCalledWith(
+      { id: 1, payload: { team_id: 't2' } },
+      expect.anything(),
+    );
+    // ...но ошибка откатила Select к текущей команде.
+    expect(select.value).toBe('t1');
+  });
+
+  it('удаление: Trash2 открывает confirm-модалку, подтверждение вызывает delete с id', async () => {
     const user = userEvent.setup();
     renderRow({ number: makeNumber(1, { phone_number: '+15550001' }) });
 
@@ -140,49 +209,16 @@ describe('SmsNumberRow', () => {
     expect(screen.queryByRole('button', { name: 'Изменить: Примечание' })).not.toBeInTheDocument();
   });
 
-  it('гейтинг: без canTransfer Select команды и кнопка «Перенести» отсутствуют', () => {
+  it('гейтинг: без canTransfer Select команды нет — показывается текст команды', () => {
     renderRow({ canTransfer: false, number: makeNumber(1, { phone_number: '+15550001' }) });
     expect(screen.queryByLabelText('Команда номера +15550001')).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Перенести/ })).not.toBeInTheDocument();
+    expect(screen.getByText('Без команды')).toBeInTheDocument();
   });
 
-  it('гейтинг: без canDelete кнопка «Удалить» отсутствует', () => {
+  it('гейтинг: без canDelete кнопка удаления отсутствует', () => {
     renderRow({ canDelete: false, number: makeNumber(1, { phone_number: '+15550001' }) });
     expect(
       screen.queryByRole('button', { name: 'Удалить номер +15550001' }),
     ).not.toBeInTheDocument();
-  });
-
-  it('перенос: выбор команды активирует «Перенести» и вызывает transfer с team_id', async () => {
-    const user = userEvent.setup();
-    renderRow({ number: makeNumber(1, { phone_number: '+15550001' }) });
-
-    const btn = screen.getByRole('button', { name: /Перенести/ });
-    // Без изменения команды (target === current) кнопка отключена.
-    expect(btn).toBeDisabled();
-
-    await user.selectOptions(screen.getByLabelText('Команда номера +15550001'), 't1');
-    expect(btn).toBeEnabled();
-
-    await user.click(btn);
-    expect(mutations.transfer).toHaveBeenCalledWith(
-      { id: 1, payload: { team_id: 't1' } },
-      expect.anything(),
-    );
-  });
-
-  it('перенос: выбор «Без команды» у номера с командой шлёт team_id=null (снятие)', async () => {
-    const user = userEvent.setup();
-    renderRow({
-      number: makeNumber(1, { phone_number: '+15550001', team: { id: 't1', name: 'Продажи' } }),
-    });
-
-    await user.selectOptions(screen.getByLabelText('Команда номера +15550001'), '');
-    await user.click(screen.getByRole('button', { name: /Перенести/ }));
-
-    expect(mutations.transfer).toHaveBeenCalledWith(
-      { id: 1, payload: { team_id: null } },
-      expect.anything(),
-    );
   });
 });

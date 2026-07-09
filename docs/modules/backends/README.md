@@ -188,7 +188,7 @@ build_backend_recovery(code: str, name: str, domain: str) -> str
 
 ### Навигация
 
-- Добавить вкладку **«Бэки»** (`/backends`) в `AppLayout` — [08-design-system.md](../../08-design-system.md#навигация-категории-дропдауны-applayout). Защищённый маршрут внутри `AppLayout`, не-full-bleed ветка. (Со Спринта B «Бэки» — пункт категории «Мониторинг», [ADR-022](../../adr/ADR-022-teams-nav-categories.md).)
+- Добавить вкладку **«Бэки»** (`/backends`) в `AppLayout` — [08-design-system.md](../../08-design-system.md#навигация-плоская-applayout). Защищённый маршрут внутри `AppLayout`, не-full-bleed ветка. («Бэки» — пункт **плоской навигации** со Спринта C, [ADR-033](../../adr/ADR-033-flat-nav-theme-toggle-numbers-table.md); ранее — категория «Мониторинг», [ADR-022](../../adr/ADR-022-teams-nav-categories.md).)
 
 ### Страница `BackendsPage`
 

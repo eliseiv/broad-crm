@@ -2,8 +2,15 @@
 @tailwind components;
 @tailwind utilities;
 
-:root {
-  /* Цветовые токены — 08-design-system.md */
+/*
+ * Цветовые токены — 08-design-system.md «Цветовые токены» / «Темизация» (ADR-033).
+ * Тема-зависимы: тёмные значения — на :root (и явно [data-theme=dark]), светлые —
+ * под [data-theme=light]. Компоненты ссылаются на переменные — при смене темы
+ * меняются только значения. Носитель темы — data-theme на <html> (см. index.html
+ * no-FOUC-скрипт + src/lib/theme.ts).
+ */
+:root,
+[data-theme='dark'] {
   --bg-base: #0a0c10;
   --surface-1: #11141a;
   --surface-2: #161a22;
@@ -20,7 +27,51 @@
   --status-red: #ef4444;
   --gauge-track: #262c38;
 
+  /* Градиенты дуги gauge (тема-зависимы, ADR-033) */
+  --gauge-green-from: #16a34a;
+  --gauge-green-to: #4ade80;
+  --gauge-yellow-from: #ca8a04;
+  --gauge-yellow-to: #facc15;
+  --gauge-red-from: #dc2626;
+  --gauge-red-to: #f87171;
+
+  /* Тема-зависимые тени карточек (ADR-033 — вместо статичных boxShadow в конфиге) */
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-sub: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 4px 12px rgba(0, 0, 0, 0.3);
+
   color-scheme: dark;
+}
+
+[data-theme='light'] {
+  --bg-base: #f2f4f7;
+  --surface-1: #ffffff;
+  --surface-2: #f7f8fa;
+  --surface-3: #eaecf1;
+  --border-subtle: #e3e6eb;
+  --border-strong: #cdd2db;
+  --text-primary: #111827;
+  --text-secondary: #4b5563;
+  --text-tertiary: #61697a;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --status-green: #15803d;
+  --status-yellow: #b45309;
+  --status-red: #dc2626;
+  --gauge-track: #e1e4ea;
+
+  /* Градиенты дуги gauge — светлые концы затемнены (не «вымываются» на белом) */
+  --gauge-green-from: #15803d;
+  --gauge-green-to: #22c55e;
+  --gauge-yellow-from: #b45309;
+  --gauge-yellow-to: #eab308;
+  --gauge-red-from: #b91c1c;
+  --gauge-red-to: #ef4444;
+
+  /* Тени — мягче, полупрозрачный #101828 (без чёрного/inset-хайлайта) */
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.08);
+  --shadow-sub: 0 1px 2px rgba(16, 24, 40, 0.05), 0 4px 12px rgba(16, 24, 40, 0.06);
+
+  color-scheme: light;
 }
 
 @layer base {
@@ -69,8 +120,9 @@
     border-radius: 4px;
   }
 
+  /* Выделение текста следует теме (accent тема-зависим, ADR-033). */
   ::selection {
-    background: rgba(99, 102, 241, 0.35);
+    background: color-mix(in srgb, var(--accent) 35%, transparent);
   }
 }
 

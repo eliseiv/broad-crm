@@ -39,118 +39,104 @@ function renderAt(initial: string) {
   );
 }
 
-describe('AppLayout — навигация категориями-дропдаунами (ADR-022)', () => {
-  afterEach(() => logout());
+// Полный нормативный порядок пунктов плоской навигации (ADR-033).
+const ALL_LABELS = [
+  'Почты',
+  'СМС',
+  'Серверы',
+  'ИИ - ключи',
+  'Прокси',
+  'Бэки',
+  'Пользователи',
+  'Роли',
+  'Команды',
+];
 
-  describe('супер-админ видит все категории', () => {
+describe('AppLayout — плоская навигация (ADR-033)', () => {
+  afterEach(() => {
+    logout();
+    localStorage.clear();
+    document.documentElement.removeAttribute('data-theme');
+  });
+
+  describe('супер-админ видит все пункты плоским рядом', () => {
     beforeEach(() => loginSuperadmin());
 
-    it('рендерит три категории-триггера: Агрегатор, Мониторинг, Пользователи', () => {
+    it('рендерит все пункты навигации как ссылки (плоский ряд)', () => {
       renderAt('/servers');
-      expect(screen.getByRole('button', { name: /Агрегатор/ })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /Мониторинг/ })).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /Пользователи/ })).toBeInTheDocument();
+      for (const label of ALL_LABELS) {
+        expect(screen.getByRole('link', { name: label })).toBeInTheDocument();
+      }
     });
 
-    it('«Дашборд» отсутствует в меню (нет ни категории, ни пункта)', () => {
+    it('нет категорий-дропдаунов / разделителя «|» / пунктов-меню (плоская навигация)', () => {
       renderAt('/servers');
+      // Категорий-триггеров прежней навигации (ADR-022) больше нет.
+      for (const cat of ['Агрегатор', 'Мониторинг']) {
+        expect(screen.queryByRole('button', { name: new RegExp(cat) })).not.toBeInTheDocument();
+      }
+      // Нет role=menuitem (NavMenu удалён) и нет визуального разделителя «|».
+      expect(screen.queryByRole('menuitem')).not.toBeInTheDocument();
+      expect(screen.queryByText('|')).not.toBeInTheDocument();
+    });
+
+    it('«Дашборд» отсутствует в навигации (доступен только по URL)', () => {
+      renderAt('/servers');
+      expect(screen.queryByRole('link', { name: /Дашборд/ })).not.toBeInTheDocument();
       expect(screen.queryByText('Дашборд')).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /Дашборд/ })).not.toBeInTheDocument();
     });
 
-    it('категория «Мониторинг» раскрывает Серверы/ИИ - ключи/Прокси/Бэки', async () => {
+    it('активен пункт текущего маршрута (/servers → «Серверы» text-accent)', () => {
+      renderAt('/servers');
+      expect(screen.getByRole('link', { name: 'Серверы' }).className).toContain('text-accent');
+      expect(screen.getByRole('link', { name: 'Почты' }).className).toContain(
+        'text-text-secondary',
+      );
+    });
+
+    it('навигация по клику на пункт (Серверы → ИИ - ключи)', async () => {
       const user = userEvent.setup();
       renderAt('/servers');
 
-      await user.click(screen.getByRole('button', { name: /Мониторинг/ }));
-
-      for (const label of ['Серверы', 'ИИ - ключи', 'Прокси', 'Бэки']) {
-        expect(await screen.findByRole('menuitem', { name: label })).toBeInTheDocument();
-      }
-      // Дашборда нет и внутри раскрытой панели.
-      expect(screen.queryByRole('menuitem', { name: 'Дашборд' })).not.toBeInTheDocument();
-    });
-
-    it('категория «Агрегатор» раскрывает пункт «Почты»', async () => {
-      const user = userEvent.setup();
-      renderAt('/servers');
-
-      await user.click(screen.getByRole('button', { name: /Агрегатор/ }));
-
-      expect(await screen.findByRole('menuitem', { name: 'Почты' })).toBeInTheDocument();
-    });
-
-    it('категория «Пользователи» раскрывает Пользователи/Роли/Команды', async () => {
-      const user = userEvent.setup();
-      renderAt('/servers');
-
-      await user.click(screen.getByRole('button', { name: /Пользователи/ }));
-
-      for (const label of ['Пользователи', 'Роли', 'Команды']) {
-        expect(await screen.findByRole('menuitem', { name: label })).toBeInTheDocument();
-      }
-    });
-
-    it('навигация по клику на пункт меню (Серверы → ИИ - ключи)', async () => {
-      const user = userEvent.setup();
-      renderAt('/servers');
-
-      await user.click(screen.getByRole('button', { name: /Мониторинг/ }));
-      await user.click(await screen.findByRole('menuitem', { name: 'ИИ - ключи' }));
+      await user.click(screen.getByRole('link', { name: 'ИИ - ключи' }));
 
       expect(screen.getByText('Контент ключей')).toBeInTheDocument();
     });
 
-    it('активна категория, содержащая текущий маршрут (/servers → «Мониторинг»)', () => {
+    it('в хэдере присутствует переключатель темы (Moon при светлой теме)', () => {
+      // data-theme не задан, ОС светлая (matchMedia matches:false) → тема light →
+      // иконка Moon, aria-label «Тёмная тема».
       renderAt('/servers');
-      expect(screen.getByRole('button', { name: /Мониторинг/ }).className).toContain('text-accent');
-      expect(screen.getByRole('button', { name: /Агрегатор/ }).className).toContain(
-        'text-text-secondary',
-      );
+      expect(screen.getByRole('button', { name: 'Тёмная тема' })).toBeInTheDocument();
     });
   });
 
-  describe('видимость категорий/пунктов по правам (категория видна ⇔ ≥1 доступный пункт)', () => {
-    it('только servers:view → видна лишь «Мониторинг» с единственным пунктом «Серверы»', async () => {
-      const user = userEvent.setup();
+  describe('видимость пунктов по правам (гейтинг: скрытый пункт не рендерится)', () => {
+    it('только servers:view → виден лишь «Серверы» (users скрыт — не admin)', () => {
       loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { servers: ['view'] } });
       renderAt('/servers');
 
-      expect(screen.getByRole('button', { name: /Мониторинг/ })).toBeInTheDocument();
-      // Категории без доступных пунктов не рендерятся.
-      expect(screen.queryByRole('button', { name: /Агрегатор/ })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /Пользователи/ })).not.toBeInTheDocument();
-
-      await user.click(screen.getByRole('button', { name: /Мониторинг/ }));
-      expect(await screen.findByRole('menuitem', { name: 'Серверы' })).toBeInTheDocument();
-      // Недоступные пункты той же категории скрыты.
-      expect(screen.queryByRole('menuitem', { name: 'ИИ - ключи' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('menuitem', { name: 'Прокси' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('menuitem', { name: 'Бэки' })).not.toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Серверы' })).toBeInTheDocument();
+      for (const label of ALL_LABELS.filter((l) => l !== 'Серверы')) {
+        expect(screen.queryByRole('link', { name: label })).not.toBeInTheDocument();
+      }
     });
 
-    it('только roles:view → «Пользователи» с единственным пунктом «Роли» (не Пользователи/Команды)', async () => {
-      const user = userEvent.setup();
+    it('только roles:view → виден «Роли»; «Пользователи»(admin) и «Команды»(teams:view) скрыты', () => {
       loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { roles: ['view'] } });
       renderAt('/roles');
 
-      expect(screen.getByRole('button', { name: /Пользователи/ })).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /Мониторинг/ })).not.toBeInTheDocument();
-
-      await user.click(screen.getByRole('button', { name: /Пользователи/ }));
-      expect(await screen.findByRole('menuitem', { name: 'Роли' })).toBeInTheDocument();
-      // Пункт «Пользователи» — admin-only; «Команды» — teams:view (нет).
-      expect(screen.queryByRole('menuitem', { name: 'Пользователи' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('menuitem', { name: 'Команды' })).not.toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Роли' })).toBeInTheDocument();
+      // «Пользователи» — admin-only; «Команды» — teams:view (нет права).
+      expect(screen.queryByRole('link', { name: 'Пользователи' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Команды' })).not.toBeInTheDocument();
     });
 
-    it('пункт «Пользователи» виден admin-признаком (role=admin), не матрицей', async () => {
-      const user = userEvent.setup();
+    it('«Пользователи» виден admin-признаком (role=admin), не матрицей прав', () => {
       loginAs({ isSuperadmin: false, role: 'admin', permissions: {} });
       renderAt('/servers');
 
-      await user.click(screen.getByRole('button', { name: /Пользователи/ }));
-      expect(await screen.findByRole('menuitem', { name: 'Пользователи' })).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'Пользователи' })).toBeInTheDocument();
     });
   });
 
@@ -163,6 +149,36 @@ describe('AppLayout — навигация категориями-дропдау
     await user.click(screen.getByRole('button', { name: /выйти/i }));
 
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
+  });
+});
+
+describe('AppLayout — переключатель темы в хэдере (ADR-033)', () => {
+  beforeEach(() => {
+    loginSuperadmin();
+    localStorage.clear();
+    document.documentElement.removeAttribute('data-theme');
+  });
+  afterEach(() => {
+    logout();
+    localStorage.clear();
+    document.documentElement.removeAttribute('data-theme');
+  });
+
+  it('клик по переключателю меняет data-theme и залипает (повторный клик возвращает)', async () => {
+    const user = userEvent.setup();
+    renderAt('/servers');
+
+    // Старт: нет сохранённого выбора, ОС светлая → тема light → кнопка «Тёмная тема».
+    await user.click(screen.getByRole('button', { name: 'Тёмная тема' }));
+    expect(document.documentElement.dataset.theme).toBe('dark');
+    expect(localStorage.getItem('crm-theme')).toBe('dark');
+    // Иконка/лейбл переключились на «Светлая тема».
+    expect(screen.getByRole('button', { name: 'Светлая тема' })).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Светлая тема' }));
+    expect(document.documentElement.dataset.theme).toBe('light');
+    expect(localStorage.getItem('crm-theme')).toBe('light');
+    expect(screen.getByRole('button', { name: 'Тёмная тема' })).toBeInTheDocument();
   });
 });
 

@@ -49,8 +49,10 @@ const config: Config = {
         nav: '6px',
       },
       boxShadow: {
-        card: '0 1px 0 rgba(255,255,255,0.03) inset, 0 8px 24px rgba(0,0,0,0.4)',
-        sub: '0 1px 0 rgba(255,255,255,0.02) inset, 0 4px 12px rgba(0,0,0,0.3)',
+        // Тема-зависимы (ADR-033): значения в CSS-переменных (index.css),
+        // переключаются вместе с data-theme. Прежде были статичны под тёмный фон.
+        card: 'var(--shadow-card)',
+        sub: 'var(--shadow-sub)',
       },
       keyframes: {
         shimmer: {

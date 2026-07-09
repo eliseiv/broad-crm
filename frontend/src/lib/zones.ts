@@ -12,16 +12,22 @@ export function usageToZone(p: number): Zone {
   return 'green'; // < 80
 }
 
-/** Градиенты дуги по зоне (08-design-system.md). */
+/**
+ * Градиенты дуги по зоне (08-design-system.md). Тема-зависимы (ADR-033) —
+ * ссылаются на CSS-переменные, переключаемые вместе с data-theme (index.css).
+ */
 export const ZONE_GRADIENT: Record<Zone, { from: string; to: string }> = {
-  green: { from: '#16A34A', to: '#4ADE80' },
-  yellow: { from: '#CA8A04', to: '#FACC15' },
-  red: { from: '#DC2626', to: '#F87171' },
+  green: { from: 'var(--gauge-green-from)', to: 'var(--gauge-green-to)' },
+  yellow: { from: 'var(--gauge-yellow-from)', to: 'var(--gauge-yellow-to)' },
+  red: { from: 'var(--gauge-red-from)', to: 'var(--gauge-red-to)' },
 };
 
-/** Сплошной цвет зоны (для свечения, точек статуса). */
+/**
+ * Сплошной цвет зоны (свечение gauge). Тема-зависим — статусные переменные
+ * (index.css) переключаются с data-theme.
+ */
 export const ZONE_COLOR: Record<Zone, string> = {
-  green: '#22C55E',
-  yellow: '#EAB308',
-  red: '#EF4444',
+  green: 'var(--status-green)',
+  yellow: 'var(--status-yellow)',
+  red: 'var(--status-red)',
 };

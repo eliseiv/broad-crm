@@ -128,7 +128,7 @@ export function InlineEditField({
           type="button"
           onClick={startEdit}
           aria-label={`Изменить: ${label}`}
-          className="shrink-0 rounded-md p-1 text-text-tertiary opacity-0 transition-opacity hover:bg-surface-3 hover:text-text-primary focus-visible:opacity-100 group-hover:opacity-100"
+          className="shrink-0 rounded-md p-1 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-primary"
         >
           <Pencil className="h-3.5 w-3.5" />
         </button>

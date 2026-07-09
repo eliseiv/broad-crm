@@ -1,58 +1,41 @@
-import { Fragment } from 'react';
-import { LogOut, ServerCog } from 'lucide-react';
-import { Outlet, useLocation, useNavigate } from 'react-router-dom';
+import { LogOut, Moon, ServerCog, Sun } from 'lucide-react';
+import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
-import { NavMenu } from '@/components/ui/NavMenu';
-import type { NavMenuItem } from '@/components/ui/NavMenu';
 import { cn } from '@/lib/cn';
+import { useTheme } from '@/lib/theme';
 import { useCanViewPage, useIsAdmin, useMe } from '@/features/auth/hooks';
 import { useAuthStore } from '@/store/auth';
 
 /**
- * Категоризированная навигация (08-design-system.md «Навигация (категории-
- * дропдауны)», ADR-022). Каждый пункт хранит `page` — ключ гейтинга видимости.
- * «Дашборд» в меню отсутствует (маршрут доступен только по прямому URL).
+ * Плоская навигация (08-design-system.md «Навигация (плоская, AppLayout)»,
+ * ADR-033). Каждый пункт — `NavLink` прямо в ряду хэдера, без категорий-дропдаунов.
+ * `page` — ключ гейтинга видимости. «Дашборд» в меню отсутствует (только по URL).
  */
-interface NavLeaf extends NavMenuItem {
+interface NavItem {
+  to: string;
+  label: string;
   page: string;
 }
-interface NavCategory {
-  label: string;
-  leaves: NavLeaf[];
-}
 
-const CATEGORIES: NavCategory[] = [
-  {
-    label: 'Агрегатор',
-    leaves: [
-      { to: '/mail', label: 'Почты', page: 'mail' },
-      { to: '/sms', label: 'СМС', page: 'sms' },
-    ],
-  },
-  {
-    label: 'Мониторинг',
-    leaves: [
-      { to: '/servers', label: 'Серверы', page: 'servers' },
-      { to: '/ai-keys', label: 'ИИ - ключи', page: 'ai-keys' },
-      { to: '/proxies', label: 'Прокси', page: 'proxies' },
-      { to: '/backends', label: 'Бэки', page: 'backends' },
-    ],
-  },
-  {
-    label: 'Пользователи',
-    leaves: [
-      { to: '/users', label: 'Пользователи', page: 'users' },
-      { to: '/roles', label: 'Роли', page: 'roles' },
-      { to: '/teams', label: 'Команды', page: 'teams' },
-    ],
-  },
+// Нормативный порядок (08-design-system.md §Навигация): агрегатор → мониторинг →
+// пользователи, но плоским рядом без визуальных заголовков-категорий.
+const NAV_ITEMS: NavItem[] = [
+  { to: '/mail', label: 'Почты', page: 'mail' },
+  { to: '/sms', label: 'СМС', page: 'sms' },
+  { to: '/servers', label: 'Серверы', page: 'servers' },
+  { to: '/ai-keys', label: 'ИИ - ключи', page: 'ai-keys' },
+  { to: '/proxies', label: 'Прокси', page: 'proxies' },
+  { to: '/backends', label: 'Бэки', page: 'backends' },
+  { to: '/users', label: 'Пользователи', page: 'users' },
+  { to: '/roles', label: 'Роли', page: 'roles' },
+  { to: '/teams', label: 'Команды', page: 'teams' },
 ];
 
 /**
- * Общий layout с верхней категоризированной навигацией (08-design-system.md
- * «Навигация», ADR-022). Все страницы — под auth-guard. Гейтинг видимости — только
- * UX; безопасность обеспечивает сервер (403).
+ * Общий layout с верхней плоской навигацией (08-design-system.md «Навигация»,
+ * ADR-033). Все страницы — под auth-guard. Гейтинг видимости — только UX;
+ * безопасность обеспечивает сервер (403). В правой части — переключатель темы.
  */
 export function AppLayout() {
   const navigate = useNavigate();
@@ -60,6 +43,7 @@ export function AppLayout() {
   const queryClient = useQueryClient();
   const username = useAuthStore((s) => s.username);
   const clearSession = useAuthStore((s) => s.clearSession);
+  const { theme, toggle } = useTheme();
 
   // Обновляем права принципала при входе на защищённые страницы (ADR-021:
   // права могут меняться без пере-логина). Наполняет стор → гейтинг реактивен.
@@ -79,19 +63,9 @@ export function AppLayout() {
     teams: useCanViewPage('teams'),
     users: isAdmin,
   };
-  const canSee = (page: string) => Boolean(access[page]);
 
-  // Только видимые категории (≥1 доступного пункта) — между ними ставится
-  // разделитель «|» (ADR-029); скрытые категории не порождают висячих разделителей.
-  const visibleCategories = CATEGORIES.map((category) => {
-    const visibleLeaves = category.leaves.filter((leaf) => canSee(leaf.page));
-    if (visibleLeaves.length === 0) return null;
-    return {
-      label: category.label,
-      active: visibleLeaves.some((leaf) => location.pathname.startsWith(leaf.to)),
-      items: visibleLeaves.map(({ to, label }): NavMenuItem => ({ to, label })),
-    };
-  }).filter((c): c is { label: string; active: boolean; items: NavMenuItem[] } => c !== null);
+  // Только видимые по правам пункты (скрытый по правам пункт не рендерится).
+  const visibleItems = NAV_ITEMS.filter((item) => Boolean(access[item.page]));
 
   // Два режима shell по маршруту (08-design-system.md «Full-bleed layout»):
   //  • /mail (full-bleed) — фиксированная высота; скролл внутри панелей master-detail.
@@ -117,25 +91,46 @@ export function AppLayout() {
           isFullBleed ? 'shrink-0' : 'sticky top-0 z-30',
         )}
       >
-        <div className="mx-auto flex max-w-[1400px] items-center justify-between px-6 py-3">
-          <div className="flex items-center gap-6">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-accent/15 text-accent">
-              <ServerCog className="h-[18px] w-[18px]" aria-hidden="true" />
-            </span>
-            <nav className="flex items-center gap-1" aria-label="Основная навигация">
-              {visibleCategories.map((category, index) => (
-                <Fragment key={category.label}>
-                  {index > 0 && (
-                    <span aria-hidden="true" className="select-none px-1 text-text-secondary">
-                      |
-                    </span>
-                  )}
-                  <NavMenu label={category.label} active={category.active} items={category.items} />
-                </Fragment>
-              ))}
-            </nav>
-          </div>
-          <div className="flex items-center gap-3">
+        <div className="mx-auto flex max-w-[1400px] items-center gap-4 px-6 py-3">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
+            <ServerCog className="h-[18px] w-[18px]" aria-hidden="true" />
+          </span>
+          {/* Плоский ряд пунктов; на узких вьюпортах — горизонтальный скролл ряда
+              (scrollbar-none), высота хэдера фиксирована (flex-nowrap), sticky/
+              full-bleed не ломаются (ADR-033 §Деградация хэдера). */}
+          <nav
+            aria-label="Основная навигация"
+            className="scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto"
+          >
+            {visibleItems.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={({ isActive }) =>
+                  cn(
+                    'shrink-0 whitespace-nowrap rounded-md px-3 py-2 text-[14px] font-medium transition-colors',
+                    'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                    isActive ? 'text-accent' : 'text-text-secondary hover:text-text-primary',
+                  )
+                }
+              >
+                {item.label}
+              </NavLink>
+            ))}
+          </nav>
+          <div className="flex shrink-0 items-center gap-3">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={toggle}
+              aria-label={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
+            >
+              {theme === 'dark' ? (
+                <Sun className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <Moon className="h-4 w-4" aria-hidden="true" />
+              )}
+            </Button>
             {username && (
               <span className="hidden text-[13px] text-text-secondary sm:inline">
                 <span className="font-mono text-text-primary">{username}</span>
