@@ -22,3 +22,8 @@ export function usersPlural(n: number): string {
 export function membersPlural(n: number): string {
   return `${n} ${pluralRu(n, { one: 'участник', few: 'участника', many: 'участников' })}`;
 }
+
+/** «N номер / номера / номеров» (число SMS-номеров команды, 08-design-system.md «СМС»). */
+export function numbersPlural(n: number): string {
+  return `${n} ${pluralRu(n, { one: 'номер', few: 'номера', many: 'номеров' })}`;
+}

@@ -32,6 +32,7 @@ import pytest
 from app.models import Base
 from app.models.role import Role
 from app.models.user import User
+from app.repositories.sms_number_repository import SmsNumberRepository
 from app.repositories.team_repository import TeamRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.team import TeamCreateRequest, TeamListItem, TeamUpdateRequest
@@ -70,7 +71,11 @@ async def _sessionmaker() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
 
 
 def _service(session: AsyncSession) -> TeamService:
-    return TeamService(teams=TeamRepository(session), users=UserRepository(session))
+    return TeamService(
+        teams=TeamRepository(session),
+        users=UserRepository(session),
+        numbers=SmsNumberRepository(session),
+    )
 
 
 async def _seed_users(

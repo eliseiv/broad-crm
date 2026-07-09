@@ -14,6 +14,8 @@ from app.api import (
     proxies,
     roles,
     servers,
+    sms,
+    sms_webhooks,
     teams,
     users,
 )
@@ -30,3 +32,5 @@ api_router.include_router(permissions.router)
 api_router.include_router(users.router)
 api_router.include_router(roles.router)
 api_router.include_router(teams.router)
+api_router.include_router(sms.router)
+api_router.include_router(sms_webhooks.router)

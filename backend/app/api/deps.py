@@ -9,22 +9,27 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db import get_session, get_sessionmaker
 from app.domain.permissions import full_catalog_permissions
+from app.domain.sms import SmsScope
 from app.errors import forbidden, unauthorized
 from app.infra.jwt import SetupTokenClaims, TokenError, decode_access_token, decode_setup_token
 from app.infra.mail_client import get_mail_client
 from app.infra.prometheus import get_prometheus_client
 from app.infra.rate_limit import get_login_rate_limiter
+from app.infra.sms_telegram import SmsBotClient
 from app.infra.telegram import TelegramClient
+from app.models.team import user_teams
 from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.backend_repository import BackendRepository
 from app.repositories.proxy_repository import ProxyRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.server_repository import ServerRepository
+from app.repositories.sms_number_repository import SmsNumberRepository
 from app.repositories.team_repository import TeamRepository
 from app.repositories.user_repository import UserRepository
 from app.services.ai_key_monitor_service import AiKeyMonitorService
@@ -39,6 +44,11 @@ from app.services.proxy_monitor_service import ProxyMonitorService
 from app.services.proxy_service import ProxyService
 from app.services.role_service import RoleService
 from app.services.server_service import ServerService
+from app.services.sms_ingest_service import SmsIngestService
+from app.services.sms_message_service import SmsMessageService
+from app.services.sms_number_service import SmsNumberService
+from app.services.sms_sync_service import SmsSyncService
+from app.services.sms_telegram_link_service import SmsTelegramLinkService
 from app.services.team_service import TeamService
 from app.services.user_service import UserService
 
@@ -66,6 +76,12 @@ class Principal:
     role: str
     permissions: dict[str, list[str]]
     is_superadmin: bool
+    # user_id из claim `uid` (UUID) — ТОЛЬКО у БД-пользователя; супер-админ → None
+    # (он не строка в `users`). Default None: `get_current_principal` всегда задаёт
+    # значение явно, дефолт лишь для конструирования супер-админ-принципала в тестах.
+    # Нужен для scope видимости SMS и привязки Telegram
+    # (05-security.md#расширение-principal, ADR-030 §6). На прочие эндпоинты не влияет.
+    user_id: uuid.UUID | None = None
 
 
 async def get_current_principal(
@@ -91,6 +107,7 @@ async def get_current_principal(
             role="admin",
             permissions=full_catalog_permissions(),
             is_superadmin=True,
+            user_id=None,
         )
 
     if claims.uid is None:
@@ -109,6 +126,7 @@ async def get_current_principal(
         role=user.role.name,
         permissions=dict(user.role.permissions),
         is_superadmin=False,
+        user_id=user.id,
     )
 
 
@@ -183,11 +201,54 @@ def get_role_service(session: DbSession) -> RoleService:
 
 
 def get_team_service(session: DbSession) -> TeamService:
-    """Сервис реестра CRM-команд (матрица teams:*, ADR-022)."""
+    """Сервис реестра CRM-команд (матрица teams:*, ADR-022; number_count/numbers ADR-030)."""
     return TeamService(
         teams=TeamRepository(session),
         users=UserRepository(session),
+        numbers=SmsNumberRepository(session),
     )
+
+
+async def get_sms_scope(principal: PrincipalDep, session: DbSession) -> SmsScope:
+    """Фабрика scope: команды пользователя из `user_teams` (супер-админ → пустой набор)."""
+    if principal.is_superadmin:
+        return SmsScope(is_super_admin=True, team_ids=frozenset())
+    if principal.user_id is None:
+        return SmsScope(is_super_admin=False, team_ids=frozenset())
+    stmt = select(user_teams.c.team_id).where(user_teams.c.user_id == principal.user_id)
+    result = await session.execute(stmt)
+    return SmsScope(is_super_admin=False, team_ids=frozenset(result.scalars().all()))
+
+
+def get_sms_message_service(session: DbSession) -> SmsMessageService:
+    """Сервис ленты входящих SMS (require sms:view + scope)."""
+    return SmsMessageService(session)
+
+
+def get_sms_number_service(session: DbSession) -> SmsNumberService:
+    """Сервис реестра SMS-номеров (require sms:view/edit/transfer/delete + scope)."""
+    return SmsNumberService(
+        numbers=SmsNumberRepository(session),
+        teams=TeamRepository(session),
+    )
+
+
+def get_sms_sync_service(session: DbSession, settings: SettingsDep) -> SmsSyncService:
+    """Сервис синхронизации номеров из Twilio (require sms:sync)."""
+    return SmsSyncService(numbers=SmsNumberRepository(session), settings=settings)
+
+
+def get_sms_telegram_link_service(
+    session: DbSession, settings: SettingsDep
+) -> SmsTelegramLinkService:
+    """Сервис Telegram-привязки оператора (link — JWT; auth — публичный)."""
+    return SmsTelegramLinkService(session=session, settings=settings)
+
+
+def get_sms_ingest_service(session: DbSession, settings: SettingsDep) -> SmsIngestService:
+    """Сервис приёма/fan-out входящих SMS (публичный Twilio-webhook)."""
+    bot = SmsBotClient(settings.sms_telegram_bot_token, settings.sms_telegram_proxy_url)
+    return SmsIngestService(session, bot)
 
 
 def get_provisioning_service(settings: SettingsDep) -> ProvisioningService:
@@ -314,3 +375,11 @@ ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]
 BackendServiceDep = Annotated[BackendService, Depends(get_backend_service)]
 MailServiceDep = Annotated[MailService, Depends(get_mail_service)]
 ClientIp = Annotated[str, Depends(get_client_ip)]
+SmsScopeDep = Annotated[SmsScope, Depends(get_sms_scope)]
+SmsMessageServiceDep = Annotated[SmsMessageService, Depends(get_sms_message_service)]
+SmsNumberServiceDep = Annotated[SmsNumberService, Depends(get_sms_number_service)]
+SmsSyncServiceDep = Annotated[SmsSyncService, Depends(get_sms_sync_service)]
+SmsTelegramLinkServiceDep = Annotated[
+    SmsTelegramLinkService, Depends(get_sms_telegram_link_service)
+]
+SmsIngestServiceDep = Annotated[SmsIngestService, Depends(get_sms_ingest_service)]

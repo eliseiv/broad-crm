@@ -19,6 +19,7 @@ CATALOG: dict[str, tuple[str, ...]] = {
     "proxies": ("view", "create", "edit", "delete"),
     "backends": ("view", "create", "edit", "delete"),
     "mail": ("view",),
+    "sms": ("view", "edit", "transfer", "sync", "delete"),
     "roles": ("view", "create", "edit", "delete"),
     "teams": ("view", "create", "edit", "delete"),
 }

@@ -78,6 +78,7 @@ location /api {
     proxy_set_header X-Real-IP         $remote_addr;
     proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host  $host;
 }
 
 # SPA: статику отдаёт nginx → security-заголовки + CSP ставит nginx
@@ -96,6 +97,8 @@ location / {
 - **Разделение ответственности за security-заголовки** (нормативно, без дублей — [05-security.md](05-security.md#http-заголовки-безопасности-нормативно)): для `/api` 4 заголовка (+HSTS) ставит backend-middleware (`setdefault`); для SPA (`location /`) те же 4 + CSP ставит nginx (`add_header ... always`). HSTS не дублировать.
 - **Значение CSP — нормативное** ([05-security.md](05-security.md#content-security-policy-spa-location-)); строка в nginx обязана побайтово совпадать с зафиксированной там.
 - `proxy_set_header X-Forwarded-Proto $scheme;` нужен, чтобы backend корректно понимал, что соединение за TLS (для условного HSTS).
+- **SMS-webhook'и наружу (нормативно, [ADR-030](adr/ADR-030-sms-module-full-merge.md), [modules/sms](modules/sms/README.md)).** Публичные пути `POST /api/sms/webhooks/twilio/sms` (приём Twilio) и `POST /api/sms/telegram/webhook` (апдейты SMS-бота) обслуживаются существующим `location /api` (отдельных `location` не требуется — они под `/api`, JWT-exempt на уровне backend, гейт — подпись/секрет). **Подпись Twilio — единственный источник URL:** backend реконструирует полный внешний `https`-URL webhook для валидации `X-Twilio-Signature` **из `SMS_PUBLIC_BASE_URL` + путь** (нормативный источник истины, [05-security.md](05-security.md#подпись-twilio-post-apismswebhookstwiliosms)); `SMS_PUBLIC_BASE_URL` **обязан** совпадать с внешним HTTPS-адресом Twilio-webhook, иначе приём вернёт `401 invalid_twilio_signature`. Проброс `X-Forwarded-Proto`/`X-Forwarded-Host` (уже присутствует в `location /api` выше) для подписи **не требуется** (используется для логов/HSTS, не как источник URL подписи). Оба webhook-URL должны быть достижимы снаружи по HTTPS (Twilio-консоль и Telegram `setWebhook` указывают на них). Тело Twilio — `application/x-www-form-urlencoded`; `client_max_body_size` дефолта nginx достаточно.
+- **Настройка webhook'ов (одноразовые операции деплоя):** URL Twilio-номеров указывается в Twilio-консоли на `https://<host>/api/sms/webhooks/twilio/sms`; Telegram `setWebhook` SMS-бота (с `secret_token = SMS_TELEGRAM_WEBHOOK_SECRET`) + `setMyCommands` (только `/start`) — скриптом (порт `scripts/telegram_setup.py` донора). Домен Mini App (`SMS_TELEGRAM_WEBAPP_URL`) регистрируется в @BotFather вручную.
 
 ### TLS-сертификаты
 
@@ -169,6 +172,16 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `MAIL_API_BASE` | `https://postapp.store` | Базовый URL внешнего почтового сервиса (модуль «Почты», read-through-прокси — [modules/mail](modules/mail/README.md), [ADR-012](adr/ADR-012-mail-read-through-proxy.md)) |
 | `MAIL_API_KEY` | `<external api key>` | **Секрет** (только env): ключ внешнего почтового API. Подставляется backend в заголовок `X-API-Key`; не в ответах/логах/SPA/URL. Пусто → почта не настроена (`mail_enabled=false`, эндпоинты `/api/mail/*` → `503 mail_not_configured`) |
 | `MAIL_API_TIMEOUT_SEC` | `10` | Таймаут HTTP-запроса backend → `postapp.store` |
+| `TWILIO_ACCOUNT_SID` | `AC…` | Twilio Account SID (модуль «СМС», [modules/sms](modules/sms/README.md), [ADR-030](adr/ADR-030-sms-module-full-merge.md)). Пусто → `twilio_configured=false` (`sync` → `503 twilio_not_configured`) |
+| `TWILIO_AUTH_TOKEN` | `<twilio auth token>` | **Секрет** (только env): токен Twilio для валидации подписи webhook и Numbers API. Не в БД/логах/ответах/SPA/URL |
+| `VERIFY_TWILIO_SIGNATURE` | `true` | Проверять `X-Twilio-Signature` на `POST /api/sms/webhooks/twilio/sms`. Прод — `true`; `true` без `TWILIO_AUTH_TOKEN` → `503`. Отключать только для локального теста |
+| `SMS_PUBLIC_BASE_URL` | `https://broadappsdev.shop` | Публичный базовый URL CRM для реконструкции URL при проверке подписи Twilio (полный внешний `https`-URL webhook). Должен совпадать с внешним адресом (за nginx) |
+| `SMS_TELEGRAM_BOT_TOKEN` | `123456:ABC-…` | **Секрет** (только env): токен **отдельного** SMS-delivery-бота (НЕ notifier). Пусто → `sms_bot_enabled=false` (доставка/retry-монитор не стартуют, приём SMS работает и сохраняет без доставки) |
+| `SMS_TELEGRAM_WEBHOOK_SECRET` | `<random 32+ bytes>` | **Секрет** (только env): секрет-токен Telegram-webhook SMS-бота (`X-Telegram-Bot-Api-Secret-Token`, constant-time) |
+| `SMS_TELEGRAM_WEBAPP_URL` | `https://broadappsdev.shop/sms` | URL Mini App (кнопка `web_app` в приветствии `/start`; домен Mini App регистрируется в @BotFather вручную) |
+| `SMS_TELEGRAM_PROXY_URL` | *(пусто)* | Опциональный прокси для egress SMS-бота к `api.telegram.org` (`socks5://…`/`http://…`). Пусто → прямой egress. Для `socks5` нужен `httpx[socks]` |
+| `SMS_DELIVERY_RETRY_INTERVAL_SEC` | `60` | Интервал фонового retry-монитора доставок SMS (с). Стартует при `sms_bot_enabled` |
+| `SMS_DELIVERY_MAX_ATTEMPTS` | `5` | Потолок попыток доставки одного SMS одному получателю до `failed`-остановки (retry-монитор) |
 | `EXPORTER_PORT` | `9100` | Порт node_exporter по умолчанию |
 | `SCRAPE_SOURCE_IP` | `37.27.192.211` | Публичный IP CRM-сервера, с которого Prometheus достукивается до remote-целей (SNAT). Передаётся в плейбук как `scrape_source_ip` → открытие `9100` на цели ТОЛЬКО для этого IP. **Пусто → плейбук firewall не трогает** (для self-host не задавать: источник = docker-подсеть, см. [09-provisioning.md](09-provisioning.md#сетевая-доступность-node_exporter-9100)) |
 | `FILE_SD_DIR` | `/etc/prometheus/targets` | Каталог file_sd (общий volume) |

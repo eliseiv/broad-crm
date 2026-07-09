@@ -25,7 +25,10 @@ interface NavCategory {
 const CATEGORIES: NavCategory[] = [
   {
     label: 'Агрегатор',
-    leaves: [{ to: '/mail', label: 'Почты', page: 'mail' }],
+    leaves: [
+      { to: '/mail', label: 'Почты', page: 'mail' },
+      { to: '/sms', label: 'СМС', page: 'sms' },
+    ],
   },
   {
     label: 'Мониторинг',
@@ -67,6 +70,7 @@ export function AppLayout() {
   const isAdmin = useIsAdmin();
   const access: Record<string, boolean> = {
     mail: useCanViewPage('mail'),
+    sms: useCanViewPage('sms'),
     servers: useCanViewPage('servers'),
     'ai-keys': useCanViewPage('ai-keys'),
     proxies: useCanViewPage('proxies'),

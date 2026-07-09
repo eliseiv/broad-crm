@@ -614,6 +614,12 @@ export interface TeamListItem {
   leader_username: string | null;
   /** Число участников (= members.length; включает лидера, если он есть). Может быть 0. */
   member_count: number;
+  /**
+   * Число SMS-номеров команды (04-api.md, COUNT sms_phone_numbers; ADR-030). Может
+   * быть 0. Денормализованный агрегат для чипа «N номеров» на карточке команды;
+   * список номеров — GET /api/teams/{id}/numbers.
+   */
+  number_count: number;
   /** Участники команды (включая лидера, если задан; может быть пустым). */
   members: TeamMember[];
   created_at: string;
@@ -648,6 +654,124 @@ export interface TeamUpdateRequest {
   name?: string;
   leader_id?: string | null;
   member_ids?: string[];
+}
+
+// --- SMS (04-api.md «SMS», modules/sms, ADR-030) ---
+
+/**
+ * Ссылка на CRM-команду номера/сообщения (04-api.md, схема `SmsTeamRef`).
+ * Текущее состояние команды; `null` в родителе — номер unassigned.
+ */
+export interface SmsTeamRef {
+  id: string;
+  name: string;
+}
+
+/**
+ * Ссылка на ТЕКУЩИЙ номер сообщения (04-api.md, схема `SmsNumberRef`; по `to_number`).
+ * Источник бейджа команды и пилюль `Логин/Приложение/Примечание` на карточке SMS.
+ * `null` в сообщении — номер удалён.
+ */
+export interface SmsNumberRef {
+  id: number;
+  phone_number: string;
+  /** Текущая команда номера; `null` — unassigned. */
+  team: SmsTeamRef | null;
+  login: string | null;
+  app_name: string | null;
+  note: string | null;
+}
+
+/**
+ * Элемент списка номеров (04-api.md, схема `SmsNumberItem`). `label` — системный
+ * никнейм (Twilio `friendly_name`), редактированию через API не подлежит; редактируются
+ * только `login`/`app_name`/`note` (PATCH). Номера создаются автоматически (нет `create`).
+ */
+export interface SmsNumber {
+  id: number;
+  phone_number: string;
+  /** Системный никнейм (Twilio friendly_name); не редактируется через API. */
+  label: string | null;
+  /** Текущая команда; `null` — unassigned. */
+  team: SmsTeamRef | null;
+  login: string | null;
+  app_name: string | null;
+  note: string | null;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Ответ GET /api/sms/numbers (04-api.md, схема `SmsNumbersResponse`). */
+export interface SmsNumbersResponse {
+  numbers: SmsNumber[];
+}
+
+/**
+ * Элемент списка номеров команды (04-api.md, схема `TeamNumberItem`) — МИНИМАЛЬНАЯ
+ * схема detail-панели /teams: только `id`/`phone_number`/`team`. БЕЗ
+ * `login`/`app_name`/`note`/`label`/`is_active`/меток (не переиспользуем полный `SmsNumber`).
+ */
+export interface TeamNumberItem {
+  id: number;
+  phone_number: string;
+  /** Команда номера (= запрошенная команда `{id}`). */
+  team: SmsTeamRef;
+}
+
+/** Ответ GET /api/teams/{id}/numbers (04-api.md, схема `TeamNumbersResponse`). */
+export interface TeamNumbersResponse {
+  numbers: TeamNumberItem[];
+}
+
+/**
+ * Входящее SMS ленты (04-api.md, схема `SmsMessageItem`, newest-first, keyset-курсор).
+ * Бейдж команды и пилюли берутся из `number` (текущий номер по `to_number`).
+ */
+export interface SmsMessage {
+  id: number;
+  from_number: string;
+  to_number: string;
+  body: string;
+  received_at: string;
+  /** Текущий номер (по `to_number`); `null` — номер удалён. */
+  number: SmsNumberRef | null;
+}
+
+/**
+ * Ответ GET /api/sms/messages (04-api.md, схема `SmsMessagesResponse`).
+ * `next_cursor` — opaque keyset-курсор следующей (более старой) страницы; `null` — старее нет.
+ */
+export interface SmsMessagesResponse {
+  messages: SmsMessage[];
+  next_cursor: string | null;
+}
+
+/**
+ * Тело PATCH /api/sms/numbers/{id} (04-api.md, схема `SmsNumberUpdateRequest`).
+ * Presence-семантика затирания: ключ присутствует + непустое значение → установить;
+ * ключ присутствует + пусто/`null` → затереть (NULL); ключ отсутствует → не менять.
+ * `label` не редактируется.
+ */
+export interface SmsNumberUpdateRequest {
+  login?: string | null;
+  app_name?: string | null;
+  note?: string | null;
+}
+
+/**
+ * Тело POST /api/sms/numbers/{id}/transfer (04-api.md, схема `SmsNumberTransferRequest`).
+ * `null` → снять команду (unassigned); иначе привязать к существующей команде.
+ */
+export interface SmsNumberTransferRequest {
+  team_id: string | null;
+}
+
+/** Ответ POST /api/sms/numbers/sync (04-api.md, схема `SmsSyncResult`). */
+export interface SmsSyncResult {
+  synced_total: number;
+  added: number;
+  skipped_existing: number;
 }
 
 /** Единый формат ошибки API (04-api.md). */

@@ -62,6 +62,6 @@ def test_revision_chain_single_head_with_0010_on_top() -> None:
     script = ScriptDirectory.from_config(_alembic_config())
     heads = script.get_heads()
 
-    assert heads == ["0016_backfill_team_leaders"]  # одна голова — цепочка линейна (ADR-022)
+    assert heads == ["0017_create_sms_module"]  # одна голова — цепочка линейна (ADR-022)
     rev = script.get_revision("0010_add_user_email")
     assert rev.down_revision == "0009_create_teams"  # 0010 сидит поверх 0009

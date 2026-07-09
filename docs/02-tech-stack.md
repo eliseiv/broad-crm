@@ -21,7 +21,8 @@
 | bcrypt | 4.2.x | Хэширование паролей БД-пользователей (`app/infra/passwords.py`, RBAC) — напрямую, без `passlib` ([ADR-021](adr/ADR-021-rbac-users-roles.md), [05-security.md](05-security.md#хэширование-паролей-bcrypt)) |
 | ansible-runner | 2.4.x | Программный запуск Ansible из backend |
 | ansible-core | 2.17.x | Движок плейбуков |
-| httpx | 0.27.x | HTTP-клиент к Prometheus/провайдерам/прокси. **Экстра `httpx[socks]`** (транзитивно `socksio`) — обязательна для проверки `socks5`-прокси ([ADR-019](adr/ADR-019-proxies-availability-monitor.md), [modules/proxies](modules/proxies/README.md)); HTTP/HTTPS-прокси работают без неё |
+| httpx | 0.27.x | HTTP-клиент к Prometheus/провайдерам/прокси **и к Telegram Bot API SMS-бота** ([modules/sms](modules/sms/README.md)). **Экстра `httpx[socks]`** (транзитивно `socksio`) — обязательна для проверки `socks5`-прокси ([ADR-019](adr/ADR-019-proxies-availability-monitor.md), [modules/proxies](modules/proxies/README.md)) и опционального прокси SMS-бота (`SMS_TELEGRAM_PROXY_URL`); HTTP/HTTPS работают без неё |
+| twilio | 9.x | Twilio Python SDK — валидация подписи webhook (`RequestValidator`) и синхронизация входящих номеров (`POST /api/sms/numbers/sync`), модуль «СМС» ([ADR-030](adr/ADR-030-sms-module-full-merge.md), [modules/sms](modules/sms/README.md)). SDK **синхронный** → сетевые вызовы из async-хендлера через `asyncio.to_thread`. Приём SMS и Telegram-доставка используют `httpx`/stdlib (SDK — только для подписи и Numbers API) |
 | structlog | 24.x | Структурированное логирование (без секретов) |
 
 Менеджер зависимостей: **uv** (`uv.lock` + `pyproject.toml`). Допустима `pip` + `requirements.txt`, если devops так решит — фиксируется в этом файле при изменении.

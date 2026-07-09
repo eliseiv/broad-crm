@@ -69,9 +69,12 @@
 | `dashboard` | `view` |
 | `servers` / `ai-keys` / `proxies` / `backends` | `view`, `create`, `edit`, `delete` |
 | `mail` | `view` |
+| `sms` | `view`, `edit`, `transfer`, `sync`, `delete` ([ADR-030](adr/ADR-030-sms-module-full-merge.md)) |
 | `roles` / `teams` | `view`, `create`, `edit`, `delete` ([ADR-022](adr/ADR-022-teams-nav-categories.md)) |
 
-Порядок ключей каталога (= порядок строк матрицы в UI): `dashboard, servers, ai-keys, proxies, backends, mail, roles, teams`.
+Порядок ключей каталога (= порядок строк матрицы в UI): `dashboard, servers, ai-keys, proxies, backends, mail, sms, roles, teams`.
+
+- **Страница `sms`** ([ADR-030](adr/ADR-030-sms-module-full-merge.md)) не имеет `create` (номера появляются автоматически из входящих SMS/`sync`). Действия: `view` (лента/номера), `edit` (`login`/`app_name`/`note`), `transfer` (команда номера), `sync` (Twilio), `delete` (удаление номера). Привязка Telegram (`POST /api/sms/telegram/link`) — **вне матрицы** `sms` (только аутентификация): доставка операторам — функция членства в команде, а не права на страницу.
 
 - Страница **«Пользователи» (`users`) в каталог не входит** — управление **пользователями** (создание/удаление, сброс паролей, назначение ролей) гейтится `require_admin` (`is_superadmin || role=="admin"`). Управление **ролями** (`/api/roles`) и **командами** (`/api/teams`) со Спринта A — под матрицей `roles:*`/`teams:*` ([ADR-022](adr/ADR-022-teams-nav-categories.md)). Оговорка: **создание/редактирование CRM-команд де-факто admin-only** — форма выбирает лидера/участников из `GET /api/users` (под `require_admin`), поэтому `teams:create`/`teams:edit` даёт полный контроль состава только вместе с admin-доступом; `teams:view` — полноценный просмотр. Осознанное следствие замыкания эскалации ([ADR-022](adr/ADR-022-teams-nav-categories.md#3-гейтинг-api-нормативно)), контракт `teams:*` не меняется.
 - Формат прав роли (`roles.permissions`, jsonb): `{ "<page>": ["<action>", ...] }`. Валиден ⇔ каждый ключ — известная страница (кроме `users`; допустимы `roles`/`teams`), каждое действие ∈ `CATALOG[page]`, без дублей → иначе `422 unprocessable`.
@@ -79,7 +82,7 @@
 
 ### Enforcement (свежая загрузка прав из БД)
 
-`get_current_principal` декодирует JWT и **на каждый запрос** формирует `Principal(username, role, permissions, is_superadmin)`:
+`get_current_principal` декодирует JWT и **на каждый запрос** формирует `Principal(username, role, permissions, is_superadmin, user_id)` (поле `user_id` добавлено [ADR-030](adr/ADR-030-sms-module-full-merge.md) — см. [Расширение Principal](#расширение-principal-полем-user_id-нормативно)):
 
 - `superadmin=true` → полный доступ (`permissions` = полный каталог, все `require(...)` и `require_admin` проходят).
 - иначе по `uid` грузятся `users`+`roles`; если пользователь не найден **или** `is_active=false` → `401 unauthorized` (действующий JWT аннулируется **без пере-логина**). Иначе `permissions = roles.permissions`.
@@ -135,6 +138,41 @@
 - Ключ подставляется backend'ом **только** в заголовок `X-API-Key` исходящего запроса к `postapp.store`. **Никогда** не возвращается в ответах CRM API, не логируется (structlog-фильтр секретов), не передаётся в SPA и не попадает в query-строку/URL.
 - **Фронт наружу не ходит** — SPA обращается только к `/api/mail/*` (тот же origin, CSP `connect-src 'self'`); прямой вызов `postapp.store` из браузера исключён.
 - HTML-тело письма — недоверенный контент третьих лиц — рендерится **только** в sandbox-iframe (`srcDoc` + `sandbox` без `allow-scripts`/`allow-same-origin`): скрипты письма не исполняются, доступа к origin/куки/JWT CRM нет ([ADR-012](adr/ADR-012-mail-read-through-proxy.md), [modules/mail](modules/mail/README.md#изоляция-html-тела-нормативно)). Согласуется с CSP SPA (`frame-ancestors 'none'`, `script-src 'self'`). Удалённые (remote https) изображения тела письма отрисовываются — `img-src` расширен до `'self' data: https:` ([ADR-015](adr/ADR-015-csp-img-src-remote-mail-images.md)); при этом sandbox без `allow-scripts`/`allow-same-origin` и `script-src 'self'` не изменены — грузятся только пассивные `<img>`.
+
+## Расширение `Principal` полем `user_id` (нормативно)
+
+Модуль «СМС» требует видимость сообщений по командам ([ADR-030](adr/ADR-030-sms-module-full-merge.md) §6). Для этого `Principal` расширяется полем **`user_id: uuid.UUID | None`**:
+
+- БД-пользователь → `user_id` из claim `uid` (UUID); стоимость нулевая — `users`-ряд уже загружается в `get_current_principal`.
+- **Супер-админ** (`.env`, `superadmin=true`) → `user_id = None` (он не строка в `users`); видит **все** SMS/номера (scope не сужается).
+- `SmsScope` (фабрика в `deps.py`): не-админ → `team_ids` из `user_teams` пользователя → фильтр видимости SMS/номеров по **текущей** принадлежности номера команде (`sms_phone_numbers.team_id ∈ team_ids`). Запрос вне scope → **пустой результат** (анти-энумерация, не `403`/`404`).
+- Побочный эффект: `POST /api/sms/telegram/link` требует `user_id` (супер-админ без `uid` не может привязать линк к строке `users` → `403 forbidden`).
+
+Поле не влияет на прочие эндпоинты (существующая логика RBAC не читает `user_id`).
+
+## Защита модуля СМС (Twilio / Telegram)
+
+Модуль «СМС» — приём входящих SMS от Twilio и доставка операторам через отдельный Telegram-бот ([ADR-030](adr/ADR-030-sms-module-full-merge.md), [modules/sms](modules/sms/README.md)). Три публичных эндпоинта без JWT гейтятся криптографически.
+
+### Секреты (только env)
+- `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` — креды Twilio (подпись webhook + Numbers API). **Секрет** (`AUTH_TOKEN`) — только env, не в БД/логах/ответах/SPA/URL.
+- `SMS_TELEGRAM_BOT_TOKEN` — токен **отдельного** SMS-delivery-бота (НЕ notifier-бот, ADR-009). Секрет, только env. `sms_bot_enabled = bool(SMS_TELEGRAM_BOT_TOKEN)`.
+- `SMS_TELEGRAM_WEBHOOK_SECRET` — секрет-токен Telegram-webhook. Секрет, только env.
+- Все секреты — фильтр structlog; `raw` тело Twilio-webhook и Telegram-`init_data`/`Update` не логируются.
+
+### Подпись Twilio (`POST /api/sms/webhooks/twilio/sms`)
+- При `VERIFY_TWILIO_SIGNATURE=true` (default) — валидация `X-Twilio-Signature` через `twilio.request_validator.RequestValidator(TWILIO_AUTH_TOKEN)`. Неверная/отсутствующая подпись → `401 invalid_twilio_signature` (до обработки тела). `VERIFY_TWILIO_SIGNATURE=true` без `TWILIO_AUTH_TOKEN` → `503 twilio_not_configured`.
+- **Реконструкция URL для подписи (критично, единственный источник истины).** Twilio считает подпись по **полному внешнему URL** (`https://<host>/api/sms/webhooks/twilio/sms`) + отсортированным form-полям. За nginx backend видит внутренний `http`/host, поэтому URL для проверки подписи **реконструируется ТОЛЬКО из `SMS_PUBLIC_BASE_URL`** (нормативный источник истины) + путь запроса — детерминированно и независимо от заголовков. `SMS_PUBLIC_BASE_URL` **обязан** совпадать с внешним HTTPS-адресом, на который Twilio шлёт webhook, иначе подпись не сойдётся ([07-deployment.md](07-deployment.md#reverse-proxy-nginx--требования)). Заголовки `X-Forwarded-Proto`/`X-Forwarded-Host` для валидации подписи **не требуются** (проброс `X-Forwarded-*` полезен для логов/HSTS, но источником URL подписи не является).
+
+### Секрет Telegram-webhook (`POST /api/sms/telegram/webhook`)
+- Заголовок `X-Telegram-Bot-Api-Secret-Token` обязан совпадать с `SMS_TELEGRAM_WEBHOOK_SECRET` — **constant-time** (`secrets.compare_digest`), **до** разбора тела. Несовпадение/отсутствие → `403 invalid_webhook_secret`. Бот обрабатывает только `/start`; ошибка `sendMessage` не роняет обработчик (`200`).
+
+### Mini App initData (`POST /api/sms/telegram/link` / `auth`)
+- Валидация `init_data` — HMAC-SHA256 (`WebAppData`-ключ из `SMS_TELEGRAM_BOT_TOKEN`) + TTL `auth_date` (порт `telegram/init_data.py` донора, чистая функция без I/O). Плохой HMAC → `401 invalid_init_data`; протухший `auth_date` → `401 init_data_expired`. `init_data` (содержит подпись/PII) не логируется.
+- `link` дополнительно требует **валидный JWT** — привязывает `telegram_user_id` только к `principal.user_id` (свой аккаунт); `auth` — публичный статус-запрос (HMAC доказывает владение именно этим `telegram_user_id`, раскрывается только его собственный статус линка).
+
+### Доставка (fan-out)
+- Fan-out идёт получателям **команды приёма** (снимок `sms_inbound.team_id`) через живые `sms_telegram_links` — независимо от RBAC-права на страницу `sms` (право `sms:view` управляет просмотром ленты, а не получением Telegram-доставок). `403`/forbidden от Bot API → линк помечается `dead_at`, доставка `dead` (оператор перепривязывает через Mini App).
 
 ## Защита паролей прокси
 

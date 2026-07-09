@@ -38,6 +38,7 @@ CRM-система мониторинга backend-сервисов и серве
 | Proxies (реестр прокси + монитор доступности + алерты) | [modules/proxies/README.md](modules/proxies/README.md) | backend, frontend |
 | Backends (реестр бэков + healthcheck `/health` + алерты) | [modules/backends/README.md](modules/backends/README.md) | backend, frontend |
 | Teams (CRM-команды: лидер + участники M2M) | [modules/teams/README.md](modules/teams/README.md) | backend, frontend |
+| SMS (СМС: Twilio-приём + Telegram-доставка операторам) | [modules/sms/README.md](modules/sms/README.md) | backend, frontend, devops |
 | UI (страница «Серверы», спидометры) | [modules/ui/README.md](modules/ui/README.md) | frontend |
 
 ## Статусы модулей
@@ -52,6 +53,7 @@ CRM-система мониторинга backend-сервисов и серве
 | notifier | `spec-ready` | Не реализован — спецификация готова |
 | ai-keys | `spec-ready` | Не реализован — спецификация готова |
 | mail | `spec-ready` | Не реализован — спецификация готова |
+| sms | `spec-ready` | Не реализован — спецификация готова ([ADR-030](adr/ADR-030-sms-module-full-merge.md)): полное слияние SMS-агрегатора — 4 таблицы (PK BIGINT + внешние FK UUID), Twilio-приём по подписи + отдельный SMS-delivery Telegram-бот (fan-out по команде/retry/dead-links), отказ от Redis (Mini App-привязка под JWT), поля номера `login`/`app_name`/`note` (системный `label`), видимость по текущей принадлежности номера, RBAC-страница `sms:view/edit/transfer/sync/delete`, `Principal.user_id`, миграция 0017. Доработка `/teams` (`number_count` + detail-панель). Импорт исторических данных — TD |
 | proxies | `implemented` (правки ADR-023/024/027 — `spec-ready`) | Реализован (Спринт 1) — модель+миграция 0006, монитор, Telegram-алерты, CRUD API, страница `/proxies`, тесты. **Правки:** карточка — только IP ([ADR-023](adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)); overall-deadline проверки против зависания ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)); grace-порог 30 мин алерта (`error_since`/`alert_sent`, `PROXY_ALERT_AFTER_SEC`, миграция 0014, унификация с бэками — [ADR-027](adr/ADR-027-proxies-alert-grace.md)) |
 | backends | `implemented` (правки ADR-023/024 — `spec-ready`) | Реализован (Спринт 2) — модель+миграция 0007, healthcheck-монитор `GET /health`, Telegram-алерты, CRUD API, страница `/backends`, тесты ([ADR-020](adr/ADR-020-backends-healthcheck-monitor.md)). **Правки:** одна кнопка «Удалить» ([ADR-023](adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)); overall-deadline + grace-порог 30 мин алерта, миграция 0013 ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
 | ui | `spec-ready` | Не реализован — спецификация готова |

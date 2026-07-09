@@ -434,6 +434,72 @@ class _FakeTeamRepo:
         return self._db.teams.pop(team_id, None) is not None
 
 
+class _FakeSmsNumber:
+    """Фейк ORM SMS-номера (для number_count/list_by_team в TeamService, ADR-030).
+
+    `team` — производное свойство текущей команды (по `team_id` из общей `RbacFakeDb`),
+    как relationship `SmsPhoneNumber.team`. Присваивание `.team_id` меняет владельца."""
+
+    def __init__(
+        self,
+        *,
+        id: int,
+        phone_number: str,
+        team_id: _uuid.UUID | None,
+        label: str | None,
+        login: str | None,
+        app_name: str | None,
+        note: str | None,
+        is_active: bool,
+        created_at: datetime,
+        updated_at: datetime,
+        db: RbacFakeDb,
+    ) -> None:
+        self.id = id
+        self.phone_number = phone_number
+        self.team_id = team_id
+        self.label = label
+        self.login = login
+        self.app_name = app_name
+        self.note = note
+        self.is_active = is_active
+        self.created_at = created_at
+        self.updated_at = updated_at
+        self._db = db
+
+    @property
+    def team(self) -> Any:
+        if self.team_id is None:
+            return None
+        return self._db.teams.get(self.team_id)
+
+
+class _FakeSmsNumberRepo:
+    """In-memory замена SmsNumberRepository (подмножество, нужное TeamService, ADR-030)."""
+
+    def __init__(self, db: RbacFakeDb) -> None:
+        self._db = db
+
+    @property
+    def session(self) -> _FakeSession:
+        return self._db.session
+
+    async def count_by_teams(self, team_ids: Any) -> dict[_uuid.UUID, int]:
+        ids = set(team_ids)
+        counts: dict[_uuid.UUID, int] = {}
+        for number in self._db.numbers.values():
+            if number.team_id in ids:
+                counts[number.team_id] = counts.get(number.team_id, 0) + 1
+        return counts
+
+    async def count_by_team(self, team_id: _uuid.UUID) -> int:
+        return sum(1 for n in self._db.numbers.values() if n.team_id == team_id)
+
+    async def list_by_team(self, team_id: _uuid.UUID) -> list[Any]:
+        rows = [n for n in self._db.numbers.values() if n.team_id == team_id]
+        return sorted(rows, key=lambda n: (n.created_at, n.id), reverse=True)
+
+
 class RbacFakeDb:
     """In-memory «БД» для user/role/team репозиториев (общее состояние + сессия).
 
@@ -445,12 +511,15 @@ class RbacFakeDb:
         self.roles: dict[_uuid.UUID, Any] = {}
         self.users: dict[_uuid.UUID, Any] = {}
         self.teams: dict[_uuid.UUID, Any] = {}
+        self.numbers: dict[int, Any] = {}
         self.user_repo = _FakeUserRepo(self)
         self.role_repo = _FakeRoleRepo(self)
         self.team_repo = _FakeTeamRepo(self)
+        self.number_repo = _FakeSmsNumberRepo(self)
         # Монотонный источник `user_teams.created_at` (детерминированный порядок
         # авто-передачи лидерства без зависимости от разрешения системного таймера).
         self._member_seq = 0
+        self._number_seq = 0
 
     def next_created_at(self) -> datetime:
         """Строго возрастающая «дата добавления» участника (детерминизм ADR-026)."""
@@ -515,6 +584,36 @@ class RbacFakeDb:
         )
         self.teams[team.id] = team
         return team
+
+    def add_number(
+        self,
+        phone_number: str,
+        *,
+        team: Any = None,
+        label: str | None = None,
+        login: str | None = None,
+        app_name: str | None = None,
+        note: str | None = None,
+        is_active: bool = True,
+    ) -> Any:
+        """Создаёт SMS-номер (для number_count/list_team_numbers в TeamService, ADR-030)."""
+        self._number_seq += 1
+        now = datetime.now(UTC)
+        number = _FakeSmsNumber(
+            id=self._number_seq,
+            phone_number=phone_number,
+            team_id=team.id if team is not None else None,
+            label=label,
+            login=login,
+            app_name=app_name,
+            note=note,
+            is_active=is_active,
+            created_at=now,
+            updated_at=now,
+            db=self,
+        )
+        self.numbers[number.id] = number
+        return number
 
 
 @pytest.fixture

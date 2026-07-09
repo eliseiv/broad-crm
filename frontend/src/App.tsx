@@ -8,6 +8,7 @@ import { MailPage } from '@/pages/MailPage';
 import { ProxiesPage } from '@/pages/ProxiesPage';
 import { RolesPage } from '@/pages/RolesPage';
 import { ServersPage } from '@/pages/ServersPage';
+import { SmsPage } from '@/pages/SmsPage';
 import { TeamsPage } from '@/pages/TeamsPage';
 import { UsersPage } from '@/pages/UsersPage';
 import { AdminRoute } from '@/routes/AdminRoute';
@@ -28,6 +29,9 @@ export function App() {
           <Route path="/proxies" element={<ProxiesPage />} />
           <Route path="/backends" element={<BackendsPage />} />
           <Route path="/mail" element={<MailPage />} />
+          {/* «СМС» — категория «Агрегатор», не-full-bleed; page-level view-guard
+              `sms:view` внутри страницы (ADR-030, 08-design-system.md «Страница СМС»). */}
+          <Route path="/sms" element={<SmsPage />} />
           {/* «Роли»/«Команды» — page-level view-guard roles:view/teams:view внутри
               страниц (ADR-022, 08-design-system.md). */}
           <Route path="/roles" element={<RolesPage />} />

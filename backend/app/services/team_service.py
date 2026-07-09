@@ -19,8 +19,10 @@ from app.domain.identity import IdentityNameError, validate_identity_name
 from app.errors import team_name_taken, team_not_found, unprocessable
 from app.logging import get_logger
 from app.models.team import Team
+from app.repositories.sms_number_repository import SmsNumberRepository
 from app.repositories.team_repository import TeamRepository
 from app.repositories.user_repository import UserRepository
+from app.schemas.sms import TeamNumbersResponse
 from app.schemas.team import (
     TeamCreateRequest,
     TeamListItem,
@@ -28,6 +30,7 @@ from app.schemas.team import (
     TeamMember,
     TeamUpdateRequest,
 )
+from app.services.sms_serialize import to_team_number_item
 
 logger = get_logger(__name__)
 
@@ -46,14 +49,31 @@ def _validate_name(raw: str) -> str:
 class TeamService:
     """CRUD реестра CRM-команд: опциональный лидер, авто-назначение/передача, валидация."""
 
-    def __init__(self, *, teams: TeamRepository, users: UserRepository) -> None:
+    def __init__(
+        self,
+        *,
+        teams: TeamRepository,
+        users: UserRepository,
+        numbers: SmsNumberRepository,
+    ) -> None:
         self._teams = teams
         self._users = users
+        self._numbers = numbers
 
     async def list_teams(self) -> TeamListResponse:
-        """Список команд (created_at DESC, id) с лидером и участниками."""
+        """Список команд (created_at DESC, id) с лидером, участниками, number_count."""
         teams = await self._teams.list_all()
-        return TeamListResponse(items=[self._to_item(team) for team in teams])
+        counts = await self._numbers.count_by_teams([team.id for team in teams])
+        return TeamListResponse(
+            items=[self._to_item(team, counts.get(team.id, 0)) for team in teams]
+        )
+
+    async def list_team_numbers(self, team_id: uuid.UUID) -> TeamNumbersResponse:
+        """Список SMS-номеров команды (detail-панель /teams, ADR-030). Нет команды → 404."""
+        if not await self._teams.get_existing_ids({team_id}):
+            raise team_not_found()
+        numbers = await self._numbers.list_by_team(team_id)
+        return TeamNumbersResponse(numbers=[to_team_number_item(n) for n in numbers])
 
     async def create_team(self, payload: TeamCreateRequest) -> TeamListItem:
         """Создаёт команду. Прецеденция: name-формат (422) → существование
@@ -89,8 +109,9 @@ class TeamService:
 
         reloaded = await self._teams.get_with_members(team.id)
         assert reloaded is not None  # только что создана в этой сессии
+        number_count = await self._numbers.count_by_team(reloaded.id)
         logger.info("team_created", team_id=str(team.id))
-        return self._to_item(reloaded)
+        return self._to_item(reloaded, number_count)
 
     async def update_team(self, team_id: uuid.UUID, payload: TeamUpdateRequest) -> TeamListItem:
         """Редактирует команду. Прецеденция: 404 → name-формат (422) → существование
@@ -157,8 +178,9 @@ class TeamService:
 
         reloaded = await self._teams.get_with_members(team_id)
         assert reloaded is not None  # существует (только что обновлена)
+        number_count = await self._numbers.count_by_team(reloaded.id)
         logger.info("team_updated", team_id=str(team_id))
-        return self._to_item(reloaded)
+        return self._to_item(reloaded, number_count)
 
     async def delete_team(self, team_id: uuid.UUID) -> None:
         """Hard-delete (каскад `user_teams`); повтор → 404 team_not_found."""
@@ -214,7 +236,7 @@ class TeamService:
         return requested
 
     @staticmethod
-    def _to_item(team: Team) -> TeamListItem:
+    def _to_item(team: Team, number_count: int) -> TeamListItem:
         """Собирает элемент ответа (лидер опционален; member_count включает лидера)."""
         return TeamListItem(
             id=team.id,
@@ -222,6 +244,7 @@ class TeamService:
             leader_id=team.leader_id,
             leader_username=team.leader.username if team.leader is not None else None,
             member_count=len(team.members),
+            number_count=number_count,
             members=[TeamMember(id=member.id, username=member.username) for member in team.members],
             created_at=team.created_at,
             updated_at=team.updated_at,

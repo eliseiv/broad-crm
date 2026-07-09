@@ -14,6 +14,7 @@ from app.config import AppEnv, Settings, get_settings
 from app.db import get_sessionmaker
 from app.errors import register_exception_handlers
 from app.infra.prometheus import get_prometheus_client
+from app.infra.sms_telegram import SmsBotClient
 from app.infra.telegram import TelegramClient
 from app.logging import configure_logging, get_logger
 from app.services.ai_key_monitor_service import AiKeyMonitorService
@@ -22,6 +23,7 @@ from app.services.monitoring_service import MonitoringService
 from app.services.notifier_service import NotifierService
 from app.services.provisioning_service import ProvisioningService
 from app.services.proxy_monitor_service import ProxyMonitorService
+from app.services.sms_delivery_monitor_service import SmsDeliveryMonitorService
 
 logger = get_logger(__name__)
 
@@ -104,6 +106,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     )
     backend_monitor_task = asyncio.create_task(backend_monitor.run())
 
+    # Retry-монитор доставок SMS (modules/sms, ADR-030): стартует ТОЛЬКО при
+    # sms_bot_enabled (задан SMS_TELEGRAM_BOT_TOKEN). Переотправляет pending/failed
+    # доставки; при отключённом боте доставка не работает и монитор не нужен.
+    sms_delivery_monitor_task: asyncio.Task[None] | None = None
+    if settings.sms_bot_enabled:
+        sms_delivery_monitor = SmsDeliveryMonitorService(
+            sessionmaker=get_sessionmaker(),
+            bot=SmsBotClient(settings.sms_telegram_bot_token, settings.sms_telegram_proxy_url),
+            settings=settings,
+        )
+        sms_delivery_monitor_task = asyncio.create_task(sms_delivery_monitor.run())
+    else:
+        logger.info("sms_delivery_monitor_disabled")
+
     yield
 
     if notifier_task is not None:
@@ -122,6 +138,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     backend_monitor_task.cancel()
     with suppress(asyncio.CancelledError):
         await backend_monitor_task
+
+    if sms_delivery_monitor_task is not None:
+        sms_delivery_monitor_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await sms_delivery_monitor_task
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

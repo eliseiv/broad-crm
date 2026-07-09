@@ -47,7 +47,8 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
 
     assert resp.status_code == 200
     pages = resp.json()["pages"]
-    # Спринт A (ADR-022): каталог включает roles/teams, порядок = строки UI-матрицы.
+    # Каталог включает roles/teams (ADR-022) и sms между mail и roles (ADR-030); порядок
+    # = строки UI-матрицы.
     assert [p["page"] for p in pages] == [
         "dashboard",
         "servers",
@@ -55,6 +56,7 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
         "proxies",
         "backends",
         "mail",
+        "sms",
         "roles",
         "teams",
     ]
@@ -62,6 +64,7 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
     assert by_page["dashboard"] == ["view"]
     assert by_page["mail"] == ["view"]
     assert by_page["servers"] == ["view", "create", "edit", "delete"]
+    assert by_page["sms"] == ["view", "edit", "transfer", "sync", "delete"]
     assert by_page["roles"] == ["view", "create", "edit", "delete"]
     assert by_page["teams"] == ["view", "create", "edit", "delete"]
     assert "users" not in by_page

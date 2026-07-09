@@ -11,6 +11,7 @@ import { useAuthStore } from '@/store/auth';
  */
 const NAV_ORDER: { path: string; page: string }[] = [
   { path: '/mail', page: 'mail' },
+  { path: '/sms', page: 'sms' },
   { path: '/servers', page: 'servers' },
   { path: '/ai-keys', page: 'ai-keys' },
   { path: '/proxies', page: 'proxies' },

@@ -127,6 +127,48 @@ class Settings(BaseSettings):
         """
         return bool(self.mail_api_key)
 
+    # --- Модуль «СМС» (Twilio-приём + Telegram-доставка, modules/sms, ADR-030) ---
+    # Twilio: креды для валидации подписи webhook и Numbers API (sync). Секрет —
+    # только env, не в БД/логах/ответах/URL (05-security.md#защита-модуля-смс).
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    # Проверять X-Twilio-Signature на POST /api/sms/webhooks/twilio/sms. Прод — true;
+    # true без TWILIO_AUTH_TOKEN → 503 twilio_not_configured. Отключать только локально.
+    verify_twilio_signature: bool = True
+    # Публичный базовый URL CRM — ЕДИНСТВЕННЫЙ источник реконструкции URL при проверке
+    # подписи Twilio (05-security.md#подпись-twilio). X-Forwarded-* для подписи не берётся.
+    sms_public_base_url: str = ""
+    # Отдельный SMS-delivery Telegram-бот (НЕ notifier-бот). Пусто → sms_bot_enabled=false
+    # (доставка/retry-монитор не стартуют; приём SMS работает и сохраняет без доставки).
+    sms_telegram_bot_token: str = ""
+    # Секрет-токен Telegram-webhook SMS-бота (X-Telegram-Bot-Api-Secret-Token, constant-time).
+    sms_telegram_webhook_secret: str = ""
+    # URL Mini App (кнопка web_app в приветствии /start).
+    sms_telegram_webapp_url: str = ""
+    # Опциональный прокси egress SMS-бота к api.telegram.org (socks5://…/http://…). Пусто → прямой.
+    sms_telegram_proxy_url: str = ""
+    # Интервал фонового retry-монитора доставок SMS (сек). Стартует при sms_bot_enabled.
+    sms_delivery_retry_interval_sec: int = 60
+    # Потолок попыток доставки одного SMS одному получателю до остановки (retry-монитор).
+    sms_delivery_max_attempts: int = 5
+
+    @property
+    def sms_bot_enabled(self) -> bool:
+        """SMS-бот активен только при заданном SMS_TELEGRAM_BOT_TOKEN (ADR-030).
+
+        Иначе доставка операторам и retry-монитор не стартуют (приём SMS сохраняет
+        входящие без Telegram-доставки).
+        """
+        return bool(self.sms_telegram_bot_token)
+
+    @property
+    def twilio_configured(self) -> bool:
+        """Twilio настроен только при заданных ACCOUNT_SID И AUTH_TOKEN (ADR-030).
+
+        Иначе POST /api/sms/numbers/sync → 503 twilio_not_configured.
+        """
+        return bool(self.twilio_account_sid and self.twilio_auth_token)
+
     # --- Провижининг / node_exporter ---
     exporter_port: int = 9100
     file_sd_dir: str = "/etc/prometheus/targets"

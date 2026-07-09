@@ -24,7 +24,7 @@ def _build_app(db: RbacFakeDb, principal: Any) -> Any:
     app = create_app(get_settings())
     app.dependency_overrides[deps.get_current_principal] = lambda: principal
     app.dependency_overrides[deps.get_team_service] = lambda: TeamService(
-        teams=db.team_repo, users=db.user_repo
+        teams=db.team_repo, users=db.user_repo, numbers=db.number_repo
     )
     return app
 
@@ -66,7 +66,10 @@ async def test_teams_crud_contract() -> None:
     assert body["leader_username"] == "Никита"
     # member_count включает лидера; лидер присутствует в members (инвариант).
     assert body["member_count"] == 2
+    # number_count — новый агрегат SMS-номеров команды (ADR-030); без номеров = 0.
+    assert body["number_count"] == 0
     assert {m["id"] for m in body["members"]} == {str(leader.id), str(member.id)}
+    assert listed.json()["items"][0]["number_count"] == 0
     assert listed.status_code == 200
     assert [t["name"] for t in listed.json()["items"]] == ["Продажи"]
     assert patched.status_code == 200

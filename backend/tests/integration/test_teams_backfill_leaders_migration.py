@@ -98,13 +98,32 @@ async def _truncate(url: str) -> None:
         await engine.dispose()
 
 
+async def _drop_schema(url: str) -> None:
+    """Сбрасывает public-схему целиком (и маркер alembic_version).
+
+    Другие integration-тесты создают таблицы через `Base.metadata.create_all` БЕЗ
+    stamp alembic_version. Если такой тест отработал раньше по порядку коллекции,
+    последующий `upgrade head` из base упал бы на `CREATE TABLE ... already exists`.
+    Полный drop гарантирует чистый старт alembic независимо от порядка тестов.
+    """
+    engine = create_async_engine(url, future=True)
+    try:
+        async with engine.begin() as conn:
+            await conn.execute(text("DROP SCHEMA public CASCADE"))
+            await conn.execute(text("CREATE SCHEMA public"))
+    finally:
+        await engine.dispose()
+
+
 def _reset_to_0015(cfg: Config, url: str) -> None:
     """Приводит схему к ревизии 0015 с пустыми домен-таблицами (чистый старт для seed).
 
-    `upgrade head` гарантирует наличие всех таблиц (свежая БД CI); `truncate` очищает
-    домен; `downgrade 0015` откатывает маркер версии на 0015 (шаг 0016→0015 — no-op по
-    данным, схему не меняет) — так следующий `upgrade 0016` реально исполнит backfill.
+    Полный drop public-схемы (изоляция от create_all-тестов без alembic-stamp) →
+    `upgrade head` создаёт все таблицы alembic'ом → `truncate` очищает домен →
+    `downgrade 0015` откатывает маркер на 0015 (шаг 0016→0015 — no-op по данным) —
+    так следующий `upgrade 0016` реально исполнит backfill.
     """
+    asyncio.run(_drop_schema(url))
     command.upgrade(cfg, "head")
     asyncio.run(_truncate(url))
     command.downgrade(cfg, _REV_0015)
@@ -184,7 +203,8 @@ async def _fetch(
 def test_0016_sits_on_top_of_0015_single_head() -> None:
     """Ревизия 0016 висит поверх 0015 и является единственной головой цепочки."""
     script = ScriptDirectory.from_config(_alembic_config())
-    assert script.get_heads() == [_REV_0016]
+    # Единственная голова цепочки — теперь 0017 (ADR-030 добавил SMS-миграцию поверх 0016).
+    assert script.get_heads() == ["0017_create_sms_module"]
     rev = script.get_revision(_REV_0016)
     assert rev.down_revision == _REV_0015
 

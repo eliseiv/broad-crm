@@ -196,6 +196,86 @@ def backend_code_taken() -> AppError:
     )
 
 
+def sms_number_not_found() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="sms_number_not_found",
+        message="Номер не найден",
+    )
+
+
+def sms_team_not_found() -> AppError:
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="sms_team_not_found",
+        message="Команда не найдена",
+    )
+
+
+def invalid_twilio_signature() -> AppError:
+    return AppError(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        code="invalid_twilio_signature",
+        message="Неверная подпись Twilio",
+    )
+
+
+def invalid_init_data() -> AppError:
+    return AppError(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        code="invalid_init_data",
+        message="Невалидные данные Telegram",
+    )
+
+
+def init_data_expired() -> AppError:
+    return AppError(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        code="init_data_expired",
+        message="Данные Telegram устарели",
+    )
+
+
+def invalid_webhook_secret() -> AppError:
+    return AppError(
+        status_code=status.HTTP_403_FORBIDDEN,
+        code="invalid_webhook_secret",
+        message="Неверный секрет webhook",
+    )
+
+
+def invalid_cursor() -> AppError:
+    return AppError(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        code="invalid_cursor",
+        message="Битый курсор пагинации",
+    )
+
+
+def invalid_limit() -> AppError:
+    return AppError(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        code="invalid_limit",
+        message="Недопустимый размер страницы",
+    )
+
+
+def twilio_error() -> AppError:
+    return AppError(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        code="twilio_error",
+        message="Сбой Twilio API",
+    )
+
+
+def twilio_not_configured() -> AppError:
+    return AppError(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        code="twilio_not_configured",
+        message="Twilio не настроен",
+    )
+
+
 def unprocessable(message: str, details: Any = None) -> AppError:
     return AppError(
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,

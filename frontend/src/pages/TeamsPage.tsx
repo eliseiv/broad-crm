@@ -1,12 +1,14 @@
 import { useState } from 'react';
-import { AlertTriangle, Plus, RefreshCw, UsersRound } from 'lucide-react';
+import { AlertTriangle, ChevronDown, Pencil, Plus, RefreshCw, UsersRound } from 'lucide-react';
 import { AddTeamModal } from '@/components/AddTeamModal';
 import { InsufficientPermissions } from '@/components/InsufficientPermissions';
+import { TeamDetailPanel } from '@/components/TeamDetailPanel';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { Spinner } from '@/components/ui/Spinner';
 import { ApiError } from '@/lib/api';
-import { membersPlural } from '@/lib/plural';
+import { cn } from '@/lib/cn';
+import { membersPlural, numbersPlural } from '@/lib/plural';
 import { useCan, useCanViewPage } from '@/features/auth/hooks';
 import { useTeams } from '@/features/teams/hooks';
 import { useUsers } from '@/features/users/hooks';
@@ -36,6 +38,9 @@ function TeamsList() {
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editTeam, setEditTeam] = useState<TeamListItem | undefined>(undefined);
+  // Аккордеон: раскрытая detail-панель (одна за раз). Клик по карточке — раскрыть/свернуть;
+  // редактирование — по карандашу (stopPropagation), а не по клику (ADR-030).
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
   const teams = teamsQuery.data?.items ?? [];
   const users = usersQuery.data?.items ?? [];
@@ -115,53 +120,76 @@ function TeamsList() {
       {!teamsQuery.isLoading && !teamsQuery.isError && teams.length > 0 && (
         <ul className="flex flex-col gap-3">
           {teams.map((team) => {
-            const interactiveProps = canEdit
-              ? {
-                  interactive: true,
-                  role: 'button' as const,
-                  tabIndex: 0,
-                  'aria-label': `Изменить команду ${team.name}`,
-                  onClick: () => openEdit(team),
-                  onKeyDown: (e: React.KeyboardEvent) => {
-                    if (e.key === 'Enter' || e.key === ' ') {
-                      e.preventDefault();
-                      openEdit(team);
-                    }
-                  },
-                }
-              : {};
+            const expanded = expandedId === team.id;
+            const panelId = `team-detail-${team.id}`;
+            const toggle = () => setExpandedId((prev) => (prev === team.id ? null : team.id));
             return (
               <li key={team.id}>
-                <Card
-                  {...interactiveProps}
-                  className={
-                    canEdit
-                      ? 'flex cursor-pointer flex-wrap items-center justify-between gap-3 p-4'
-                      : 'flex flex-wrap items-center justify-between gap-3 p-4'
-                  }
-                >
-                  <div className="flex min-w-0 items-center gap-3">
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-chip bg-surface-3 text-text-secondary">
-                      <UsersRound className="h-5 w-5" aria-hidden="true" />
-                    </span>
-                    <div className="flex min-w-0 flex-col gap-0.5">
-                      <span className="truncate text-sm font-medium text-text-primary">
-                        {team.name}
+                <Card className="overflow-hidden p-0">
+                  <div
+                    role="button"
+                    tabIndex={0}
+                    aria-expanded={expanded}
+                    aria-controls={panelId}
+                    aria-label={`${team.name}: показать детали`}
+                    onClick={toggle}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        toggle();
+                      }
+                    }}
+                    className="flex cursor-pointer flex-wrap items-center justify-between gap-3 p-4"
+                  >
+                    <div className="flex min-w-0 items-center gap-3">
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-chip bg-surface-3 text-text-secondary">
+                        <UsersRound className="h-5 w-5" aria-hidden="true" />
                       </span>
-                      <span className="truncate text-[13px] text-text-secondary">
-                        {team.leader_username ? (
-                          <>
-                            Лидер: <span className="font-mono">{team.leader_username}</span>
-                          </>
-                        ) : (
-                          'Без лидера'
+                      <div className="flex min-w-0 flex-col gap-0.5">
+                        <span className="truncate text-sm font-medium text-text-primary">
+                          {team.name}
+                        </span>
+                        <span className="truncate text-[13px] text-text-secondary">
+                          {team.leader_username ? (
+                            <>
+                              Лидер: <span className="font-mono">{team.leader_username}</span>
+                            </>
+                          ) : (
+                            'Без лидера'
+                          )}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-3">
+                      <span className="whitespace-nowrap font-mono text-[13px] text-text-secondary">
+                        {numbersPlural(team.number_count)}
+                      </span>
+                      <span className="whitespace-nowrap font-mono text-[13px] text-text-secondary">
+                        {membersPlural(team.member_count)}
+                      </span>
+                      {canEdit && (
+                        <button
+                          type="button"
+                          aria-label={`Изменить команду ${team.name}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEdit(team);
+                          }}
+                          className="rounded-md p-1.5 text-text-tertiary transition-colors hover:bg-surface-3 hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                        >
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                      )}
+                      <ChevronDown
+                        className={cn(
+                          'h-4 w-4 text-text-tertiary transition-transform',
+                          expanded && 'rotate-180',
                         )}
-                      </span>
+                        aria-hidden="true"
+                      />
                     </div>
                   </div>
-                  <span className="shrink-0 whitespace-nowrap font-mono text-[13px] text-text-secondary">
-                    {membersPlural(team.member_count)}
-                  </span>
+                  {expanded && <TeamDetailPanel team={team} id={panelId} />}
                 </Card>
               </li>
             );

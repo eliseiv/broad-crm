@@ -33,6 +33,19 @@ export function formatRelativeTime(
   return `${diffDay} дн назад`;
 }
 
+/**
+ * Абсолютная дата-время «DD.MM.YYYY HH:MM» (08-design-system.md «Страница СМС»,
+ * карточка `SmsMessageCard`). Локальное время; невалидная метка → «—».
+ */
+export function formatDateTimeRu(iso: string | null | undefined): string {
+  if (!iso) return '—';
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return '—';
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getDate())}.${p(d.getMonth() + 1)}.${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 /** Аккуратное число: целые без дробной части, иначе один знак. */
 export function formatNumber(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);

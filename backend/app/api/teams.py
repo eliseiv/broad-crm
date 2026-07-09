@@ -12,6 +12,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Response, status
 
 from app.api.deps import Principal, TeamServiceDep, require
+from app.schemas.sms import TeamNumbersResponse
 from app.schemas.team import (
     TeamCreateRequest,
     TeamListItem,
@@ -61,3 +62,13 @@ async def delete_team(
     """Удаляет команду (hard delete; каскад `user_teams`)."""
     await service.delete_team(team_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.get("/{team_id}/numbers", response_model=TeamNumbersResponse)
+async def list_team_numbers(
+    team_id: uuid.UUID,
+    service: TeamServiceDep,
+    _principal: Annotated[Principal, Depends(require("teams", "view"))],
+) -> TeamNumbersResponse:
+    """SMS-номера команды для detail-панели /teams (ADR-030). Нет команды → 404."""
+    return await service.list_team_numbers(team_id)

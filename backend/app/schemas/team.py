@@ -60,6 +60,9 @@ class TeamListItem(BaseModel):
     leader_id: uuid.UUID | None
     leader_username: str | None
     member_count: int
+    # Число SMS-номеров команды (COUNT sms_phone_numbers WHERE team_id = id, ADR-030).
+    # Денормализованный агрегат для чипа «N номеров»; может быть 0.
+    number_count: int
     members: list[TeamMember]
     created_at: datetime
     updated_at: datetime

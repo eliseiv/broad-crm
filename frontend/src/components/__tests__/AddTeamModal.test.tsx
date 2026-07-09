@@ -43,6 +43,7 @@ const TEAM: TeamListItem = {
   leader_id: 'u1',
   leader_username: 'Никита',
   member_count: 2,
+  number_count: 0,
   members: [
     { id: 'u1', username: 'Никита' },
     { id: 'u2', username: 'Мария' },

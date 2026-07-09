@@ -26,7 +26,7 @@ def db() -> RbacFakeDb:
 
 
 def _service(db: RbacFakeDb) -> TeamService:
-    return TeamService(teams=db.team_repo, users=db.user_repo)
+    return TeamService(teams=db.team_repo, users=db.user_repo, numbers=db.number_repo)
 
 
 def _user(db: RbacFakeDb, name: str) -> object:
