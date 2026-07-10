@@ -142,4 +142,30 @@ describe('api client and endpoint wrappers', () => {
     });
     expect(useAuthStore.getState().isAuthenticated).toBe(false);
   });
+
+  it('does NOT clear the admin session on a 401 when skipAuthReset is set (Mini App SSO isolation)', async () => {
+    // Дыра изоляции (ADR-044 §7): истёкший SSO-JWT Mini App почты (401 с skipAuthReset)
+    // НЕ должен ронять админ-стор `crm.auth.*` — иначе просмотр Mini App разлогинивал бы
+    // администратора в других вкладках.
+    useAuthStore.getState().setSession('admin-jwt', 'admin');
+    vi.stubGlobal(
+      'fetch',
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response(
+            JSON.stringify({ error: { code: 'unauthorized', message: 'Требуется авторизация' } }),
+            { status: 401 },
+          ),
+        ),
+    );
+
+    await expect(
+      apiRequest('/mail/messages', { authToken: 'sso-jwt', skipAuthReset: true }),
+    ).rejects.toMatchObject({ status: 401 });
+
+    // Админ-сессия сохранена (clearSession НЕ вызван), токен в localStorage не стёрт.
+    expect(useAuthStore.getState().isAuthenticated).toBe(true);
+    expect(localStorage.getItem('crm.auth.token')).toBe('admin-jwt');
+  });
 });

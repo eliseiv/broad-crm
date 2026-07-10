@@ -2,6 +2,12 @@
 
 from app.models.ai_key import AiKey, AiKeyStatus, AiProvider
 from app.models.base import Base
+from app.models.mail_account import MailAccount
+from app.models.mail_message import MailMessage
+from app.models.mail_sent_message import MailSentMessage
+from app.models.mail_tag import MailMessageTag, MailTag, MailTagRule
+from app.models.mail_telegram import MailTelegramLink, MailTelegramNotification
+from app.models.mail_user_settings import MailUserSettings
 from app.models.notifier_alert_log import NotifierAlertLog
 from app.models.notifier_server_state import NotifierServerState
 from app.models.proxy import Proxy, ProxyStatus, ProxyType
@@ -22,6 +28,15 @@ __all__ = [
     "Backend",
     "BackendStatus",
     "Base",
+    "MailAccount",
+    "MailMessage",
+    "MailMessageTag",
+    "MailSentMessage",
+    "MailTag",
+    "MailTagRule",
+    "MailTelegramLink",
+    "MailTelegramNotification",
+    "MailUserSettings",
     "NotifierAlertLog",
     "NotifierServerState",
     "ProvisionStatus",

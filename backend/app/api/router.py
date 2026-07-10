@@ -10,6 +10,9 @@ from app.api import (
     backends,
     health,
     mail,
+    mail_ingest,
+    mail_me,
+    mail_telegram,
     permissions,
     proxies,
     roles,
@@ -28,6 +31,9 @@ api_router.include_router(ai_keys.router)
 api_router.include_router(proxies.router)
 api_router.include_router(backends.router)
 api_router.include_router(mail.router)
+api_router.include_router(mail_ingest.router)
+api_router.include_router(mail_telegram.router)
+api_router.include_router(mail_me.router)
 api_router.include_router(permissions.router)
 api_router.include_router(users.router)
 api_router.include_router(roles.router)

@@ -151,8 +151,9 @@ export function TeamDetailPanel({ team, id }: TeamDetailPanelProps) {
 
   const numbers = numbersQuery.data?.numbers ?? [];
   const mailboxes = mailboxesQuery.data?.mailboxes ?? [];
-  // «Почты не привязаны» — команда без mail_group_id; «Почт нет» — привязка есть, ящиков нет.
-  const mailboxesEmptyText = team.mail_group_id == null ? 'Почты не привязаны' : 'Почт нет';
+  // Групп агрегатора больше нет (ADR-044): ящик крепится прямо к команде через team_id.
+  // Пустая секция = у команды нет привязанных ящиков.
+  const mailboxesEmptyText = 'Почт нет';
 
   return (
     <div id={id} className="flex flex-col gap-4 border-t border-border-subtle px-4 py-4">

@@ -2,14 +2,13 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useMailFeed, useMailMailboxes, useMailTeams } from '@/features/mail/hooks';
+import { useMailFeed, useMailMailboxes } from '@/features/mail/hooks';
 import { ApiError } from '@/lib/api';
 import type { MailListResponse, MailMessage } from '@/types/api';
 
 const api = vi.hoisted(() => ({
   listMail: vi.fn(),
   replyMail: vi.fn(),
-  listTeams: vi.fn(),
   listMailboxes: vi.fn(),
   MAIL_PAGE_LIMIT: 20,
 }));
@@ -22,11 +21,12 @@ vi.mock('@/lib/env', () => ({
   env: { apiBaseUrl: '', pollIntervalMs: 999_999, statusPollIntervalMs: 2500 },
 }));
 
-function makeMessage(id: number): MailMessage {
+/** Письмо с управляемой датой (internal_date НЕ уникален — проверяем склейку по курсору). */
+function makeMessage(id: number, internalDate = '2026-07-02T09:15:00Z'): MailMessage {
   return {
     id,
     subject: `Письмо ${id}`,
-    internal_date: '2026-07-02T09:15:00Z',
+    internal_date: internalDate,
     from_addr: 'sender@example.com',
     from_name: 'Иван',
     to_addrs: 'inbox@postapp.store',
@@ -40,13 +40,9 @@ function makeMessage(id: number): MailMessage {
   };
 }
 
-/** desc-страница: заполнен `next_before_id`, `next_since_id` = null (04-api.md). */
-function page(
-  messages: MailMessage[],
-  nextBeforeId: number | null,
-  hasMore: boolean,
-): MailListResponse {
-  return { messages, next_since_id: null, next_before_id: nextBeforeId, has_more: hasMore };
+/** Страница компаундного keyset: `next_cursor` — opaque-токен либо `null` (конец). */
+function page(messages: MailMessage[], nextCursor: string | null): MailListResponse {
+  return { messages, next_cursor: nextCursor };
 }
 
 /** Свежий QueryClient на каждый тест — изоляция кэша между прогонами. */
@@ -59,30 +55,34 @@ function makeWrapper() {
   };
 }
 
-describe('useMailFeed (ADR-013 infinite desc feed)', () => {
+describe('useMailFeed (ADR-044 infinite compound-keyset feed)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('loads the first batch newest-first without a cursor (order=desc, limit=20)', async () => {
-    api.listMail.mockResolvedValueOnce(page([makeMessage(2), makeMessage(1)], 1, true));
+  it('loads the first batch newest-first without a cursor (limit=20, no filters)', async () => {
+    api.listMail.mockResolvedValueOnce(page([makeMessage(2), makeMessage(1)], 'cur-1'));
     const { result } = renderHook(() => useMailFeed(), { wrapper: makeWrapper() });
 
     await waitFor(() => expect(result.current.phase).toBe('ready'));
-    // Первая страница — без before_id, order=desc, дефолтный лимит 20.
+    // Первая страница — без `before`, дефолтный лимит 20, фильтры пусты.
     expect(api.listMail.mock.calls[0][0]).toEqual({
-      order: 'desc',
-      beforeId: undefined,
+      before: undefined,
       limit: 20,
+      mailAccountId: undefined,
+      teamId: undefined,
     });
     expect(result.current.messages.map((m) => m.id)).toEqual([2, 1]);
     expect(result.current.hasMore).toBe(true);
   });
 
-  it('paginates older by next_before_id, dedups overlaps and keeps id DESC', async () => {
+  it('paginates older by next_cursor, dedups equal-internal_date overlaps, keeps server order', async () => {
+    // Все письма делят один internal_date → порядок держит id DESC, а склейку — курсор.
+    const d = '2026-07-02T09:15:00Z';
     api.listMail
-      .mockResolvedValueOnce(page([makeMessage(5), makeMessage(4)], 4, true))
-      .mockResolvedValueOnce(page([makeMessage(4), makeMessage(3)], 3, false));
+      .mockResolvedValueOnce(page([makeMessage(5, d), makeMessage(4, d)], 'cur-4'))
+      // Граничное письмо id=4 повторяется на стыке страниц — не должно задвоиться.
+      .mockResolvedValueOnce(page([makeMessage(4, d), makeMessage(3, d)], null));
     const { result } = renderHook(() => useMailFeed(), { wrapper: makeWrapper() });
     await waitFor(() => expect(result.current.phase).toBe('ready'));
 
@@ -91,18 +91,27 @@ describe('useMailFeed (ADR-013 infinite desc feed)', () => {
     });
 
     await waitFor(() => expect(result.current.hasMore).toBe(false));
-    // Догрузка старых шлёт before_id = next_before_id первой страницы (4).
+    // Догрузка старых шлёт before = next_cursor первой страницы.
     expect(api.listMail.mock.calls[1][0]).toEqual({
-      order: 'desc',
-      beforeId: 4,
+      before: 'cur-4',
       limit: 20,
+      mailAccountId: undefined,
+      teamId: undefined,
     });
-    // Дедуп по id: письмо 4 не задвоилось; порядок — новые сверху.
+    // Дедуп по id: письмо 4 не задвоилось, id=3 не потеряно; порядок — новые сверху.
     expect(result.current.messages.map((m) => m.id)).toEqual([5, 4, 3]);
   });
 
+  it('marks the end of the feed when next_cursor is null (hasMore=false)', async () => {
+    api.listMail.mockResolvedValueOnce(page([makeMessage(1)], null));
+    const { result } = renderHook(() => useMailFeed(), { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(result.current.phase).toBe('ready'));
+    expect(result.current.hasMore).toBe(false);
+  });
+
   it('does not fetch more when hasMore is false (idempotent guard)', async () => {
-    api.listMail.mockResolvedValueOnce(page([makeMessage(1)], null, false));
+    api.listMail.mockResolvedValueOnce(page([makeMessage(1)], null));
     const { result } = renderHook(() => useMailFeed(), { wrapper: makeWrapper() });
     await waitFor(() => expect(result.current.phase).toBe('ready'));
 
@@ -129,76 +138,74 @@ describe('useMailFeed (ADR-013 infinite desc feed)', () => {
     await waitFor(() => expect(result.current.phase).toBe('error'));
   });
 
-  it('forwards mail_account_id server filter to listMail', async () => {
-    api.listMail.mockResolvedValueOnce(page([makeMessage(2)], null, false));
+  it('forwards the mail_account_id server filter to listMail', async () => {
+    api.listMail.mockResolvedValueOnce(page([makeMessage(2)], null));
     const { result } = renderHook(() => useMailFeed({ mailAccountId: 7 }), {
       wrapper: makeWrapper(),
     });
 
     await waitFor(() => expect(result.current.phase).toBe('ready'));
     expect(api.listMail.mock.calls[0][0]).toEqual({
-      order: 'desc',
-      beforeId: undefined,
+      before: undefined,
       limit: 20,
       mailAccountId: 7,
-      groupId: undefined,
+      teamId: undefined,
     });
   });
 
-  it('forwards group_id server filter to listMail', async () => {
-    api.listMail.mockResolvedValueOnce(page([makeMessage(2)], null, false));
-    const { result } = renderHook(() => useMailFeed({ groupId: 3 }), { wrapper: makeWrapper() });
+  it('forwards the team_id server filter to listMail', async () => {
+    api.listMail.mockResolvedValueOnce(page([makeMessage(2)], null));
+    const { result } = renderHook(() => useMailFeed({ teamId: 'team-3' }), {
+      wrapper: makeWrapper(),
+    });
 
     await waitFor(() => expect(result.current.phase).toBe('ready'));
     expect(api.listMail.mock.calls[0][0]).toEqual({
-      order: 'desc',
-      beforeId: undefined,
+      before: undefined,
       limit: 20,
       mailAccountId: undefined,
-      groupId: 3,
+      teamId: 'team-3',
     });
   });
 
-  it('re-requests the feed when the server filter changes (filter is part of queryKey)', async () => {
-    // Смена фильтра = новый queryKey → новый запрос ленты с новым фильтром (ADR-017).
-    api.listMail.mockResolvedValue(page([makeMessage(2)], null, false));
+  it('re-requests the feed (resets pagination) when the server filter changes', async () => {
+    // Смена фильтра = новый queryKey → новый запрос ленты с чистой пагинацией (ADR-044 §7).
+    api.listMail.mockResolvedValue(page([makeMessage(2)], 'cur-x'));
     const { result, rerender } = renderHook(
-      ({ groupId }: { groupId?: number }) => useMailFeed({ groupId }),
-      { wrapper: makeWrapper(), initialProps: { groupId: undefined as number | undefined } },
+      ({ teamId }: { teamId?: string }) => useMailFeed({ teamId }),
+      { wrapper: makeWrapper(), initialProps: { teamId: undefined as string | undefined } },
     );
     await waitFor(() => expect(result.current.phase).toBe('ready'));
     expect(api.listMail).toHaveBeenCalledTimes(1);
 
-    rerender({ groupId: 3 });
+    rerender({ teamId: 'team-3' });
 
-    // Новый ключ запускает отдельный запрос ленты с фильтром group_id=3.
+    // Новый ключ запускает отдельный запрос ленты с фильтром team_id и БЕЗ before (сброс).
     await waitFor(() => expect(api.listMail).toHaveBeenCalledTimes(2));
-    expect(api.listMail.mock.calls[1][0]).toMatchObject({ groupId: 3, mailAccountId: undefined });
+    expect(api.listMail.mock.calls[1][0]).toMatchObject({
+      teamId: 'team-3',
+      mailAccountId: undefined,
+      before: undefined,
+    });
   });
 });
 
-describe('useMailTeams / useMailMailboxes (ADR-017 справочники фильтров)', () => {
+describe('useMailMailboxes (справочник ящиков)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it('useMailTeams fetches the teams reference', async () => {
-    api.listTeams.mockResolvedValueOnce({ teams: [{ id: 3, name: 'Продажи' }] });
-    const { result } = renderHook(() => useMailTeams(), { wrapper: makeWrapper() });
-
-    await waitFor(() => expect(result.current.isSuccess).toBe(true));
-    expect(result.current.data?.teams).toEqual([{ id: 3, name: 'Продажи' }]);
-    expect(api.listTeams).toHaveBeenCalledTimes(1);
-  });
-
-  it('useMailMailboxes fetches the mailboxes reference', async () => {
+  it('fetches the mailboxes reference', async () => {
     const mailboxes = [
       {
         id: 7,
         email: 'inbox@postapp.store',
         display_name: 'Входящие',
-        group_id: 3,
+        team_id: 'team-3',
         is_active: true,
+        last_synced_at: null,
+        last_sync_error: null,
+        consecutive_failures: 0,
       },
     ];
     api.listMailboxes.mockResolvedValueOnce({ mailboxes });
@@ -209,7 +216,7 @@ describe('useMailTeams / useMailMailboxes (ADR-017 справочники фил
     expect(api.listMailboxes).toHaveBeenCalledTimes(1);
   });
 
-  it('useMailMailboxes surfaces a 503 error (dashboard "not configured" branch)', async () => {
+  it('surfaces a 503 error (dashboard "not configured" branch)', async () => {
     api.listMailboxes.mockRejectedValueOnce(new ApiError(503, 'mail_not_configured', 'x'));
     const { result } = renderHook(() => useMailMailboxes(), { wrapper: makeWrapper() });
 

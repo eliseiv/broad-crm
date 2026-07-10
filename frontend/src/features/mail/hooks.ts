@@ -8,16 +8,17 @@ import {
   deleteMailbox,
   deleteTag,
   deleteTagRule,
+  getMailSettings,
   listMail,
   listMailboxes,
   listTags,
   listTeamMailboxes,
-  listTeams,
   MAIL_PAGE_LIMIT,
   replyMail,
   syncMailbox,
   testMailbox,
   updateMailbox,
+  updateMailSettings,
   updateTag,
 } from '@/features/mail/api';
 import { env } from '@/lib/env';
@@ -38,22 +39,23 @@ import type {
   MailTagRule,
   MailTagRuleCreateRequest,
   MailTagUpdateRequest,
+  MailUserSettings,
 } from '@/types/api';
 
 export const mailFeedKey = ['mail', 'feed'] as const;
-export const mailTeamsKey = ['mail', 'teams'] as const;
 export const mailMailboxesKey = ['mail', 'mailboxes'] as const;
 export const mailTagsKey = ['mail', 'tags'] as const;
+export const mailSettingsKey = ['mail', 'settings'] as const;
 export const teamMailboxesKey = ['teams', 'mailboxes'] as const;
 
 /**
- * Серверный фильтр ленты (**комбинируемы — AND, ADR-038 §3**; оба опциональны). Часть
+ * Серверный фильтр ленты (**комбинируемы — AND, ADR-044 §7**; оба опциональны). Часть
  * queryKey ленты: смена фильтра ре-запрашивает ленту (сброс пагинации + авто-выбор
- * свежего письма) — ADR-017, 08-design-system.md.
+ * свежего письма). `teamId` — UUID CRM-команды (групп агрегатора больше нет).
  */
 export interface MailFeedFilter {
   mailAccountId?: number;
-  groupId?: number;
+  teamId?: string;
 }
 
 /**
@@ -63,12 +65,12 @@ export interface MailFeedFilter {
 export type MailPhase = 'loading' | 'ready' | 'error' | 'not_configured';
 
 export interface MailFeedResult {
-  /** Аккумулированные письма всех страниц, дедуп по `id`, порядок `id` DESC (newest-first). */
+  /** Аккумулированные письма всех страниц, дедуп по `id`, порядок сервера (internal_date DESC, id DESC). */
   messages: MailMessage[];
   phase: MailPhase;
   /** Ошибка последнего запроса (для различения 401/502 в UI). */
   error: unknown;
-  /** Есть ли ещё более старые письма (desc, has_more). */
+  /** Есть ли ещё более старые письма (курсор `next_cursor` не пуст). */
   hasMore: boolean;
   /** Идёт догрузка более старого батча. */
   isFetchingMore: boolean;
@@ -81,42 +83,44 @@ export interface MailFeedResult {
 }
 
 /**
- * Бесконечная лента писем (desc, newest-first) на TanStack `useInfiniteQuery`
- * (образец — features/servers/ai-keys; ADR-013, modules/mail «Пагинация»).
- *
- * - Первая страница — `order=desc&limit=20` (без `before_id`) → новейшие 20.
- * - Догрузка старых — `order=desc&before_id=<next_before_id>&limit=20`, пока `has_more`.
- * - Курсор следующей страницы — `next_before_id`; стоп при `has_more=false`.
- * - Дедуп по `id` и сортировка `id` DESC — на этапе flatten (страховка от пересечений).
+ * Аккумуляция страниц с дедупом по `id` и СОХРАНЕНИЕМ порядка сервера
+ * (`internal_date DESC, id DESC`). Клиент НЕ сортирует по `id`: `id` отражает порядок
+ * прихода push'а, а не дату письма (ADR-044 §2, MAJOR-8) — сортировка по id всплыла бы
+ * ре-пушнутое старое письмо в топ. `Map` сохраняет порядок вставки → порядок сервера.
+ */
+function flattenPages(pages: { messages: MailMessage[] }[] | undefined): MailMessage[] {
+  const byId = new Map<number, MailMessage>();
+  for (const page of pages ?? []) {
+    for (const m of page.messages) {
+      if (!byId.has(m.id)) byId.set(m.id, m);
+    }
+  }
+  return [...byId.values()];
+}
+
+/**
+ * Бесконечная лента писем (newest-first, компаундный keyset-курсор) на TanStack
+ * `useInfiniteQuery`. Первая страница — без `before` → новейшие 20; догрузка старых —
+ * `before=<next_cursor>`, пока `next_cursor` не `null`.
  */
 export function useMailFeed(filter: MailFeedFilter = {}): MailFeedResult {
-  const { mailAccountId, groupId } = filter;
+  const { mailAccountId, teamId } = filter;
   const query = useInfiniteQuery({
     // Фильтр входит в queryKey → его смена запускает новый запрос ленты (сброс пагинации).
     queryKey: [
       ...mailFeedKey,
-      { mail_account_id: mailAccountId ?? null, group_id: groupId ?? null },
+      { mail_account_id: mailAccountId ?? null, team_id: teamId ?? null },
     ] as const,
     queryFn: ({ pageParam, signal }) =>
-      listMail(
-        { order: 'desc', beforeId: pageParam, limit: MAIL_PAGE_LIMIT, mailAccountId, groupId },
-        signal,
-      ),
-    initialPageParam: undefined as number | undefined,
-    getNextPageParam: (lastPage) =>
-      lastPage.has_more ? (lastPage.next_before_id ?? undefined) : undefined,
-    // Один заход: 502/503/401 отдаём сразу в UI, без ретрай-задержек (внешний rate-limit).
+      listMail({ before: pageParam, limit: MAIL_PAGE_LIMIT, mailAccountId, teamId }, signal),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    // Один заход: 502/503/401 отдаём сразу в UI, без ретрай-задержек.
     retry: false,
     refetchOnWindowFocus: false,
   });
 
-  const messages = useMemo<MailMessage[]>(() => {
-    const byId = new Map<number, MailMessage>();
-    for (const page of query.data?.pages ?? []) {
-      for (const m of page.messages) byId.set(m.id, m);
-    }
-    return [...byId.values()].sort((a, b) => b.id - a.id);
-  }, [query.data]);
+  const messages = useMemo<MailMessage[]>(() => flattenPages(query.data?.pages), [query.data]);
 
   let phase: MailPhase = 'ready';
   if (query.status === 'pending') {
@@ -154,23 +158,6 @@ export function useReplyMail(messageId: number) {
 }
 
 /**
- * Справочник команд для дропдауна «Команда» (серверный фильтр) — GET /api/mail/teams.
- * `enabled` (default `true`) — фильтр «Команда» рендерится только admin-уровню
- * (`sees_all_mail_teams`, ADR-038 §3); прочим ролям справочник не грузится (анти-энумерация).
- */
-export function useMailTeams(enabled = true) {
-  return useQuery({
-    queryKey: mailTeamsKey,
-    queryFn: ({ signal }) => listTeams(signal),
-    enabled,
-    refetchInterval: env.pollIntervalMs,
-    refetchIntervalInBackground: false,
-    staleTime: env.pollIntervalMs,
-    retry: false,
-  });
-}
-
-/**
  * Справочник почтовых ящиков (без фильтра) — GET /api/mail/mailboxes. Источник дропдауна
  * «Почта» (серверный фильтр ленты) и счётчиков карточки «Почты» на «Дашборде» (клиентский
  * подсчёт is_active). Polling как у списков servers/ai-keys.
@@ -187,7 +174,7 @@ export function useMailMailboxes() {
 }
 
 /**
- * Список ящиков для вкладки «Почты» с серверным фильтром активности (04-api.md
+ * Список ящиков для вкладки «Почты» с серверным фильтром активности (ADR-044 §4
  * `is_active`). `isActive` входит в queryKey — смена сегмента ре-запрашивает список.
  * Polling обновляет статус синка (кружок). Мутации ящиков инвалидируют весь префикс
  * `['mail','mailboxes']` (покрывает и этот, и справочник дропдауна).
@@ -248,7 +235,7 @@ export function useSyncMailbox() {
   });
 }
 
-// --- Теги (глобальный каталог, гейт mail:tags) ---
+// --- Теги (глобальный каталог, гейт mail:tags; `id` — UUID) ---
 
 /** Список глобальных тегов с правилами — GET /api/mail/tags. */
 export function useMailTags() {
@@ -275,7 +262,7 @@ export function useCreateTag() {
 
 export function useUpdateTag() {
   const queryClient = useQueryClient();
-  return useMutation<MailTagFull, unknown, { id: number; payload: MailTagUpdateRequest }>({
+  return useMutation<MailTagFull, unknown, { id: string; payload: MailTagUpdateRequest }>({
     mutationFn: ({ id, payload }) => updateTag(id, payload),
     onSuccess: () => invalidateTags(queryClient),
   });
@@ -283,7 +270,7 @@ export function useUpdateTag() {
 
 export function useDeleteTag() {
   const queryClient = useQueryClient();
-  return useMutation<void, unknown, number>({
+  return useMutation<void, unknown, string>({
     mutationFn: (id) => deleteTag(id),
     onSuccess: () => invalidateTags(queryClient),
   });
@@ -291,7 +278,7 @@ export function useDeleteTag() {
 
 export function useCreateTagRule() {
   const queryClient = useQueryClient();
-  return useMutation<MailTagRule, unknown, { tagId: number; payload: MailTagRuleCreateRequest }>({
+  return useMutation<MailTagRule, unknown, { tagId: string; payload: MailTagRuleCreateRequest }>({
     mutationFn: ({ tagId, payload }) => createTagRule(tagId, payload),
     onSuccess: () => invalidateTags(queryClient),
   });
@@ -299,7 +286,7 @@ export function useCreateTagRule() {
 
 export function useDeleteTagRule() {
   const queryClient = useQueryClient();
-  return useMutation<void, unknown, { tagId: number; ruleId: number }>({
+  return useMutation<void, unknown, { tagId: string; ruleId: string }>({
     mutationFn: ({ tagId, ruleId }) => deleteTagRule(tagId, ruleId),
     onSuccess: () => invalidateTags(queryClient),
   });
@@ -307,10 +294,35 @@ export function useDeleteTagRule() {
 
 export function useApplyTag() {
   const queryClient = useQueryClient();
-  return useMutation<MailTagApplyResponse, unknown, number>({
+  return useMutation<MailTagApplyResponse, unknown, string>({
     mutationFn: (tagId) => applyTagToExisting(tagId),
     // Применение навешивает тег на существующие письма → лента обновляется.
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: mailFeedKey }),
+  });
+}
+
+// --- Персональные настройки уведомлений (opt-out, гейт mail:view, ADR-044 §2) ---
+
+/**
+ * Состояние opt-out Telegram-уведомлений — GET /api/mail/me/settings. `enabled`
+ * позволяет не грузить настройки там, где строки нет (супер-админ из `.env` → 403).
+ */
+export function useMailSettings(enabled = true) {
+  return useQuery({
+    queryKey: mailSettingsKey,
+    queryFn: ({ signal }) => getMailSettings(signal),
+    enabled,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+}
+
+/** PATCH /api/mail/me/settings — переключить уведомления; обновляет кэш настроек. */
+export function useUpdateMailSettings() {
+  const queryClient = useQueryClient();
+  return useMutation<MailUserSettings, unknown, boolean>({
+    mutationFn: (enabled) => updateMailSettings({ tg_notifications_enabled: enabled }),
+    onSuccess: (data) => queryClient.setQueryData(mailSettingsKey, data),
   });
 }
 

@@ -32,6 +32,12 @@ interface RequestOptions {
    * setup-token для POST /api/auth/set-password, ADR-025). Игнорируется при skipAuth.
    */
   authToken?: string;
+  /**
+   * Изолированная сессия (Mini App почты, ADR-044 §7): на 401 НЕ сбрасывать админ-стор
+   * (`clearSession()`) — Bearer всё равно отправляется (`authToken`/сессия), но истечение
+   * SSO-JWT Mini App обрабатывается локально вызывающим, а не роняет `crm.auth.*`.
+   */
+  skipAuthReset?: boolean;
   signal?: AbortSignal;
 }
 
@@ -67,7 +73,14 @@ async function parseError(res: Response): Promise<ApiError> {
  * на 401 сбрасывает сессию (редирект на /login выполняет роутер).
  */
 export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = 'GET', body, skipAuth = false, authToken, signal } = options;
+  const {
+    method = 'GET',
+    body,
+    skipAuth = false,
+    authToken,
+    skipAuthReset = false,
+    signal,
+  } = options;
   const headers: Record<string, string> = {};
 
   if (body !== undefined) headers['Content-Type'] = 'application/json';
@@ -83,7 +96,10 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     signal,
   });
 
-  if (res.status === 401 && !skipAuth) {
+  // 401: сбрасываем админ-сессию только для обычных запросов. Для изолированной
+  // Mini-App-сессии (`skipAuthReset`) НЕ трогаем `clearSession()` — пробрасываем ApiError
+  // ниже (parseError) для локальной обработки истёкшего SSO-JWT.
+  if (res.status === 401 && !skipAuth && !skipAuthReset) {
     clearSession();
     throw new ApiError(401, 'unauthorized', 'Сессия истекла. Войдите снова.');
   }

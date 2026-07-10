@@ -34,7 +34,6 @@ const TEAMS: TeamListItem[] = [
   {
     id: 't1',
     name: 'Продажи',
-    mail_group_id: null,
     leader_id: 'x',
     leader_username: 'Лидер',
     member_count: 1,

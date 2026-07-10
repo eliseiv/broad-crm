@@ -4,6 +4,7 @@ import { AiKeysPage } from '@/pages/AiKeysPage';
 import { BackendsPage } from '@/pages/BackendsPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { LoginPage } from '@/pages/LoginPage';
+import { MailMiniAppPage } from '@/pages/MailMiniAppPage';
 import { MailPage } from '@/pages/MailPage';
 import { ProxiesPage } from '@/pages/ProxiesPage';
 import { RolesPage } from '@/pages/RolesPage';
@@ -25,6 +26,10 @@ export function App() {
           без nav-shell. Вход — только по кнопке Telegram-бота; в меню/DefaultRoute
           не участвует. Беспарольный SSO + изолированный auth-стор (miniAppAuth). */}
       <Route path="/tg/sms" element={<SmsMiniAppPage />} />
+      {/* Telegram Mini App почты (ADR-044 §7): ПУБЛИЧНЫЙ маршрут вне `AppLayout`/
+          `ProtectedRoute` — без экрана логина и redirect на /login. Вход — по кнопке
+          Telegram-бота; беспарольный SSO (`initData`) + изолированный auth-стор. */}
+      <Route path="/tg/mail" element={<MailMiniAppPage />} />
       <Route element={<ProtectedRoute />}>
         <Route element={<AppLayout />}>
           {/* Index и fallback — permission-aware дефолт (08-design-system.md «Гейтинг»). */}

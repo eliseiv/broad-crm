@@ -1,29 +1,30 @@
-"""Async httpx-клиент к внешнему почтовому сервису `postapp.store`.
+"""Async httpx-клиент к агрегатору-connector'у `postapp.store` (ADR-044 §1/§4/§8).
 
-Модуль «Почты» — headless read+write прокси без хранения (ADR-012/ADR-038,
-modules/mail). Backend подставляет секрет `MAIL_API_KEY` ТОЛЬКО в заголовок
-`X-API-Key` исходящего запроса; ключ НИКОГДА не логируется и не попадает в
-URL/ответы CRM (05-security.md). TLS verify включён. Тела запросов (в т.ч. транзитные
-IMAP/SMTP-пароли) не логируются — в лог идут только `error_type`/`status`.
+В модели ADR-044 CRM — система-запись: лента/теги/ящики читаются из БД CRM, а агрегатор
+остаётся тонким mail-connector'ом. Через этот клиент CRM делает ТОЛЬКО управляющие
+вызовы жизненного цикла ящика (create/update/delete/sync/test — креды транзитом,
+шифрование в агрегаторе) и делегирование SMTP-отправки reply (`send`). GET-чтения,
+message-scoped reply и CRUD тегов агрегатору больше не проксируются (эти эндпоинты в
+агрегаторе сняты, `ADR-0043`).
 
-Идемпотентность ретраев (нормативно, 04-api.md#mail, ADR-038 §1):
-- **GET** (`list_*`) — идемпотентны: ретрай на `ConnectError`/`ConnectTimeout`,
-  read-timeout и транзиентных `{429,500,502,503,504}` (backoff `(0.2, 0.5)`).
-- **POST/PATCH/DELETE** (create/update/delete/sync ящика, reply, CRUD тегов/правил,
-  apply, `test`) — НЕ идемпотентны: ретрай ТОЛЬКО на ошибках установки соединения
-  (запрос заведомо не ушёл). Read-timeout/`5xx` на write → сразу `MailUnavailable`
-  (защита от двойной записи).
+Backend подставляет секрет `MAIL_API_KEY` ТОЛЬКО в заголовок `X-API-Key`; ключ никогда
+не логируется и не попадает в URL/ответы CRM (05-security.md). TLS verify включён. Тела
+запросов (транзитные IMAP/SMTP-пароли) не логируются — в лог идут только
+`error_type`/`status`.
 
-Маппинг статусов внешнего сервиса — **постатусный** (ADR-038): 2xx → JSON (или `{}` при
-204); `429`/`5xx`/сеть/таймаут (исчерпаны ретраи) → `MailUnavailable`; прочий 4xx
-(400/403/404/409/422) → `MailRejected(status_code)`. Различение 404 (ящик/тег/письмо),
-409, 422, 400 в коды CRM выполняет сервис по контексту эндпоинта (04-api.md#mail).
+Идемпотентность ретраев (ADR-044 §4, инвариант ADR-038 §1):
+- Все вызовы здесь — **write** (create/update/delete/sync/test/send): НЕ идемпотентны.
+  Ретрай ТОЛЬКО на ошибках установки соединения (запрос заведомо не ушёл). Read-timeout/
+  `5xx` на write → сразу `MailUnavailable` (защита от двойной записи/отправки).
+
+Маппинг статусов: 2xx → JSON (или `{}` при 204); `429`/`5xx`/сеть/таймаут → `MailUnavailable`;
+прочий 4xx (400/403/404/409/422) → `MailRejected(status_code)`. Различение в коды CRM
+выполняет сервис по контексту эндпоинта (ADR-044 §4/§8).
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
 from typing import Any, NoReturn
 
 import httpx
@@ -35,28 +36,21 @@ logger = get_logger(__name__)
 
 # Задержки backoff между попытками; число попыток = len + 1 (т.е. 3).
 _BACKOFF_DELAYS_SEC = (0.2, 0.5)
-# Транзиентные HTTP-статусы внешнего сервиса — имеет смысл ретрай (для идемпотентных).
-_RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
-_EXTERNAL_MESSAGES_PATH = "/api/external/messages"
-_EXTERNAL_TEAMS_PATH = "/api/external/teams"
 _EXTERNAL_MAILBOXES_PATH = "/api/external/mailboxes"
-_EXTERNAL_TAGS_PATH = "/api/external/tags"
 _API_KEY_HEADER = "X-API-Key"
 
 
 class MailUnavailable(Exception):
-    """Внешний сервис недоступен: таймаут/сеть/5xx/429/исчерпаны ретраи → 502."""
+    """Агрегатор недоступен: таймаут/сеть/5xx/429/исчерпаны ретраи → 502."""
 
 
 class MailRejected(Exception):
-    """Внешний сервис отклонил запрос (4xx, кроме 429).
+    """Агрегатор отклонил запрос (4xx, кроме 429).
 
-    Несёт `status_code` внешнего ответа (400/403/404/409/422) и, если внешний
-    сервис прислал тело ошибки в едином формате, машиночитаемый `error_code`
-    (напр. `group_not_found` при 404). Сервис маппит его в код CRM по контексту
-    эндпоинта (04-api.md#mail, ADR-038): 404 `group_not_found` → команда не
-    найдена, прочий 404 → ящик/тег/письмо не найдены; 409 → конфликт;
+    Несёт `status_code` внешнего ответа (400/403/404/409/422) и, если агрегатор прислал
+    тело ошибки в едином формате, машиночитаемый `error_code`. Сервис маппит его в код
+    CRM по контексту эндпоинта (ADR-044 §4/§8): 404 → ящик не найден; 409 → конфликт;
     422 → unprocessable; 400 → validation_error.
     """
 
@@ -67,141 +61,56 @@ class MailRejected(Exception):
 
 
 class MailClient:
-    """Тонкая обёртка над external-API `postapp.store` (headless read+write прокси)."""
+    """Тонкая обёртка над управляющим external-API агрегатора (ADR-044 §4/§8)."""
 
     def __init__(self, base_url: str, api_key: str, timeout_sec: float) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._timeout = timeout_sec
 
-    # --- Чтение (GET, идемпотентно) ----------------------------------------
-
-    async def list_messages(
-        self,
-        *,
-        order: str,
-        since_id: int | None,
-        before_id: int | None,
-        limit: int,
-        mail_account_id: int | None,
-        group_ids: Sequence[int] | None,
-    ) -> dict[str, Any]:
-        """Лента писем: GET /api/external/messages (04-api.md#mail, ADR-013/017/038).
-
-        `order` (`asc`/`desc`) передаётся всегда явно. `since_id` — только при `asc`;
-        `before_id` — только при `desc`. Фильтры `mail_account_id` (single) и `group_ids`
-        (повторяемый) **AND-комбинируемы** (external ADR-0039 §3 — взаимоисключение
-        ADR-0037 снято): передаются вместе, если заданы. Идемпотентен.
-        """
-        params: dict[str, Any] = {"order": order, "limit": limit}
-        if order == "asc" and since_id is not None:
-            params["since_id"] = since_id
-        elif order == "desc" and before_id is not None:
-            params["before_id"] = before_id
-        if mail_account_id is not None:
-            params["mail_account_id"] = mail_account_id
-        if group_ids:
-            params["group_id"] = list(group_ids)
-        return await self._request("GET", _EXTERNAL_MESSAGES_PATH, params=params, idempotent=True)
-
-    async def list_teams(self) -> dict[str, Any]:
-        """Список команд: GET /api/external/teams (04-api.md#mail). Идемпотентен."""
-        return await self._request("GET", _EXTERNAL_TEAMS_PATH, idempotent=True)
-
-    async def list_mailboxes(
-        self,
-        *,
-        is_active: bool | None = None,
-        group_ids: Sequence[int] | None = None,
-    ) -> dict[str, Any]:
-        """Список ящиков: GET /api/external/mailboxes (04-api.md#mail, ADR-0039 §4).
-
-        `is_active` (опц.: `True`/`False`/None=все) и повторяемый `group_id`
-        пробрасываются во внешний API. Идемпотентен.
-        """
-        params: dict[str, Any] = {}
-        if is_active is not None:
-            params["is_active"] = is_active
-        if group_ids:
-            params["group_id"] = list(group_ids)
-        return await self._request(
-            "GET", _EXTERNAL_MAILBOXES_PATH, params=params or None, idempotent=True
-        )
-
-    async def list_tags(self) -> dict[str, Any]:
-        """Список глобальных тегов: GET /api/external/tags (04-api.md#mail). Идемпотентен."""
-        return await self._request("GET", _EXTERNAL_TAGS_PATH, idempotent=True)
-
-    # --- Запись (POST/PATCH/DELETE, НЕ идемпотентно) ------------------------
-
-    async def reply(self, message_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        """Ответ на письмо: POST /api/external/messages/{id}/reply (не идемпотентно)."""
-        path = f"{_EXTERNAL_MESSAGES_PATH}/{message_id}/reply"
-        return await self._request("POST", path, json_body=payload, idempotent=False)
+    # --- Жизненный цикл ящика (write, НЕ идемпотентно) ---------------------
 
     async def test_mailbox(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Проверка IMAP/SMTP-соединения без сохранения: POST /mailboxes/test.
 
         Мутирующая семантика по ретраям (открывает IMAP/SMTP-сессию) — ретрай только
-        на ошибках соединения (ADR-038 §1). Путь `test` внешнего сервиса отдаёт 422/400
-        и НИКОГДА не 502 (502 — только фактическая отправка).
+        на ошибках соединения. Путь `test` агрегатора отдаёт 422/400 и НИКОГДА не 502.
         """
         path = f"{_EXTERNAL_MAILBOXES_PATH}/test"
-        return await self._request("POST", path, json_body=payload, idempotent=False)
+        return await self._request("POST", path, json_body=payload)
 
     async def create_mailbox(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Создание ящика: POST /api/external/mailboxes (не идемпотентно)."""
-        return await self._request(
-            "POST", _EXTERNAL_MAILBOXES_PATH, json_body=payload, idempotent=False
-        )
+        """Создание ящика: POST /api/external/mailboxes → `{id, ...}` (не идемпотентно).
+
+        Владелец в агрегаторе = служебный `crm-service` (без `group_id`); привязка к
+        команде живёт только в CRM-каталоге (ADR-044 §4). Возвращает присвоенный `id`.
+        """
+        return await self._request("POST", _EXTERNAL_MAILBOXES_PATH, json_body=payload)
 
     async def update_mailbox(self, mailbox_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         """Правка ящика: PATCH /api/external/mailboxes/{id} (не идемпотентно)."""
         path = f"{_EXTERNAL_MAILBOXES_PATH}/{mailbox_id}"
-        return await self._request("PATCH", path, json_body=payload, idempotent=False)
+        return await self._request("PATCH", path, json_body=payload)
 
     async def delete_mailbox(self, mailbox_id: int) -> dict[str, Any]:
         """Удаление ящика: DELETE /api/external/mailboxes/{id} (204, не идемпотентно)."""
         path = f"{_EXTERNAL_MAILBOXES_PATH}/{mailbox_id}"
-        return await self._request("DELETE", path, idempotent=False)
+        return await self._request("DELETE", path)
 
     async def sync_mailbox(self, mailbox_id: int) -> dict[str, Any]:
         """Форс-синк ящика: POST /api/external/mailboxes/{id}/sync (202, не идемпотентно)."""
         path = f"{_EXTERNAL_MAILBOXES_PATH}/{mailbox_id}/sync"
-        return await self._request("POST", path, idempotent=False)
+        return await self._request("POST", path)
 
-    async def create_tag(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Создание тега: POST /api/external/tags (не идемпотентно)."""
-        return await self._request("POST", _EXTERNAL_TAGS_PATH, json_body=payload, idempotent=False)
+    async def send_message(self, mailbox_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        """Отправка reply: POST /api/external/mailboxes/{id}/send (ADR-044 §8).
 
-    async def update_tag(self, tag_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        """Правка тега: PATCH /api/external/tags/{id} (не идемпотентно)."""
-        path = f"{_EXTERNAL_TAGS_PATH}/{tag_id}"
-        return await self._request("PATCH", path, json_body=payload, idempotent=False)
-
-    async def delete_tag(self, tag_id: int) -> dict[str, Any]:
-        """Удаление тега: DELETE /api/external/tags/{id} (204, не идемпотентно)."""
-        path = f"{_EXTERNAL_TAGS_PATH}/{tag_id}"
-        return await self._request("DELETE", path, idempotent=False)
-
-    async def create_tag_rule(self, tag_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        """Добавление правила: POST /api/external/tags/{id}/rules (не идемпотентно)."""
-        path = f"{_EXTERNAL_TAGS_PATH}/{tag_id}/rules"
-        return await self._request("POST", path, json_body=payload, idempotent=False)
-
-    async def delete_tag_rule(self, tag_id: int, rule_id: int) -> dict[str, Any]:
-        """Удаление правила: DELETE /api/external/tags/{id}/rules/{rule_id} (204)."""
-        path = f"{_EXTERNAL_TAGS_PATH}/{tag_id}/rules/{rule_id}"
-        return await self._request("DELETE", path, idempotent=False)
-
-    async def apply_tag_to_existing(self, tag_id: int) -> dict[str, Any]:
-        """Применить тег к существующим: POST /tags/{id}/apply-to-existing (не идемпотентно).
-
-        Идемпотентен на стороне агрегатора (`ON CONFLICT DO NOTHING`), но семантически
-        дорог → политика write (ретрай только connect, ADR-038 §1).
+        Тело `{to, cc, subject, body_text, in_reply_to?, refs?}` → `{sent_id,
+        smtp_message_id}`. Обобщённый send-эндпоинт заменяет message-scoped reply
+        (письма живут в CRM, threading формирует CRM). Не идемпотентно (SMTP-отправка).
         """
-        path = f"{_EXTERNAL_TAGS_PATH}/{tag_id}/apply-to-existing"
-        return await self._request("POST", path, idempotent=False)
+        path = f"{_EXTERNAL_MAILBOXES_PATH}/{mailbox_id}/send"
+        return await self._request("POST", path, json_body=payload)
 
     # --- Транспорт ---------------------------------------------------------
 
@@ -210,15 +119,13 @@ class MailClient:
         method: str,
         path: str,
         *,
-        params: dict[str, Any] | None = None,
         json_body: dict[str, Any] | None = None,
-        idempotent: bool,
     ) -> dict[str, Any]:
-        """Выполняет запрос с ограниченными ретраями; ключ — только в заголовке.
+        """Выполняет write-запрос с ретраем только на ошибках соединения; ключ — в заголовке.
 
         Секрет `MAIL_API_KEY` и тело запроса не логируются. Возвращает распарсенный
         JSON-объект (dict) при 2xx с телом, `{}` при 204/пустом теле; иначе бросает
-        `MailUnavailable`/`MailRejected` (постатусный маппинг, ADR-038).
+        `MailUnavailable`/`MailRejected` (постатусный маппинг, ADR-044 §4).
         """
         url = f"{self._base_url}{path}"
         headers = {_API_KEY_HEADER: self._api_key}
@@ -227,9 +134,7 @@ class MailClient:
         async with httpx.AsyncClient(timeout=self._timeout, verify=True) as client:
             for attempt in range(max_attempts):
                 try:
-                    response = await client.request(
-                        method, url, params=params, json=json_body, headers=headers
-                    )
+                    response = await client.request(method, url, json=json_body, headers=headers)
                 except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
                     # Соединение не установлено → запрос не отправлен: повтор безопасен
                     # даже для неидемпотентных write-методов.
@@ -241,26 +146,19 @@ class MailClient:
                     )
                     raise MailUnavailable(str(exc)) from exc
                 except (httpx.TimeoutException, httpx.TransportError) as exc:
-                    # Запрос мог быть отправлен (read-timeout/сетевой сбой):
-                    # ретраим только идемпотентные (GET), write → сразу 502.
-                    if idempotent and attempt < max_attempts - 1:
-                        await asyncio.sleep(_BACKOFF_DELAYS_SEC[attempt])
-                        continue
+                    # Запрос мог быть отправлен (read-timeout/сетевой сбой): write →
+                    # сразу 502 (защита от двойной записи/отправки).
                     logger.warning(
                         "mail_request_failed", error_type=type(exc).__name__, attempt=attempt + 1
                     )
                     raise MailUnavailable(str(exc)) from exc
                 except httpx.HTTPError as exc:
-                    # Прочая ошибка httpx — неретраябельна.
                     logger.warning("mail_request_failed", error_type=type(exc).__name__)
                     raise MailUnavailable(str(exc)) from exc
 
                 status_code = response.status_code
                 if 200 <= status_code < 300:
                     return self._parse_body(response)
-                if status_code in _RETRYABLE_STATUS and idempotent and attempt < max_attempts - 1:
-                    await asyncio.sleep(_BACKOFF_DELAYS_SEC[attempt])
-                    continue
                 self._raise_for_status(response)
 
         # Недостижимо: цикл либо возвращает результат, либо бросает исключение.
@@ -286,12 +184,10 @@ class MailClient:
 
     @staticmethod
     def _extract_error_code(response: httpx.Response) -> str | None:
-        """Достаёт `error.code` из тела ошибки внешнего сервиса (единый формат).
+        """Достаёт `error.code` из тела ошибки агрегатора (единый формат).
 
-        Внешний контракт (ADR-0039) отдаёт `{"error": {"code": "...", ...}}`. Код
-        нужен сервису, чтобы различать 404 по семантике (напр. `group_not_found`
-        vs неизвестный `id` ящика). Тело ошибки в ответ CRM не пробрасывается —
-        только машиночитаемый `code`. Отсутствие/битое тело → None (best-effort).
+        Тело ошибки в ответ CRM не пробрасывается — только машиночитаемый `code`.
+        Отсутствие/битое тело → None (best-effort).
         """
         try:
             payload = response.json()
@@ -307,17 +203,15 @@ class MailClient:
 
     @classmethod
     def _raise_for_status(cls, response: httpx.Response) -> NoReturn:
-        """Постатусный маппинг не-2xx внешнего статуса (ADR-038).
+        """Постатусный маппинг не-2xx статуса (ADR-044 §4).
 
         `429`/`5xx` → недоступность (`MailUnavailable`); прочий 4xx
-        (400/403/404/409/422) → `MailRejected(status_code, error_code)` для
-        контекстного маппинга сервисом. Тело ошибки внешнего сервиса в CRM не
-        пробрасывается — только машиночитаемый `code` (04-api.md#mail).
+        (400/403/404/409/422) → `MailRejected(status_code, error_code)`.
         """
         status_code = response.status_code
         if status_code == httpx.codes.TOO_MANY_REQUESTS or status_code >= 500:
             logger.warning("mail_request_failed", status=status_code)
-            raise MailUnavailable(f"Внешний сервис вернул {status_code}")
+            raise MailUnavailable(f"Агрегатор вернул {status_code}")
         raise MailRejected(status_code, cls._extract_error_code(response))
 
 

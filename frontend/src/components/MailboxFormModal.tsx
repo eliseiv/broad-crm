@@ -8,22 +8,18 @@ import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
 import type { SelectOption } from '@/components/ui/Select';
 import { ApiError } from '@/lib/api';
-import { useCan } from '@/features/auth/hooks';
-import {
-  useCreateMailbox,
-  useMailTeams,
-  useTestMailbox,
-  useUpdateMailbox,
-} from '@/features/mail/hooks';
+import { useCan, useSeesAllMailTeams } from '@/features/auth/hooks';
+import { useCreateMailbox, useTestMailbox, useUpdateMailbox } from '@/features/mail/hooks';
+import { useTeams } from '@/features/teams/hooks';
 import type {
   MailMailbox,
   MailMailboxCreateRequest,
   MailMailboxTestRequest,
   MailMailboxUpdateRequest,
-  MailTeam,
+  TeamListItem,
 } from '@/types/api';
 
-/** Значение опции «Без команды» (group_id = null). */
+/** Значение опции «Без команды» (team_id = null). */
 const NO_TEAM = '';
 type SmtpSecurity = 'ssl' | 'starttls';
 
@@ -49,10 +45,10 @@ export function MailboxFormModal({ open, onOpenChange, mode, mailbox }: MailboxF
   );
 }
 
-function teamOptions(teams: MailTeam[]): SelectOption[] {
+function teamOptions(teams: TeamListItem[]): SelectOption[] {
   return [
     { value: NO_TEAM, label: 'Без команды' },
-    ...teams.map((t) => ({ value: String(t.id), label: t.name })),
+    ...teams.map((t) => ({ value: t.id, label: t.name })),
   ];
 }
 
@@ -70,11 +66,11 @@ function MailboxDialog({
   mailbox?: MailMailbox;
 }) {
   const isEdit = mode === 'edit';
-  const initialGroup = mailbox?.group_id != null ? String(mailbox.group_id) : NO_TEAM;
+  const initialTeam = mailbox?.team_id != null ? mailbox.team_id : NO_TEAM;
 
   const [email, setEmail] = useState(mailbox?.email ?? '');
   const [displayName, setDisplayName] = useState(mailbox?.display_name ?? '');
-  const [groupId, setGroupId] = useState(initialGroup);
+  const [teamId, setTeamId] = useState(initialTeam);
   const [isActive, setIsActive] = useState(mailbox?.is_active ?? true);
 
   const [imapHost, setImapHost] = useState('');
@@ -89,14 +85,18 @@ function MailboxDialog({
 
   const [errors, setErrors] = useState<FieldErrors>({});
 
-  const teamsQuery = useMailTeams(open);
-  const teams = teamsQuery.data?.teams ?? [];
+  const teamsQuery = useTeams(open);
+  const teams = teamsQuery.data?.items ?? [];
 
   // «Проверить соединение» бьёт POST /mailboxes/test, закрытый гейтом mail:create
   // (backend/app/api/mail.py: CreateDep). Модалка edit открывается под mail:edit —
   // роль с edit, но без create получила бы 403 по клику; поэтому кнопку рендерим
   // только при mail:create (граница безопасности — на сервере, это UX-гейт).
   const canTest = useCan('mail', 'create');
+  // Перенос ящика между командами (смена team_id в edit) — только admin-уровень (ADR-044 §4).
+  // При создании выбор команды доступен всегда (рядовой участник привязывает к своей).
+  const seesAllTeams = useSeesAllMailTeams();
+  const teamSelectDisabled = isEdit && !seesAllTeams;
 
   const testMutation = useTestMailbox();
   const createMutation = useCreateMailbox();
@@ -136,6 +136,10 @@ function MailboxDialog({
       }
       if (err.status === 422) {
         toast.error('Не удалось подключиться к почтовому серверу. Проверьте креды и хосты.');
+        return;
+      }
+      if (err.status === 404) {
+        toast.error('Выбранная команда не найдена');
         return;
       }
       if (err.status === 400) {
@@ -188,7 +192,7 @@ function MailboxDialog({
     const payload: MailMailboxCreateRequest = {
       ...buildTestPayload(),
       display_name: displayName.trim() || null,
-      group_id: groupId ? Number(groupId) : null,
+      team_id: teamId || null,
     };
     createMutation.mutate(payload, {
       onSuccess: () => {
@@ -206,7 +210,7 @@ function MailboxDialog({
     if (email.trim() !== mailbox.email) payload.email = email.trim();
     if (displayName.trim() !== (mailbox.display_name ?? ''))
       payload.display_name = displayName.trim() || null;
-    if (groupId !== initialGroup) payload.group_id = groupId ? Number(groupId) : null;
+    if (teamId !== initialTeam) payload.team_id = teamId || null;
     if (isActive !== mailbox.is_active) payload.is_active = isActive;
     // Креды/хосты — только если заполнены заново (backend их не отдаёт).
     if (imapHost.trim()) {
@@ -317,12 +321,20 @@ function MailboxDialog({
           autoComplete="off"
           onChange={(e) => setDisplayName(e.target.value)}
         />
-        <Select
-          label="Команда"
-          options={teamOptions(teams)}
-          value={groupId}
-          onChange={(e) => setGroupId(e.target.value)}
-        />
+        <div className="flex flex-col gap-1.5">
+          <Select
+            label="Команда"
+            options={teamOptions(teams)}
+            value={teamId}
+            disabled={teamSelectDisabled}
+            onChange={(e) => setTeamId(e.target.value)}
+          />
+          {teamSelectDisabled && (
+            <p className="text-[12px] text-text-secondary">
+              Перенос между командами доступен только администратору.
+            </p>
+          )}
+        </div>
 
         {connectionHint && <p className="text-[12px] text-text-secondary">{connectionHint}</p>}
 

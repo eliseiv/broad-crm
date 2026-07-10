@@ -61,7 +61,7 @@ export function MailTagRow({ tag, canManage }: MailTagRowProps) {
     );
   };
 
-  const handleDeleteRule = (ruleId: number) => {
+  const handleDeleteRule = (ruleId: string) => {
     deleteRule.mutate(
       { tagId: tag.id, ruleId },
       {

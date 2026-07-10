@@ -24,6 +24,7 @@ from app.errors import (
 from app.infra.passwords import hash_password
 from app.logging import get_logger
 from app.models.user import User
+from app.repositories.mail_telegram_link_repository import MailTelegramLinkRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.team_repository import TeamRepository
 from app.repositories.user_repository import UserRepository
@@ -122,6 +123,12 @@ class UserService:
                 role_id=payload.role_id,
             )
             await self._users.set_membership(user.id, team_ids)
+            if telegram is not None:
+                # Ленивый резолв orphan-линков почты (ADR-044 §6, синхронный хук):
+                # связать привязки с этим username, ожидавшие появления пользователя.
+                await MailTelegramLinkRepository(self._users.session).bind_orphans_for_user(
+                    user_id=user.id, username=telegram
+                )
             await self._users.session.commit()
         except IntegrityError as exc:
             await self._users.session.rollback()
@@ -191,6 +198,13 @@ class UserService:
 
         if requested_teams is not None:
             await self._replace_membership_with_transfer(user_id, requested_teams)
+
+        if new_telegram is not None:
+            # Ленивый резолв orphan-линков почты (ADR-044 §6): смена users.telegram
+            # связывает ожидавшие привязки без повторного /start.
+            await MailTelegramLinkRepository(self._users.session).bind_orphans_for_user(
+                user_id=user_id, username=new_telegram
+            )
 
         try:
             await self._users.session.commit()

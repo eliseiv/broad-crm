@@ -52,7 +52,7 @@ function mailbox(id: number, isActive: boolean): MailMailbox {
     id,
     email: `box${id}@postapp.store`,
     display_name: null,
-    group_id: null,
+    team_id: null,
     is_active: isActive,
     last_synced_at: null,
     last_sync_error: null,

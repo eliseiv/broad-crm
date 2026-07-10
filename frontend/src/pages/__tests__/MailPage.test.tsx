@@ -24,15 +24,20 @@ const mailboxes = vi.hoisted(() => ({
           id: 7,
           email: 'inbox@postapp.store',
           display_name: 'Входящие',
-          group_id: 3,
+          team_id: 'team-3',
           is_active: true,
+          last_synced_at: null,
+          last_sync_error: null,
+          consecutive_failures: 0,
         },
       ],
     },
   } as unknown,
 }));
+// Справочник CRM-команд (GET /api/teams) — источник дропдауна «Команда» (ADR-044 §7):
+// групп агрегатора больше нет, фильтр по команде идёт по UUID CRM-команды.
 const teams = vi.hoisted(() => ({
-  value: { data: { teams: [{ id: 3, name: 'Продажи' }] } } as unknown,
+  value: { data: { items: [{ id: 'team-3', name: 'Продажи' }] } } as unknown,
 }));
 
 vi.mock('@/features/mail/hooks', () => ({
@@ -42,9 +47,16 @@ vi.mock('@/features/mail/hooks', () => ({
   },
   // MailDetail → MailReplyForm использует useReplyMail — мокаем как no-op мутацию.
   useReplyMail: () => ({ mutate: vi.fn(), isPending: false }),
-  // Дропдауны серверных фильтров тянут справочники ящиков/команд (ADR-017).
+  // Дропдаун «Почта» тянет справочник ящиков.
   useMailMailboxes: () => mailboxes.value,
-  useMailTeams: () => teams.value,
+  // Шапка вкладок рендерит MailNotificationsToggle → useMailSettings/useUpdateMailSettings.
+  useMailSettings: () => ({ data: undefined, isLoading: false, isError: false }),
+  useUpdateMailSettings: () => ({ mutate: vi.fn(), isPending: false }),
+}));
+
+// Дропдаун «Команда» тянет CRM-команды через feature teams (ADR-044 §7).
+vi.mock('@/features/teams/hooks', () => ({
+  useTeams: () => teams.value,
 }));
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -97,7 +109,11 @@ function makeMessage(id: number, tags: MailMessage['tags'] = []): MailMessage {
   };
 }
 
-const tag: MailMessage['tags'][number] = { id: 5, name: 'важное', color: '#EF4444' };
+const tag: MailMessage['tags'][number] = {
+  id: '5a1f0c2e-0000-4000-8000-000000000005',
+  name: 'важное',
+  color: '#EF4444',
+};
 
 function baseFeed(overrides: Partial<MailFeedResult> = {}): MailFeedResult {
   return {
@@ -259,7 +275,7 @@ describe('MailPage "С тегами" filter', () => {
     expect(screen.getByText('Нет писем с тегами среди загруженных')).toBeInTheDocument();
   });
 
-  it('keeps the selected message in the detail panel even when the filter hides it from the list', async () => {
+  it('re-selects the first VISIBLE message when the filter hides the current selection (ADR-044 §7)', async () => {
     const user = userEvent.setup();
     // id=2 — самое свежее (авто-выбор), без тегов; id=1 — тегированное.
     feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1, [tag])] });
@@ -270,9 +286,10 @@ describe('MailPage "С тегами" filter', () => {
 
     await user.click(screen.getByRole('button', { name: /С тегами/ }));
 
-    // Правая панель сохранила выбор id=2, хотя список скрыл его; в списке теперь id=1.
-    expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
-    expect(screen.getByText('Письмо 1')).toBeInTheDocument();
+    // Фильтр скрыл id=2 из видимого списка → в detail НЕ должно остаться письмо без тегов,
+    // отсутствующее в ленте: авто-выбор переезжает на первый ВИДИМЫЙ (id=1).
+    expect(screen.queryByRole('heading', { name: 'Письмо 2' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Письмо 1' })).toBeInTheDocument();
   });
 
   it('keeps loading older messages while the filter is active and hasMore is true', async () => {
@@ -347,13 +364,13 @@ describe('MailPage server filters (Почта/Команда dropdowns)', () => 
     render(<MailPage />);
 
     // Сначала выбираем команду.
-    await user.selectOptions(getTeamSelect(), '3');
-    expect(getTeamSelect().value).toBe('3');
+    await user.selectOptions(getTeamSelect(), 'team-3');
+    expect(getTeamSelect().value).toBe('team-3');
 
     // Затем выбираем ящик — команда НЕ сбрасывается (фильтры комбинируемы, AND).
     await user.selectOptions(getMailboxSelect(), '7');
     expect(getMailboxSelect().value).toBe('7');
-    expect(getTeamSelect().value).toBe('3');
+    expect(getTeamSelect().value).toBe('team-3');
   });
 
   it('selecting a team after a mailbox keeps both (AND-combinable, ADR-038)', async () => {
@@ -365,8 +382,8 @@ describe('MailPage server filters (Почта/Команда dropdowns)', () => 
     expect(getMailboxSelect().value).toBe('7');
 
     // Команда добавляется к уже выбранному ящику — ящик остаётся.
-    await user.selectOptions(getTeamSelect(), '3');
-    expect(getTeamSelect().value).toBe('3');
+    await user.selectOptions(getTeamSelect(), 'team-3');
+    expect(getTeamSelect().value).toBe('team-3');
     expect(getMailboxSelect().value).toBe('7');
   });
 

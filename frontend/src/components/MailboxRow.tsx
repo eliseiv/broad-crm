@@ -10,15 +10,17 @@ import { MailboxFormModal } from '@/components/MailboxFormModal';
 import { ApiError } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 import { useDeleteMailbox, useSyncMailbox, useUpdateMailbox } from '@/features/mail/hooks';
-import type { MailMailbox, MailTeam } from '@/types/api';
+import type { MailMailbox, TeamListItem } from '@/types/api';
 
-/** group_id = null (без команды). */
+/** team_id = null (без команды). */
 const NO_TEAM = '';
 
 interface MailboxRowProps {
   mailbox: MailMailbox;
-  /** Команды mail-агрегатора для привязки (GET /api/mail/teams). */
-  teams: MailTeam[];
+  /** CRM-команды для привязки ящика (GET /api/teams). */
+  teams: TeamListItem[];
+  /** Может ли актор менять команду ящика (перенос — только admin-уровень, ADR-044 §4). */
+  canTransfer: boolean;
   canEdit: boolean;
   canSync: boolean;
   canDelete: boolean;
@@ -34,9 +36,16 @@ function errorMessage(err: unknown, fallback: string): string {
  * есть ошибки синка), адрес + имя, привязка к команде (`Select`, как в SmsNumberRow),
  * время последнего синка и ошибка, действия (синк/редактировать/удалить) под правами.
  */
-export function MailboxRow({ mailbox, teams, canEdit, canSync, canDelete }: MailboxRowProps) {
-  const currentGroup = mailbox.group_id != null ? String(mailbox.group_id) : NO_TEAM;
-  const [selectedGroup, setSelectedGroup] = useState(currentGroup);
+export function MailboxRow({
+  mailbox,
+  teams,
+  canTransfer,
+  canEdit,
+  canSync,
+  canDelete,
+}: MailboxRowProps) {
+  const currentTeam = mailbox.team_id ?? NO_TEAM;
+  const [selectedTeam, setSelectedTeam] = useState(currentTeam);
   const [editOpen, setEditOpen] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
 
@@ -45,8 +54,8 @@ export function MailboxRow({ mailbox, teams, canEdit, canSync, canDelete }: Mail
   const deleteMutation = useDeleteMailbox();
 
   useEffect(() => {
-    setSelectedGroup(currentGroup);
-  }, [currentGroup]);
+    setSelectedTeam(currentTeam);
+  }, [currentTeam]);
 
   // Кружок (08-design-system.md §«Вкладка Почты»): зелёный — активна И без ошибок синка
   // (consecutive_failures===0 И last_sync_error==null); красный — неактивна ИЛИ есть
@@ -61,18 +70,18 @@ export function MailboxRow({ mailbox, teams, canEdit, canSync, canDelete }: Mail
 
   const teamOptions: SelectOption[] = [
     { value: NO_TEAM, label: 'Без команды' },
-    ...teams.map((t) => ({ value: String(t.id), label: t.name })),
+    ...teams.map((t) => ({ value: t.id, label: t.name })),
   ];
 
-  const handleGroupChange = (next: string) => {
-    if (next === currentGroup) return;
-    setSelectedGroup(next);
+  const handleTeamChange = (next: string) => {
+    if (next === currentTeam) return;
+    setSelectedTeam(next);
     updateMutation.mutate(
-      { id: mailbox.id, payload: { group_id: next === NO_TEAM ? null : Number(next) } },
+      { id: mailbox.id, payload: { team_id: next === NO_TEAM ? null : next } },
       {
         onSuccess: () => toast.success('Почта перенесена'),
         onError: (err) => {
-          setSelectedGroup(currentGroup);
+          setSelectedTeam(currentTeam);
           toast.error(errorMessage(err, 'Не удалось перенести почту'));
         },
       },
@@ -112,19 +121,21 @@ export function MailboxRow({ mailbox, teams, canEdit, canSync, canDelete }: Mail
         </div>
       </td>
       <td className="px-3 py-3">
-        {canEdit ? (
+        {canTransfer ? (
           <div className="w-40">
             <Select
               aria-label={`Команда почты ${mailbox.email}`}
               options={teamOptions}
-              value={selectedGroup}
+              value={selectedTeam}
               disabled={updateMutation.isPending}
-              onChange={(e) => handleGroupChange(e.target.value)}
+              onChange={(e) => handleTeamChange(e.target.value)}
             />
           </div>
         ) : (
           <span className="text-[13px] text-text-secondary">
-            {teams.find((t) => String(t.id) === currentGroup)?.name ?? 'Без команды'}
+            {currentTeam
+              ? (teams.find((t) => t.id === currentTeam)?.name ?? 'Команда')
+              : 'Без команды'}
           </span>
         )}
       </td>

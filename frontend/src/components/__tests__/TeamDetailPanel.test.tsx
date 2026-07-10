@@ -55,7 +55,6 @@ function makeTeam(over: Partial<TeamListItem> = {}): TeamListItem {
   return {
     id: 't1',
     name: 'Продажи',
-    mail_group_id: null,
     leader_id: 'u1',
     leader_username: 'Никита',
     member_count: 2,
@@ -191,7 +190,7 @@ describe('TeamDetailPanel (свёрнутые секции + ленивая за
     teamMailboxes.value = query({
       data: { mailboxes: [makeMailbox(1, { email: 'inbox@postapp.store', is_active: true })] },
     });
-    render(<TeamDetailPanel team={makeTeam({ mail_group_id: 3 })} id="panel-1" />);
+    render(<TeamDetailPanel team={TEAM} id="panel-1" />);
 
     await user.click(mailboxesToggle());
 
@@ -207,25 +206,17 @@ describe('TeamDetailPanel (свёрнутые секции + ленивая за
         mailboxes: [makeMailbox(1, { display_name: 'Продажи-вход', is_active: false })],
       },
     });
-    render(<TeamDetailPanel team={makeTeam({ mail_group_id: 3 })} id="panel-1" />);
+    render(<TeamDetailPanel team={TEAM} id="panel-1" />);
     await user.click(mailboxesToggle());
 
     expect(screen.getByText('Неактивна')).toBeInTheDocument();
     expect(screen.getByText('Продажи-вход')).toBeInTheDocument();
   });
 
-  it('почты: без привязки (mail_group_id=null) → «Почты не привязаны»', async () => {
+  it('почты: ящиков нет → «Почт нет» (групп агрегатора больше нет, ADR-044)', async () => {
     const user = userEvent.setup();
     teamMailboxes.value = query({ data: { mailboxes: [] } });
-    render(<TeamDetailPanel team={makeTeam({ mail_group_id: null })} id="panel-1" />);
-    await user.click(mailboxesToggle());
-    expect(screen.getByText('Почты не привязаны')).toBeInTheDocument();
-  });
-
-  it('почты: привязка есть, ящиков нет → «Почт нет»', async () => {
-    const user = userEvent.setup();
-    teamMailboxes.value = query({ data: { mailboxes: [] } });
-    render(<TeamDetailPanel team={makeTeam({ mail_group_id: 3 })} id="panel-1" />);
+    render(<TeamDetailPanel team={TEAM} id="panel-1" />);
     await user.click(mailboxesToggle());
     expect(screen.getByText('Почт нет')).toBeInTheDocument();
   });
@@ -234,7 +225,7 @@ describe('TeamDetailPanel (свёрнутые секции + ленивая за
     const user = userEvent.setup();
     const refetch = vi.fn();
     teamMailboxes.value = query({ isError: true, refetch });
-    render(<TeamDetailPanel team={makeTeam({ mail_group_id: 3 })} id="panel-1" />);
+    render(<TeamDetailPanel team={TEAM} id="panel-1" />);
     await user.click(mailboxesToggle());
 
     expect(screen.getByText('Не удалось загрузить')).toBeInTheDocument();

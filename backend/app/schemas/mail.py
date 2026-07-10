@@ -1,25 +1,21 @@
-"""Схемы модуля «Почты» (04-api.md#mail).
+"""Схемы модуля «Почты» (ADR-044).
 
-Read-through-прокси к внешнему сервису `postapp.store` без хранения (ADR-012,
-modules/mail). Внешний DTO проксируется 1:1 в нормативные схемы ниже; поля и типы —
-строго по 04-api.md#mail. Ключ `MAIL_API_KEY` в этих схемах не присутствует и в
-ответах CRM не возвращается (05-security.md).
+CRM — система-запись писем/тегов/каталога ящиков (разворот «без хранения» ADR-012/038).
+Лента/теги/ящики читаются из БД CRM; создание/правка/удаление ящика и reply транзитом
+делегируются агрегатору (креды не хранятся в CRM). Поля и типы — строго по ADR-044
+(§2/§4/§5/§8). Пароли/креды в схемы ответов не входят и в ответах не возвращаются
+(05-security.md).
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field
 
-# Режим пагинации ленты (04-api.md#mail): `desc` — backward newest-first (основной
-# режим страницы), `asc` — keyset вперёд (обратная совместимость). Default эндпоинта
-# CRM — `desc`; во внешний API `order` передаётся всегда явно.
-MailOrder = Literal["asc", "desc"]
-
-# Тип правила тега (04-api.md#mail, external ADR-0040). Человекочитаемые подписи —
-# на стороне frontend (08-design-system.md).
+# Тип правила тега (ADR-044 §5). Человекочитаемые подписи — на стороне frontend.
 MailTagRuleType = Literal["subject_contains", "body_contains", "sender_contains", "sender_exact"]
 # Режим совпадения правил тега: `any` — любое правило, `all` — все.
 MailTagMatchMode = Literal["any", "all"]
@@ -28,8 +24,11 @@ _PORT_MIN = 1
 _PORT_MAX = 65535
 
 
-class MailAccount(BaseModel):
-    """Почтовый аккаунт-получатель (04-api.md#mail)."""
+# --- Лента писем (чтение из БД CRM) -----------------------------------------
+
+
+class MailAccountRef(BaseModel):
+    """Ссылка на ящик-владелец письма (проекция каталога, ADR-044 §2)."""
 
     id: int
     email: str
@@ -37,15 +36,15 @@ class MailAccount(BaseModel):
 
 
 class MailTag(BaseModel):
-    """Тег письма; `color` — HEX для Badge (04-api.md#mail)."""
+    """Тег письма для ленты; `color` — HEX для Badge (ADR-044 §5)."""
 
-    id: int
+    id: uuid.UUID
     name: str
     color: str
 
 
 class MailMessage(BaseModel):
-    """Письмо ленты (проекция внешнего DTO, 04-api.md#mail)."""
+    """Письмо ленты (проекция `mail_messages` + ящик + теги, ADR-044 §2)."""
 
     id: int
     subject: str | None
@@ -54,7 +53,7 @@ class MailMessage(BaseModel):
     from_name: str | None
     to_addrs: str
     cc_addrs: str | None
-    mail_account: MailAccount
+    mail_account: MailAccountRef
     body_text: str
     body_html: str | None
     body_present: bool
@@ -63,30 +62,27 @@ class MailMessage(BaseModel):
 
 
 class MailListResponse(BaseModel):
-    """Ответ 200 GET /api/mail/messages (единая схема обоих режимов, 04-api.md#mail).
+    """Ответ 200 GET /api/mail/messages (компаундный keyset, ADR-044 §2).
 
-    Заполнен курсор запрошенного режима, второй — `null`:
-    - **asc:** `next_since_id` — максимальный `id` в батче (следующий `since_id`);
-      `null` для пустого батча (нет писем вперёд). `next_before_id` = `null`.
-    - **desc:** `next_before_id` — минимальный `id` в батче (следующий `before_id`,
-      догрузка более старых); `null`, если старее нет или батч пуст.
-      `next_since_id` = `null`.
-
-    `has_more` — есть ли ещё письма в запрошенном направлении.
+    Порядок — `internal_date DESC, id DESC` (истинная дата письма, а не порядок push'а).
+    `next_cursor` — opaque-токен пары `(internal_date, id)` последнего элемента страницы
+    для догрузки более старых (передаётся обратно как `before`); `null` — старее нет.
     """
 
     messages: list[MailMessage]
-    next_since_id: int | None
-    next_before_id: int | None
-    has_more: bool
+    next_cursor: str | None
+
+
+# --- Reply (отправка через агрегатор) ---------------------------------------
 
 
 class MailReplyRequest(BaseModel):
-    """Тело POST /api/mail/messages/{id}/reply (04-api.md#mail).
+    """Тело POST /api/mail/messages/{id}/reply (ADR-044 §8).
 
-    `body` обязателен и непуст (пустой → 422 unprocessable, проверяется в сервисе;
-    поэтому без `min_length`, иначе получили бы 400 вместо 422). `to`/`cc`/`subject`
-    опциональны: `None` → внешний сервис применяет дефолты (отправитель исходного).
+    `body` обязателен и непуст (пустой/> 1 MiB → 422 unprocessable, проверяется в
+    сервисе; поэтому без `min_length`/`max_length`, иначе получили бы 400 вместо 422).
+    `to`/`cc`/`subject` опциональны: `None` → сервер применяет дефолты (адрес/тема
+    исходного письма). Нормы (≤100 адресов, e-mail regex, subject ≤998) — в сервисе.
     """
 
     to: list[str] | None = None
@@ -96,65 +92,44 @@ class MailReplyRequest(BaseModel):
 
 
 class MailReplyResponse(BaseModel):
-    """Ответ 200 POST /api/mail/messages/{id}/reply (04-api.md#mail)."""
+    """Ответ 200 POST /api/mail/messages/{id}/reply (ADR-044 §8)."""
 
     sent_id: int
     smtp_message_id: str
 
 
-class MailTeam(BaseModel):
-    """Команда (`groups` внешнего сервиса, external ADR-0037; 04-api.md#mail).
-
-    Команда ≠ тег (`MailTag`): теги остаются отдельной сущностью письма.
-    """
-
-    id: int
-    name: str
+# --- Каталог ящиков (чтение из БД CRM; write — транзит в агрегатор) ----------
 
 
 class MailMailbox(BaseModel):
-    """Почтовый ящик внешнего сервиса (external ADR-0037/ADR-0039; 04-api.md#mail).
+    """Почтовый ящик из каталога CRM `mail_accounts` (ADR-044 §2/§4).
 
-    `id` используется как `mail_account_id` в фильтре GET /api/mail/messages и в
-    PATCH/DELETE/sync; привязка к команде — через `group_id`; `is_active` — статус.
-    Поля статуса синка (`last_synced_at`/`last_sync_error`/`consecutive_failures`) —
-    для кружка статуса и диагностики (ADR-0039, аддитивно). Пароли в схему НЕ входят
-    и в ответах не возвращаются (05-security.md).
-
-    Поля статуса — **required без дефолтов** (внешний DTO обязан всегда их отдавать —
-    mail-агрегатор 04-api-contracts.md §4d-mailboxes/§4f): их отсутствие в ответе =
-    регресс контракта интеграции → `ValidationError` → 502, а НЕ тихое «ящик здоров»
-    (зелёный кружок при сломанном синке). Значения `last_synced_at`/`last_sync_error`
-    могут быть законно `null` (новый ящик) — это допустимое значение, не отсутствие поля.
+    `id` = id ящика в агрегаторе; `team_id` — команда-владелец (per-mailbox, `null` —
+    unassigned). Поля статуса синка зеркалятся из агрегатора status-каналом. Пароли в
+    схему НЕ входят и в ответах не возвращаются (05-security.md).
     """
 
     id: int
     email: str
     display_name: str | None
-    group_id: int | None
+    team_id: uuid.UUID | None
     is_active: bool
     last_synced_at: datetime | None
     last_sync_error: str | None
     consecutive_failures: int
 
 
-class MailTeamsResponse(BaseModel):
-    """Ответ 200 GET /api/mail/teams (04-api.md#mail). Список может быть пустым."""
-
-    teams: list[MailTeam]
-
-
 class MailMailboxesResponse(BaseModel):
-    """Ответ 200 GET /api/mail/mailboxes (04-api.md#mail). Список может быть пустым."""
+    """Ответ 200 GET /api/mail/mailboxes (ADR-044 §4). Список может быть пустым."""
 
     mailboxes: list[MailMailbox]
 
 
 class MailMailboxTestRequest(BaseModel):
-    """Тело POST /api/mail/mailboxes/test (04-api.md#mail). Пароли — транзитом в агрегатор.
+    """Тело POST /api/mail/mailboxes/test (ADR-044 §4). Креды — транзитом в агрегатор.
 
     Не логируются, не возвращаются (05-security.md). `smtp_username`/`smtp_password`
-    опц.: `None` → внешний сервис берёт `email`/`password` соответственно.
+    опц.: `None` → агрегатор берёт `email`/`password` соответственно.
     """
 
     email: str
@@ -171,29 +146,30 @@ class MailMailboxTestRequest(BaseModel):
 
 
 class MailMailboxTestResponse(BaseModel):
-    """Ответ 200 POST /api/mail/mailboxes/test (04-api.md#mail)."""
+    """Ответ 200 POST /api/mail/mailboxes/test (ADR-044 §4)."""
 
     imap_ok: bool
     smtp_ok: bool
 
 
 class MailMailboxCreateRequest(MailMailboxTestRequest):
-    """Тело POST /api/mail/mailboxes (04-api.md#mail) = поля `test` + привязка/имя.
+    """Тело POST /api/mail/mailboxes (ADR-044 §4) = поля `test` + привязка/имя.
 
-    `group_id` (ge=1) — команда (`MailTeam.id`), к которой привязать ящик; `null` —
-    без команды. Для не-admin `group_id` обязан ∈ `MailScope.group_ids` (иначе 403).
+    `team_id` (uuid) — команда-владелец; `null` — без команды (unassigned, только
+    admin-уровень). Для не-admin `team_id` обязан ∈ `MailScope.team_ids` (иначе 403).
+    Креды транзитом в агрегатор; в каталог CRM сохраняется строка без кредов.
     """
 
     display_name: str | None = None
-    group_id: int | None = Field(default=None, ge=1)
+    team_id: uuid.UUID | None = None
 
 
 class MailMailboxUpdateRequest(BaseModel):
-    """Тело PATCH /api/mail/mailboxes/{id} (04-api.md#mail). Presence-семантика полей.
+    """Тело PATCH /api/mail/mailboxes/{id} (ADR-044 §4). Presence-семантика полей.
 
-    Передаются только изменяемые поля (`model_dump(exclude_unset=True)`). Пароли —
-    транзитом (не логируются/не возвращаются). `group_id`: int — сменить команду
-    (для не-admin ∈ `MailScope.group_ids`); `null` — снять привязку.
+    Передаются только изменяемые поля (`model_fields_set`/`exclude_unset`). Креды —
+    транзитом в агрегатор. `team_id` (перенос между командами) — только admin-уровень
+    (`MailScope.sees_all_teams`); `null` — снять привязку (unassigned).
     """
 
     email: str | None = None
@@ -209,28 +185,31 @@ class MailMailboxUpdateRequest(BaseModel):
     password: str | None = None
     smtp_password: str | None = None
     is_active: bool | None = None
-    group_id: int | None = Field(default=None, ge=1)
+    team_id: uuid.UUID | None = None
 
 
 class MailMailboxSyncResponse(BaseModel):
-    """Ответ 202 POST /api/mail/mailboxes/{id}/sync (04-api.md#mail)."""
+    """Ответ 202 POST /api/mail/mailboxes/{id}/sync (ADR-044 §4)."""
 
     queued: bool
 
 
-class MailTagRule(BaseModel):
-    """Правило тега (04-api.md#mail, external ADR-0040)."""
+# --- Теги (глобальный админский каталог, чтение/запись из БД CRM) ------------
 
-    id: int
+
+class MailTagRule(BaseModel):
+    """Правило тега (ADR-044 §5)."""
+
+    id: uuid.UUID
     type: MailTagRuleType
     pattern: str
     created_at: datetime
 
 
 class MailTagFull(BaseModel):
-    """Полный тег с правилами (вкладка «Теги»; глобальный каталог, 04-api.md#mail)."""
+    """Полный тег с правилами (вкладка «Теги»; глобальный каталог, ADR-044 §5)."""
 
-    id: int
+    id: uuid.UUID
     name: str
     color: str
     match_mode: MailTagMatchMode
@@ -241,42 +220,45 @@ class MailTagFull(BaseModel):
 
 
 class MailTagsResponse(BaseModel):
-    """Ответ 200 GET /api/mail/tags (04-api.md#mail). Список может быть пустым."""
+    """Ответ 200 GET /api/mail/tags (ADR-044 §5). Список может быть пустым."""
 
     tags: list[MailTagFull]
 
 
 class MailTagCreateRequest(BaseModel):
-    """Тело POST /api/mail/tags (04-api.md#mail). `match_mode` опц., default `any`."""
+    """Тело POST /api/mail/tags (ADR-044 §5). `match_mode` опц., default `any`."""
 
-    name: str
-    color: str
+    name: str = Field(min_length=1, max_length=64)
+    color: str = Field(pattern=r"^#[0-9A-Fa-f]{6}$")
     match_mode: MailTagMatchMode = "any"
 
 
 class MailTagUpdateRequest(BaseModel):
-    """Тело PATCH /api/mail/tags/{id} (04-api.md#mail). Все поля опц."""
+    """Тело PATCH /api/mail/tags/{id} (ADR-044 §5). Все поля опц."""
 
-    name: str | None = None
-    color: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    color: str | None = Field(default=None, pattern=r"^#[0-9A-Fa-f]{6}$")
     match_mode: MailTagMatchMode | None = None
 
 
 class MailTagRuleCreateRequest(BaseModel):
-    """Тело POST /api/mail/tags/{id}/rules (04-api.md#mail)."""
+    """Тело POST /api/mail/tags/{id}/rules (ADR-044 §5)."""
 
     type: MailTagRuleType
-    pattern: str
+    pattern: str = Field(min_length=1, max_length=256)
 
 
 class MailTagApplyResponse(BaseModel):
-    """Ответ 200 POST /api/mail/tags/{id}/apply-to-existing (04-api.md#mail)."""
+    """Ответ 200 POST /api/mail/tags/{id}/apply-to-existing (ADR-044 §5)."""
 
     applied_count: int
 
 
+# --- Ящики команды для detail-панели /teams ---------------------------------
+
+
 class TeamMailboxItem(BaseModel):
-    """Ящик команды для detail-панели /teams (минимальная схема без кредов, 04-api.md#teams)."""
+    """Ящик команды для detail-панели /teams (минимальная схема без кредов, ADR-044 §4)."""
 
     id: int
     email: str
@@ -285,13 +267,13 @@ class TeamMailboxItem(BaseModel):
 
 
 class TeamMailboxesResponse(BaseModel):
-    """Ответ 200 GET /api/teams/{id}/mailboxes (04-api.md#teams). Может быть пустым."""
+    """Ответ 200 GET /api/teams/{id}/mailboxes (ADR-044 §4). Может быть пустым."""
 
     mailboxes: list[TeamMailboxItem]
 
 
 __all__ = [
-    "MailAccount",
+    "MailAccountRef",
     "MailListResponse",
     "MailMailbox",
     "MailMailboxCreateRequest",
@@ -301,7 +283,6 @@ __all__ = [
     "MailMailboxUpdateRequest",
     "MailMailboxesResponse",
     "MailMessage",
-    "MailOrder",
     "MailReplyRequest",
     "MailReplyResponse",
     "MailTag",
@@ -314,8 +295,6 @@ __all__ = [
     "MailTagRuleType",
     "MailTagUpdateRequest",
     "MailTagsResponse",
-    "MailTeam",
-    "MailTeamsResponse",
     "TeamMailboxItem",
     "TeamMailboxesResponse",
 ]

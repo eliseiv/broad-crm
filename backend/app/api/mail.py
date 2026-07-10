@@ -1,16 +1,18 @@
-"""Роутер модуля «Почты» (04-api.md#mail, ADR-012/038). Матрица прав `mail:*`.
+"""Роутер модуля «Почты» (ADR-044). Матрица прав `mail:*`.
 
-Headless read+write прокси к внешнему сервису `postapp.store` без хранения. Гейты:
-`view` (лента/справочники/теги-чтение + reply), `create` (создание/тест ящика),
-`edit` (правка ящика), `delete` (удаление ящика), `sync` (форс-синк), `tags`
-(управление каталогом тегов). Мутации ящика дополнительно ограничены `MailScope`
-(вне scope → 403). Эндпоинты записи ящиков несут `Cache-Control: no-store` (в теле
-запроса транзитом идут IMAP/SMTP-креды, 05-security.md). `limit`/гейт `mail_enabled`
-валидируются в сервисе.
+CRM — система-запись: лента/ящики/теги читаются из БД CRM; создание/правка/удаление
+ящика и reply транзитом делегируются агрегатору (креды не хранятся в CRM). Гейты:
+`view` (лента/ящики/теги-чтение + reply), `create` (создание/тест ящика), `edit`
+(правка ящика), `delete` (удаление ящика), `sync` (форс-синк), `tags` (управление
+глобальным каталогом тегов). Мутации/синк/удаление ящика и reply дополнительно
+ограничены `MailScope` по `team_id` (вне scope → 403/404, анти-энумерация). Эндпоинты
+записи ящиков несут `Cache-Control: no-store` (в телах транзитом идут IMAP/SMTP-креды,
+05-security.md).
 """
 
 from __future__ import annotations
 
+import uuid
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Query, Response, status
@@ -25,7 +27,6 @@ from app.schemas.mail import (
     MailMailboxTestRequest,
     MailMailboxTestResponse,
     MailMailboxUpdateRequest,
-    MailOrder,
     MailReplyRequest,
     MailReplyResponse,
     MailTagApplyResponse,
@@ -35,7 +36,6 @@ from app.schemas.mail import (
     MailTagRuleCreateRequest,
     MailTagsResponse,
     MailTagUpdateRequest,
-    MailTeamsResponse,
 )
 
 router = APIRouter(prefix="/mail", tags=["mail"])
@@ -47,16 +47,14 @@ DeleteDep = Annotated[Principal, Depends(require("mail", "delete"))]
 SyncDep = Annotated[Principal, Depends(require("mail", "sync"))]
 TagsDep = Annotated[Principal, Depends(require("mail", "tags"))]
 
-Order = Annotated[MailOrder, Query()]
-SinceId = Annotated[int | None, Query()]
-BeforeId = Annotated[int | None, Query(ge=1)]
+Before = Annotated[str | None, Query()]
 Limit = Annotated[int, Query()]
-MailAccountId = Annotated[int | None, Query(ge=1)]
-GroupId = Annotated[int | None, Query(ge=1)]
+MailAccountIds = Annotated[list[int] | None, Query(alias="mail_account_id")]
+TeamId = Annotated[uuid.UUID | None, Query()]
 IsActive = Annotated[bool | None, Query()]
 
 
-# --- Чтение -----------------------------------------------------------------
+# --- Чтение (из БД CRM) -----------------------------------------------------
 
 
 @router.get("/messages", response_model=MailListResponse)
@@ -64,33 +62,25 @@ async def list_messages(
     service: MailServiceDep,
     scope: MailScopeDep,
     _p: ViewDep,
-    order: Order = "desc",
-    since_id: SinceId = None,
-    before_id: BeforeId = None,
+    before: Before = None,
     limit: Limit = 50,
-    mail_account_id: MailAccountId = None,
-    group_id: GroupId = None,
+    mail_account_id: MailAccountIds = None,
+    team_id: TeamId = None,
 ) -> MailListResponse:
-    """Лента писем (04-api.md#mail, ADR-013/017/038).
+    """Лента писем из `mail_messages` (компаундный keyset, ADR-044 §2/§7).
 
-    Фильтры `mail_account_id`/`group_id` (`ge=1`, опц.) AND-комбинируемы; для не-админа
-    пересекаются со `MailScope.group_ids` (вне scope → пустая страница, анти-энумерация).
+    Порядок `internal_date DESC, id DESC`. Фильтры `mail_account_id` (повторяемый) и
+    `team_id` AND-комбинируемы; для не-админа пересекаются со `MailScope.team_ids` (вне
+    scope → пустая страница, анти-энумерация). `before` — opaque-курсор пары
+    `(internal_date, id)`; `limit` в диапазоне 1..200.
     """
     return await service.list_messages(
         scope=scope,
-        order=order,
-        since_id=since_id,
-        before_id=before_id,
+        before=before,
         limit=limit,
-        mail_account_id=mail_account_id,
-        group_id=group_id,
+        mail_account_ids=mail_account_id,
+        team_id=team_id,
     )
-
-
-@router.get("/teams", response_model=MailTeamsResponse)
-async def list_teams(service: MailServiceDep, _p: ViewDep) -> MailTeamsResponse:
-    """Список команд (прокси external /teams, 04-api.md#mail). Без параметров."""
-    return await service.list_teams()
 
 
 @router.get("/mailboxes", response_model=MailMailboxesResponse)
@@ -99,19 +89,18 @@ async def list_mailboxes(
     scope: MailScopeDep,
     _p: ViewDep,
     is_active: IsActive = None,
-    group_id: GroupId = None,
 ) -> MailMailboxesResponse:
-    """Список ящиков (прокси external /mailboxes, 04-api.md#mail, ADR-038).
+    """Список ящиков из каталога CRM `mail_accounts` (ADR-044 §4/§7).
 
-    Фильтруется `MailScope` (не-admin — только ящики групп своих команд). `is_active`/
-    `group_id` пробрасываются во внешний API.
+    Не-admin — только ящики своих команд (`team_id ∈ scope.team_ids`, анти-энумерация).
+    `is_active` — доп. фильтр активности.
     """
-    return await service.list_mailboxes(scope=scope, is_active=is_active, group_id=group_id)
+    return await service.list_mailboxes(scope=scope, is_active=is_active)
 
 
 @router.get("/tags", response_model=MailTagsResponse)
 async def list_tags(service: MailServiceDep, _p: ViewDep) -> MailTagsResponse:
-    """Список глобальных тегов с правилами (прокси external /tags, 04-api.md#mail)."""
+    """Список глобальных тегов с правилами из БД CRM (ADR-044 §5)."""
     return await service.list_tags()
 
 
@@ -120,13 +109,20 @@ async def reply_message(
     message_id: int,
     payload: MailReplyRequest,
     service: MailServiceDep,
-    _p: ViewDep,
+    scope: MailScopeDep,
+    p: ViewDep,
 ) -> MailReplyResponse:
-    """Ответ на письмо (прокси к внешнему reply-эндпоинту). Гейт mail:view (ADR-012)."""
-    return await service.reply(message_id=message_id, payload=payload)
+    """Ответ на письмо (ADR-044 §8). Гейт mail:view; письмо ∈ scope (иначе 404).
+
+    Письмо берётся из БД CRM, SMTP-отправка делегируется агрегатору, факт отправки
+    пишется в `mail_sent_messages`.
+    """
+    return await service.reply(
+        scope=scope, user_id=p.user_id, message_id=message_id, payload=payload
+    )
 
 
-# --- Запись: почтовые ящики -------------------------------------------------
+# --- Запись: почтовые ящики (креды транзитом в агрегатор) -------------------
 
 
 @router.post("/mailboxes/test", response_model=MailMailboxTestResponse)
@@ -136,7 +132,7 @@ async def test_mailbox(
     _p: CreateDep,
     response: Response,
 ) -> MailMailboxTestResponse:
-    """Проверка IMAP/SMTP-соединения без сохранения (04-api.md#mail). Гейт mail:create."""
+    """Проверка IMAP/SMTP-соединения без сохранения (ADR-044 §4). Гейт mail:create."""
     response.headers["Cache-Control"] = "no-store"
     return await service.test_mailbox(payload)
 
@@ -149,7 +145,7 @@ async def create_mailbox(
     _p: CreateDep,
     response: Response,
 ) -> MailMailbox:
-    """Создание ящика (04-api.md#mail). Гейт mail:create; для не-admin group_id ∈ scope."""
+    """Создание ящика (ADR-044 §4). Гейт mail:create; для не-admin team_id ∈ scope."""
     response.headers["Cache-Control"] = "no-store"
     return await service.create_mailbox(scope=scope, payload=payload)
 
@@ -163,7 +159,10 @@ async def update_mailbox(
     _p: EditDep,
     response: Response,
 ) -> MailMailbox:
-    """Правка ящика (presence-семантика, 04-api.md#mail). Гейт mail:edit; ящик ∈ scope."""
+    """Правка ящика (presence-семантика, ADR-044 §4). Гейт mail:edit; ящик ∈ scope.
+
+    Смена `team_id` (перенос между командами) — только admin-уровень.
+    """
     response.headers["Cache-Control"] = "no-store"
     return await service.update_mailbox(scope=scope, mailbox_id=mailbox_id, payload=payload)
 
@@ -175,7 +174,7 @@ async def delete_mailbox(
     scope: MailScopeDep,
     _p: DeleteDep,
 ) -> Response:
-    """Удаление ящика (04-api.md#mail). Гейт mail:delete; ящик ∈ scope."""
+    """Удаление ящика (ADR-044 §4). Гейт mail:delete; ящик ∈ scope."""
     await service.delete_mailbox(scope=scope, mailbox_id=mailbox_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -191,7 +190,7 @@ async def sync_mailbox(
     scope: MailScopeDep,
     _p: SyncDep,
 ) -> MailMailboxSyncResponse:
-    """Форс-синк ящика (04-api.md#mail). Гейт mail:sync; ящик ∈ scope."""
+    """Форс-синк ящика (ADR-044 §4). Гейт mail:sync; ящик ∈ scope."""
     return await service.sync_mailbox(scope=scope, mailbox_id=mailbox_id)
 
 
@@ -204,28 +203,28 @@ async def create_tag(
     service: MailServiceDep,
     _p: TagsDep,
 ) -> MailTagFull:
-    """Создание тега (04-api.md#mail). Гейт mail:tags."""
+    """Создание тега (ADR-044 §5). Гейт mail:tags."""
     return await service.create_tag(payload)
 
 
 @router.patch("/tags/{tag_id}", response_model=MailTagFull)
 async def update_tag(
-    tag_id: int,
+    tag_id: uuid.UUID,
     payload: MailTagUpdateRequest,
     service: MailServiceDep,
     _p: TagsDep,
 ) -> MailTagFull:
-    """Правка тега (04-api.md#mail). Гейт mail:tags."""
+    """Правка тега (ADR-044 §5). Гейт mail:tags."""
     return await service.update_tag(tag_id, payload)
 
 
 @router.delete("/tags/{tag_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_tag(
-    tag_id: int,
+    tag_id: uuid.UUID,
     service: MailServiceDep,
     _p: TagsDep,
 ) -> Response:
-    """Удаление тега (04-api.md#mail). Гейт mail:tags; встроенный тег → 409."""
+    """Удаление тега (ADR-044 §5). Гейт mail:tags; встроенный тег → 409."""
     await service.delete_tag(tag_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
@@ -234,32 +233,32 @@ async def delete_tag(
     "/tags/{tag_id}/rules", response_model=MailTagRule, status_code=status.HTTP_201_CREATED
 )
 async def create_tag_rule(
-    tag_id: int,
+    tag_id: uuid.UUID,
     payload: MailTagRuleCreateRequest,
     service: MailServiceDep,
     _p: TagsDep,
 ) -> MailTagRule:
-    """Добавление правила тегу (04-api.md#mail). Гейт mail:tags."""
+    """Добавление правила тегу (ADR-044 §5). Гейт mail:tags."""
     return await service.create_tag_rule(tag_id, payload)
 
 
 @router.delete("/tags/{tag_id}/rules/{rule_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_tag_rule(
-    tag_id: int,
-    rule_id: int,
+    tag_id: uuid.UUID,
+    rule_id: uuid.UUID,
     service: MailServiceDep,
     _p: TagsDep,
 ) -> Response:
-    """Удаление правила (04-api.md#mail). Гейт mail:tags."""
+    """Удаление правила (ADR-044 §5). Гейт mail:tags."""
     await service.delete_tag_rule(tag_id, rule_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.post("/tags/{tag_id}/apply-to-existing", response_model=MailTagApplyResponse)
 async def apply_tag_to_existing(
-    tag_id: int,
+    tag_id: uuid.UUID,
     service: MailServiceDep,
     _p: TagsDep,
 ) -> MailTagApplyResponse:
-    """Применить правила тега к существующим письмам (04-api.md#mail). Гейт mail:tags."""
+    """Применить правила тега к существующим письмам (ADR-044 §5). Гейт mail:tags."""
     return await service.apply_tag_to_existing(tag_id)

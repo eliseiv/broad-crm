@@ -716,7 +716,7 @@ CREATE INDEX ix_user_teams_team_id ON user_teams (team_id);
 > ALTER TABLE teams ADD COLUMN mail_group_id integer NULL;
 > ALTER TABLE teams ADD CONSTRAINT uq_teams_mail_group_id UNIQUE (mail_group_id);
 > ```
-> `down_revision` — текущая голова цепочки на момент реализации (S2). `downgrade()`: `ALTER TABLE teams DROP CONSTRAINT uq_teams_mail_group_id; ALTER TABLE teams DROP COLUMN mail_group_id;`. Существующие команды получают `mail_group_id = NULL` (сопоставление — ручное через `PATCH /api/teams/{id}`).
+> `down_revision` — текущая голова цепочки на момент реализации (S2). `downgrade()`: `ALTER TABLE teams DROP CONSTRAINT uq_teams_mail_group_id; ALTER TABLE teams DROP COLUMN mail_group_id;`. Существующие команды получают `mail_group_id = NULL`. Заполнение: **ленивый провижининг** — авто-создание группы по первому добавлению почты в команду ([ADR-043](adr/ADR-043-lazy-mail-group-provisioning.md), `POST /api/mail/mailboxes` с `team_id`); ручная (пере)привязка к существующей группе — через `PATCH /api/teams/{id}` (edit-селектор).
 
 ### Индексы и обоснование
 - `UNIQUE(teams.name)` — детерминированный `409 team_name_taken`.

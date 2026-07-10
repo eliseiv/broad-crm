@@ -228,6 +228,18 @@ def sms_operator_not_provisioned() -> AppError:
     )
 
 
+def mail_operator_not_provisioned() -> AppError:
+    """Telegram Mini App `/tg/mail`: username не сопоставлен с CRM-пользователем.
+
+    ADR-044 §6/§7 (симметрично `sms_operator_not_provisioned`, ADR-031). 403.
+    """
+    return AppError(
+        status_code=status.HTTP_403_FORBIDDEN,
+        code="mail_operator_not_provisioned",
+        message="Ваш Telegram не привязан к пользователю CRM. Обратитесь к администратору.",
+    )
+
+
 def invalid_twilio_signature() -> AppError:
     return AppError(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -361,6 +373,24 @@ def mail_not_configured() -> AppError:
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         code="mail_not_configured",
         message="Сервис почт не настроен",
+    )
+
+
+def mail_ingest_not_configured() -> AppError:
+    """Push-приёмник выключен: пуст `MAIL_PUSH_SECRET` (ADR-044 §3). 503."""
+    return AppError(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        code="mail_ingest_not_configured",
+        message="Приём почты от агрегатора не настроен",
+    )
+
+
+def not_authenticated() -> AppError:
+    """Невалидная HMAC-подпись / протухший timestamp push-контракта (ADR-044 §3). 401."""
+    return AppError(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        code="not_authenticated",
+        message="Не аутентифицирован",
     )
 
 

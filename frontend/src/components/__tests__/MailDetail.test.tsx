@@ -25,7 +25,7 @@ function makeMessage(overrides: Partial<MailMessage> = {}): MailMessage {
     body_html: null,
     body_present: true,
     body_truncated: false,
-    tags: [{ id: 7, name: 'важное', color: '#EF4444' }],
+    tags: [{ id: '7a1f0c2e-0000-4000-8000-000000000007', name: 'важное', color: '#EF4444' }],
     ...overrides,
   };
 }

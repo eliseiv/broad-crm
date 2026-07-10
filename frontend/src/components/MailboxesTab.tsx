@@ -6,8 +6,9 @@ import { MailboxFormModal } from '@/components/MailboxFormModal';
 import { MailboxRow } from '@/components/MailboxRow';
 import { cn } from '@/lib/cn';
 import { ApiError } from '@/lib/api';
-import { useCan } from '@/features/auth/hooks';
-import { useMailboxesManage, useMailTeams } from '@/features/mail/hooks';
+import { useCan, useSeesAllMailTeams } from '@/features/auth/hooks';
+import { useMailboxesManage } from '@/features/mail/hooks';
+import { useTeams } from '@/features/teams/hooks';
 
 /** Значение сегмента активности → query `is_active` (не задан / true / false). */
 type ActivityFilter = 'all' | 'active' | 'inactive';
@@ -74,10 +75,13 @@ export function MailboxesTab() {
   const canEdit = useCan('mail', 'edit');
   const canSync = useCan('mail', 'sync');
   const canDelete = useCan('mail', 'delete');
+  // Перенос ящика между командами (смена team_id) — только admin-уровень (ADR-044 §4).
+  const canTransfer = useSeesAllMailTeams();
 
   const query = useMailboxesManage(toIsActive(filter));
-  const teamsQuery = useMailTeams();
-  const teams = teamsQuery.data?.teams ?? [];
+  // CRM-команды (GET /api/teams) — источник дропдауна переноса и резолва имени команды.
+  const teamsQuery = useTeams();
+  const teams = teamsQuery.data?.items ?? [];
   const mailboxes = query.data?.mailboxes ?? [];
 
   const isNotConfigured = query.error instanceof ApiError && query.error.status === 503;
@@ -175,7 +179,10 @@ export function MailboxesTab() {
                 <th className="px-3 py-3 font-medium">Почта</th>
                 <th className="px-3 py-3 font-medium">Команда</th>
                 <th className="px-3 py-3 font-medium">Синхронизация</th>
-                <th className="px-3 py-3 font-medium">
+                {/* relative: даёт абсолютному `sr-only` позиционированного предка ВНУТРИ
+                    overflow-x-auto обёртки, иначе его containing block — ICB, и он выпадает
+                    из клипа обёртки, растягивая scrollWidth документа на узких вьюпортах. */}
+                <th className="relative px-3 py-3 font-medium">
                   <span className="sr-only">Действия</span>
                 </th>
               </tr>
@@ -186,6 +193,7 @@ export function MailboxesTab() {
                   key={mb.id}
                   mailbox={mb}
                   teams={teams}
+                  canTransfer={canTransfer}
                   canEdit={canEdit}
                   canSync={canSync}
                   canDelete={canDelete}

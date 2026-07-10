@@ -112,7 +112,10 @@ export function TagsTab() {
               <tr className="text-[12px] font-medium uppercase tracking-wide text-text-tertiary">
                 <th className="w-52 px-3 py-3 font-medium">Имя тега</th>
                 <th className="px-3 py-3 font-medium">Правила</th>
-                <th className="px-3 py-3 font-medium">
+                {/* relative: даёт абсолютному `sr-only` позиционированного предка ВНУТРИ
+                    overflow-x-auto обёртки, иначе его containing block — ICB, и он выпадает
+                    из клипа обёртки, растягивая scrollWidth документа на узких вьюпортах. */}
+                <th className="relative px-3 py-3 font-medium">
                   <span className="sr-only">Действия</span>
                 </th>
               </tr>

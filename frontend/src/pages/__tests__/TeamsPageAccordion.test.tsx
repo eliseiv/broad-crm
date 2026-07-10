@@ -84,7 +84,6 @@ const TEAMS: TeamListResponse = {
     {
       id: 't1',
       name: 'Продажи',
-      mail_group_id: null,
       leader_id: 'u1',
       leader_username: 'Никита',
       member_count: 3,

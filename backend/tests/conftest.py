@@ -209,6 +209,15 @@ class _FakeSession:
         # name↔mail_group (ADR-038). None → драйвер имени не отдал (фолбэк-перепроверка).
         self.integrity_constraint: str | None = None
 
+    async def execute(self, *_args: Any, **_kwargs: Any) -> Any:
+        """No-op для SQL-хуков поверх фейк-репозиториев (ADR-044 §6: синхронный
+        orphan-резолв `bind_orphans_for_user` в UserService дергает `session.execute`).
+
+        In-memory фейки не держат `mail_telegram_links`, orphan'ов нет → возвращаем
+        результат с `rowcount=0` (хук ничего не связывает). Orphan-связывание покрыто
+        отдельно на РЕАЛЬНОМ Postgres (`tests/integration/test_mail_orphan_resolve.py`)."""
+        return SimpleNamespace(rowcount=0)
+
     async def commit(self) -> None:
         if self.raise_integrity:
             orig = Exception("duplicate")

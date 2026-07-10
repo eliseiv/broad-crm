@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { MailTags } from '@/components/MailTags';
 import type { MailTag } from '@/types/api';
 
-function tag(id: number, name: string, color: string): MailTag {
+function tag(id: string, name: string, color: string): MailTag {
   return { id, name, color };
 }
 
@@ -15,11 +15,11 @@ describe('MailTags', () => {
 
   it('shows a "+N" overflow badge when tags exceed the max limit', () => {
     const tags = [
-      tag(1, 'a', '#EF4444'),
-      tag(2, 'b', '#EF4444'),
-      tag(3, 'c', '#EF4444'),
-      tag(4, 'd', '#EF4444'),
-      tag(5, 'e', '#EF4444'),
+      tag('t1', 'a', '#EF4444'),
+      tag('t2', 'b', '#EF4444'),
+      tag('t3', 'c', '#EF4444'),
+      tag('t4', 'd', '#EF4444'),
+      tag('t5', 'e', '#EF4444'),
     ];
     render(<MailTags tags={tags} max={3} />);
 
@@ -31,7 +31,7 @@ describe('MailTags', () => {
   });
 
   it('renders every tag without a "+N" badge when max is not set', () => {
-    render(<MailTags tags={[tag(1, 'важное', '#EF4444'), tag(2, 'счёт', '#22C55E')]} />);
+    render(<MailTags tags={[tag('t1', 'важное', '#EF4444'), tag('t2', 'счёт', '#22C55E')]} />);
 
     expect(screen.getByText('важное')).toBeInTheDocument();
     expect(screen.getByText('счёт')).toBeInTheDocument();
@@ -39,7 +39,7 @@ describe('MailTags', () => {
   });
 
   it('renders each tag as a MailTagChip (единый элемент, не сырой HEX как текст)', () => {
-    render(<MailTags tags={[tag(1, 'важное', '#123456')]} />);
+    render(<MailTags tags={[tag('t1', 'важное', '#123456')]} />);
 
     // Текст тега в чипе; цвет — тема-зависимый color-mix, НЕ плоский tag.color (WCAG AA).
     const chip = screen.getByText('важное').closest('span[style]') as HTMLElement;

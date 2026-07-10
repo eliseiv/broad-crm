@@ -24,7 +24,7 @@ from app.infra.prometheus import get_prometheus_client
 from app.infra.rate_limit import get_login_rate_limiter
 from app.infra.sms_telegram import SmsBotClient
 from app.infra.telegram import TelegramClient
-from app.models.team import Team, user_teams
+from app.models.team import user_teams
 from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.backend_repository import BackendRepository
 from app.repositories.proxy_repository import ProxyRepository
@@ -38,7 +38,9 @@ from app.services.ai_key_service import AiKeyService
 from app.services.auth_service import AuthService
 from app.services.backend_monitor_service import BackendMonitorService
 from app.services.backend_service import BackendService
+from app.services.mail_ingest_service import MailIngestService
 from app.services.mail_service import MailService
+from app.services.mail_telegram_service import MailTelegramService
 from app.services.monitoring_service import MonitoringService
 from app.services.provisioning_service import ProvisioningService
 from app.services.proxy_monitor_service import ProxyMonitorService
@@ -252,25 +254,21 @@ def principal_sees_all_mail_teams(principal: Principal) -> bool:
 
 
 async def get_mail_scope(principal: PrincipalDep, session: DbSession) -> MailScope:
-    """Фабрика scope почты (ADR-038 §3, образец `get_sms_scope`).
+    """Фабрика scope почты (ADR-044 §7, образец `get_sms_scope`).
 
-    «Видит все команды» ⇔ супер-админ ИЛИ полный каталог прав. Иначе `group_ids` =
-    непустые `teams.mail_group_id` по командам пользователя из `user_teams`
-    (`user_id=None` или нет привязанных групп → пустой набор → пустая видимость).
+    «Видит все команды» ⇔ супер-админ ИЛИ полный каталог прав. Иначе `team_ids` =
+    команды пользователя из `user_teams` (per-mailbox `mail_accounts.team_id`; групп
+    больше нет — ADR-044 §7). `user_id=None` или нет команд → пустой набор → пустая
+    видимость (анти-энумерация).
     """
     sees_all_teams = principal_sees_all_mail_teams(principal)
     if sees_all_teams:
-        return MailScope(sees_all_teams=True, group_ids=frozenset())
+        return MailScope(sees_all_teams=True, team_ids=frozenset())
     if principal.user_id is None:
-        return MailScope(sees_all_teams=False, group_ids=frozenset())
-    stmt = (
-        select(Team.mail_group_id)
-        .join(user_teams, user_teams.c.team_id == Team.id)
-        .where(user_teams.c.user_id == principal.user_id, Team.mail_group_id.is_not(None))
-    )
+        return MailScope(sees_all_teams=False, team_ids=frozenset())
+    stmt = select(user_teams.c.team_id).where(user_teams.c.user_id == principal.user_id)
     result = await session.execute(stmt)
-    group_ids = {gid for gid in result.scalars().all() if gid is not None}
-    return MailScope(sees_all_teams=False, group_ids=frozenset(group_ids))
+    return MailScope(sees_all_teams=False, team_ids=frozenset(result.scalars().all()))
 
 
 def get_sms_message_service(session: DbSession) -> SmsMessageService:
@@ -395,9 +393,19 @@ def get_backend_service(
     return BackendService(repository=BackendRepository(session), monitor=monitor)
 
 
-def get_mail_service(settings: SettingsDep) -> MailService:
-    """Сервис почты (read-through-прокси к postapp.store; клиент из настроек)."""
-    return MailService(client=get_mail_client(), settings=settings)
+def get_mail_service(session: DbSession, settings: SettingsDep) -> MailService:
+    """Сервис почты (ADR-044): чтение из БД CRM + транзит операций ящика/reply в агрегатор."""
+    return MailService(session=session, client=get_mail_client(), settings=settings)
+
+
+def get_mail_ingest_service(session: DbSession, settings: SettingsDep) -> MailIngestService:
+    """Сервис приёма push'а агрегатор→CRM (письма + статус ящика; HMAC, без JWT)."""
+    return MailIngestService(session, max_batch=settings.mail_ingest_max_batch)
+
+
+def get_mail_telegram_service(session: DbSession, settings: SettingsDep) -> MailTelegramService:
+    """Сервис Telegram-слоя почты (Mini App SSO / webhook / callback / opt-out, ADR-044)."""
+    return MailTelegramService(session=session, settings=settings)
 
 
 def get_client_ip(request: Request) -> str:
@@ -432,6 +440,8 @@ AiKeyServiceDep = Annotated[AiKeyService, Depends(get_ai_key_service)]
 ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]
 BackendServiceDep = Annotated[BackendService, Depends(get_backend_service)]
 MailServiceDep = Annotated[MailService, Depends(get_mail_service)]
+MailIngestServiceDep = Annotated[MailIngestService, Depends(get_mail_ingest_service)]
+MailTelegramServiceDep = Annotated[MailTelegramService, Depends(get_mail_telegram_service)]
 MailScopeDep = Annotated[MailScope, Depends(get_mail_scope)]
 ClientIp = Annotated[str, Depends(get_client_ip)]
 SmsScopeDep = Annotated[SmsScope, Depends(get_sms_scope)]

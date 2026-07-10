@@ -46,6 +46,9 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
 "alembic/*" = ["E501"]
+# Побуквенный порт SQL движка тегов из mail-агрегатора (ADR-044 §5): длинные строки
+# регекс-предиката НЕ переносятся (иначе рушится byte-for-byte эквивалентность).
+"app/domain/mail_tags_sql.py" = ["E501"]
 
 [tool.mypy]
 python_version = "3.12"

@@ -8,11 +8,13 @@ import { InsufficientPermissions } from '@/components/InsufficientPermissions';
 import { MailboxesTab } from '@/components/MailboxesTab';
 import { MailDetail } from '@/components/MailDetail';
 import { MailListItem } from '@/components/MailListItem';
+import { MailNotificationsToggle } from '@/components/MailNotificationsToggle';
 import { TagsTab } from '@/components/TagsTab';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { useCanViewPage, useSeesAllMailTeams } from '@/features/auth/hooks';
-import { useMailFeed, useMailMailboxes, useMailTeams } from '@/features/mail/hooks';
+import { useMailFeed, useMailMailboxes } from '@/features/mail/hooks';
+import { useTeams } from '@/features/teams/hooks';
 
 type Tab = 'messages' | 'mailboxes' | 'tags';
 
@@ -91,34 +93,34 @@ function MailTabs() {
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div
-        role="tablist"
-        aria-label="Разделы почты"
-        className="flex shrink-0 items-center gap-1 border-b border-border-subtle px-3 py-2"
-      >
-        {tabs.map((t) => {
-          const active = tab === t.key;
-          return (
-            <button
-              key={t.key}
-              type="button"
-              role="tab"
-              id={`mail-tab-${t.key}`}
-              aria-selected={active}
-              aria-controls={`mail-panel-${t.key}`}
-              onClick={() => setTab(t.key)}
-              className={cn(
-                'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
-                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-                active
-                  ? 'bg-surface-2 text-text-primary'
-                  : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
-              )}
-            >
-              {t.label}
-            </button>
-          );
-        })}
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border-subtle px-3 py-2">
+        <div role="tablist" aria-label="Разделы почты" className="flex items-center gap-1">
+          {tabs.map((t) => {
+            const active = tab === t.key;
+            return (
+              <button
+                key={t.key}
+                type="button"
+                role="tab"
+                id={`mail-tab-${t.key}`}
+                aria-selected={active}
+                aria-controls={`mail-panel-${t.key}`}
+                onClick={() => setTab(t.key)}
+                className={cn(
+                  'rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                  'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                  active
+                    ? 'bg-surface-2 text-text-primary'
+                    : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
+                )}
+              >
+                {t.label}
+              </button>
+            );
+          })}
+        </div>
+        {/* Персональный opt-out Telegram-уведомлений — виден на всех вкладках (ADR-044 §2). */}
+        <MailNotificationsToggle />
       </div>
 
       {tab === 'messages' && (
@@ -156,18 +158,18 @@ function MailTabs() {
 }
 
 function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
-  // Серверные фильтры ленты — комбинируемы (AND, ADR-038 §3): выбор одного НЕ сбрасывает
+  // Серверные фильтры ленты — комбинируемы (AND, ADR-044 §7): выбор одного НЕ сбрасывает
   // другой. Входят в queryKey ленты: смена фильтра ре-запрашивает ленту, сбрасывает
-  // пагинацию и авто-выбор — ADR-017.
+  // пагинацию и авто-выбор — ADR-017. `teamId` — UUID CRM-команды (групп агрегатора нет).
   const [mailAccountId, setMailAccountId] = useState<number | undefined>(undefined);
-  const [groupId, setGroupId] = useState<number | undefined>(undefined);
+  const [teamId, setTeamId] = useState<string | undefined>(undefined);
 
   const { messages, phase, error, hasMore, isFetchingMore, isReloading, loadMore, reload } =
-    useMailFeed({ mailAccountId, groupId });
+    useMailFeed({ mailAccountId, teamId });
   const mailboxesQuery = useMailMailboxes();
-  // Справочник команд — только admin-уровню (фильтр «Команда» рендерится по
-  // `sees_all_mail_teams`); прочим ролям не грузим (анти-энумерация, ADR-038 §3).
-  const teamsQuery = useMailTeams(seesAllMailTeams);
+  // Справочник CRM-команд — только admin-уровню (фильтр «Команда» рендерится по
+  // `sees_all_mail_teams`); прочим ролям не грузим (анти-энумерация, ADR-044 §7).
+  const teamsQuery = useTeams(seesAllMailTeams);
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Узкие вьюпорты: показываем деталь письма поверх списка (одна колонка).
@@ -188,41 +190,44 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
   }, [mailboxesQuery.data]);
 
   const teamOptions = useMemo(() => {
-    const teams = teamsQuery.data?.teams ?? [];
+    const teams = teamsQuery.data?.items ?? [];
     return [
       { value: '', label: 'Все команды' },
-      ...teams.map((t) => ({ value: String(t.id), label: t.name })),
+      ...teams.map((t) => ({ value: t.id, label: t.name })),
     ];
   }, [teamsQuery.data]);
 
-  // Комбинируемы (AND): выбор одного не сбрасывает другой (ADR-038 §3).
+  // Комбинируемы (AND): выбор одного не сбрасывает другой (ADR-044 §7).
   const handleMailboxChange = (e: ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
     setMailAccountId(v ? Number(v) : undefined);
   };
   const handleTeamChange = (e: ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
-    setGroupId(v ? Number(v) : undefined);
+    setTeamId(v || undefined);
   };
-
-  // Авто-выбор самого свежего письма (первое в desc-ленте) при первой загрузке / смене фильтра.
-  useEffect(() => {
-    if (messages.length === 0) {
-      if (selectedId !== null) setSelectedId(null);
-      return;
-    }
-    const stillExists = selectedId !== null && messages.some((m) => m.id === selectedId);
-    if (!stillExists) setSelectedId(messages[0].id);
-  }, [messages, selectedId]);
-
-  const selected = useMemo(
-    () => messages.find((m) => m.id === selectedId) ?? null,
-    [messages, selectedId],
-  );
 
   const visibleMessages = useMemo(
     () => (onlyTagged ? messages.filter((m) => m.tags.length > 0) : messages),
     [messages, onlyTagged],
+  );
+
+  // Авто-выбор самого свежего письма (первое в desc-ленте) при первой загрузке / смене
+  // фильтра. Опираемся на ВИДИМЫЙ (клиентски отфильтрованный) список, а не на `messages`:
+  // при активном «С тегами» selectedId всегда остаётся в пределах видимого списка — иначе
+  // в detail могло открыться письмо без тегов, отсутствующее в ленте (ADR-044 §7).
+  useEffect(() => {
+    if (visibleMessages.length === 0) {
+      if (selectedId !== null) setSelectedId(null);
+      return;
+    }
+    const stillExists = selectedId !== null && visibleMessages.some((m) => m.id === selectedId);
+    if (!stillExists) setSelectedId(visibleMessages[0].id);
+  }, [visibleMessages, selectedId]);
+
+  const selected = useMemo(
+    () => visibleMessages.find((m) => m.id === selectedId) ?? null,
+    [visibleMessages, selectedId],
   );
 
   const handleSelect = (id: number) => {
@@ -326,7 +331,7 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
               <Select
                 aria-label="Команда"
                 options={teamOptions}
-                value={groupId != null ? String(groupId) : ''}
+                value={teamId ?? ''}
                 onChange={handleTeamChange}
               />
             </div>

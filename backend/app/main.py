@@ -19,6 +19,8 @@ from app.infra.telegram import TelegramClient
 from app.logging import configure_logging, get_logger
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.backend_monitor_service import BackendMonitorService
+from app.services.mail_bootstrap import seed_builtin_mail_tags
+from app.services.mail_dispatcher_service import MailDispatcherService
 from app.services.monitoring_service import MonitoringService
 from app.services.notifier_service import NotifierService
 from app.services.provisioning_service import ProvisioningService
@@ -46,6 +48,12 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         logger.info("startup_recovery", recovered=recovered, file_sd_regenerated=regenerated)
     except Exception as exc:
         logger.error("startup_recovery_failed", error_type=type(exc).__name__)
+
+    # Посев builtin-тегов почты (ADR-044 §5): идемпотентно по UNIQUE(name).
+    try:
+        await seed_builtin_mail_tags(get_sessionmaker())
+    except Exception as exc:
+        logger.error("mail_builtin_tags_seed_failed", error_type=type(exc).__name__)
 
     # Telegram-нотификатор (modules/notifier, ADR-009): фоновая задача только
     # если заданы обе переменные TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID.
@@ -120,6 +128,19 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("sms_delivery_monitor_disabled")
 
+    # Telegram-диспетчер почты (ADR-044 §6, S4): фоновая asyncio-задача. Стартует ТОЛЬКО
+    # при MAIL_DISPATCH_ENABLED=true (cut-over: агрегатор глушится ДО старта диспетчера,
+    # иначе двойная доставка). Проходы A (новые письма) / B (recovery) / C (mailbox-down).
+    mail_dispatcher_task: asyncio.Task[None] | None = None
+    if settings.mail_dispatch_enabled:
+        mail_dispatcher = MailDispatcherService(
+            sessionmaker=get_sessionmaker(),
+            settings=settings,
+        )
+        mail_dispatcher_task = asyncio.create_task(mail_dispatcher.run())
+    else:
+        logger.info("mail_dispatcher_disabled")
+
     yield
 
     if notifier_task is not None:
@@ -143,6 +164,11 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         sms_delivery_monitor_task.cancel()
         with suppress(asyncio.CancelledError):
             await sms_delivery_monitor_task
+
+    if mail_dispatcher_task is not None:
+        mail_dispatcher_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await mail_dispatcher_task
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:

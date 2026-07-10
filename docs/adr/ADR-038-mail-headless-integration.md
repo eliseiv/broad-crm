@@ -4,6 +4,8 @@
 
 Амендмент [ADR-012](ADR-012-mail-read-through-proxy.md) / [ADR-013](ADR-013-mail-newest-first-master-detail-inline-reply.md) / [ADR-017](ADR-017-dashboard-client-aggregation-mail-server-filters.md). Парный ADR в mail-агрегаторе — `ADR-0039` (external write API + расширение read-фильтров), `ADR-0040` (глобальные теги).
 
+> **Дополнен [ADR-043](ADR-043-lazy-mail-group-provisioning.md) (2026-07-10):** §2 (ручной backfill `mail_group_id` / селектор «Почтовая группа» при создании команды) заменён на **ленивый провижининг** группы по первой почте (селектор убран из создания, сохранён в edit); write-контракт ящика ссылается на команду по **`team_id`** (не `group_id`); §3 `MailScope` расширен `team_ids`. Пары в проде: mail-агрегатор `ADR-0042` (external team create/delete).
+
 ## Context
 
 Сегодня страница `/mail` — **read-through-прокси без хранения** (ADR-012/013/017): `api/mail.py` → `services/mail_service.py` → `infra/mail_client.py` ходит на `https://postapp.store` (`MAIL_API_BASE`) с `X-API-Key` в `GET /api/external/{messages,teams,mailboxes}` и `POST /api/external/messages/{id}/reply`. Внешний API — read-only (плюс узкий `reply`).
@@ -83,7 +85,7 @@ CRM **не хранит** IMAP/SMTP-пароли. Пароли (`password`, оп
 ## Consequences
 
 - CRM получает полный CRUD почт и глобальных тегов, ролевую видимость писем по CRM-командам, «Почты команды» на `/teams` — при добавлении **одного** поля `teams.mail_group_id` и без БД-хранилища писем.
-- Владение ящиком остаётся единым (агрегатор) — нет рассинхрона видимости/доставки. Смена команды ящика = смена `group_id` в агрегаторе через `PATCH /mailboxes/{id}`.
+- Владение ящиком остаётся единым (агрегатор) — нет рассинхрона видимости/доставки. Смена команды ящика = смена `group_id` в агрегаторе через `PATCH /mailboxes/{id}`. *(Дополнено [ADR-043](ADR-043-lazy-mail-group-provisioning.md): CRM-write ссылается на команду по `team_id`, не `group_id`; перенос — только admin-уровень.)*
 - **1:1 команда↔группа** — ограничение: команде нельзя привязать ящики из нескольких групп. Запасной путь (per-mailbox владение через `mail_account_teams`) — [TD-033](../100-known-tech-debt.md).
 - **Вложения писем недоступны из CRM** (MinIO агрегатора не проксируется) — [TD-034](../100-known-tech-debt.md).
 - Ролевая видимость — **серверная граница безопасности**: вне scope чтение отдаёт пусто (анти-энумерация), мутация — `403`. Фронт-гейтинг (`permissions`, `sees_all_mail_teams`) — только UX.

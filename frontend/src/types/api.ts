@@ -243,26 +243,26 @@ export interface AiKeyStatusResponse {
   last_checked_at: string | null;
 }
 
-// --- Mail (04-api.md «Mail», modules/mail) ---
+// --- Mail (ADR-044; CRM — система-запись писем/тегов/каталога ящиков) ---
 
-/** Почтовый аккаунт-получатель (04-api.md, MailAccount). */
+/** Ящик-владелец письма (ADR-044 §2, MailAccountRef). */
 export interface MailAccount {
   id: number;
   email: string;
   display_name: string | null;
 }
 
-/** Тег письма (04-api.md, MailTag). `color` — HEX для бейджа. */
+/** Тег письма (ADR-044 §5, MailTag). `id` — UUID; `color` — HEX для бейджа. */
 export interface MailTag {
-  id: number;
+  id: string;
   name: string;
   color: string;
 }
 
 /**
- * Письмо ленты «Почты» (04-api.md, MailMessage). Read-through-прокси: поля
- * приходят из внешнего сервиса как есть; `body_html` рендерится ТОЛЬКО в
- * sandbox-iframe (modules/mail «Изоляция HTML-тела»).
+ * Письмо ленты «Почты» (ADR-044 §2, MailMessage). Хранится в БД CRM; `body_html`
+ * рендерится ТОЛЬКО в sandbox-iframe (modules/mail «Изоляция HTML-тела»). Порядок
+ * ленты — `internal_date DESC, id DESC` (истинная дата письма, а не порядок push'а).
  */
 export interface MailMessage {
   id: number;
@@ -280,24 +280,15 @@ export interface MailMessage {
   tags: MailTag[];
 }
 
-/** Режим пагинации ленты писем (04-api.md, GET /api/mail/messages `order`). */
-export type MailOrder = 'asc' | 'desc';
-
 /**
- * Ответ GET /api/mail/messages (04-api.md, MailListResponse). Единая схема для обоих
- * режимов; заполнен курсор запрошенного режима, второй — `null`.
- * - `next_since_id` — asc-режим: максимальный `id` батча (курсор `since_id` вперёд);
- *   `null` для пустого батча. В desc-режиме всегда `null`.
- * - `next_before_id` — desc-режим (основной для страницы): минимальный `id` батча
- *   (курсор `before_id` — догрузка более старых); `null`, если старее нет или батч пуст.
- *   В asc-режиме всегда `null`.
- * - `has_more` — есть ли ещё письма в запрошенном направлении.
+ * Ответ GET /api/mail/messages (ADR-044 §2, MailListResponse). Компаундный keyset
+ * по паре `(internal_date, id)`. `next_cursor` — opaque-токен последнего элемента
+ * страницы для догрузки более старых (передаётся обратно как query `before`);
+ * `null` — старее нет.
  */
 export interface MailListResponse {
   messages: MailMessage[];
-  next_since_id: number | null;
-  next_before_id: number | null;
-  has_more: boolean;
+  next_cursor: string | null;
 }
 
 /**
@@ -318,31 +309,18 @@ export interface MailReplyResponse {
 }
 
 /**
- * Команда внешнего почтового сервиса (04-api.md, MailTeam; external ADR-0037).
- * Это `groups` внешнего сервиса. Команда ≠ тег (MailTag).
- */
-export interface MailTeam {
-  id: number;
-  name: string;
-}
-
-/** Ответ GET /api/mail/teams (04-api.md, MailTeamsResponse). */
-export interface MailTeamsResponse {
-  teams: MailTeam[];
-}
-
-/**
- * Почтовый ящик внешнего сервиса (04-api.md, MailMailbox; external ADR-0037/ADR-0039).
- * `id` используется как `mail_account_id` в серверном фильтре ленты;
- * привязка к команде — через `group_id`; `is_active` — статус ящика (для дашборда).
- * Поля статуса синка (`last_synced_at`/`last_sync_error`/`consecutive_failures`) —
- * для кружка статуса и диагностики на вкладке «Почты» (ADR-038).
+ * Почтовый ящик из каталога CRM `mail_accounts` (ADR-044 §2/§4, MailMailbox).
+ * `id` = id ящика в агрегаторе (используется как `mail_account_id` в серверном
+ * фильтре ленты); привязка к команде — напрямую через `team_id` (UUID CRM-команды;
+ * `null` — ящик без команды, unassigned). Поля статуса синка
+ * (`last_synced_at`/`last_sync_error`/`consecutive_failures`) зеркалятся из агрегатора
+ * status-каналом — для кружка статуса и диагностики на вкладке «Почты».
  */
 export interface MailMailbox {
   id: number;
   email: string;
   display_name: string | null;
-  group_id: number | null;
+  team_id: string | null;
   is_active: boolean;
   /** Время последней успешной синхронизации; `null` — ещё не синхронизировался. */
   last_synced_at: string | null;
@@ -384,19 +362,20 @@ export interface MailMailboxTestResponse {
 }
 
 /**
- * Тело POST /api/mail/mailboxes (04-api.md, MailMailboxCreateRequest) = поля `test`
- * + `display_name`/`group_id` (команда `MailTeam.id`; `null` — без команды).
+ * Тело POST /api/mail/mailboxes (ADR-044 §4, MailMailboxCreateRequest) = поля `test`
+ * + `display_name`/`team_id` (UUID CRM-команды-владельца; `null` — без команды,
+ * unassigned — только admin-уровень). Для не-admin `team_id` обязан ∈ его командам.
  */
 export interface MailMailboxCreateRequest extends MailMailboxTestRequest {
   display_name?: string | null;
-  group_id?: number | null;
+  team_id?: string | null;
 }
 
 /**
- * Тело PATCH /api/mail/mailboxes/{id} (04-api.md, MailMailboxUpdateRequest). Все поля
+ * Тело PATCH /api/mail/mailboxes/{id} (ADR-044 §4, MailMailboxUpdateRequest). Все поля
  * опциональны — присутствие поля = «изменить». Пароль не передан → не менять (секрет не
- * префилится). `group_id`: int — сменить команду; `null` — снять привязку. `is_active` —
- * активация/деактивация ящика.
+ * префилится). `team_id`: UUID — сменить команду (перенос между командами — только
+ * admin-уровень); `null` — снять привязку. `is_active` — активация/деактивация ящика.
  */
 export interface MailMailboxUpdateRequest {
   email?: string;
@@ -412,7 +391,7 @@ export interface MailMailboxUpdateRequest {
   password?: string;
   smtp_password?: string | null;
   is_active?: boolean;
-  group_id?: number | null;
+  team_id?: string | null;
 }
 
 /** Ответ 202 POST /api/mail/mailboxes/{id}/sync (04-api.md, MailMailboxSyncResponse). */
@@ -430,21 +409,21 @@ export type MailTagRuleType =
 /** Режим совпадения правил тега (04-api.md): `any` — любое правило, `all` — все. */
 export type MailTagMatchMode = 'any' | 'all';
 
-/** Правило тега (04-api.md, MailTagRule). */
+/** Правило тега (ADR-044 §5, MailTagRule). `id` — UUID. */
 export interface MailTagRule {
-  id: number;
+  id: string;
   type: MailTagRuleType;
   pattern: string;
   created_at: string;
 }
 
 /**
- * Полный тег с правилами для вкладки «Теги» (04-api.md, MailTagFull). Глобальный
- * админский каталог. `color` — HEX из палитры 8 цветов (08-design-system.md).
+ * Полный тег с правилами для вкладки «Теги» (ADR-044 §5, MailTagFull). Глобальный
+ * админский каталог; `id` — UUID. `color` — HEX из палитры 8 цветов (08-design-system.md).
  * `is_builtin` — встроенный тег (удалять нельзя → 409; правка имени/правил разрешена).
  */
 export interface MailTagFull {
-  id: number;
+  id: string;
   name: string;
   color: string;
   match_mode: MailTagMatchMode;
@@ -498,6 +477,47 @@ export interface TeamMailboxItem {
 /** Ответ GET /api/teams/{id}/mailboxes (04-api.md, TeamMailboxesResponse). */
 export interface TeamMailboxesResponse {
   mailboxes: TeamMailboxItem[];
+}
+
+/**
+ * Состояние opt-out Telegram-уведомлений почты (ADR-044 §2, MailUserSettingsResponse).
+ * Ответ GET/PATCH /api/mail/me/settings. Дефолт (нет строки) = уведомления включены.
+ */
+export interface MailUserSettings {
+  tg_notifications_enabled: boolean;
+}
+
+/** Тело PATCH /api/mail/me/settings (ADR-044 §2, MailUserSettingsUpdateRequest). */
+export interface MailUserSettingsUpdateRequest {
+  tg_notifications_enabled: boolean;
+}
+
+/**
+ * Тело POST /api/mail/telegram/auth (ADR-044 §7, MailTelegramAuthRequest) —
+ * беспарольный Telegram-SSO Mini App `/tg/mail`. `init_data` — raw Telegram WebApp
+ * initData (HMAC-подпись бота — граница безопасности). Публичный эндпоинт.
+ */
+export interface MailTelegramAuthRequest {
+  init_data: string;
+}
+
+/**
+ * Ответ 200 POST /api/mail/telegram/auth (ADR-044 §7, MailTelegramAuthResponse).
+ * Успешный SSO: выдан CRM access-JWT + auto-upsert линка. Ошибки — 401
+ * `invalid_init_data`/`init_data_expired`, 403 `mail_operator_not_provisioned`,
+ * 400 `validation_error`.
+ */
+export interface MailTelegramAuthResponse {
+  /** Обычный CRM access-JWT (как у POST /api/auth/login). Держится Mini App в памяти. */
+  access_token: string;
+  /** Всегда `"bearer"`. */
+  token_type: string;
+  /** TTL access-токена в секундах. */
+  expires_in: number;
+  /** Из проверенного `init_data`. */
+  telegram_user_id: number;
+  /** Всегда `true` при успехе (линк upserted). */
+  linked: boolean;
 }
 
 // --- Proxies (04-api.md «Proxies», modules/proxies) ---
@@ -715,8 +735,7 @@ export interface PermissionsCatalogResponse {
 
 /**
  * Ссылка на CRM-команду пользователя (04-api.md, `TeamRef`). Денормализовано
- * для группировки списка «Пользователи» по командам. Это CRM-команды ([Teams]),
- * НЕ mail-«команды» (MailTeam).
+ * для группировки списка «Пользователи» по командам.
  */
 export interface TeamRef {
   id: string;
@@ -842,7 +861,8 @@ export interface TeamMember {
 
 /**
  * Элемент списка CRM-команд (04-api.md, схема `TeamListItem`). CRM-команды —
- * отдельная сущность (uuid, БД CRM, лидер+участники), НЕ mail-«команды» (MailTeam).
+ * отдельная сущность (uuid, БД CRM, лидер+участники). Ящик почты крепится к команде
+ * напрямую через `mail_accounts.team_id` (ADR-044; групп агрегатора больше нет).
  */
 export interface TeamListItem {
   id: string;
@@ -854,12 +874,6 @@ export interface TeamListItem {
   leader_username: string | null;
   /** Число участников (= members.length; включает лидера, если он есть). Может быть 0. */
   member_count: number;
-  /**
-   * Привязка к группе mail-агрегатора (04-api.md, ADR-038; 1:1 команда↔группа).
-   * `null` — команда без привязки к почте. Значения — из GET /api/mail/teams
-   * (`MailTeam.id`). Используется секцией «Почты команды» detail-панели /teams.
-   */
-  mail_group_id: number | null;
   /**
    * Число SMS-номеров команды (04-api.md, COUNT sms_phone_numbers; ADR-030). Может
    * быть 0. Денормализованный агрегат для чипа «N номеров» на карточке команды;
@@ -888,11 +902,6 @@ export interface TeamCreateRequest {
   name: string;
   leader_id?: string;
   member_ids?: string[];
-  /**
-   * Привязка к группе mail-агрегатора (04-api.md, ADR-038). Опц. `MailTeam.id`;
-   * `null`/не задан — без привязки. Занято другой командой → 409 team_mail_group_taken.
-   */
-  mail_group_id?: number | null;
 }
 
 /**
@@ -905,12 +914,6 @@ export interface TeamUpdateRequest {
   name?: string;
   leader_id?: string | null;
   member_ids?: string[];
-  /**
-   * Привязка к группе mail-агрегатора (04-api.md, ADR-038; presence-семантика: передано
-   * → изменить). `integer` → привязать/сменить; `null` → снять привязку. Не передано →
-   * не менять. Занято другой командой → 409 team_mail_group_taken.
-   */
-  mail_group_id?: number | null;
 }
 
 // --- SMS (04-api.md «SMS», modules/sms, ADR-030) ---

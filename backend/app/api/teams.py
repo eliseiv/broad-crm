@@ -82,10 +82,10 @@ async def list_team_mailboxes(
     mail_service: MailServiceDep,
     _principal: Annotated[Principal, Depends(require("teams", "view"))],
 ) -> TeamMailboxesResponse:
-    """Почты команды для detail-панели /teams (ADR-038). Нет команды → 404.
+    """Почты команды для detail-панели /teams (ADR-044 §4). Нет команды → 404.
 
-    Резолв `teams.mail_group_id`; NULL/`mail_enabled=false` → пустой список. Иначе
-    прокси external /mailboxes по группе; внешний сервис недоступен → 502.
+    Ящики читаются из каталога CRM `mail_accounts WHERE team_id=:id` (per-mailbox
+    привязка; групп больше нет). Пустой список — у команды нет ящиков.
     """
-    mail_group_id = await service.get_team_mail_group_id(team_id)
-    return await mail_service.list_team_mailboxes(mail_group_id)
+    await service.ensure_team_exists(team_id)
+    return await mail_service.list_team_mailboxes(team_id)

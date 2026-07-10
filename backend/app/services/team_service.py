@@ -110,6 +110,11 @@ class TeamService:
             raise team_not_found()
         return team.mail_group_id
 
+    async def ensure_team_exists(self, team_id: uuid.UUID) -> None:
+        """Команда существует в CRM, иначе 404 team_not_found (ADR-044 §4)."""
+        if not await self._teams.get_existing_ids({team_id}):
+            raise team_not_found()
+
     async def create_team(self, payload: TeamCreateRequest) -> TeamListItem:
         """Создаёт команду. Прецеденция: name-формат (422) → существование
         leader_id/member_ids (422) → уникальность name (409). Лидер (если есть) — в
