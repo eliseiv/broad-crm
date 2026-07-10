@@ -394,6 +394,19 @@ def not_authenticated() -> AppError:
     )
 
 
+def oauth_state_expired() -> AppError:
+    """`crm_state.exp` в прошлом на `/api/mail/oauth/ingest` (ADR-045 §3). 410.
+
+    Консент завершён после TTL: ящик создан в агрегаторе, но CRM не привяжет его к
+    команде по этому уведомлению → доедет через reconcile-pull (TD-047).
+    """
+    return AppError(
+        status_code=status.HTTP_410_GONE,
+        code="oauth_state_expired",
+        message="Ссылка подключения Outlook устарела",
+    )
+
+
 def mail_mailbox_not_found() -> AppError:
     return AppError(
         status_code=status.HTTP_404_NOT_FOUND,

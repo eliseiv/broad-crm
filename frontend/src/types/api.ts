@@ -399,6 +399,25 @@ export interface MailMailboxSyncResponse {
   queued: boolean;
 }
 
+/**
+ * Тело POST /api/mail/mailboxes/oauth/authorize (ADR-045 §3, MailOauthAuthorizeRequest).
+ * `team_id` — UUID CRM-команды-владельца будущего Outlook-ящика; `null` («без команды») —
+ * только admin-уровень. Не-admin обязан указать команду ∈ своим (иначе 403 forbidden).
+ */
+export interface MailOauthAuthorizeRequest {
+  team_id: string | null;
+}
+
+/**
+ * Ответ 200 POST /api/mail/mailboxes/oauth/authorize (ADR-045 §3, MailOauthAuthorizeResponse).
+ * `authorize_url` — Microsoft OAuth-ссылка; CRM показывает её для открытия в нужном профиле
+ * OctoBrowser (не auto-redirect). Ошибки: 401/403 forbidden/404 team_not_found/502
+ * mail_unavailable/503 mail_not_configured (Outlook-OAuth выключен — кнопка скрывается).
+ */
+export interface MailOauthAuthorizeResponse {
+  authorize_url: string;
+}
+
 /** Тип правила тега (04-api.md, MailTagRule). Человекочитаемые подписи — 08-design-system.md. */
 export type MailTagRuleType =
   | 'subject_contains'

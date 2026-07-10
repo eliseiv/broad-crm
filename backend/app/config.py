@@ -152,6 +152,12 @@ class Settings(BaseSettings):
     mail_push_max_skew_sec: int = 300
     # Потолок писем в одном батче POST /api/mail/ingest (> лимита → 400 validation_error).
     mail_ingest_max_batch: int = 100
+    # TTL HMAC-подписанного crm_state для headless Outlook-OAuth (ADR-045 §3): покрывает
+    # время прохождения consent в OctoBrowser. На /api/mail/oauth/ingest при `crm_state.exp`
+    # в прошлом → 410 oauth_state_expired. Нормативно >= агрегаторского
+    # OUTLOOK_OAUTH_STATE_TTL_SECONDS, чтобы consent, уложившийся в окно агрегатора,
+    # проходил и в CRM. Секретом не является (подпись — через MAIL_PUSH_SECRET).
+    mail_oauth_state_ttl_sec: int = 600
 
     @property
     def mail_ingest_enabled(self) -> bool:

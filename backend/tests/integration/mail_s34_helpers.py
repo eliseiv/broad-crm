@@ -109,6 +109,13 @@ class FakeMailClient:
         self._record("sync_mailbox", mailbox_id)
         return self._responses.get("sync_mailbox", {"queued": True})
 
+    async def authorize_oauth(self, crm_state: str) -> dict[str, Any]:
+        self._record("authorize_oauth", crm_state)
+        return self._responses.get(
+            "authorize_oauth",
+            {"authorize_url": "https://login.microsoftonline.com/consumers/authorize?x=1"},
+        )
+
     async def send_message(self, mailbox_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         self._record("send_message", mailbox_id, payload)
         return self._responses.get(

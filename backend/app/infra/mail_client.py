@@ -38,6 +38,7 @@ logger = get_logger(__name__)
 _BACKOFF_DELAYS_SEC = (0.2, 0.5)
 
 _EXTERNAL_MAILBOXES_PATH = "/api/external/mailboxes"
+_EXTERNAL_OAUTH_AUTHORIZE_PATH = f"{_EXTERNAL_MAILBOXES_PATH}/oauth/authorize"
 _API_KEY_HEADER = "X-API-Key"
 
 
@@ -101,6 +102,19 @@ class MailClient:
         """Форс-синк ящика: POST /api/external/mailboxes/{id}/sync (202, не идемпотентно)."""
         path = f"{_EXTERNAL_MAILBOXES_PATH}/{mailbox_id}/sync"
         return await self._request("POST", path)
+
+    async def authorize_oauth(self, crm_state: str) -> dict[str, Any]:
+        """Запросить у агрегатора Microsoft authorize URL (ADR-045 §2).
+
+        POST /api/external/mailboxes/oauth/authorize `{crm_state}` → `{authorize_url,
+        state}`. Outlook-OAuth выключен на агрегаторе (нет `OUTLOOK_CLIENT_ID`/`_SECRET`)
+        → внешний `404` → `MailRejected(404)` (сервис маппит в 503 mail_not_configured,
+        ADR-045 §3). Мутирующая семантика ретраев (минт `state` в Redis) — ретрай только
+        на ошибках соединения. `crm_state` — непрозрачный подписанный CRM-токен.
+        """
+        return await self._request(
+            "POST", _EXTERNAL_OAUTH_AUTHORIZE_PATH, json_body={"crm_state": crm_state}
+        )
 
     async def send_message(self, mailbox_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         """Отправка reply: POST /api/external/mailboxes/{id}/send (ADR-044 §8).

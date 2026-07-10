@@ -13,6 +13,7 @@ import {
   listMailboxes,
   listTags,
   listTeamMailboxes,
+  mailboxOAuthAuthorize,
   MAIL_PAGE_LIMIT,
   replyMail,
   syncMailbox,
@@ -31,6 +32,7 @@ import type {
   MailMailboxTestResponse,
   MailMailboxUpdateRequest,
   MailMessage,
+  MailOauthAuthorizeResponse,
   MailReplyRequest,
   MailReplyResponse,
   MailTagApplyResponse,
@@ -232,6 +234,17 @@ export function useSyncMailbox() {
     mutationFn: (id) => syncMailbox(id),
     // Синк меняет last_synced_at/consecutive_failures — обновляем список после постановки.
     onSuccess: () => invalidateMailboxes(queryClient),
+  });
+}
+
+/**
+ * POST /api/mail/mailboxes/oauth/authorize — инициировать OAuth-подключение Outlook
+ * (ADR-045 §3). Мутация без инвалидации: ящик появится позже (агрегатор → /oauth/ingest),
+ * форма пуллит список ящиков, пока открыта панель-ссылка. Variables — `team_id` (UUID|null).
+ */
+export function useMailboxOAuthAuthorize() {
+  return useMutation<MailOauthAuthorizeResponse, unknown, string | null>({
+    mutationFn: (teamId) => mailboxOAuthAuthorize(teamId),
   });
 }
 

@@ -27,6 +27,8 @@ from app.schemas.mail import (
     MailMailboxTestRequest,
     MailMailboxTestResponse,
     MailMailboxUpdateRequest,
+    MailOauthAuthorizeRequest,
+    MailOauthAuthorizeResponse,
     MailReplyRequest,
     MailReplyResponse,
     MailTagApplyResponse,
@@ -148,6 +150,25 @@ async def create_mailbox(
     """Создание ящика (ADR-044 §4). Гейт mail:create; для не-admin team_id ∈ scope."""
     response.headers["Cache-Control"] = "no-store"
     return await service.create_mailbox(scope=scope, payload=payload)
+
+
+@router.post("/mailboxes/oauth/authorize", response_model=MailOauthAuthorizeResponse)
+async def authorize_oauth(
+    payload: MailOauthAuthorizeRequest,
+    service: MailServiceDep,
+    scope: MailScopeDep,
+    p: CreateDep,
+    response: Response,
+) -> MailOauthAuthorizeResponse:
+    """Инициировать headless Outlook-OAuth из CRM (ADR-045 §3). Гейт mail:create.
+
+    Авторизация команды — как создание ящика (`team_id ∈ scope`; `team_id=null` — только
+    admin). CRM минтит HMAC-подписанный `crm_state` и запрашивает у агрегатора authorize
+    URL. Outlook-OAuth недоступен (`MAIL_API_KEY` пуст ИЛИ агрегатор вернул 404) → единый
+    503 mail_not_configured (frontend по нему скрывает кнопку Outlook, §5).
+    """
+    response.headers["Cache-Control"] = "no-store"
+    return await service.authorize_oauth(scope=scope, initiator_user_id=p.user_id, payload=payload)
 
 
 @router.patch("/mailboxes/{mailbox_id}", response_model=MailMailbox)

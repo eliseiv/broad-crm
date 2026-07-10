@@ -12,7 +12,8 @@ from collections.abc import Iterable
 from datetime import datetime
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
+from sqlalchemy import func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.mail_account import MailAccount
@@ -104,6 +105,42 @@ class MailAccountRepository:
         self._session.add(account)
         await self._session.flush()
         return account
+
+    async def upsert_catalog(
+        self,
+        *,
+        account_id: int,
+        email: str,
+        display_name: str | None,
+        team_id: uuid.UUID | None,
+        is_active: bool,
+    ) -> None:
+        """Upsert каталожной записи Outlook-ящика (ADR-045 §3). Идемпотентно.
+
+        `id = account_id` (агрегаторский int). `ON CONFLICT (id) DO UPDATE`
+        **детерминированно перезаписывает** email/display_name/team_id/is_active (re-consent
+        того же ящика не создаёт дубля; `team_id` всегда берётся из `crm_state`, §3). Поля
+        синка (`last_synced_at`/`last_sync_error`/`consecutive_failures`/`down_alert_sent_at`)
+        НЕ трогаются — их ведёт status-канал. Токены/креды в CRM не хранятся.
+        """
+        stmt = pg_insert(MailAccount).values(
+            id=account_id,
+            email=email,
+            display_name=display_name,
+            team_id=team_id,
+            is_active=is_active,
+        )
+        stmt = stmt.on_conflict_do_update(
+            index_elements=[MailAccount.id],
+            set_={
+                "email": email,
+                "display_name": display_name,
+                "team_id": team_id,
+                "is_active": is_active,
+                "updated_at": func.now(),
+            },
+        )
+        await self._session.execute(stmt)
 
     async def delete(self, account_id: int) -> None:
         """Удалить строку каталога (CASCADE удалит письма/reply ящика, §4)."""

@@ -16,6 +16,7 @@ CRM хранит письма/теги/каталог ящиков (развор
 
 from __future__ import annotations
 
+import time
 import uuid
 from collections.abc import Callable
 from datetime import datetime
@@ -53,6 +54,7 @@ from app.errors import (
     validation_error,
 )
 from app.infra.mail_client import MailClient, MailRejected, MailUnavailable
+from app.infra.mail_oauth_state import encode_crm_state
 from app.logging import get_logger
 from app.models.mail_account import MailAccount
 from app.models.mail_message import MailMessage as MailMessageModel
@@ -74,6 +76,8 @@ from app.schemas.mail import (
     MailMailboxTestResponse,
     MailMailboxUpdateRequest,
     MailMessage,
+    MailOauthAuthorizeRequest,
+    MailOauthAuthorizeResponse,
     MailReplyRequest,
     MailReplyResponse,
     MailTag,
@@ -420,6 +424,62 @@ class MailService:
             raise self._map_rejected(exc, not_found=mail_mailbox_not_found) from exc
         queued = raw.get("queued")
         return MailMailboxSyncResponse(queued=queued if isinstance(queued, bool) else True)
+
+    # --- Outlook OAuth (headless инициация, ADR-045) -----------------------
+
+    async def authorize_oauth(
+        self,
+        *,
+        scope: MailScope,
+        initiator_user_id: uuid.UUID | None,
+        payload: MailOauthAuthorizeRequest,
+    ) -> MailOauthAuthorizeResponse:
+        """Инициировать headless Outlook-OAuth из CRM (ADR-045 §3). Гейт mail:create.
+
+        Авторизация команды — идентична созданию ящика (ADR-044 §4): `team_id=null` —
+        только admin; не-admin обязан указать `team_id ∈ scope.team_ids`; несуществующая
+        `team_id` → 404 team_not_found. CRM минтит HMAC-подписанный `crm_state`
+        (`{team_id, initiator, exp}` через `MAIL_PUSH_SECRET`, stateless) и запрашивает у
+        агрегатора authorize URL. Outlook-OAuth недоступен (`MAIL_API_KEY` пуст → 503 в
+        `_ensure_configured`; агрегатор вернул 404 → 503) → единый 503 mail_not_configured
+        (§3). Транзиентная недоступность агрегатора → 502 mail_unavailable.
+        """
+        self._ensure_configured()
+        await self._ensure_team_writable(scope, payload.team_id)
+
+        exp = int(time.time()) + self._settings.mail_oauth_state_ttl_sec
+        crm_state = encode_crm_state(
+            secret=self._settings.mail_push_secret,
+            team_id=payload.team_id,
+            initiator_user_id=initiator_user_id,
+            exp=exp,
+        )
+        try:
+            raw = await self._client.authorize_oauth(crm_state)
+        except MailUnavailable as exc:
+            raise mail_unavailable() from exc
+        except MailRejected as exc:
+            raise self._map_authorize_rejected(exc) from exc
+
+        authorize_url = raw.get("authorize_url")
+        if not isinstance(authorize_url, str) or not authorize_url:
+            logger.warning("mail_oauth_authorize_missing_url")
+            raise mail_unavailable()
+        return MailOauthAuthorizeResponse(authorize_url=authorize_url)
+
+    @staticmethod
+    def _map_authorize_rejected(exc: MailRejected) -> AppError:
+        """Маппинг отклонения authorize агрегатором (ADR-045 §3).
+
+        Внешний 404 = Outlook-OAuth выключен на агрегаторе (нет `OUTLOOK_CLIENT_ID`/
+        `_SECRET`) → единый 503 mail_not_configured (конфигурационное «возможность не
+        настроена», не транзиентная недоступность). Прочие 4xx — неожиданны при валидном
+        `crm_state`/ключе → 502 mail_unavailable.
+        """
+        if exc.status_code == status.HTTP_404_NOT_FOUND:
+            return mail_not_configured()
+        logger.warning("mail_oauth_authorize_unexpected_status", status=exc.status_code)
+        return mail_unavailable()
 
     # --- Reply (отправка через агрегатор) ----------------------------------
 

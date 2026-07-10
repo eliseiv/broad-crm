@@ -1,0 +1,107 @@
+# ADR-045 — Восстановление добавления Outlook-ящиков (OAuth) из CRM в headless-модели + инструкция «Как добавить почту?»
+
+Статус: `accepted` · Дата: 2026-07-10
+
+**Амендмент** [ADR-044](ADR-044-mail-full-merge-into-crm.md) (§4 «Ящики: CRUD в CRM») и парного mail-агрегатора `ADR-0044` §7 / Phase A3 / Phase G (судьба `oauth_router`, env-чистка). Парный ADR в mail-агрегаторе — `ADR-0045` (external Outlook OAuth headless). Закрывает пробел, зафиксированный как агрегаторский **TD-052** (headless OAuth-consent недоступен после сноса session-UI).
+
+## Context
+
+При переносе модуля «Почты» в CRM ([ADR-044](ADR-044-mail-full-merge-into-crm.md)) и демонтаже агрегатора (`ADR-0044`) потеряны **две** функции формы добавления ящика, работавшие в старом Jinja-UI агрегатора (`backend/app/templates/accounts/form.html`):
+
+1. **Подключение Outlook по OAuth2.** Личные ящики `@outlook.com`/`@hotmail.com`/`@live.com` с сентября 2024 не принимают логин по паролю приложения — нужен OAuth2. В агрегаторе это делал session-роутер `GET /api/oauth/outlook/authorize` (`backend/app/oauth/router.py:62`) — отдавал Microsoft authorize URL как JSON-строку (пользователь открывал её в нужном профиле OctoBrowser, **не** auto-redirect) + `GET /api/oauth/outlook/callback` (зарегистрированный `redirect_uri`) — обменивал `code` на токены и создавал/привязывал ящик от session-владельца. **Проблема:** `authorize` требует `CurrentUser` (session), `callback` создаёт ящик от `account.user_id` (session-владелец) и редиректит на `/accounts`. В headless-CRM сессий/UI агрегатора нет → роутер функционировать не может. `ADR-0044` §7 снял `oauth_router` и завёл `TD-052`; `OutlookTokenService` (refresh существующих `oauth_outlook`-ящиков) остался живым в worker'е. Итог: существующие Outlook-ящики с валидным refresh синкаются, но **завести НОВЫЙ Outlook-ящик или переподключить ящик в `oauth_needs_consent` из CRM нельзя**.
+
+2. **Инструкция «Как добавить почту?».** `<details>`-аккордеон help-box (`form.html:18-113`) с per-провайдерными подсказками (Gmail app passwords + предупреждение о корпоративном Workspace, Яндекс, Mail.ru, Outlook, iCloud, Yahoo, свой сервер, troubleshooting). В форме CRM `MailboxFormModal.tsx` инструкции нет.
+
+**Инварианты, которые нельзя нарушить** (действующая архитектура ADR-044):
+- **Токены и `mail_accounts` (с кредами) живут в агрегаторе.** У агрегатора — IMAP-sync-worker, `OutlookTokenService` (refresh), `MailPasswordCipher` (AES-256-GCM), колонки `oauth_refresh_token_encrypted`/`oauth_access_token_encrypted`. CRM IMAP не синкает и AES-GCM для почты не держит (креды — **транзитом**, ADR-044 §4). ⇒ **обмен `code`→токены и хранение токенов обязаны остаться в агрегаторе.**
+- **Владение ящик↔команда — источник истины в CRM** (`mail_accounts.team_id`, ADR-044 §2). Агрегатор о CRM-командах не знает (`group_id`/`groups` упразднены). ⇒ **CRM-строку `mail_accounts` с `team_id` создаёт CRM**, ключ — id ящика, присвоенный агрегатором.
+- **`redirect_uri` зарегистрирован в Azure App** и указывает на агрегатор; смена ключей/секрета Microsoft-приложения нежелательна. `OUTLOOK_CLIENT_SECRET` живёт **только** в агрегаторе.
+- CRM без Redis/брокера (NFR-1); у агрегатора Redis есть.
+
+## Decision
+
+### §1. Где происходит каждый шаг OAuth (решение и обоснование)
+
+**Выбран вариант A: authorize-URL генерирует агрегатор по запросу CRM; Microsoft редиректит на агрегатор (там обмен `code` и хранение токенов); агрегатор server-to-server уведомляет CRM о созданном ящике вместе с CRM-контекстом команды.** CRM только инициирует flow, показывает ссылку и привязывает ящик к команде.
+
+| Шаг | Где | Почему |
+|-----|-----|--------|
+| Генерация Microsoft authorize URL (`client_id`, `redirect_uri`, `scope`, `state`, PKCE S256) | **Агрегатор** (реюз `OutlookOAuthService.build_authorize_url`) | `client_id`/`redirect_uri`/`OUTLOOK_TENANT`/PKCE-стейт-стор (Redis) уже там; CRM не должна знать секреты Microsoft-приложения и не имеет Redis для PKCE-стейта |
+| Хранение `state` + PKCE `code_verifier` (одноразово, TTL) | **Агрегатор** (Redis `oauth_state:{state}`, реюз) | анти-CSRF/анти-fixation стейт нужен там же, где обмен `code` |
+| Открытие authorize URL и прохождение consent | **Оператор в OctoBrowser** (нужный профиль) | реюз рабочей модели агрегатора: ссылку открывают в правильном профиле, **не** auto-redirect |
+| Microsoft `redirect_uri` (обмен `code`→токены) | **Агрегатор** (реюз `OutlookOAuthService.exchange_code`) | обмен требует `OUTLOOK_CLIENT_SECRET` + AES-GCM для `oauth_refresh_token_encrypted`; и то и другое **только** в агрегаторе |
+| Создание `mail_accounts` (id, креды, токены) | **Агрегатор** (owner = `crm-service`, **без** `group_id`) | ядро connector'а; id ящика присваивает агрегатор |
+| Привязка ящик↔команда (`team_id`) | **CRM** | источник истины владения — CRM; агрегатор о командах не знает |
+| Доставка id нового ящика + CRM-контекста обратно в CRM | **Агрегатор → CRM, server-to-server (HMAC)** | надёжнее браузерного round-trip: не теряется, если оператор закрыл вкладку OctoBrowser; реюз push-инфраструктуры/HMAC (`MAIL_PUSH_SECRET`) |
+
+**Почему не «CRM генерирует URL и Microsoft редиректит на CRM».** Тогда `OUTLOOK_CLIENT_SECRET` и обмен `code`→refresh-токен + AES-GCM-шифрование токенов пришлось бы дублировать в CRM, а `redirect_uri` в Azure — перерегистрировать на CRM. Это дублирует OAuth-ядро и токен-хранилище (нарушает «токены только в агрегаторе»). Отклонено.
+
+**Почему не «браузер возвращается в CRM с id ящика».** Consent проходит в изолированном профиле OctoBrowser (не в обычном браузере оператора). Браузерный носитель `team_id`/id спуфабелен и теряется при закрытии вкладки. Server-to-server-уведомление (HMAC) детерминированно. Отклонено.
+
+**Почему `team_id` не хранится в агрегаторе.** Владение командой — исключительно в CRM (ADR-044 §1). Агрегатор переносит **непрозрачный** `crm_state`, кодирующий CRM-контекст, и возвращает его на шаге уведомления, не интерпретируя.
+
+### §2. Контракт агрегатора (парный `ADR-0045`) — что видит CRM
+
+Два новых external-эндпоинта под тем же ключом `EXTERNAL_API_KEY`/`X-API-Key` и гейтом `EXTERNAL_WRITE_ENABLED` (полные схемы — mail-агрегатор `ADR-0045` + `04-api-contracts.md`). Здесь — нормативная граница со стороны CRM:
+
+- **`POST /api/external/mailboxes/oauth/authorize`** (write-gate): тело `{ crm_state: string }` (непрозрачный CRM-токен, ≤512 симв.). Агрегатор минтит Microsoft authorize URL + `state`, сохраняет в Redis `{ code_verifier, crm_state }` (TTL `OUTLOOK_OAUTH_STATE_TTL_SECONDS`). Ответ `200` `{ authorize_url: string, state: string }`. `outlook_oauth_enabled=false` (нет `OUTLOOK_CLIENT_ID`/`_SECRET`) → `404 not_found` (фича скрыта, симметрично старому поведению). Ошибки: `401`/`403`/`400`.
+- **`GET /api/external/mailboxes/oauth/callback`** (зарегистрированный `redirect_uri`, машинный, БЕЗ ключа/сессии — авторизация через одноразовый `state` в Redis + PKCE): Microsoft-редирект. Агрегатор: валидирует+DEL `state` (атомарно), обменивает `code`→токены (PKCE), резолвит email из `id_token`, **создаёт `mail_accounts` (owner=`crm-service`, без `group_id`)** ИЛИ обновляет токены существующего ящика (re-consent), затем **уведомляет CRM** (см. §3) и возвращает **минимальную self-contained HTML-страницу** «Outlook подключён — вернитесь в CRM» / «Ошибка подключения». `outlook_oauth_enabled=false` → `404`. Consent отклонён (`error`) / битый `state` / сбой обмена → HTML-страница ошибки (mailbox не создаётся).
+
+`redirect_uri` (Azure App + `OUTLOOK_REDIRECT_URI` env агрегатора) переводится на новый путь `{APP_BASE_URL}/api/external/mailboxes/oauth/callback` (одноразовая правка Azure + env — devops). Обмен `code` использует тот же `OUTLOOK_REDIRECT_URI`, что и authorize — значения обязаны совпадать с Azure-регистрацией.
+
+### §3. Контракт CRM — новые эндпоинты
+
+Все под модулем mail; per-endpoint права — из `CATALOG["mail"]` (ADR-044 §7, **без изменений**: `("view","create","edit","delete","sync","tags")`). Полные схемы + коды ошибок — follow-up `04-api.md#mail` (§6); здесь — нормативная спецификация.
+
+- **`POST /api/mail/mailboxes/oauth/authorize`** (`mail:create`): инициирует OAuth-подключение из CRM.
+  - Тело `MailOauthAuthorizeRequest`: `{ team_id: string(uuid) | null }`.
+  - **Авторизация команды — те же правила, что создание ящика (ADR-044 §4, MAJOR-6):** не-admin обязан указать `team_id ∈ MailScope.team_ids`, иначе `403 forbidden`; **`team_id = null` (ящик без команды) — ТОЛЬКО admin-уровень** (`MailScope.sees_all_teams`), не-admin `null` → `403`. `team_id` указывает на несуществующую команду → `404 team_not_found`.
+  - CRM формирует **непрозрачный `crm_state`**, детерминированно кодирующий `{ team_id, initiator_user_id, exp }`, **подписанный HMAC общим секретом** (переиспользуется `MAIL_PUSH_SECRET`; stateless — новой таблицы CRM не заводим). CRM вызывает агрегатор `POST /api/external/mailboxes/oauth/authorize { crm_state }` (под `MAIL_API_KEY`/`X-API-Key`).
+  - Ответ `200` `MailOauthAuthorizeResponse`: `{ authorize_url: string }` (ссылку CRM показывает пользователю для открытия в нужном профиле OctoBrowser — **не** auto-redirect; §5-UI). Ошибки: `401`, `403 forbidden`, `404 team_not_found`, `502 mail_unavailable`, `503 mail_not_configured`.
+  - **Единый нормативный статус «Outlook-OAuth недоступен» — `503 mail_not_configured`** (код из существующего реестра CRM, `app/errors.py`/`04-api.md`; НЕ новый). CRM authorize возвращает **`503 mail_not_configured`** в обоих под-случаях «сервер не сконфигурирован для этой возможности»: (а) почта выключена глобально (`MAIL_API_KEY` пуст → `mail_enabled=false`, как все `/api/mail/*`), и (б) агрегатор сообщил, что Outlook-OAuth выключен (агрегаторский `authorize` вернул `404`, т.е. `OUTLOOK_CLIENT_ID`/`_SECRET` не заданы). Обоснование выбора `503 mail_not_configured`, а НЕ `502 mail_unavailable`: это **конфигурационное «возможность не настроена на сервере»** (детерминированное состояние, кнопку надо скрыть), а не транзиентная недоступность внешнего сервиса (`502` подразумевал бы ретрай). Инвентированный ранее `404 outlook_oauth_disabled` — **упразднён** (в реестре кода такого нет). Frontend по `503` от authorize скрывает кнопку Outlook (§5).
+
+- **`POST /api/mail/oauth/ingest`** (машинный, аутентификация **HMAC-SHA256** тем же механизмом и секретом `MAIL_PUSH_SECRET`, что `/api/mail/ingest` — ADR-044 §3; **без JWT, CSRF-exempt**): уведомление агрегатора о созданном/переподключённом Outlook-ящике.
+  - Тело `MailOauthIngestRequest`: `{ crm_state: string, mail_account_id: int, email: string, display_name: string | null, is_active: bool }`.
+  - CRM: проверяет HMAC-подпись+timestamp-окно (идентично §3 ADR-044); проверяет HMAC-подпись **`crm_state`** и его `exp` → извлекает `team_id`/`initiator_user_id`; **upsert** `mail_accounts { id=mail_account_id, email, display_name, team_id, is_active }` идемпотентно `ON CONFLICT (id) DO UPDATE` (re-consent того же ящика не создаёт дубля). Аудит `mail_oauth_account_linked` (лог-based, structlog; без токенов/секретов).
+  - **`team_id` детерминирован — upsert ВСЕГДА перезаписывает `mail_accounts.team_id` значением из `crm_state`** (не «сохраняет прежнее»). Т.к. `authorize` требует `team_id` в теле, а `crm_state` его несёт, привязка ящика к команде однозначно определяется тем `team_id`, который был в форме на шаге authorize. **При re-consent frontend передаёт в `authorize` ТЕКУЩИЙ `team_id` ящика** (из detail-view ящика на вкладке «Почты») → upsert перезапишет `team_id` тем же значением (нет перемещения). Если оператор осознанно передаст **другой** `team_id` (в пределах своего `MailScope.team_ids` / admin), ящик **детерминированно переназначится** на новую команду — это корректное, а не побочное поведение (перенос между командами всё равно admin-only на обычном `PATCH`; здесь `team_id` для не-admin валиден только в пределах его команд на шаге authorize).
+  - Ответ `200` `{ ok: true }`. Ошибки: `401 not_authenticated` (HMAC/skew/битый `crm_state`-HMAC), `410 oauth_state_expired` (`crm_state.exp` в прошлом — консент завершён после TTL; ящик в агрегаторе создан, но CRM его не привяжет к команде → попадёт в reconcile, [TD-047]), `400 validation_error`, `503 mail_ingest_not_configured` (`MAIL_PUSH_SECRET` пуст).
+  - **Порядок гарантий:** агрегатор вызывает `/oauth/ingest` **до** первого push письма этого ящика, поэтому CRM-каталог существует до писем (нет `unknown_mailbox`-дропа, ADR-044 §3). Ретрай `/oauth/ingest` со стороны агрегатора — connect-only (анти-двойная-запись; upsert идемпотентен).
+
+**Ре-консент существующего ящика.** Кнопка «Переподключить Outlook» доступна в CRM для ящика с признаком просроченного consent. Механизм тот же (`authorize`→consent→callback→`exchange_code` обновляет токены существующего `mail_accounts` в агрегаторе→`/oauth/ingest` со `is_active`). Признак «нужен re-consent» на стороне CRM — [TD-048] (агрегатор знает `oauth_needs_consent`, но CRM его сейчас не зеркалит; на старте кнопка «Переподключить» доступна из detail-строки ящика всегда — вызов безвреден для password-ящиков не предлагается, только для помеченных OAuth; полное зеркалирование признака — отдельный шаг).
+
+### §4. Координация с демонтажём агрегатора (критично — зависимость)
+
+Замена session-OAuth **специфицирована ДО** того, как демонтаж (`ADR-0044`) снёс бы возможность заводить Outlook-ящики. Явные правки к `ADR-0044`, обязательные к согласованию (парный `ADR-0045` их фиксирует на стороне агрегатора):
+
+1. **`ADR-0044` §7 / Phase A3 — `OutlookOAuthService` НЕ удаляется.** Снимается только session-роутер `oauth/router.py` (человеко-обращён — верно). Класс `OutlookOAuthService` (`build_authorize_url` + `exchange_code`) из `oauth/service.py` — **остаётся** (файл и так «оставить»), но **адаптируется под headless**: owner создаваемого ящика = `crm-service` (не session-user), `group_id` **не проставляется** (колонка дропнута ADR-0044 §2), `OAuthState` несёт `{ code_verifier, crm_state }` вместо `user_id`. Новые external-роуты (`/api/external/mailboxes/oauth/*`) добавляются в **сохраняемый** `external/router.py`.
+2. **`ADR-0044` Phase G (env-чистка) — `OUTLOOK_REDIRECT_URI` НЕ удаляется.** ADR-0044 §7 гласил «consent-only параметры (`redirect_uri`) не нужны» — этот пункт **отменяется**: headless-consent восстановлен, поэтому `OUTLOOK_REDIRECT_URI` (обновлённый на новый путь §2), `OUTLOOK_TENANT`, `OUTLOOK_OAUTH_STATE_TTL_SECONDS`, `OUTLOOK_CLIENT_ID`, `OUTLOOK_CLIENT_SECRET` — **все сохраняются**.
+3. **Redis агрегатора сохраняется** (уже так — push-очередь/force_sync/rate-limit); `oauth_state:{state}` работает.
+4. **Порядок:** новые external-OAuth-эндпоинты деплоятся в агрегатор **в той же или более ранней фазе**, что снятие `oauth_router` (Phase A3). Т.к. они живут в сохраняемом `external/router.py`, конфликта нет — старый session-роутер снимается, новый external-flow его замещает. **TD-052 (агрегатор) закрывается** этим ADR (парный `ADR-0045`): headless OAuth-consent восстановлен.
+
+### §5. UI-инструкция и Outlook-секция формы (нормативный текст — в `08-design-system.md`)
+
+Нормативный текст инструкции «Как добавить почту?» и Outlook-OAuth-секции формы добавления ящика (`MailboxFormModal.tsx`) задаётся в [08-design-system.md](../08-design-system.md#как-добавить-почту-нормативно) (перенос содержательных подсказок агрегаторского help-box, актуализированных под CRM: провайдеры, app passwords, ограничения, troubleshooting). Здесь — только структура:
+
+- **Аккордеон «Как добавить почту?»** (`ui/Accordion`/`<details>`, свёрнут по умолчанию) — вверху модалки создания (не в режиме edit). Провайдеры: Gmail, Яндекс, Mail.ru-семейство, Outlook/Hotmail/Live, Apple iCloud, Yahoo, свой сервер, «если не работает».
+- **Секция «Outlook (OAuth)»** — под аккордеоном, только при создании: лид «Для ящиков `@outlook.com`/`@hotmail.com`/`@live.com`» + кнопка **«Подключить Outlook (OAuth)»**. Кнопка отправляет `POST /api/mail/mailboxes/oauth/authorize { team_id }` с **текущим значением селектора «Команда»** модалки — семантика `team_id` **идентична обычному созданию ящика** (`MailboxFormModal.handleCreate` шлёт `team_id: teamId || null`). По `200` — панель со **ссылкой** (readonly-инпут + «Скопировать» + «Открыть») и инструкцией «Откройте ссылку в нужном профиле OctoBrowser…; после подтверждения ящик появится в списке». Пока панель открыта, вкладка «Почты» **периодически перезапрашивает** `GET /api/mail/mailboxes` (react-query `refetchInterval`) → новый ящик появляется, когда `/oauth/ingest` долетит. При `503 mail_not_configured` от authorize (Outlook-OAuth выключен на агрегаторе; §3) — кнопка скрыта/«недоступно».
+
+**Политика `team_id` в UI — Вариант B (нормативно; разрешение docs↔docs-напряжения UI vs backend).** Backend `authorize` через `_ensure_team_writable` допускает `team_id = null` **для admin-уровня** (симметрично созданию ящика, ADR-044 §4). UI **следует той же политике, что обычное создание ящика в той же модалке** (а НЕ строже): OAuth-кнопка использует **тот же общий селектор «Команда»** (`teamOptions`, `MailboxFormModal`) и шлёт `team_id: teamId || null`. admin-уровень (`sees_all_mail_teams`) выбирает «Без команды» → подключает unassigned-ящик (`team_id: null`, активная кнопка). **Отдельного гейта «сначала выберите команду для всех» — НЕТ** (иначе OAuth-подключение оказалось бы строже ручного создания в той же форме — асимметрия: admin мог бы вручную завести unassigned-ящик, но не через OAuth). Обоснование выбора B, а не A (строгий UI): консистентность с фактическим `MailboxFormModal.handleCreate` (`team_id: teamId || null`, admin создаёт unassigned-ящик по дефолту без принуждения к команде).
+
+**Оговорка (реальность формы, не-admin).** Селектор «Команда» в режиме `add` показывает опцию «Без команды» **всем** (pre-existing: `teamOptions` не гейтит её по `seesAllTeams` — закоммичено в ADR-044, до OAuth). Не-admin, выбравший «Без команды», получит **`403`** от `_ensure_team_writable` (в ручном создании и в OAuth одинаково — backend защищён). Штатный выбор не-admin — своя команда. Гейтить «Без команды» по admin-уровню в UI (единообразно для create+OAuth) — **UX-долг [TD-050](../100-known-tech-debt.md)** (НЕ регрессия OAuth-задачи). Известное следствие unassigned-ящика (нет командной видимости/уведомлений) — [TD-042](../100-known-tech-debt.md), общее для ручного и OAuth-создания.
+- **Разделитель** «или добавьте ящик вручную (IMAP / пароль)» — над существующими полями IMAP/SMTP.
+
+## Consequences
+
+- Добавление и переподключение Outlook-ящиков из CRM восстановлено без переноса токен-ядра/секретов Microsoft в CRM: обмен `code` и хранение токенов остаются в агрегаторе, привязка к команде — в CRM, доставка id — server-to-server по HMAC (реюз `MAIL_PUSH_SECRET`).
+- **Зависимость демонтажа снята:** `ADR-0044` §7/Phase A3/Phase G амендированы (сохранить `OutlookOAuthService` headless + `OUTLOOK_REDIRECT_URI`); **агрегаторский TD-052 закрыт** парным `ADR-0045`.
+- Новых секретов/таблиц не вводится: CRM переиспользует `MAIL_API_KEY` (вызов агрегатора) и `MAIL_PUSH_SECRET` (HMAC `/oauth/ingest` + подпись `crm_state`); агрегатор — существующие `OUTLOOK_*` + новый `CRM_OAUTH_INGEST_URL` (URL CRM-приёмника, парный `ADR-0045`).
+- Инструкция «Как добавить почту?» восстановлена в дизайн-системе CRM как нормативный UI-текст.
+- Известные ограничения — [TD-047] (сбой `/oauth/ingest` → ящик в агрегаторе без CRM-каталога/команды до reconcile), [TD-048] (признак `oauth_needs_consent` в CRM не зеркалится — кнопка «Переподключить» без серверного индикатора), [TD-049] (корпоративные O365/Workspace-ящики, где app-passwords отключены админом домена, а OAuth недоступен для рабочего тенанта — не поддерживаются; наследует агрегаторский TD-031 «e2e не подтверждён на реальном Azure App»).
+
+## Alternatives considered
+
+- **CRM генерирует authorize URL и владеет callback (Microsoft редиректит на CRM).** Отклонён: дублирует `OUTLOOK_CLIENT_SECRET` + обмен `code`→refresh + AES-GCM-хранение токенов в CRM и требует перерегистрации `redirect_uri` на CRM; нарушает «токены только в агрегаторе».
+- **Браузерный возврат id ящика в CRM (redirect на CRM с `mail_account_id`).** Отклонён: consent идёт в изолированном OctoBrowser-профиле; браузерный носитель id/team спуфабелен и теряется при закрытии вкладки. Server-to-server надёжнее.
+- **CRM поллит агрегатор за результатом (`confirm`-эндпоинт + чтение «какой ящик создал state X»).** Отклонён: требует хранить `crm_state→mailbox` в агрегаторе и лишний round-trip; событийный HMAC-push доставляет привязку без опроса (зеркалит `/api/mail/ingest`).
+- **Хранить `team_id` в агрегаторе (в `mail_accounts`).** Отклонён: владение командой — только в CRM (ADR-044 §1); агрегатор — чистый connector без знания CRM-команд.
+- **Отдельная CRM-таблица `mail_oauth_pending` для `state`.** Отклонён в пользу stateless HMAC-подписанного `crm_state` (реюз `MAIL_PUSH_SECRET`): без новой миграции; идемпотентность и анти-replay обеспечены HMAC-аутентификацией `/oauth/ingest` + upsert по id ящика.

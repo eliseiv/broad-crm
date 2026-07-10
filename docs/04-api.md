@@ -808,9 +808,11 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 | `409` | `mail_conflict` | Дубликат ящика (email уже заведён) или тега (имя занято) — проброс внешнего `409` |
 | `422` | `unprocessable` | Семантически некорректное тело (пустой `body` reply, невалидный `color`/`type` правила) **или сбой IMAP/SMTP-логина/коннекта при `test`/create/`PATCH` кредов** (проброс внешнего `422` `imap_login_failed`/`smtp_login_failed`/`invalid_host`) |
 | `502` | `mail_unavailable` | Внешний сервис `postapp.store` недоступен/таймаут/вернул `5xx` (исчерпаны ретраи). **Сбой проверки IMAP/SMTP-соединения при `test`/create — это `422` (см. выше), не `502`** |
-| `503` | `mail_not_configured` | Почта не настроена (`MAIL_API_KEY` пуст → `mail_enabled=false`); все эндпоинты |
+| `503` | `mail_not_configured` | Почта не настроена (`MAIL_API_KEY` пуст → `mail_enabled=false`); все эндпоинты. **Также — единый код «Outlook-OAuth недоступен»** (`POST /api/mail/mailboxes/oauth/authorize`: агрегатор сообщил, что Outlook-OAuth выключен — `OUTLOOK_CLIENT_ID`/`_SECRET` не заданы; [ADR-045](adr/ADR-045-mail-outlook-oauth-headless-reonboarding.md) §3) |
+| `410` | `oauth_state_expired` | `POST /api/mail/oauth/ingest`: `crm_state.exp` в прошлом — OAuth-консент завершён после TTL; ящик в агрегаторе создан, но CRM не привяжет к команде ([ADR-045](adr/ADR-045-mail-outlook-oauth-headless-reonboarding.md) §3, [TD-047](100-known-tech-debt.md)) |
+| `503` | `mail_ingest_not_configured` | `POST /api/mail/oauth/ingest` (и `/api/mail/ingest`): `MAIL_PUSH_SECRET` пуст → приёмник выключен ([ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) §3 / [ADR-045](adr/ADR-045-mail-outlook-oauth-headless-reonboarding.md) §3) |
 
-Фабрики `mail_unavailable`, `mail_message_not_found`, `mail_not_configured`, `mail_mailbox_not_found`, `mail_group_not_found`, `mail_tag_not_found`, `mail_conflict` — в `app/errors.py`. Тело ошибки внешнего сервиса в ответ CRM дословно не пробрасывается (только нормативный `code` + рус. `message`).
+Фабрики `mail_unavailable`, `mail_message_not_found`, `mail_not_configured`, `mail_mailbox_not_found`, `mail_group_not_found`, `mail_tag_not_found`, `mail_conflict`, `team_not_found`, `oauth_state_expired`, `mail_ingest_not_configured` — в `app/errors.py`. Тело ошибки внешнего сервиса в ответ CRM дословно не пробрасывается (только нормативный `code` + рус. `message`).
 
 **Ретраи (нормативно, `mail_client.py`).** GET-методы ретраятся на транзиентных `{429,500,502,503,504}` + `Connect*`/read-timeout (backoff `(0.2, 0.5)`). Мутирующие `POST/PATCH/DELETE` (create/update/delete/sync ящика, reply, CRUD тегов/правил, apply, `test`) ретраятся **только** на `ConnectError`/`ConnectTimeout` — защита от двойной записи; read-timeout/`5xx` на write → сразу `502 mail_unavailable`.
 
@@ -1073,6 +1075,48 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 
 ### POST `/api/mail/mailboxes/{id}/sync`
 Форс-синхронизация ящика (прокси к внешнему `POST /api/external/mailboxes/{id}/sync`). Требует JWT (`mail:sync`). Для не-admin — ящик ∈ `MailScope`. **Response 202** — `{ "queued": true }`. **Ошибки:** `401`, `403 forbidden`, `404 mail_mailbox_not_found`, `502 mail_unavailable`, `503 mail_not_configured`.
+
+### Outlook OAuth (headless) — [ADR-045](adr/ADR-045-mail-outlook-oauth-headless-reonboarding.md)
+
+Восстановление добавления/переподключения Outlook-ящиков по OAuth в headless-модели. Authorize-URL генерирует и токены хранит **агрегатор** (mail-агрегатор `ADR-0045`); CRM инициирует flow и привязывает ящик к команде. Ящик привязан к команде по **`team_id` (UUID CRM-команды)**, не `group_id` (ADR-044 §2/§4). Подробности потока — [ADR-045](adr/ADR-045-mail-outlook-oauth-headless-reonboarding.md).
+
+#### POST `/api/mail/mailboxes/oauth/authorize`
+Инициирует OAuth-подключение Outlook. Требует JWT (`mail:create`). `Cache-Control: no-store`.
+
+**Тело** — `MailOauthAuthorizeRequest`:
+| Поле | Тип | Правила |
+|------|-----|---------|
+| `team_id` | string(uuid) \| null | Команда-владелец будущего ящика. Правила — **как при создании ящика** (ADR-044 §4): не-admin обязан указать `team_id ∈ MailScope.team_ids`; `team_id = null` (без команды) — **только admin-уровень** (`MailScope.sees_all_teams`) |
+
+Логика: CRM формирует непрозрачный HMAC-подписанный `crm_state` (`{team_id, initiator_user_id, exp}`, секрет `MAIL_PUSH_SECRET`, stateless — без таблицы), вызывает агрегатор `POST /api/external/mailboxes/oauth/authorize { crm_state }`, возвращает Microsoft authorize URL.
+
+**Response 200** — `MailOauthAuthorizeResponse`:
+```json
+{ "authorize_url": "https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?..." }
+```
+| Поле | Тип | Примечание |
+|------|-----|-----------|
+| `authorize_url` | string | Ссылка Microsoft — фронт показывает как ссылку для открытия в нужном профиле OctoBrowser (**не** auto-redirect). После consent ящик появляется в `GET /api/mail/mailboxes` (агрегатор уведомит CRM, см. `/oauth/ingest`) |
+
+**Ошибки:** `401 unauthorized`, `403 forbidden` (`team_id` вне `MailScope` / `null` не-admin), `404 team_not_found` (несуществующая команда), `503 mail_not_configured` (**единый код** — почта не настроена глобально ИЛИ Outlook-OAuth выключен на агрегаторе: агрегаторский `authorize` вернул `404`, `OUTLOOK_CLIENT_ID`/`_SECRET` не заданы), `502 mail_unavailable` (агрегатор недоступен/таймаут).
+
+#### POST `/api/mail/oauth/ingest`
+**Машинный** приёмник уведомления агрегатора о созданном/переподключённом Outlook-ящике. **Аутентификация — HMAC-SHA256** тем же механизмом и секретом `MAIL_PUSH_SECRET`, что `POST /api/mail/ingest` (заголовки `X-Mail-Signature: sha256=<hex>`, `X-Mail-Timestamp`; каноническая подпись `str(ts).encode("ascii") + b"." + raw_body_bytes`). **Без JWT, CSRF-exempt.** `Cache-Control: no-store`.
+
+**Тело** — `MailOauthIngestRequest`:
+| Поле | Тип | Примечание |
+|------|-----|-----------|
+| `crm_state` | string | Непрозрачный CRM-токен из шага authorize (агрегатор эхо-возвращает); CRM проверяет HMAC-подпись и `exp`, извлекает `team_id`/`initiator` |
+| `mail_account_id` | integer | id ящика (присвоен агрегатором; = `mail_accounts.id` в CRM) |
+| `email` | string | Адрес ящика |
+| `display_name` | string \| null | Отображаемое имя |
+| `is_active` | boolean | Статус ящика |
+
+Логика: проверка HMAC-подписи+timestamp-окна (как `/ingest`) → проверка HMAC-подписи `crm_state` + `exp` → **upsert** `mail_accounts { id, email, display_name, team_id, is_active }` идемпотентно `ON CONFLICT (id) DO UPDATE`. `team_id` **детерминированно перезаписывается** значением из `crm_state` (re-consent: фронт передаёт текущий `team_id` ящика → перезапись тем же значением). Уведомление приходит **до** первого push письма ящика (каталог существует до писем — нет `unknown_mailbox`-дропа).
+
+**Response 200** — `{ "ok": true }`.
+
+**Ошибки:** `401 not_authenticated` (HMAC/skew/битая подпись `crm_state`), `410 oauth_state_expired` (`crm_state.exp` в прошлом — консент завершён после TTL; ящик в агрегаторе создан, но CRM не привяжет к команде → reconcile, [TD-047](100-known-tech-debt.md)), `400 validation_error`, `503 mail_ingest_not_configured` (`MAIL_PUSH_SECRET` пуст).
 
 ### Схема `MailTagRule`
 

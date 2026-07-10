@@ -194,6 +194,30 @@ class MailMailboxSyncResponse(BaseModel):
     queued: bool
 
 
+# --- Outlook OAuth (headless, ADR-045) --------------------------------------
+
+
+class MailOauthAuthorizeRequest(BaseModel):
+    """Тело POST /api/mail/mailboxes/oauth/authorize (ADR-045 §3).
+
+    `team_id` (uuid) — команда-владелец будущего Outlook-ящика; `null` — без команды
+    (unassigned, только admin-уровень). Авторизация — как создание ящика (ADR-044 §4):
+    для не-admin `team_id` обязан ∈ `MailScope.team_ids` (иначе 403).
+    """
+
+    team_id: uuid.UUID | None = None
+
+
+class MailOauthAuthorizeResponse(BaseModel):
+    """Ответ 200 POST /api/mail/mailboxes/oauth/authorize (ADR-045 §3).
+
+    `authorize_url` — Microsoft authorize URL (минтит агрегатор); CRM показывает его
+    пользователю для открытия в нужном профиле OctoBrowser (не auto-redirect, §5).
+    """
+
+    authorize_url: str
+
+
 # --- Теги (глобальный админский каталог, чтение/запись из БД CRM) ------------
 
 

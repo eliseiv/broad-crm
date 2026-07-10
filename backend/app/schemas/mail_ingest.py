@@ -63,3 +63,25 @@ class MailboxStatusResponse(BaseModel):
     """
 
     updated: bool
+
+
+class MailOauthIngestRequest(BaseModel):
+    """Тело `POST /api/mail/oauth/ingest`: уведомление о созданном/переподключённом
+    Outlook-ящике (ADR-045 §3).
+
+    `crm_state` — непрозрачный подписанный CRM-токен (несёт `team_id`/`initiator`/`exp`).
+    `mail_account_id` — id ящика, присвоенный агрегатором (ключ каталожной записи CRM).
+    Токены/креды Outlook в CRM НЕ передаются и не хранятся (живут в агрегаторе).
+    """
+
+    crm_state: str
+    mail_account_id: int
+    email: str
+    display_name: str | None = None
+    is_active: bool
+
+
+class MailOauthIngestResponse(BaseModel):
+    """Ответ 200 `POST /api/mail/oauth/ingest` (ADR-045 §3)."""
+
+    ok: bool

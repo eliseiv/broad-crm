@@ -8,6 +8,8 @@ import type {
   MailMailboxTestRequest,
   MailMailboxTestResponse,
   MailMailboxUpdateRequest,
+  MailOauthAuthorizeRequest,
+  MailOauthAuthorizeResponse,
   MailReplyRequest,
   MailReplyResponse,
   MailTagApplyResponse,
@@ -120,6 +122,20 @@ export function syncMailbox(id: number): Promise<MailMailboxSyncResponse> {
   return apiRequest<MailMailboxSyncResponse>(`/mail/mailboxes/${id}/sync`, {
     method: 'POST',
     body: {},
+  });
+}
+
+/**
+ * POST /api/mail/mailboxes/oauth/authorize — инициировать OAuth-подключение Outlook-ящика
+ * (ADR-045 §3). CRM формирует непрозрачный `crm_state` и получает от агрегатора Microsoft
+ * authorize URL. `teamId` — UUID команды-владельца (`null` — без команды, только admin).
+ * → 200 { authorize_url }. 503 mail_not_configured — Outlook-OAuth выключен (кнопку скрыть).
+ */
+export function mailboxOAuthAuthorize(teamId: string | null): Promise<MailOauthAuthorizeResponse> {
+  const body: MailOauthAuthorizeRequest = { team_id: teamId };
+  return apiRequest<MailOauthAuthorizeResponse>('/mail/mailboxes/oauth/authorize', {
+    method: 'POST',
+    body,
   });
 }
 

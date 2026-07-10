@@ -13,7 +13,17 @@ from fastapi import APIRouter, Request
 from pydantic import ValidationError
 
 from app.api.deps import MailIngestServiceDep, SettingsDep
-from app.errors import mail_ingest_not_configured, not_authenticated, validation_error
+from app.errors import (
+    mail_ingest_not_configured,
+    not_authenticated,
+    oauth_state_expired,
+    validation_error,
+)
+from app.infra.mail_oauth_state import (
+    CrmStateExpired,
+    CrmStateInvalid,
+    decode_crm_state,
+)
 from app.infra.mail_push_security import verify_mail_push_signature
 from app.logging import get_logger
 from app.schemas.mail_ingest import (
@@ -21,6 +31,8 @@ from app.schemas.mail_ingest import (
     MailboxStatusResponse,
     MailIngestRequest,
     MailIngestResponse,
+    MailOauthIngestRequest,
+    MailOauthIngestResponse,
 )
 
 logger = get_logger(__name__)
@@ -92,3 +104,34 @@ async def mailbox_status(
         raise validation_error("Невалидное тело запроса") from exc
     updated = await service.apply_mailbox_status(payload)
     return MailboxStatusResponse(updated=updated)
+
+
+@router.post("/oauth/ingest", response_model=MailOauthIngestResponse)
+async def oauth_ingest(
+    request: Request,
+    service: MailIngestServiceDep,
+    settings: SettingsDep,
+) -> MailOauthIngestResponse:
+    """Уведомление агрегатора о созданном/переподключённом Outlook-ящике (ADR-045 §3).
+
+    Аутентификация — HMAC (`MAIL_PUSH_SECRET`) над сырым телом ДО парсинга, как `/ingest`:
+    пустой секрет → 503; подпись/skew → 401. Битое тело → 400. Затем `crm_state`: битый
+    HMAC/формат → 401 not_authenticated; протух (`exp` в прошлом) → 410 oauth_state_expired.
+    Upsert каталожной записи (id, email, display_name, team_id из `crm_state`, is_active),
+    `ON CONFLICT (id) DO UPDATE` детерминированно перезаписывает `team_id`. Идемпотентно.
+    """
+    raw_body = await _authenticated_raw_body(request, settings)
+    try:
+        payload = MailOauthIngestRequest.model_validate_json(raw_body)
+    except ValidationError as exc:
+        raise validation_error("Невалидное тело запроса") from exc
+    try:
+        state = decode_crm_state(secret=settings.mail_push_secret, token=payload.crm_state)
+    except CrmStateExpired as exc:
+        raise oauth_state_expired() from exc
+    except CrmStateInvalid as exc:
+        raise not_authenticated() from exc
+    await service.link_oauth_account(
+        payload, team_id=state.team_id, initiator_user_id=state.initiator_user_id
+    )
+    return MailOauthIngestResponse(ok=True)
