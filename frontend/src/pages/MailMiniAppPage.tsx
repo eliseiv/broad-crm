@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CSSProperties, ReactNode } from 'react';
-import { AlertTriangle, Inbox, ShieldAlert } from 'lucide-react';
+import type { CSSProperties, KeyboardEvent, ReactNode } from 'react';
+import { AlertTriangle, ArrowLeft, Inbox, ShieldAlert } from 'lucide-react';
 import { MailTags } from '@/components/MailTags';
 import { Spinner } from '@/components/ui/Spinner';
 import { ApiError } from '@/lib/api';
@@ -12,17 +12,14 @@ import { applyTelegramTheme, loadTelegramSdk } from '@/features/sms/telegramSdk'
 import type { MailMessage } from '@/types/api';
 
 /**
- * Строки Mini App почты. Нормативные:
- * - `notProvisionedHint` — ADR-044 §7 (текст ошибки «Telegram не привязан»);
- * - `tabMessages` — вкладка «Сообщения» (ADR-044 §7);
- * - `messagesEmpty` — «Писем пока нет» (единый словарь /mail, 08-design-system.md).
- * Остальные (заголовок, состояния загрузки/сети/вне-Telegram) — общий словарь Mini App,
- * согласован с операторской SMS Mini App (08-design-system.md); см. blocking_questions
- * по нормативному заголовку экрана почты.
+ * Строки Mini App почты (нормативный словарь — 08-design-system.md «Telegram Mini App почты»,
+ * ADR-044 «Поправка 2026-07-10»). Экран рендерится БЕЗ h1-заголовка и БЕЗ таб-лейбла
+ * «Сообщения» — лента показывается напрямую, полный текст письма открывается на detail-экране.
+ * - `notProvisionedTitle`/`notProvisionedHint` — 403 mail_operator_not_provisioned;
+ * - `messagesEmpty` — «Писем пока нет»;
+ * - `back`/`bodyUnavailable`/`bodyTruncated` — detail письма.
  */
 const T = {
-  title: 'Почта — уведомления',
-  tabMessages: 'Сообщения',
   notProvisionedTitle: 'Доступ не настроен',
   notProvisionedHint: 'Ваш Telegram не привязан к пользователю CRM. Обратитесь к администратору.',
   initDataError: 'Сессия Telegram устарела — откройте приложение заново через бота',
@@ -31,6 +28,11 @@ const T = {
   loading: 'Загрузка…',
   retry: 'Повторить',
   messagesEmpty: 'Писем пока нет',
+  subjectEmpty: '(без темы)',
+  back: 'Назад',
+  bodyFrameTitle: 'Тело письма',
+  bodyUnavailable: 'Тело письма недоступно',
+  bodyTruncated: 'Письмо показано не полностью',
 } as const;
 
 /**
@@ -128,10 +130,6 @@ export function MailMiniAppPage() {
   return (
     <div className="min-h-screen w-full px-4 py-5" style={chromeStyle}>
       <div className="mx-auto flex w-full max-w-xl flex-col gap-4">
-        <h1 className="text-lg font-semibold" style={{ color: 'var(--tg-text, #e6e8ec)' }}>
-          {T.title}
-        </h1>
-
         {phase === 'loading' && <LoadingState />}
         {phase === 'outside' && <MessageState icon="info" text={T.outsideTelegram} />}
         {phase === 'initData' && <MessageState icon="warn" text={T.initDataError} />}
@@ -232,12 +230,15 @@ function TgButton({ children, onClick }: { children: ReactNode; onClick: () => v
 }
 
 /**
- * Успешный SSO: вкладка «Сообщения» (дефолт и единственная, ADR-044 §7) — лента входящих
- * писем команд пользователя под `mail:view`. Без `mail:view` сервер отдаёт 403 → лента
- * пуста. Курсорная догрузка через IntersectionObserver (без кнопки).
+ * Успешный SSO: лента входящих писем команд пользователя под `mail:view` (без `mail:view`
+ * сервер отдаёт 403 → лента пуста), показывается НАПРЯМУЮ — без h1-заголовка и без
+ * таб-лейбла «Сообщения» (08-design-system.md «Telegram Mini App почты», ADR-044 поправка).
+ * Клик по карточке открывает read-only full-width detail с полным текстом письма (локальный
+ * `useState`, НЕ роутинг). Курсорная догрузка через IntersectionObserver (без кнопки).
  */
 function AuthorizedView() {
   const messages = useMailMiniAppFeed(true);
+  const [selected, setSelected] = useState<MailMessage | null>(null);
   const messagesForbidden =
     messages.phase === 'error' &&
     messages.error instanceof ApiError &&
@@ -260,18 +261,6 @@ function AuthorizedView() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center gap-1">
-        <span
-          className="rounded-lg px-3 py-1.5 text-sm font-medium"
-          style={{
-            backgroundColor: 'var(--tg-button, #4c82fb)',
-            color: 'var(--tg-button-text, #ffffff)',
-          }}
-        >
-          {T.tabMessages}
-        </span>
-      </div>
-
       <div className="flex flex-col gap-2.5">
         {!messagesForbidden && messages.phase === 'loading' && <SectionLoading />}
         {!messagesForbidden && messages.phase === 'error' && (
@@ -283,7 +272,7 @@ function AuthorizedView() {
         {!messagesForbidden && messages.phase === 'ready' && messages.messages.length > 0 && (
           <div className="flex flex-col gap-2.5">
             {messages.messages.map((m) => (
-              <MailMiniAppCard key={m.id} message={m} />
+              <MailMiniAppCard key={m.id} message={m} onOpen={setSelected} />
             ))}
             <div ref={sentinelRef} aria-hidden="true" className="h-px" />
             {messages.isFetchingMore && (
@@ -296,16 +285,41 @@ function AuthorizedView() {
         )}
         {messagesForbidden && <SectionEmpty text={T.messagesEmpty} />}
       </div>
+
+      {selected && <MailMiniAppDetail message={selected} onBack={() => setSelected(null)} />}
     </div>
   );
 }
 
-/** Read-only карточка письма (без detail/reply — Mini App только читает ленту). */
-function MailMiniAppCard({ message }: { message: MailMessage }) {
+/**
+ * Кликабельная карточка письма в ленте (весь блок — область тапа, `role="button"`,
+ * доступна с клавиатуры, видимый focus-ring). Тело письма в карточке НЕ показывается —
+ * оно на detail-экране (08-design-system.md «Telegram Mini App почты»).
+ */
+function MailMiniAppCard({
+  message,
+  onOpen,
+}: {
+  message: MailMessage;
+  onOpen: (message: MailMessage) => void;
+}) {
   const accountLabel = message.mail_account.display_name || message.mail_account.email;
-  const subject = message.subject ?? '(без темы)';
+  const subject = message.subject ?? T.subjectEmpty;
+  const open = () => onOpen(message);
+  const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      open();
+    }
+  };
   return (
-    <div className="flex flex-col gap-1.5 rounded-card border border-border-subtle bg-surface-1 p-4">
+    <div
+      role="button"
+      tabIndex={0}
+      onClick={open}
+      onKeyDown={onKeyDown}
+      className="flex cursor-pointer flex-col gap-1.5 rounded-card border border-border-subtle bg-surface-1 p-4 text-left transition-colors hover:border-border-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+    >
       <div className="flex items-start justify-between gap-3">
         <span className="min-w-0 flex-1 break-words text-sm font-semibold text-text-primary">
           {message.from_name || message.from_addr}
@@ -332,6 +346,142 @@ function MailMiniAppCard({ message }: { message: MailMessage }) {
       <p className="break-words text-[12px] text-text-secondary">
         Получено на: <span className="text-text-primary">{accountLabel}</span>
       </p>
+    </div>
+  );
+}
+
+/** Полная дата для шапки detail (08-design-system.md: `ru-RU`, dateStyle long + timeStyle short). */
+function absoluteDate(iso: string): string {
+  const ts = Date.parse(iso);
+  if (Number.isNaN(ts)) return formatRelativeTime(iso);
+  return new Date(ts).toLocaleString('ru-RU', { dateStyle: 'long', timeStyle: 'short' });
+}
+
+/**
+ * Обёртка srcDoc sandbox-iframe: инъекция серого фона `--surface-2` перед недоверенным телом
+ * письма — тот же паттерн, что десктопный MailDetail. Sandbox НЕ ослабляется (без
+ * allow-scripts/allow-same-origin — ADR-012).
+ */
+function buildHtmlSrcDoc(bodyHtml: string): string {
+  return `<style>html,body{background:#161A22;color:#E6E9EF;margin:0;padding:12px}</style>${bodyHtml}`;
+}
+
+/**
+ * Тело письма в detail. `body_html` (недоверенный HTML третьих лиц) рендерится ТОЛЬКО в
+ * sandbox-iframe без `allow-scripts`/`allow-same-origin` + `referrerPolicy="no-referrer"`
+ * (ADR-012, modules/mail «Изоляция HTML-тела» — инварианты НЕ ослабляются). Иначе — `body_text`
+ * моношрифтом с переносами. Тело скроллится в своём контейнере.
+ */
+function MailMiniAppBody({ message }: { message: MailMessage }) {
+  if (!message.body_present) {
+    return (
+      <div className="flex flex-1 items-center justify-center px-6 py-10 text-center">
+        <p className="text-[13px] text-text-secondary">{T.bodyUnavailable}</p>
+      </div>
+    );
+  }
+
+  const html = message.body_html;
+  const hasHtml = Boolean(html && html.trim());
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-2 bg-surface-2 px-4 py-4">
+      {hasHtml ? (
+        <iframe
+          title={T.bodyFrameTitle}
+          srcDoc={buildHtmlSrcDoc(html ?? '')}
+          sandbox=""
+          referrerPolicy="no-referrer"
+          className="min-h-0 w-full flex-1 rounded-lg border border-border-subtle bg-surface-2"
+        />
+      ) : (
+        <pre className="scrollbar-none min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-subtle bg-surface-2 p-3 font-mono text-[13px] text-text-primary">
+          {message.body_text}
+        </pre>
+      )}
+      {message.body_truncated && (
+        <p className="shrink-0 text-[12px] text-text-secondary">{T.bodyTruncated}</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Read-only full-width detail письма внутри того же webview (НЕ роутинг). Полный сохранённый
+ * текст выбранного письма из уже загруженного объекта (без нового запроса/эндпоинта). Формы
+ * ответа в Mini App НЕТ. 08-design-system.md «Telegram Mini App почты», ADR-044 поправка.
+ */
+function MailMiniAppDetail({ message, onBack }: { message: MailMessage; onBack: () => void }) {
+  const backRef = useRef<HTMLButtonElement>(null);
+  const { email, display_name: displayName } = message.mail_account;
+  const subject = message.subject ?? T.subjectEmpty;
+
+  // Фокус на «Назад» при открытии detail — доступность с клавиатуры.
+  useEffect(() => {
+    backRef.current?.focus();
+  }, []);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={subject}
+      className="fixed inset-0 z-50 flex flex-col bg-surface-1"
+    >
+      <header className="shrink-0 border-b border-border-subtle px-4 py-4">
+        <button
+          ref={backRef}
+          type="button"
+          onClick={onBack}
+          className="mb-3 inline-flex items-center gap-1 rounded-md text-[13px] font-medium text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+        >
+          <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+          {T.back}
+        </button>
+
+        <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <span className="text-sm font-semibold text-text-primary">
+            {message.from_name || message.from_addr}
+          </span>
+          <time dateTime={message.internal_date} className="text-[12px] text-text-tertiary">
+            {absoluteDate(message.internal_date)}
+          </time>
+        </div>
+
+        {message.from_name && (
+          <p className="mt-0.5 break-all font-mono text-[12px] text-text-secondary">
+            {message.from_addr}
+          </p>
+        )}
+
+        <h2
+          className={
+            message.subject === null
+              ? 'mt-2 text-base font-semibold text-text-secondary'
+              : 'mt-2 text-base font-semibold text-text-primary'
+          }
+        >
+          {subject}
+        </h2>
+
+        <div className="mt-2">
+          <MailTags tags={message.tags} />
+        </div>
+
+        {/*
+          «Получено на: {display_name} <{email}>» — значения видны полностью (значимый контент
+          не обрезаем, CLAUDE.md); длинный адрес переносится (break-words), НЕ truncate. При
+          пустом display_name — только email.
+        */}
+        <p className="mt-2 break-words text-[12px] text-text-secondary">
+          Получено на: {displayName && <span className="text-text-primary">{displayName} </span>}
+          <span className="font-mono text-text-secondary">
+            {displayName ? `<${email}>` : email}
+          </span>
+        </p>
+      </header>
+
+      <MailMiniAppBody message={message} />
     </div>
   );
 }
