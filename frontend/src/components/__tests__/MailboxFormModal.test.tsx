@@ -16,6 +16,8 @@ const authorize = vi.hoisted(() => ({
 }));
 // Управляемое значение watchQuery (пуллинг списка ящиков при открытой панели).
 const watch = vi.hoisted(() => ({ value: { data: undefined } as unknown }));
+// Спаи мутаций записи ящика — чтобы проверить ИСХОДЯЩИЙ payload формы (ADR-047 §3.2).
+const mutations = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn() }));
 
 vi.mock('@/features/auth/hooks', () => ({
   useCan: (page: string, action: string) =>
@@ -35,9 +37,9 @@ vi.mock('@tanstack/react-query', () => ({
 
 vi.mock('@/features/mail/hooks', () => ({
   mailMailboxesKey: ['mail', 'mailboxes'],
-  useCreateMailbox: () => ({ mutate: vi.fn(), isPending: false }),
+  useCreateMailbox: () => ({ mutate: mutations.create, isPending: false }),
   useTestMailbox: () => ({ mutate: vi.fn(), isPending: false }),
-  useUpdateMailbox: () => ({ mutate: vi.fn(), isPending: false }),
+  useUpdateMailbox: () => ({ mutate: mutations.update, isPending: false }),
   useMailboxOAuthAuthorize: () => ({
     isPending: false,
     mutate: (
@@ -76,7 +78,9 @@ function makeMailbox(over: Partial<MailMailbox> = {}): MailMailbox {
   return {
     id: 42,
     email: 'box@outlook.com',
-    display_name: 'Box',
+    number: '5108',
+    app_name: 'Klyro',
+    display_name: '5108 Klyro',
     team_id: null,
     is_active: true,
     last_synced_at: null,
@@ -180,5 +184,95 @@ describe('MailboxFormModal edit mode omits the add-only Outlook UI', () => {
     expect(screen.queryByText(/или добавьте ящик вручную/)).not.toBeInTheDocument();
     // Заголовок секции «Outlook» отсутствует в edit.
     expect(screen.queryByRole('heading', { name: 'Outlook' })).not.toBeInTheDocument();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Поля «Номер» / «Приложение» вместо «Отображаемого имени» (ADR-047 §3.2/§3.6).
+// display_name клиентом НЕ отправляется — сервер вычисляет его сам (производное поле).
+// ---------------------------------------------------------------------------
+describe('MailboxFormModal «Номер»/«Приложение» (ADR-047 §3.6)', () => {
+  it('рендерит два поля имени и НЕ рендерит «Отображаемое имя»', () => {
+    render(<MailboxFormModal open onOpenChange={vi.fn()} mode="add" />);
+
+    expect(screen.getByLabelText('Номер')).toBeInTheDocument();
+    expect(screen.getByLabelText('Приложение')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Отображаемое имя')).not.toBeInTheDocument();
+  });
+
+  it('edit: поля предзаполнены из number/app_name ящика', () => {
+    render(
+      <MailboxFormModal
+        open
+        onOpenChange={vi.fn()}
+        mode="edit"
+        mailbox={makeMailbox({ number: '173, 57, 104', app_name: 'WIU' })}
+      />,
+    );
+
+    expect(screen.getByLabelText('Номер')).toHaveValue('173, 57, 104');
+    expect(screen.getByLabelText('Приложение')).toHaveValue('WIU');
+  });
+
+  it('create: payload несёт number/app_name и НЕ несёт display_name', async () => {
+    render(<MailboxFormModal open onOpenChange={vi.fn()} mode="add" />);
+
+    await userEvent.type(screen.getByLabelText('Адрес почты'), 'new@example.com');
+    await userEvent.type(screen.getByLabelText('Номер'), '5108');
+    await userEvent.type(screen.getByLabelText('Приложение'), 'Klyro Forge (Codex)');
+    await userEvent.type(screen.getByLabelText('IMAP-хост'), 'imap.example.com');
+    await userEvent.type(screen.getByLabelText('SMTP-хост'), 'smtp.example.com');
+    await userEvent.type(screen.getByLabelText('Пароль (IMAP)'), 's3cr3t');
+    await userEvent.click(screen.getByRole('button', { name: 'Добавить' }));
+
+    expect(mutations.create).toHaveBeenCalledTimes(1);
+    const payload = mutations.create.mock.calls[0][0] as Record<string, unknown>;
+    expect(payload.number).toBe('5108');
+    expect(payload.app_name).toBe('Klyro Forge (Codex)');
+    expect(payload).not.toHaveProperty('display_name');
+  });
+
+  it('edit: правка «Номера» шлёт только number (display_name наружу не идёт)', async () => {
+    render(
+      <MailboxFormModal
+        open
+        onOpenChange={vi.fn()}
+        mode="edit"
+        mailbox={makeMailbox({ number: '5108', app_name: 'Klyro' })}
+      />,
+    );
+
+    const numberInput = screen.getByLabelText('Номер');
+    await userEvent.clear(numberInput);
+    await userEvent.type(numberInput, '777');
+    await userEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    expect(mutations.update).toHaveBeenCalledTimes(1);
+    const { payload } = mutations.update.mock.calls[0][0] as {
+      payload: Record<string, unknown>;
+    };
+    expect(payload.number).toBe('777');
+    expect(payload).not.toHaveProperty('app_name'); // не менялось → presence-семантика
+    expect(payload).not.toHaveProperty('display_name');
+  });
+
+  it('edit: очистка «Приложения» шлёт app_name = null', async () => {
+    render(
+      <MailboxFormModal
+        open
+        onOpenChange={vi.fn()}
+        mode="edit"
+        mailbox={makeMailbox({ number: '5108', app_name: 'Klyro' })}
+      />,
+    );
+
+    await userEvent.clear(screen.getByLabelText('Приложение'));
+    await userEvent.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    const { payload } = mutations.update.mock.calls[0][0] as {
+      payload: Record<string, unknown>;
+    };
+    expect(payload.app_name).toBeNull();
+    expect(payload).not.toHaveProperty('display_name');
   });
 });

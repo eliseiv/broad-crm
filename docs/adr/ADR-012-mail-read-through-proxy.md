@@ -1,6 +1,13 @@
 # ADR-012 · Модуль «Почты» — read-through-прокси без хранения
 
-- Статус: `accepted`
+- Статус: **`partially superseded by` [ADR-044](ADR-044-mail-full-merge-into-crm.md)**
+
+> ⚠️ **ЧАСТИЧНО ОТМЕНЁН [ADR-044](ADR-044-mail-full-merge-into-crm.md) (2026-07-10).** Модель **«read-through-прокси БЕЗ ХРАНЕНИЯ»** (нет БД/миграций под почту; лента/теги/ящики проксируются во внешний API) **более НЕ действует**: письма/теги/каталог ящиков/Telegram-уведомления **хранятся в БД CRM**, агрегатор — тонкий IMAP/SMTP-connector с push. Действующая архитектура — [ADR-044](ADR-044-mail-full-merge-into-crm.md); контракт — [04-api.md §Mail](../04-api.md#mail); модуль — [modules/mail](../modules/mail/README.md).
+>
+> **ЧТО ИЗ ЭТОГО ADR ДЕЙСТВУЕТ (инварианты пережили супессию, НЕ ослаблены):**
+> 1. **`MAIL_API_KEY` — только на backend**, в заголовке `X-API-Key` исходящего запроса; никогда не в ответах CRM/логах/SPA/URL.
+> 2. **HTML-тело письма рендерится ТОЛЬКО в sandbox-iframe** — `srcDoc` + `sandbox=""` **без** `allow-scripts` и **без** `allow-same-origin`, `referrerPolicy="no-referrer"`, без DOMPurify. Смена фона/цвета тела под тему CRM ([ADR-047](ADR-047-mail-fix-pack.md) §6) — чисто стилевая инъекция, изоляцию **не ослабляет**.
+> 3. **JWT** на всех пользовательских mail-эндпоинтах.
 - Дата: 2026-07-03
 - Контекст модулей: [mail](../modules/mail/README.md)
 - Связанные: [ADR-001](ADR-001-stack-i-monolit.md) (монолит/простота), [ADR-010](ADR-010-ai-key-monitor-vnutri-backend.md) (внешний секрет только на backend), [05-security.md](../05-security.md)

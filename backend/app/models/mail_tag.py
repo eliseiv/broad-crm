@@ -4,6 +4,10 @@
 письмам всех команд. `UNIQUE (name)` — глобально уникальное имя (`tags.user_id`
 агрегатора не переносится вовсе). `match_mode` any/all. `mail_message_tags` —
 дедуп применения (`PRIMARY KEY (message_id, tag_id)`, `ON CONFLICT DO NOTHING`).
+
+Признака «встроенный тег» НЕТ (ADR-047 §1): колонка `is_builtin` дропнута миграцией
+`0023`, удалить можно ЛЮБОЙ тег. Первичный сев канонических тегов — однократно той же
+миграцией (сев в lifespan убран: он воскрешал удалённый тег при рестарте).
 """
 
 from __future__ import annotations
@@ -13,7 +17,6 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
-    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -44,7 +47,6 @@ class MailTag(Base):
     name: Mapped[str] = mapped_column(Text, nullable=False)
     color: Mapped[str] = mapped_column(Text, nullable=False)
     match_mode: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'any'"))
-    is_builtin: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

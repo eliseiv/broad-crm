@@ -112,8 +112,12 @@ describe('ProxyCard — detail → edit (ADR-035)', () => {
 
     const dialog = within(await screen.findByRole('dialog'));
     expect(dialog.getByText('Просмотр')).toBeInTheDocument();
-    // Detail-поля read-only: Название / Тип / Хост / Порт / Логин.
+    // Видимая зона — идентификаторы (Название / Хост / Порт); Тип и Логин — внутри
+    // свёрнутой по умолчанию «Информации» (ADR-046 §2в).
     expect(dialog.getByText('Хост')).toBeInTheDocument();
+    expect(dialog.queryByText('user01')).not.toBeInTheDocument();
+
+    await user.click(dialog.getByRole('button', { name: 'Информация' }));
     expect(dialog.getByText('user01')).toBeInTheDocument();
     expect(screen.queryByText('Изменить прокси')).not.toBeInTheDocument();
     expect(hooks.updateMutate).not.toHaveBeenCalled();

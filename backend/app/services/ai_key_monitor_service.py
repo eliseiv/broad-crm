@@ -18,13 +18,15 @@ from typing import Literal
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
-from app.domain.notifications import build_key_error, build_key_recovery
+from app.domain.notifications import BackendRef, build_key_error, build_key_recovery
 from app.infra.ai_provider import KeyCheckResult, check_key
 from app.infra.crypto import CryptoError, decrypt_secret
 from app.infra.telegram import TelegramClient
 from app.logging import get_logger
 from app.models.ai_key import AiKeyStatus, AiProvider
 from app.repositories.ai_key_repository import AiKeyRepository
+from app.repositories.backend_repository import BackendRepository
+from app.services.alert_backend_refs import to_backend_refs
 
 logger = get_logger(__name__)
 
@@ -191,15 +193,33 @@ class AiKeyMonitorService:
     async def _send_alert(
         self, alert: Alert, snapshot: KeySnapshot, error_message: str | None
     ) -> None:
-        """Отправляет Telegram-алерт, если бот включён; иначе — info-лог (не ошибка)."""
+        """Отправляет Telegram-алерт, если бот включён; иначе — info-лог (не ошибка).
+
+        Алерт «Ключ не работает» дополняется перечнем бэков, использующих этот ключ
+        (ADR-046 §1). Перечень резолвится только когда сообщение реально формируется и
+        бот включён (при выключенном боте лишний SELECT не делается). Recovery-алерт
+        перечнем НЕ расширяется.
+        """
         if self._telegram is None:
             logger.info("ai_key_alert_suppressed_no_telegram", ai_key_id=str(snapshot.id))
             return
         if alert == "error":
-            text = build_key_error(snapshot.name, snapshot.key_last4, error_message or "")
+            backends = await self._backend_refs(snapshot.id)
+            text = build_key_error(snapshot.name, snapshot.key_last4, error_message or "", backends)
         else:
             text = build_key_recovery(snapshot.name, snapshot.key_last4)
         await self._telegram.send_message(text)
+
+    async def _backend_refs(self, ai_key_id: uuid.UUID) -> list[BackendRef]:
+        """Бэки, использующие ключ (`backends.ai_key_id`), в порядке `position ASC, code ASC`.
+
+        Проекция в `BackendRef` выполняется ВНУТРИ сессии: после выхода из блока
+        ORM-объекты detached, и чтение их колонок стало бы латентным
+        `DetachedInstanceError` при любом изменении настроек сессии.
+        """
+        async with self._sessionmaker() as session:
+            backends = await BackendRepository(session).list_by_ai_key(ai_key_id)
+            return to_backend_refs(backends)
 
     async def run(self) -> None:
         """Бесконечный цикл: опрос → sleep. Ошибка итерации логируется, цикл живёт."""

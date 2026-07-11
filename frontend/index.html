@@ -12,24 +12,13 @@
       «сохранённый выбор → иначе СВЕТЛАЯ» (08-design-system.md «Темизация», ADR-041;
       разворот прежнего системного дефолта ADR-033). Первая отрисовка (включая экран
       логина) — уже в правильной теме, без вспышки; prefers-color-scheme не участвует.
+
+      Скрипт — ОТДЕЛЬНЫЙ СТАТИЧЕСКИЙ ФАЙЛ своего origin (`/theme-init.js`,
+      frontend/public/), а НЕ inline (ADR-046 §4.1): прод-CSP несёт `script-src 'self'`
+      без 'unsafe-inline'/nonce/hash → inline-скрипт не исполнялся бы, и тема всегда
+      уходила бы в тёмную. CSP не ослабляется — меняется только способ подключения.
     -->
-    <script>
-      (function () {
-        var t;
-        try {
-          t = localStorage.getItem('crm-theme');
-          if (t !== 'light' && t !== 'dark') {
-            t = 'light';
-          }
-        } catch (e) {
-          t = 'light';
-        }
-        document.documentElement.dataset.theme = t;
-        // theme-color (браузерный chrome) следует теме — значения bg-base из 08-design-system.
-        var meta = document.querySelector('meta[name="theme-color"]');
-        if (meta) meta.setAttribute('content', t === 'light' ? '#F2F4F7' : '#0A0C10');
-      })();
-    </script>
+    <script src="/theme-init.js"></script>
   </head>
   <body>
     <div id="root"></div>

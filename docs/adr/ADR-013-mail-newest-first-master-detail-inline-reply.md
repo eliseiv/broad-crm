@@ -1,6 +1,10 @@
 # ADR-013 · Почты — newest-first backward-пагинация, master-detail и inline-reply
 
-- Статус: `accepted`
+- Статус: **`partially superseded by` [ADR-044](ADR-044-mail-full-merge-into-crm.md)**
+
+> ⚠️ **ЧАСТИЧНО ОТМЕНЁН [ADR-044](ADR-044-mail-full-merge-into-crm.md) (2026-07-10).** **Механика пагинации отменена:** режимов `order=asc|desc`, курсоров `since_id`/`before_id` и полей ответа `next_since_id`/`next_before_id`/`has_more` в действующем контракте **НЕТ**. Лента читается **из БД CRM**, сортируется по **`internal_date DESC, id DESC`** (по истинной дате письма, **не** по `id` — `id` отражает порядок прихода push'а) и пагинируется **компаундным opaque-курсором `(internal_date, id)`**: параметр `before` → поле ответа `next_cursor`. Актуальный контракт — [04-api.md §GET /api/mail/messages](../04-api.md#get-apimailmessages).
+>
+> **ЧТО ДЕЙСТВУЕТ:** UX-решения — **master-detail** (список ~30% / тело ~70%), **авто-выбор самого свежего** письма, **бесконечная лента newest-first** (`IntersectionObserver`, без кнопки «Загрузить ещё», дедуп по `id`), **inline-reply** (`Textarea` + «Ответить», без модалки), теги-чипы.
 - Дата: 2026-07-04
 - Контекст модулей: [mail](../modules/mail/README.md)
 - Связанные: [ADR-012](ADR-012-mail-read-through-proxy.md) (read-through-прокси без хранения — **не отменяется**, расширяется), [05-security.md](../05-security.md), внешний контракт mail-агрегатора **ADR-0036** (backward-пагинация external-API)

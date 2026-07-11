@@ -1,7 +1,9 @@
 import { ArrowLeft } from 'lucide-react';
 import { MailReplyForm } from '@/components/MailReplyForm';
 import { MailTags } from '@/components/MailTags';
+import { buildMailBodySrcDoc } from '@/features/mail/mailBody';
 import { formatRelativeTime } from '@/lib/format';
+import { useThemeValue } from '@/lib/theme';
 import type { MailMessage } from '@/types/api';
 
 /** Полная дата для шапки детали (08-design-system.md: в детали — полная дата). */
@@ -12,24 +14,17 @@ function absoluteDate(iso: string): string {
 }
 
 /**
- * Обёртка srcDoc для sandbox-iframe: инъекция базового серого фона `--surface-2` (#161A22)
- * ПЕРЕД телом письма, чтобы HTML-письмо рендерилось на том же сером, что и текстовые
- * (08-design-system.md «Единый серый фон тела», ADR-013 поправка). Sandbox НЕ ослабляется
- * (без allow-scripts/allow-same-origin — ADR-012). Best-effort: письмо с собственным
- * background может перекрыть серый.
- */
-function buildHtmlSrcDoc(bodyHtml: string): string {
-  return `<style>html,body{background:#161A22;color:#E6E9EF;margin:0;padding:12px}</style>${bodyHtml}`;
-}
-
-/**
  * Тело письма. `body_html` (недоверенный HTML третьих лиц) рендерится ТОЛЬКО в
  * sandbox-iframe без `allow-scripts`/`allow-same-origin` (ADR-012, modules/mail
  * «Изоляция HTML-тела»). Иначе — `body_text` моношрифтом с переносами. DOMPurify не нужен.
- * Единый серый фон `--surface-2` для text и html (08-design-system.md «Деталь письма»).
+ * Фон/цвет тела следуют ТЕМЕ CRM (ADR-047 §6): srcDoc собирает ЕДИНЫЙ билдер
+ * `buildMailBodySrcDoc(bodyHtml, theme)` (общий с Mini App `/tg/mail`), тема — реактивная
+ * (`useThemeValue`), смена темы перерисовывает iframe.
  * Возвращает flex-1-контейнер: тело скроллится внутри себя, страница по вертикали не едет.
  */
 function MailBody({ message }: { message: MailMessage }) {
+  const theme = useThemeValue();
+
   if (!message.body_present) {
     return (
       <div className="flex flex-1 items-center justify-center px-6 py-10 text-center">
@@ -46,7 +41,7 @@ function MailBody({ message }: { message: MailMessage }) {
       {hasHtml ? (
         <iframe
           title="Тело письма"
-          srcDoc={buildHtmlSrcDoc(html ?? '')}
+          srcDoc={buildMailBodySrcDoc(html ?? '', theme)}
           sandbox=""
           referrerPolicy="no-referrer"
           className="min-h-0 w-full flex-1 rounded-lg border border-border-subtle bg-surface-2"

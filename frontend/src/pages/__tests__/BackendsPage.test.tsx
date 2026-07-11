@@ -101,9 +101,10 @@ describe('BackendsPage', () => {
 
     backendsHook.value = { ...backendsHook.value, isLoading: false, data: { items: [] } };
     rerender(<BackendsPage />);
-    // Пустое состояние (ADR-039) — ТОЛЬКО карточка добавления, без пояснительного текста.
-    expect(screen.getByText('Подключить новый бэк для мониторинга')).toBeInTheDocument();
-    expect(screen.queryByText('Пока нет бэков')).not.toBeInTheDocument();
+    // Пустое состояние (ADR-046 §2б) — текстовая строка; карточка-плейсхолдер AddBackendCard
+    // упразднена, добавление доступно кнопкой «Добавить» в правой зоне заголовка.
+    expect(screen.getByText('Бэков пока нет')).toBeInTheDocument();
+    expect(screen.queryByText('Подключить новый бэк для мониторинга')).not.toBeInTheDocument();
 
     backendsHook.value = { ...backendsHook.value, data: { items: [backend()] } };
     rerender(<BackendsPage />);
@@ -154,6 +155,26 @@ describe('BackendsPage', () => {
     expect(screen.getByText('Проверка…')).toBeInTheDocument();
   });
 
+  // ADR-046 §2б: кнопка «Добавить» — в правой зоне заголовка, гейт `backends:create`.
+  it('кнопка «Добавить» живёт в шапке и гейтится backends:create', () => {
+    backendsHook.value = { ...backendsHook.value, data: { items: [] } };
+    const { rerender } = render(<BackendsPage />, { wrapper });
+
+    expect(screen.getByRole('button', { name: /Добавить/ })).toBeInTheDocument();
+
+    // Без права create кнопки нет (при сохранённом backends:view).
+    loginAs({
+      isSuperadmin: false,
+      role: 'Оператор',
+      permissions: { backends: ['view'] },
+    });
+    rerender(<BackendsPage />);
+
+    expect(screen.queryByRole('button', { name: /Добавить/ })).not.toBeInTheDocument();
+    // Пустое состояние — тот же текст независимо от прав.
+    expect(screen.getByText('Бэков пока нет')).toBeInTheDocument();
+  });
+
   it('user without backends:view sees the page-scoped stub, list is not rendered (ADR-021 §6)', () => {
     loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
     backendsHook.value = { ...backendsHook.value, data: { items: [backend()] } };
@@ -166,7 +187,7 @@ describe('BackendsPage', () => {
   });
 });
 
-describe('BackendsPage — группировка и поиск (ADR-039)', () => {
+describe('BackendsPage — плоская сетка, сортировка и поиск (ADR-046 §2а)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     loginSuperadmin();
@@ -180,7 +201,14 @@ describe('BackendsPage — группировка и поиск (ADR-039)', () =
     };
   });
 
-  it('группирует бэки с одинаковым name в кластер «name · N»', () => {
+  /** Имена карточек бэков в порядке их появления в DOM (карточка — div[role=button]). */
+  function renderedNames(): string[] {
+    return Array.from(
+      document.querySelectorAll('[role="button"][aria-label^="Просмотр бэка"]'),
+    ).map((el) => el.getAttribute('aria-label')?.replace('Просмотр бэка ', '') ?? '');
+  }
+
+  it('кластеры «Имя · N» упразднены — одна плоская сетка карточек', () => {
     backendsHook.value = {
       ...backendsHook.value,
       data: {
@@ -193,10 +221,48 @@ describe('BackendsPage — группировка и поиск (ADR-039)', () =
     };
     render(<BackendsPage />, { wrapper });
 
-    // Кластер из двух «API» → групповой заголовок «API · 2».
-    expect(screen.getByRole('heading', { name: 'API · 2' })).toBeInTheDocument();
-    // Одиночный «Web» группового заголовка не получает.
-    expect(screen.queryByRole('heading', { name: /^Web · / })).not.toBeInTheDocument();
+    // Группового заголовка кластера больше нет (ADR-039 отменён в этой части).
+    expect(screen.queryByRole('heading', { name: 'API · 2' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /·\s\d+$/ })).not.toBeInTheDocument();
+    // Все три карточки — в одной сетке.
+    expect(document.querySelector('.md\\:grid-cols-2')).toBeInTheDocument();
+    expect(renderedNames()).toHaveLength(3);
+  });
+
+  it('порядок — сортировка по имени (регистронезависимо), tie-break по коду', () => {
+    backendsHook.value = {
+      ...backendsHook.value,
+      data: {
+        items: [
+          // position намеренно перемешан: UI его больше не использует (DnD убран, TD-054).
+          backend({ id: 'b1', code: 'zeta', name: 'zebra', domain: 'https://z/', position: 0 }),
+          backend({ id: 'b2', code: 'api-us', name: 'API', domain: 'https://us/', position: 5 }),
+          backend({ id: 'b3', code: 'api-eu', name: 'api', domain: 'https://eu/', position: 9 }),
+          backend({ id: 'b4', code: 'beta', name: 'Beta', domain: 'https://b/', position: 1 }),
+        ],
+      },
+    };
+    render(<BackendsPage />, { wrapper });
+
+    // «API»/«api» — одно имя без учёта регистра → стоят рядом, порядок между ними задаёт
+    // tie-break по code («api-eu» < «api-us»). Далее — «Beta», затем «zebra».
+    expect(renderedNames()).toEqual(['api', 'API', 'Beta', 'zebra']);
+  });
+
+  it('одинаковые имена стоят рядом (замена прежней группировки)', () => {
+    backendsHook.value = {
+      ...backendsHook.value,
+      data: {
+        items: [
+          backend({ id: 'b1', code: 'api-eu', name: 'API', domain: 'https://eu/' }),
+          backend({ id: 'b2', code: 'web', name: 'Web', domain: 'https://web/' }),
+          backend({ id: 'b3', code: 'api-us', name: 'API', domain: 'https://us/' }),
+        ],
+      },
+    };
+    render(<BackendsPage />, { wrapper });
+
+    expect(renderedNames()).toEqual(['API', 'API', 'Web']);
   });
 
   it('поиск фильтрует по code/name/domain (регистронезависимо)', async () => {

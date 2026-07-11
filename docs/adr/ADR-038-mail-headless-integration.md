@@ -1,6 +1,10 @@
 # ADR-038 — Headless-интеграция CRM ↔ mail-агрегатор: write-прокси, `teams.mail_group_id`, `MailScope`, RBAC, транзит кредов
 
-Статус: `accepted` · Дата: 2026-07-09
+Статус: **`superseded by` [ADR-044](ADR-044-mail-full-merge-into-crm.md)** · Дата: 2026-07-09 · Супессия: 2026-07-10
+
+> ⚠️ **ОТМЕНЁН.** Модель «headless read+write-прокси **без хранения**» с групп-индирекцией (`teams.mail_group_id`, `MailScope.group_ids`, проксирование ленты/тегов в external API агрегатора) **более не действует**. Почта перенесена **полностью в БД CRM**: письма/теги/ящики/Telegram-уведомления хранятся в CRM, ящик закреплён за командой напрямую (`mail_accounts.team_id`), агрегатор — чистый IMAP/SMTP-connector с push. Действующая архитектура — **[ADR-044](ADR-044-mail-full-merge-into-crm.md)**; действующий контракт — [04-api.md §Mail](../04-api.md#mail) и [modules/mail](../modules/mail/README.md). **Не реализуйте ничего по этому документу.**
+>
+> **Что из ADR-038 пережило супессию** (перенесено в актуальные docs, [ADR-044](ADR-044-mail-full-merge-into-crm.md) §12 / [ADR-047](ADR-047-mail-fix-pack.md) §0): каталог прав `CATALOG["mail"] = ("view","create","edit","delete","sync","tags")`; admin-предикат `sees_all_mail_teams` в `GET /api/auth/me`; транзит IMAP/SMTP-кредов без хранения в CRM + `Cache-Control: no-store` на write-эндпоинтах ящика; ретраи write — только `Connect*`. Эти инварианты действуют — сменился лишь адрес их прописки ([05-security.md](../05-security.md), [04-api.md](../04-api.md)).
 
 Амендмент [ADR-012](ADR-012-mail-read-through-proxy.md) / [ADR-013](ADR-013-mail-newest-first-master-detail-inline-reply.md) / [ADR-017](ADR-017-dashboard-client-aggregation-mail-server-filters.md). Парный ADR в mail-агрегаторе — `ADR-0039` (external write API + расширение read-фильтров), `ADR-0040` (глобальные теги).
 

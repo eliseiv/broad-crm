@@ -28,11 +28,11 @@ function errorMessage(err: unknown, fallback: string): string {
 }
 
 /**
- * Строка таблицы «Теги» (08-design-system.md «Вкладка Теги», ADR-038). Колонки: Имя тега
- * (цветной чип по палитре + признак «встроенный»), Правила (режим + человекочитаемые
- * строки правил, добавление/удаление под `mail:tags`), Действия (редактировать, применить
- * к существующим, удалить — встроенный тег удалить нельзя). Колонки «Тип» нет — тип входит
- * в строку правила.
+ * Строка таблицы «Теги» (08-design-system.md «Вкладка Теги», ADR-047 §1/§2). Колонки:
+ * Имя тега (тег-чип по палитре), Правила (режим + человекочитаемые строки правил,
+ * добавление/удаление под `mail:tags`), Действия (редактировать, применить к существующим,
+ * удалить). **Признак «встроенный» упразднён (ADR-047 §1): подписи нет, удалить можно
+ * ЛЮБОЙ тег.** Колонки «Тип» нет — тип входит в строку правила.
  */
 export function MailTagRow({ tag, canManage }: MailTagRowProps) {
   const [editOpen, setEditOpen] = useState(false);
@@ -93,7 +93,6 @@ export function MailTagRow({ tag, canManage }: MailTagRowProps) {
       <td className="px-3 py-3">
         <div className="flex flex-col gap-1">
           <MailTagChip name={tag.name} color={tag.color} dot wrap className="px-2.5 text-[12px]" />
-          {tag.is_builtin && <span className="text-[11px] text-text-tertiary">встроенный</span>}
         </div>
       </td>
 
@@ -183,56 +182,41 @@ export function MailTagRow({ tag, canManage }: MailTagRowProps) {
               <Pencil className="h-4 w-4" />
             </Button>
             <MailTagModal open={editOpen} onOpenChange={setEditOpen} mode="edit" tag={tag} />
-            {tag.is_builtin ? (
-              <span
-                className="inline-flex h-8 w-8 items-center justify-center text-text-tertiary opacity-50"
-                title="Встроенный тег нельзя удалить"
-                aria-label="Встроенный тег нельзя удалить"
-              >
-                <Trash2 className="h-4 w-4" />
-              </span>
-            ) : (
-              <>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => setConfirmOpen(true)}
-                  aria-label={`Удалить тег ${tag.name}`}
-                  className="text-text-tertiary hover:text-status-red"
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-                <Modal
-                  open={confirmOpen}
-                  onOpenChange={(next) => !deleteTag.isPending && setConfirmOpen(next)}
-                  title="Удалить тег?"
-                  description={`Тег «${tag.name}» будет удалён из каталога.`}
-                  dismissible={!deleteTag.isPending}
-                  footer={
-                    <>
-                      <Button
-                        variant="ghost"
-                        onClick={() => setConfirmOpen(false)}
-                        disabled={deleteTag.isPending}
-                      >
-                        Отмена
-                      </Button>
-                      <Button
-                        variant="danger"
-                        loading={deleteTag.isPending}
-                        onClick={handleDeleteTag}
-                      >
-                        Удалить
-                      </Button>
-                    </>
-                  }
-                >
-                  <p className="text-sm text-text-secondary">
-                    Тег будет снят со всех писем. Правила тега также удалятся.
-                  </p>
-                </Modal>
-              </>
-            )}
+            {/* Удалить можно ЛЮБОЙ тег (ADR-047 §1): блокировка встроенных и 409 отменены. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setConfirmOpen(true)}
+              aria-label={`Удалить тег ${tag.name}`}
+              className="text-text-tertiary hover:text-status-red"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+            <Modal
+              open={confirmOpen}
+              onOpenChange={(next) => !deleteTag.isPending && setConfirmOpen(next)}
+              title="Удалить тег?"
+              description={`Тег «${tag.name}» будет удалён из каталога.`}
+              dismissible={!deleteTag.isPending}
+              footer={
+                <>
+                  <Button
+                    variant="ghost"
+                    onClick={() => setConfirmOpen(false)}
+                    disabled={deleteTag.isPending}
+                  >
+                    Отмена
+                  </Button>
+                  <Button variant="danger" loading={deleteTag.isPending} onClick={handleDeleteTag}>
+                    Удалить
+                  </Button>
+                </>
+              }
+            >
+              <p className="text-sm text-text-secondary">
+                Тег будет снят со всех писем. Правила тега также удалятся.
+              </p>
+            </Modal>
           </div>
         ) : (
           <span className="text-[13px] text-text-tertiary">—</span>

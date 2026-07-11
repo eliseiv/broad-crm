@@ -96,10 +96,13 @@ describe('ProxiesPage', () => {
 
     proxiesHook.value = { ...proxiesHook.value, isLoading: false, data: { items: [] } };
     rerender(<ProxiesPage />);
-    expect(screen.getByText('Пока нет прокси')).toBeInTheDocument();
-    expect(screen.getByText('Добавьте первый прокси')).toBeInTheDocument();
-    // Пустое состояние показывает карточку добавления (AddProxyCard).
-    expect(screen.getByText('Подключить новый прокси для мониторинга')).toBeInTheDocument();
+    // Empty (ADR-046 §2б): единая текстовая строка; AddProxyCard упразднена, добавление —
+    // кнопкой «Добавить» в правой зоне заголовка.
+    expect(screen.getByText('Прокси пока нет')).toBeInTheDocument();
+    expect(screen.queryByText('Пока нет прокси')).not.toBeInTheDocument();
+    expect(screen.queryByText('Добавьте первый прокси')).not.toBeInTheDocument();
+    expect(screen.queryByText('Подключить новый прокси для мониторинга')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Добавить/ })).toBeInTheDocument();
 
     proxiesHook.value = { ...proxiesHook.value, data: { items: [proxy()] } };
     rerender(<ProxiesPage />);

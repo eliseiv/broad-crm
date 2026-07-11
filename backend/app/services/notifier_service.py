@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal, cast
 
 from app.db import get_sessionmaker
 from app.domain.notifications import (
     METRIC_LABELS,
+    BackendRef,
     MetricItem,
     build_critical_load,
     build_offline,
@@ -30,6 +32,7 @@ from app.domain.thresholds import Zone
 from app.infra.telegram import TelegramClient
 from app.logging import get_logger
 from app.models.notifier_server_state import NotifierServerState
+from app.repositories.backend_repository import BackendRepository
 from app.repositories.notifier_alert_log_repository import (
     NotifierAlertLogRepository,
 )
@@ -37,6 +40,7 @@ from app.repositories.notifier_server_state_repository import (
     NotifierServerStateRepository,
 )
 from app.repositories.server_repository import ServerRepository
+from app.services.alert_backend_refs import to_backend_refs
 from app.services.monitoring_service import (
     InstanceMetrics,
     MonitoringService,
@@ -51,6 +55,10 @@ _METRIC_KEYS: tuple[str, ...] = ("cpu", "ram", "ssd")
 _ZONE_RANK: dict[Zone, int] = {"green": 0, "yellow": 1, "red": 2}
 
 AlertKind = Literal["warning", "critical", "offline", "recovered"]
+
+# Виды алертов об ОШИБКАХ сервера — только они дополняются перечнем бэков (ADR-046 §1).
+# Recovery-сообщение (`recovered`) перечнем НЕ расширяется (решение владельца).
+_ERROR_ALERT_KINDS: frozenset[AlertKind] = frozenset({"warning", "critical", "offline"})
 
 
 @dataclass(frozen=True)
@@ -87,6 +95,7 @@ def evaluate(
     *,
     name: str,
     ip: str,
+    backends: Sequence[BackendRef] = (),
 ) -> tuple[ServerAlertState, list[Alert]]:
     """Чистая функция перехода state-машины (modules/notifier).
 
@@ -98,6 +107,11 @@ def evaluate(
     offline→online (recovery, ADR-018 — только при явном `prev.online == False`,
     не при `prev is None`). Деэскалация зон — молча. При элевированном возврате
     порядок: recovery → warning/critical. Тестируется qa без сети/БД.
+
+    `backends` (ADR-046 §1) — перечень бэков этого сервера (`position ASC, code ASC`);
+    дополняет сообщения об ОШИБКАХ (warning/critical/offline) блоком «Бэки:». Пустой
+    перечень (default) → сообщение побайтово равно прежнему. Recovery-сообщение
+    перечнем НЕ расширяется.
     """
     base_state = prev if prev is not None else _HEALTHY_BASELINE
 
@@ -106,7 +120,7 @@ def evaluate(
         alerts: list[Alert] = []
         if base_state.online:
             # online → offline (в т.ч. baseline online → offline): срочное сообщение.
-            alerts.append(Alert("offline", build_offline(name, ip)))
+            alerts.append(Alert("offline", build_offline(name, ip, backends)))
         return ServerAlertState(online=False, zones=None), alerts
 
     # Recovery (offline→online): только при ЯВНОМ prev.online == False. `prev is None`
@@ -153,9 +167,9 @@ def evaluate(
     if recovered:
         alerts.append(Alert("recovered", build_recovered(name, ip)))
     if warning_items:
-        alerts.append(Alert("warning", build_warning(name, ip, warning_items)))
+        alerts.append(Alert("warning", build_warning(name, ip, warning_items, backends)))
     if critical_items:
-        alerts.append(Alert("critical", build_critical_load(name, ip, critical_items)))
+        alerts.append(Alert("critical", build_critical_load(name, ip, critical_items, backends)))
     return new_state, alerts
 
 
@@ -213,6 +227,9 @@ class NotifierService:
         (лог алертов тоже не пишется). После отправки алертов новое состояние
         UPSERT'ится отдельной короткой сессией; в той же сессии одним коммитом
         пишутся строки `notifier_alert_log` на каждый отправленный алерт (ADR-018).
+        Перед отправкой алерты об ошибках дополняются перечнем бэков сервера
+        (`_attach_backends`, ADR-046 §1) — отдельной короткой сессией и только для
+        серверов, у которых алерт реально сформирован.
         """
         sessionmaker = get_sessionmaker()
         async with sessionmaker() as session:
@@ -241,18 +258,24 @@ class NotifierService:
             logger.warning("notifier_prometheus_unavailable")
             return  # состояние в БД НЕ трогаем
 
+        # Первый проход — чистый переход state-машины без перечня бэков: он определяет,
+        # у каких серверов вообще формируется алерт об ошибке.
+        results: dict[uuid.UUID, tuple[ServerAlertState, list[Alert]]] = {}
+        for server_id, (name, ip, instance) in snapshot.items():
+            im = metrics_by_instance.get(instance)
+            if im is None:
+                # Instance отсутствует в ответе — не оцениваем, строку не трогаем.
+                continue
+            results[server_id] = evaluate(prev_states.get(server_id), im, name=name, ip=ip)
+
+        await self._attach_backends(results, snapshot, metrics_by_instance, prev_states)
+
         to_persist: list[tuple[uuid.UUID, ServerAlertState]] = []
         # Строки durable-лога на каждый ОТПРАВЛЕННЫЙ алерт (ADR-018): (server_id,
         # kind, message, delivered). Собираются по мере отправок, пишутся в финальной
         # сессии. message = plain-текст алерта (без секретов: токен/chat_id/URL нет).
         alert_log_rows: list[tuple[uuid.UUID, AlertKind, str, bool]] = []
-        for server_id, (name, ip, instance) in snapshot.items():
-            prev = prev_states.get(server_id)
-            im = metrics_by_instance.get(instance)
-            if im is None:
-                # Instance отсутствует в ответе — не оцениваем, строку не трогаем.
-                continue
-            state, alerts = evaluate(prev, im, name=name, ip=ip)
+        for server_id, (state, alerts) in results.items():
             to_persist.append((server_id, state))
             for alert in alerts:
                 delivered = await self._telegram.send_message(alert.text)
@@ -279,6 +302,45 @@ class NotifierService:
                 for log_server_id, kind, message, delivered in alert_log_rows:
                     await log_repo.insert(log_server_id, kind, message, delivered)
             await session.commit()
+
+    @staticmethod
+    async def _attach_backends(
+        results: dict[uuid.UUID, tuple[ServerAlertState, list[Alert]]],
+        snapshot: dict[uuid.UUID, tuple[str, str, str]],
+        metrics_by_instance: dict[str, InstanceMetrics],
+        prev_states: dict[uuid.UUID, ServerAlertState],
+    ) -> None:
+        """Дополняет алерты об ОШИБКАХ перечнем бэков сервера (ADR-046 §1).
+
+        Перечень резолвится ТОЛЬКО для серверов, у которых алерт реально сформирован
+        (алерты редки → по одному индексируемому SELECT на алертящий сервер, а не на
+        каждый online-сервер каждую итерацию). Найденные бэки подаются в `evaluate`
+        повторно: функция чистая (без сети/БД), состояние от `backends` не зависит,
+        меняется только текст сообщений — так композиция блока остаётся внутри билдеров.
+        Recovery-алерты перечнем не расширяются (`_ERROR_ALERT_KINDS`).
+        """
+        alerting = [
+            server_id
+            for server_id, (_, alerts) in results.items()
+            if any(alert.kind in _ERROR_ALERT_KINDS for alert in alerts)
+        ]
+        if not alerting:
+            return
+        sessionmaker = get_sessionmaker()
+        async with sessionmaker() as session:
+            repo = BackendRepository(session)
+            for server_id in alerting:
+                refs = to_backend_refs(await repo.list_by_server(server_id))
+                if not refs:
+                    continue  # бэков нет → блок «Бэки:» не добавляется вовсе
+                name, ip, instance = snapshot[server_id]
+                results[server_id] = evaluate(
+                    prev_states.get(server_id),
+                    metrics_by_instance[instance],
+                    name=name,
+                    ip=ip,
+                    backends=refs,
+                )
 
     async def run(self) -> None:
         """Бесконечный цикл: опрос → sleep. Ошибка итерации логируется, цикл живёт."""

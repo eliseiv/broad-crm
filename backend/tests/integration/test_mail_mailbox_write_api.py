@@ -68,12 +68,18 @@ async def test_create_transits_creds_not_stored_and_no_store(
         app = build_app(sm, principal, mail_client=fake)
         async with client(app) as c:
             resp = await c.post(
-                "/api/mail/mailboxes", json={**_CREDS, "team_id": team_id, "display_name": "Box"}
+                "/api/mail/mailboxes",
+                # Тело запроса несёт `number`/`app_name`; `display_name` клиентом НЕ
+                # принимается — сервер вычисляет его сам (ADR-047 §3.2/§3.3).
+                json={**_CREDS, "team_id": team_id, "number": "5108", "app_name": "Klyro"},
             )
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["id"] == 500
     assert body["team_id"] == team_id
+    assert body["number"] == "5108"
+    assert body["app_name"] == "Klyro"
+    assert body["display_name"] == "5108 Klyro"  # производное (ADR-047 §3.3)
     assert resp.headers.get("Cache-Control") == "no-store"
     # Креды ушли в агрегатор транзитом.
     assert fake.calls[0][0] == "create_mailbox"
@@ -278,7 +284,7 @@ async def test_mutate_foreign_mailbox_403(monkeypatch: pytest.MonkeyPatch) -> No
         fake = FakeMailClient()
         app = build_app(sm, _member(user_id, ["edit"]), mail_client=fake)
         async with client(app) as c:
-            resp = await c.patch("/api/mail/mailboxes/20", json={"display_name": "x"})
+            resp = await c.patch("/api/mail/mailboxes/20", json={"app_name": "x"})
     assert resp.status_code == 403
 
 
@@ -295,7 +301,7 @@ async def test_mutate_nonexistent_mailbox_404(monkeypatch: pytest.MonkeyPatch) -
         fake = FakeMailClient()
         app = build_app(sm, _member(user_id, ["edit"]), mail_client=fake)
         async with client(app) as c:
-            resp = await c.patch("/api/mail/mailboxes/99999", json={"display_name": "x"})
+            resp = await c.patch("/api/mail/mailboxes/99999", json={"app_name": "x"})
     # ADR §7: `_load_account_in_scope` — отсутствующий ящик → 404 mail_mailbox_not_found
     # (проверка scope идёт ПОСЛЕ загрузки). Чужой ящик → 403 (см. test_mutate_foreign).
     # NB: промт-инструкция «несуществующий → тоже 403 (неразличимы)» НЕ соответствует

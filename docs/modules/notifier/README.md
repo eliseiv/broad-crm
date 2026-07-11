@@ -108,6 +108,29 @@ ServerState = { online: bool, zones: {cpu: Zone, ram: Zone, ssd: Zone} | None }
 
 Метки метрик: `CPU` / `RAM` / `SSD`. Порядок строк стабильный — CPU, RAM, SSD. `n%` = `int(usage_percent)` (**округление ВНИЗ**, `usage_percent` уже округлён до 1 знака в маппинге). Имя сервера — в двойных кавычках. Текст — plain (без parse_mode/Markdown).
 
+### Блок «Бэки:» в алертах об ОШИБКАХ (нормативно, [ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §1)
+
+Сообщения об **ошибках** сервера (**warning** / **critical** / **offline**) дополняются перечнем бэков, которые **используют этот сервер** (`backends.server_id`, [ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)).
+
+- **Recovery-сообщения перечнем НЕ расширяются** (`build_recovered` — без изменений).
+- **Источник:** `backends WHERE server_id = :server_id`, порядок — **`position ASC, code ASC`** (детерминированный: `code` UNIQUE ⇒ тотальный порядок).
+- **⚠️ Порядок перечня в АЛЕРТЕ ≠ порядок API reverse-lookup — намеренно** ([ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §1). `BackendRepository.list_by_server` (эндпоинт `GET /api/servers/{id}/backends`, [ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)) сортирует **`position ASC, created_at DESC, id ASC`** — **контракт не меняется**. Алерту нужен `position ASC, code ASC` (воспроизводимость текста), поэтому переупорядочение делается **in-memory поверх результата репозитория**, а не сменой `ORDER BY`.
+- **Формат строки бэка — ПЕРЕИСПОЛЬЗУЕТСЯ нормативный блок** [modules/backends §Формат сообщений Telegram](../backends/README.md#формат-сообщений-telegram-точно-нормативно--источник-истины) (`_backend_block(code, name, domain)`, побуквенно): `Бэк "<name>" [<code>] <domain>`.
+- **⚠️ Механика сортировки (нормативно): in-memory по КОРТЕЖУ `(position, code)` — перенос тай-брейка в SQL `ORDER BY` ЗАПРЕЩЁН.** «`position ASC, code ASC`» задаёт **требуемый порядок**, а не способ его получения: сортировка идёт по **кодпойнтам** `code` (Python), а не по **коллации БД** (`ORDER BY` в PostgreSQL при `en_US.UTF-8` игнорирует регистр/пунктуацию → для кодов со смешанным регистром порядок разойдётся). Побайтовая воспроизводимость текста алерта требует детерминизма кодпойнтов и независимости от локали БД. **Не «унифицировать» в `ORDER BY` при рефакторинге.**
+- **Структура блока** — пустая строка, затем `Бэки:`, затем по строке на бэк:
+
+  ```
+  
+  Бэки:
+  Бэк "<name1>" [<code1>] <domain1>
+  Бэк "<name2>" [<code2>] <domain2>
+  ```
+
+- **Пустой перечень → блок НЕ добавляется вовсе** (ни `Бэки:`, ни пустой строки) — сообщение побайтово равно прежнему.
+- **Лимит `MAX_ALERT_BACKENDS = 10`.** При `N > 10` печатаются первые 10, последней строкой блока идёт: `… и ещё <N-10>` (символ `…` = U+2026). Обоснование — лимит Telegram 4096 символов; молча терять хвост нельзя, полный список всегда доступен в detail-модалке сервера (секция «Бэки»).
+- **Сигнатуры билдеров** (`app/domain/notifications.py`; расширение обратно-совместимое): `build_warning(name, ip, items, backends=())`, `build_critical_load(name, ip, items, backends=())`, `build_offline(name, ip, backends=())`; `BackendRef = tuple[str, str, str]` = `(code, name, domain)`.
+- **CHECK `ck_notifier_alert_log_kind` НЕ меняется** — новых `kind` не вводится (`offline`/`recovered`/`warning`/`critical`); меняется **только текст** `notifier_alert_log.message` (в него пишется отправленная строка целиком, включая блок «Бэки:»). Миграций не требуется.
+
 **1. 🟡 ПРЕДУПРЕЖДЕНИЕ** — метрики, эскалировавшие в жёлтую зону (`cur == yellow`):
 
 ```
@@ -117,6 +140,10 @@ IP <ip>
 
 CPU: Нагрузка более 83%
 RAM: Нагрузка более 81%
+
+Бэки:
+Бэк "<name1>" [<code1>] <domain1>
+Бэк "<name2>" [<code2>] <domain2>
 ```
 
 **2. 🔴 СРОЧНО (красная зона)** — метрики, эскалировавшие в красную зону (`cur == red`), тот же layout:
@@ -127,6 +154,9 @@ RAM: Нагрузка более 81%
 IP <ip>
 
 CPU: Нагрузка более 95%
+
+Бэки:
+Бэк "<name1>" [<code1>] <domain1>
 ```
 
 **3. 🔴 СРОЧНО (offline)** — переход `online→offline`:
@@ -137,9 +167,12 @@ CPU: Нагрузка более 95%
 IP <ip>
 
 Сервер не доступен
+
+Бэки:
+Бэк "<name1>" [<code1>] <domain1>
 ```
 
-**4. 🟢 ВОССТАНОВЛЕНО (recovery)** — переход `offline→online` ([ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)); `build_recovered(name, ip)`, стиль как у recovery AI-ключей:
+**4. 🟢 ВОССТАНОВЛЕНО (recovery)** — переход `offline→online` ([ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)); `build_recovered(name, ip)`, стиль как у recovery AI-ключей. **Перечнем бэков НЕ расширяется** ([ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §1 — решение владельца):
 
 ```
 🟢🟢🟢ВОССТАНОВЛЕНО🟢🟢🟢
@@ -155,17 +188,34 @@ IP <ip>
 
 Помимо серверных алертов, тот же `TelegramClient` используется **отдельным** фоновым сервисом `AiKeyMonitorService` ([modules/ai-keys](../ai-keys/README.md), [ADR-010](../../adr/ADR-010-ai-key-monitor-vnutri-backend.md)) для уведомлений о валидности AI-ключей. **Важно:** это НЕ часть state-машины серверов из этого модуля — отдельный сервис, отдельное состояние (в БД `ai_keys.check_status`, переживает рестарт), отдельный интервал (`AI_KEY_CHECK_INTERVAL_SEC`). Общее — только `TelegramClient`, гейт `notifier_enabled` и семантика доставки at-least-once.
 
-Формат (точно; plain-текст, имя ключа в кавычках, `<last4>` = `key_last4`):
+Формат — **точно** (plain-текст, имя ключа в двойных кавычках, `<last4>` = `key_last4`; для короткого ключа, где `key_last4 = NULL`, подставляется пустая строка → `****`).
 
-**🔴 Ключ не работает** (переход `pending|working → error`):
+> **Этот текст ПОБУКВЕННО дублируется** в [modules/notifier §Сообщения AI-ключей](../notifier/README.md#сообщения-ai-ключей) и [modules/ai-keys §Формат сообщений Telegram](../ai-keys/README.md#формат-сообщений-telegram-точно). Оба вхождения обязаны совпадать **посимвольно**; при правке — менять оба. Формат строки бэка — источник истины [modules/backends](../backends/README.md#формат-сообщений-telegram-точно-нормативно--источник-истины).
+
+**🔴 Ключ не работает** (переход `pending|working → error`) — **дополняется перечнем бэков, использующих этот ключ** ([ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §1):
 
 ```
 🔴🔴🔴СРОЧНО🔴🔴🔴
 Ключ "<name>" ****<last4>
 Ключ не работает: "<reason>"
+
+Бэки:
+Бэк "<name1>" [<code1>] <domain1>
+Бэк "<name2>" [<code2>] <domain2>
 ```
 
-**🟢 Ключ восстановлен** (переход `error → working`):
+`<reason>` = актуальный `error_message` («Ключ недействителен» / «Доступ запрещён» / «Недостаточно средств» / «Ошибка провайдера»).
+
+**Блок «Бэки:» (нормативно, [ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §1):**
+- **Источник:** `backends WHERE ai_key_id = :ai_key_id` (связь [ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)), порядок — **`position ASC, code ASC`**.
+- **⚠️ Порядок перечня в АЛЕРТЕ ≠ порядок API reverse-lookup — намеренно (нормативно, [ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §1).** Репозиторные методы `BackendRepository.list_by_server` / `list_by_ai_key`, обслуживающие эндпоинты `GET /api/servers|ai-keys/{id}/backends` ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)), сортируют **`position ASC, created_at DESC, id ASC`** — **этот контракт НЕ меняется**. Для текста алерта нормативен **`position ASC, code ASC`**: `code` UNIQUE ⇒ порядок **тотальный и детерминированный** (тай-брейк однозначен даже при равных `position`/`created_at`), что необходимо для побайтово воспроизводимого формата сообщения и его тестов. Переупорядочение выполняется **in-memory поверх результата репозитория** (отдельный хелпер), а **не** сменой `ORDER BY` — чтобы не трогать публичный контракт reverse-lookup. Два порядка сосуществуют осознанно.
+- **Строка бэка — переиспользуется `_backend_block(code, name, domain)`** побуквенно: `Бэк "<name>" [<code>] <domain>`.
+- **⚠️ Механика сортировки (нормативно): in-memory по КОРТЕЖУ `(position, code)` — перенос тай-брейка в SQL `ORDER BY` ЗАПРЕЩЁН.** Запись «`position ASC, code ASC`» описывает **требуемый порядок**, а не способ его получения. Реализация — Python-сортировка по кортежу `(position, code)`, т.е. по **кодпойнтам** строки `code`. Это **не то же самое**, что `ORDER BY position, code` в PostgreSQL: там порядок задаёт **коллация БД** (напр. `en_US.UTF-8` игнорирует регистр и знаки препинания), поэтому для кодов со **смешанным регистром** SQL-порядок и порядок кодпойнтов **расходятся**. Побайтовая воспроизводимость текста алерта (qa сверяет посимвольно) требует именно детерминизма кодпойнтов и независимости от настроек локали БД. **Не «унифицировать» это в `ORDER BY` при будущем рефакторинге** — порядок молча изменится.
+- **Пустой перечень → блок не добавляется вовсе** (ни строки `Бэки:`, ни пустой строки перед ней) — сообщение побайтово равно прежнему.
+- **Лимит `MAX_ALERT_BACKENDS = 10`:** при `N > 10` печатаются первые 10, последней строкой блока идёт `… и ещё <N-10>` (символ `…` = U+2026). Долг — [TD-053](../../100-known-tech-debt.md).
+- Сигнатура: `build_key_error(name, last4, reason, backends=())`; `BackendRef = tuple[str, str, str]` = `(code, name, domain)`.
+
+**🟢 Ключ восстановлен** (переход `error → working`). **Перечнем бэков НЕ расширяется** (`build_key_recovery(name, last4)` — без изменений):
 
 ```
 🟢🟢🟢ВОССТАНОВЛЕНО🟢🟢🟢
@@ -224,6 +274,8 @@ IP <ip>
 - [ ] Coverage ≥90 % для функции перехода/классификации сообщений ([06-testing-strategy.md](../../06-testing-strategy.md)).
 
 ## Changelog
+
+- 2026-07-11: **Перечень бэков в алертах об ошибках** (architect, [ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §1; **БД/контракты не затронуты, миграций нет**). Сообщения об **ошибках** сервера (`warning`/`critical`/`offline`) и **ошибке ИИ-ключа** дополняются блоком `Бэки:` — строки `Бэк "<name>" [<code>] <domain>` (**реюз** `_backend_block`, источник истины формата — [modules/backends](../backends/README.md#формат-сообщений-telegram-точно-нормативно--источник-истины)). Источник перечня — `backends.server_id` / `backends.ai_key_id` ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)), порядок `position ASC, code ASC`; **лимит 10** + `… и ещё N` ([TD-053](../../100-known-tech-debt.md)); **пустой перечень → блока нет** (сообщение побайтово равно прежнему). **Recovery-сообщения НЕ расширяются** (решение владельца). Алерты бэков/прокси не затронуты. **CHECK `ck_notifier_alert_log_kind` не меняется** — новых `kind` нет, меняется только текст `message`.
 
 - 2026-06-30: спецификация создана (architect); решение об in-backend-нотификаторе — [ADR-009](../../adr/ADR-009-in-backend-notifier-vs-alertmanager.md); state in-memory — [TD-019](../../100-known-tech-debt.md).
 - 2026-07-04: state-машина переведена на **персистентное состояние в БД** (`notifier_server_state`) + правило **alert-on-first-elevated** (отсутствующая база ≡ здоровый baseline `online`+`green×3`) — [ADR-014](../../adr/ADR-014-persist-notifier-state-alert-on-first-elevated.md); [TD-019](../../100-known-tech-debt.md) закрыт. Пороги зон и `usage_to_zone()` НЕ менялись.

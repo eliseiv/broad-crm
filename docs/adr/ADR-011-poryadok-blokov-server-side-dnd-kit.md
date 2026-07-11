@@ -1,6 +1,12 @@
 # ADR-011 · Порядок блоков — server-side `position` + @dnd-kit, drag по задержке
 
-- Статус: `accepted`
+- Статус: `accepted` (**амендирован** [ADR-046](ADR-046-ui-infra-fix-pack.md) §2а — DnD убран на `/backends`)
+
+> ⚠️ **АМЕНДМЕНТ [ADR-046](ADR-046-ui-infra-fix-pack.md) §2а (2026-07-11): на странице «Бэки» (`/backends`) DnD УБРАН.**
+> - Порядок карточек `/backends` задаёт **клиентская сортировка по `name`** (регистронезависимо, `localeCompare` ru; tie-break — `code`, UNIQUE ⇒ детерминированно). `DndContext`/`SortableContext`/`SortableItem`/`PointerSensor` там **не применяются**; разведение жестов «короткий клик vs зажатие ~200 мс» на этой странице не требуется — клик открывает detail немедленно.
+> - **Колонка `backends.position` и `PATCH /api/backends/order` СОХРАНЕНЫ** в БД/API (UI их не вызывает — [TD-054](../100-known-tech-debt.md)): `position` по-прежнему задаёт порядок ответа `GET /api/backends` и порядок перечня бэков в Telegram-алертах ([ADR-046](ADR-046-ui-infra-fix-pack.md) §1).
+> - **Для `/servers`, `/ai-keys` и `/proxies` настоящий ADR действует БЕЗ ИЗМЕНЕНИЙ** (DnD + `position` + delay-активация сохраняются).
+> - Короткий клик по карточке ведёт в **read-only detail-view**, а не в edit-модалку ([ADR-035](ADR-035-detail-view-secret-reveal.md)); состав detail — [ADR-046](ADR-046-ui-infra-fix-pack.md) §2в.
 - Дата: 2026-07-01
 - Контекст модулей: [servers](../modules/servers/README.md), [ai-keys](../modules/ai-keys/README.md), [ui](../modules/ui/README.md)
 

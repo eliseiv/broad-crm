@@ -1,29 +1,30 @@
-"""Репозиторий тегов почты (движок матчинга + seed builtin, ADR-044 §5).
+"""Репозиторий тегов почты (движок матчинга + CRUD каталога, ADR-044 §5).
 
 `apply_tags_to_message` — применить все матчащие теги к одному письму (на приёме
 push'а, синхронно). `apply_tag_to_existing` — bulk-INSERT правил тега по всем письмам
 (apply-to-existing). Обе — через ПОБУКВЕННО портированный SQL (`mail_tags_sql`), без
-visibility-веток (теги глобальны). `seed_builtin` — идемпотентный посев builtin по
-`UNIQUE (name)` в lifespan.
+visibility-веток (теги глобальны).
+
+Посева builtin-тегов здесь НЕТ (ADR-047 §1): признак «встроенный» упразднён, сев при
+старте приложения убран (он воскрешал удалённый тег), первичный сев каталога выполняет
+однократно data-миграция `0023`.
 """
 
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select, text
-from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.mail_builtin_tags import BuiltinTag
 from app.domain.mail_tags_sql import APPLY_TAG_TO_EXISTING, APPLY_TAGS_TO_MESSAGE
 from app.models.mail_tag import MailMessageTag, MailTag, MailTagRule
 
 
 class MailTagRepository:
-    """Движок применения тегов + посев builtin + CRUD глобального каталога (§5)."""
+    """Движок применения тегов + CRUD глобального каталога (§5)."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -82,8 +83,8 @@ class MailTagRepository:
         return (await self._session.execute(stmt.limit(1))).first() is not None
 
     async def create_tag(self, *, name: str, color: str, match_mode: str) -> MailTag:
-        """Создать тег (без правил; `is_builtin=false`, ADR-044 §5)."""
-        tag = MailTag(name=name, color=color, match_mode=match_mode, is_builtin=False)
+        """Создать тег (без правил, ADR-044 §5)."""
+        tag = MailTag(name=name, color=color, match_mode=match_mode)
         self._session.add(tag)
         await self._session.flush()
         return tag
@@ -143,36 +144,3 @@ class MailTagRepository:
         result = await self._session.execute(text(APPLY_TAG_TO_EXISTING), {"tag_id": tag_id})
         # CursorResult.rowcount не типизирован в SQLAlchemy stubs (известное ограничение).
         return int(result.rowcount or 0)  # type: ignore[attr-defined]
-
-    async def seed_builtin(self, catalogue: Sequence[BuiltinTag]) -> int:
-        """Идемпотентно создать отсутствующие builtin-теги (по `UNIQUE (name)`).
-
-        Существующий по имени тег НЕ трогается (`ON CONFLICT (name) DO NOTHING`);
-        правила добавляются только новосозданным. Возвращает число созданных тегов.
-        """
-        created = 0
-        for tag in catalogue:
-            stmt = (
-                pg_insert(MailTag)
-                .values(
-                    name=tag["name"],
-                    color=tag["color"],
-                    match_mode=tag["match_mode"],
-                    is_builtin=True,
-                )
-                .on_conflict_do_nothing(index_elements=["name"])
-                .returning(MailTag.id)
-            )
-            tag_id = (await self._session.execute(stmt)).scalar_one_or_none()
-            if tag_id is None:
-                continue  # тег с таким именем уже есть — не трогаем
-            created += 1
-            for rule in tag["rules"]:
-                await self._session.execute(
-                    pg_insert(MailTagRule).values(
-                        tag_id=tag_id,
-                        type=rule["type"],
-                        pattern=rule["pattern"],
-                    )
-                )
-        return created

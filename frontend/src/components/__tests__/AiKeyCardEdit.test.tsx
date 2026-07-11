@@ -66,6 +66,12 @@ describe('AiKeyCard detail → edit (ADR-035)', () => {
 
     const dialog = within(await screen.findByRole('dialog'));
     expect(dialog.getByText('Просмотр')).toBeInTheDocument();
+    // Видимая зона — идентификаторы (Название / Провайдер); поле «Ключ» — внутри свёрнутой
+    // по умолчанию «Информации» (ADR-046 §2в).
+    expect(dialog.getByText('OpenAI Prod')).toBeInTheDocument();
+    expect(dialog.queryByText('sk-p…bA3T')).not.toBeInTheDocument();
+
+    await user.click(dialog.getByRole('button', { name: 'Информация' }));
     // Поле «Ключ» detail-view показывает маску key_masked (полный ключ скрыт).
     expect(dialog.getByText('sk-p…bA3T')).toBeInTheDocument();
     expect(screen.queryByText('Изменить ключ')).not.toBeInTheDocument();

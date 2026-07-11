@@ -1,4 +1,9 @@
-import { DetailEditPencil, DetailRow, SecretRevealField } from '@/components/DetailFields';
+import {
+  DetailEditPencil,
+  DetailInfoSection,
+  DetailRow,
+  SecretRevealField,
+} from '@/components/DetailFields';
 import { Modal } from '@/components/ui/Modal';
 import { revealBackendAdminApiKey, revealBackendApiKey } from '@/features/backends/api';
 import type { Backend } from '@/types/api';
@@ -13,14 +18,13 @@ interface BackendDetailModalProps {
   onEdit: () => void;
 }
 
-const DASH = <span className="text-text-tertiary">—</span>;
-
 /**
- * Read-only detail-модалка бэка (08-design-system.md «Detail-view», ADR-035/ADR-040).
- * Поля: Код / Название / Домен + Сервер (`server_name`/«—») / ИИ-ключ (`ai_key_name`/«—») /
- * API KEY / ADMIN API KEY (`••••` + глаз-reveal под `backends:edit`, если `has_*`; иначе «—») /
- * Git (ссылка/«—») / Примечания (`note`/«—»). Карандаш (под `backends:edit`) открывает
- * edit-модалку с секцией «Информация».
+ * Read-only detail-модалка бэка (08-design-system.md «Detail-view», ADR-035/ADR-040/ADR-046 §2в).
+ * Сразу видны только **идентификаторы**: Код / Название / Домен. Всё остальное — Сервер,
+ * ИИ-ключ, API KEY / ADMIN API KEY (`••••` + глаз-reveal под `backends:edit`, только при
+ * `has_api_key`/`has_admin_api_key`), Git, Примечания — внутри свёрнутого блока «Информация».
+ * Пустые поля не рендерятся (ADR-046 §3; прочерк «—» упразднён); если внутри «Информации» не
+ * осталось ничего — блок не рендерится вовсе. Карандаш (под `backends:edit`) открывает edit.
  */
 export function BackendDetailModal({
   open,
@@ -29,6 +33,14 @@ export function BackendDetailModal({
   canEdit,
   onEdit,
 }: BackendDetailModalProps) {
+  const hasInfo =
+    Boolean(backend.server_name) ||
+    Boolean(backend.ai_key_name) ||
+    backend.has_api_key ||
+    backend.has_admin_api_key ||
+    Boolean(backend.git) ||
+    Boolean(backend.note);
+
   return (
     <Modal
       open={open}
@@ -40,51 +52,50 @@ export function BackendDetailModal({
         <DetailRow label="Код" value={backend.code} mono />
         <DetailRow label="Название" value={backend.name} />
         <DetailRow label="Домен" value={backend.domain} mono />
-        <DetailRow label="Сервер" value={backend.server_name ?? DASH} />
-        <DetailRow label="ИИ-ключ" value={backend.ai_key_name ?? DASH} />
 
-        {backend.has_api_key ? (
-          <SecretRevealField
-            label="API KEY"
-            canReveal={canEdit}
-            reveal={(signal) => revealBackendApiKey(backend.id, signal)}
-            showAria="Показать API KEY"
-            hideAria="Скрыть API KEY"
-          />
-        ) : (
-          <DetailRow label="API KEY" value={DASH} />
+        {hasInfo && (
+          <DetailInfoSection>
+            <DetailRow label="Сервер" value={backend.server_name} />
+            <DetailRow label="ИИ-ключ" value={backend.ai_key_name} />
+
+            {backend.has_api_key && (
+              <SecretRevealField
+                label="API KEY"
+                canReveal={canEdit}
+                reveal={(signal) => revealBackendApiKey(backend.id, signal)}
+                showAria="Показать API KEY"
+                hideAria="Скрыть API KEY"
+              />
+            )}
+
+            {backend.has_admin_api_key && (
+              <SecretRevealField
+                label="ADMIN API KEY"
+                canReveal={canEdit}
+                reveal={(signal) => revealBackendAdminApiKey(backend.id, signal)}
+                showAria="Показать ADMIN API KEY"
+                hideAria="Скрыть ADMIN API KEY"
+              />
+            )}
+
+            {backend.git && (
+              <DetailRow
+                label="Git"
+                value={
+                  <a
+                    href={backend.git}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="break-all text-accent underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+                  >
+                    {backend.git}
+                  </a>
+                }
+              />
+            )}
+            <DetailRow label="Примечания" value={backend.note} />
+          </DetailInfoSection>
         )}
-
-        {backend.has_admin_api_key ? (
-          <SecretRevealField
-            label="ADMIN API KEY"
-            canReveal={canEdit}
-            reveal={(signal) => revealBackendAdminApiKey(backend.id, signal)}
-            showAria="Показать ADMIN API KEY"
-            hideAria="Скрыть ADMIN API KEY"
-          />
-        ) : (
-          <DetailRow label="ADMIN API KEY" value={DASH} />
-        )}
-
-        <DetailRow
-          label="Git"
-          value={
-            backend.git ? (
-              <a
-                href={backend.git}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="break-all text-accent underline-offset-2 hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-              >
-                {backend.git}
-              </a>
-            ) : (
-              DASH
-            )
-          }
-        />
-        <DetailRow label="Примечания" value={backend.note ?? DASH} />
       </div>
     </Modal>
   );

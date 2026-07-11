@@ -16,17 +16,25 @@ export const TAG_PALETTE: { hex: string; name: string }[] = [
   { hex: '#475569', name: 'серый' },
 ];
 
-/** Человекочитаемые подписи типов правил (08-design-system.md, нормативно). */
+/**
+ * Человекочитаемые лейблы типов правил (08-design-system.md «Вкладка Теги», ADR-047 §2 —
+ * нормативный словарь). `sender_exact` присутствует ТОЛЬКО для отображения существующих
+ * правил (тип остаётся в БД/контракте; движок матчинга не тронут).
+ */
 const RULE_TYPE_LABEL: Record<MailTagRuleType, string> = {
-  subject_contains: 'Тема содержит',
-  body_contains: 'Тело содержит',
-  sender_contains: 'Отправитель содержит',
+  subject_contains: 'Тема письма',
+  body_contains: 'Текст письма',
+  sender_contains: 'Отправитель',
   sender_exact: 'Отправитель равен',
 };
 
-/** Опции Select типа правила (порядок — как в словаре docs). */
+/**
+ * Опции Select типа правила при СОЗДАНИИ правила (порядок — как в словаре docs).
+ * `sender_exact` из списка убран (ADR-047 §2, TD-055): создать новое правило такого типа
+ * из CRM нельзя, но старые правила этого типа продолжают работать и отображаются лейблом.
+ */
 export const RULE_TYPE_OPTIONS: { value: MailTagRuleType; label: string }[] = (
-  ['subject_contains', 'body_contains', 'sender_contains', 'sender_exact'] as MailTagRuleType[]
+  ['subject_contains', 'body_contains', 'sender_contains'] as MailTagRuleType[]
 ).map((value) => ({ value, label: RULE_TYPE_LABEL[value] }));
 
 /** Полная строка правила: `<подпись типа> «<pattern>»` (08-design-system.md). */

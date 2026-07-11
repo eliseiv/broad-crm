@@ -4,6 +4,7 @@ import { toast } from 'sonner';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Modal } from '@/components/ui/Modal';
+import { Pill } from '@/components/ui/Pill';
 import { Select } from '@/components/ui/Select';
 import type { SelectOption } from '@/components/ui/Select';
 import { MailboxFormModal } from '@/components/MailboxFormModal';
@@ -31,10 +32,16 @@ function errorMessage(err: unknown, fallback: string): string {
 }
 
 /**
- * Строка таблицы «Почты» (08-design-system.md «Вкладка Почты», ADR-038): слева цветной
- * кружок статуса (`Badge` dot: green — активна и без ошибок синка; red — неактивна ИЛИ
- * есть ошибки синка), адрес + имя, привязка к команде (`Select`, как в SmsNumberRow),
- * время последнего синка и ошибка, действия (синк/редактировать/удалить) под правами.
+ * Строка таблицы «Почты» (08-design-system.md «Рендер строки ящика», ADR-047 §5; референс
+ * `screen/1.jpg`). Идентификационная ячейка — ДВА РЯДА, отдельной колонки статуса нет
+ * (кружок переехал в первый ряд):
+ *  - ряд 1: кружок статуса (`Badge` dot: green — активна и без ошибок синка; red — неактивна
+ *    ИЛИ есть ошибки синка; статус продублирован текстом для скринридера) → лейбл «Номер»
+ *    (вторичный) + `number` (крупно, полужирно) → лейбл «Приложение» (вторичный) + `app_name`
+ *    пилюлей `ui/Pill tone="accent"`. Пустое значение → пара «лейбл + значение» не рендерится;
+ *  - ряд 2: адрес почты (`email`).
+ * Далее: команда (перенос `Select` — только admin-уровень; значение читается ПОЛНОСТЬЮ,
+ * без truncate — ADR-047 §4), время последнего синка и ошибка, действия под правами.
  */
 export function MailboxRow({
   mailbox,
@@ -68,10 +75,19 @@ export function MailboxRow({
       : 'Ошибка синхронизации'
     : 'Неактивна';
 
+  // Пустое значение → пара «лейбл + значение» не рендерится (лейбл без значения не
+  // показывается никогда; ADR-047 §5).
+  const number = mailbox.number?.trim() ? mailbox.number : null;
+  const appName = mailbox.app_name?.trim() ? mailbox.app_name : null;
+
   const teamOptions: SelectOption[] = [
     { value: NO_TEAM, label: 'Без команды' },
     ...teams.map((t) => ({ value: t.id, label: t.name })),
   ];
+
+  const currentTeamName = currentTeam
+    ? (teams.find((t) => t.id === currentTeam)?.name ?? 'Команда')
+    : 'Без команды';
 
   const handleTeamChange = (next: string) => {
     if (next === currentTeam) return;
@@ -108,23 +124,41 @@ export function MailboxRow({
   return (
     <tr className="border-t border-border-subtle align-top">
       <td className="px-3 py-3">
-        <Badge tone={healthy ? 'green' : 'red'}>{statusText}</Badge>
-      </td>
-      <td className="px-3 py-3">
-        <div className="flex flex-col gap-0.5">
+        <div className="flex flex-col gap-1">
+          {/* Ряд 1: статус-кружок + «Номер» + «Приложение» (ADR-047 §5, референс screen/1.jpg). */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <Badge tone={healthy ? 'green' : 'red'} className="shrink-0">
+              <span className="sr-only">{statusText}</span>
+            </Badge>
+            {number && (
+              <span className="flex items-baseline gap-2">
+                <span className="text-[13px] text-text-secondary">Номер</span>
+                <span className="break-words text-lg font-bold leading-tight text-text-primary">
+                  {number}
+                </span>
+              </span>
+            )}
+            {appName && (
+              <span className="flex items-center gap-2">
+                <span className="text-[13px] text-text-secondary">Приложение</span>
+                <Pill label={appName} tone="accent" wrap title={appName} />
+              </span>
+            )}
+          </div>
+          {/* Ряд 2: адрес почты. */}
           <span className="break-all font-mono text-[13px] text-text-primary">{mailbox.email}</span>
-          {mailbox.display_name && (
-            <span className="break-words text-[12px] text-text-secondary">
-              {mailbox.display_name}
-            </span>
-          )}
         </div>
       </td>
       <td className="px-3 py-3">
+        {/* Значение команды читается ПОЛНОСТЬЮ (ADR-047 §4): контрол не менее w-56,
+            статичное значение переносится (break-words), truncate/overflow-hidden запрещены. */}
         {canTransfer ? (
-          <div className="w-40">
+          // Контрол не менее w-56 и растёт вместе с колонкой (`w-full`) — значение
+          // читается целиком; `title` отдаёт полное имя команды при наведении.
+          <div className="w-full min-w-[14rem]">
             <Select
               aria-label={`Команда почты ${mailbox.email}`}
+              title={currentTeamName}
               options={teamOptions}
               value={selectedTeam}
               disabled={updateMutation.isPending}
@@ -132,10 +166,8 @@ export function MailboxRow({
             />
           </div>
         ) : (
-          <span className="text-[13px] text-text-secondary">
-            {currentTeam
-              ? (teams.find((t) => t.id === currentTeam)?.name ?? 'Команда')
-              : 'Без команды'}
+          <span className="block w-full min-w-[14rem] break-words text-[13px] text-text-secondary">
+            {currentTeamName}
           </span>
         )}
       </td>

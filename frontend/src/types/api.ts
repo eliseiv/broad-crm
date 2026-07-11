@@ -319,6 +319,14 @@ export interface MailReplyResponse {
 export interface MailMailbox {
   id: number;
   email: string;
+  /** «Номер» ящика (04-api.md, ADR-047 §3); `null` — не задан. */
+  number: string | null;
+  /** «Приложение» ящика (04-api.md, ADR-047 §3); `null` — не задано. */
+  app_name: string | null;
+  /**
+   * ПРОИЗВОДНОЕ (read-only для клиента, ADR-047 §3.3): `"<number> <app_name>"` (пустые
+   * части опускаются; обе пусты → `null`). Считает сервер; в запросах НЕ принимается.
+   */
   display_name: string | null;
   team_id: string | null;
   is_active: boolean;
@@ -362,24 +370,29 @@ export interface MailMailboxTestResponse {
 }
 
 /**
- * Тело POST /api/mail/mailboxes (ADR-044 §4, MailMailboxCreateRequest) = поля `test`
- * + `display_name`/`team_id` (UUID CRM-команды-владельца; `null` — без команды,
- * unassigned — только admin-уровень). Для не-admin `team_id` обязан ∈ его командам.
+ * Тело POST /api/mail/mailboxes (04-api.md, MailMailboxCreateRequest) = поля `test`
+ * + `number`/`app_name` (ADR-047 §3; оба опц.) + `team_id` (UUID CRM-команды-владельца;
+ * `null` — без команды, unassigned — только admin-уровень). Для не-admin `team_id` обязан
+ * ∈ его командам. **`display_name` в запросе НЕ принимается** — сервер вычисляет его сам.
  */
 export interface MailMailboxCreateRequest extends MailMailboxTestRequest {
-  display_name?: string | null;
+  number?: string | null;
+  app_name?: string | null;
   team_id?: string | null;
 }
 
 /**
- * Тело PATCH /api/mail/mailboxes/{id} (ADR-044 §4, MailMailboxUpdateRequest). Все поля
+ * Тело PATCH /api/mail/mailboxes/{id} (04-api.md, MailMailboxUpdateRequest). Все поля
  * опциональны — присутствие поля = «изменить». Пароль не передан → не менять (секрет не
- * префилится). `team_id`: UUID — сменить команду (перенос между командами — только
- * admin-уровень); `null` — снять привязку. `is_active` — активация/деактивация ящика.
+ * префилится). `number`/`app_name` (ADR-047 §3): значение — установить, `null` — очистить.
+ * **`display_name` НЕ принимается** — сервер пересчитывает его из `number`/`app_name`.
+ * `team_id`: UUID — сменить команду (перенос между командами — только admin-уровень);
+ * `null` — снять привязку. `is_active` — активация/деактивация ящика.
  */
 export interface MailMailboxUpdateRequest {
   email?: string;
-  display_name?: string | null;
+  number?: string | null;
+  app_name?: string | null;
   imap_host?: string;
   imap_port?: number;
   imap_ssl?: boolean;
@@ -437,16 +450,16 @@ export interface MailTagRule {
 }
 
 /**
- * Полный тег с правилами для вкладки «Теги» (ADR-044 §5, MailTagFull). Глобальный
+ * Полный тег с правилами для вкладки «Теги» (04-api.md, MailTagFull). Глобальный
  * админский каталог; `id` — UUID. `color` — HEX из палитры 8 цветов (08-design-system.md).
- * `is_builtin` — встроенный тег (удалять нельзя → 409; правка имени/правил разрешена).
+ * **Поля `is_builtin` НЕТ** (ADR-047 §1): признак «встроенный тег» упразднён, колонка
+ * дропнута миграцией `0023`. Удалить можно ЛЮБОЙ тег.
  */
 export interface MailTagFull {
   id: string;
   name: string;
   color: string;
   match_mode: MailTagMatchMode;
-  is_builtin: boolean;
   rules: MailTagRule[];
   created_at: string;
   updated_at: string;

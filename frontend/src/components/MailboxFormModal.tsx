@@ -271,7 +271,10 @@ function MailboxDialog({
   const initialTeam = mailbox?.team_id != null ? mailbox.team_id : NO_TEAM;
 
   const [email, setEmail] = useState(mailbox?.email ?? '');
-  const [displayName, setDisplayName] = useState(mailbox?.display_name ?? '');
+  // Два поля имени вместо «Отображаемого имени» (ADR-047 §3.6): `display_name` —
+  // производное, сервер считает его сам и клиентом оно НЕ отправляется.
+  const [number, setNumber] = useState(mailbox?.number ?? '');
+  const [appName, setAppName] = useState(mailbox?.app_name ?? '');
   const [teamId, setTeamId] = useState(initialTeam);
   const [isActive, setIsActive] = useState(mailbox?.is_active ?? true);
 
@@ -476,7 +479,8 @@ function MailboxDialog({
   const handleCreate = () => {
     const payload: MailMailboxCreateRequest = {
       ...buildTestPayload(),
-      display_name: displayName.trim() || null,
+      number: number.trim() || null,
+      app_name: appName.trim() || null,
       team_id: teamId || null,
     };
     createMutation.mutate(payload, {
@@ -493,8 +497,8 @@ function MailboxDialog({
     // Presence-семантика: шлём только изменённые/заполненные поля (04-api.md).
     const payload: MailMailboxUpdateRequest = {};
     if (email.trim() !== mailbox.email) payload.email = email.trim();
-    if (displayName.trim() !== (mailbox.display_name ?? ''))
-      payload.display_name = displayName.trim() || null;
+    if (number.trim() !== (mailbox.number ?? '')) payload.number = number.trim() || null;
+    if (appName.trim() !== (mailbox.app_name ?? '')) payload.app_name = appName.trim() || null;
     if (teamId !== initialTeam) payload.team_id = teamId || null;
     if (isActive !== mailbox.is_active) payload.is_active = isActive;
     // Креды/хосты — только если заполнены заново (backend их не отдаёт).
@@ -602,12 +606,26 @@ function MailboxDialog({
             if (errors.email) setErrors((p) => ({ ...p, email: undefined }));
           }}
         />
-        <Input
-          label="Отображаемое имя"
-          value={displayName}
-          autoComplete="off"
-          onChange={(e) => setDisplayName(e.target.value)}
-        />
+        {/* «Номер» + «Приложение» вместо упразднённого «Отображаемого имени» (ADR-047 §3.6);
+            оба опциональны. `display_name` — производное, сервер вычисляет его сам. */}
+        <div className="flex flex-wrap gap-3">
+          <div className="min-w-[140px] flex-1">
+            <Input
+              label="Номер"
+              value={number}
+              autoComplete="off"
+              onChange={(e) => setNumber(e.target.value)}
+            />
+          </div>
+          <div className="min-w-[180px] flex-[2]">
+            <Input
+              label="Приложение"
+              value={appName}
+              autoComplete="off"
+              onChange={(e) => setAppName(e.target.value)}
+            />
+          </div>
+        </div>
         <div className="flex flex-col gap-1.5">
           <Select
             label="Команда"

@@ -64,6 +64,35 @@ class _FakeSession:
         return None
 
 
+class _FakeBackend:
+    """Строка `backends` для перечня бэков в алерте «Ключ не работает» (ADR-046 §1)."""
+
+    def __init__(self, *, position: int, code: str, name: str, domain: str) -> None:
+        self.position = position
+        self.code = code
+        self.name = name
+        self.domain = domain
+
+
+class _FakeBackendRepo:
+    """Стаб BackendRepository: `_send_alert` резолвит бэки ключа на фейковой сессии.
+
+    По умолчанию бэков нет → блок «Бэки:» не добавляется, текст побайтово равен прежнему.
+    `calls` фиксирует, для каких ключей перечень вообще запрашивался (при выключенном боте
+    и при recovery-алерте лишний SELECT не делается).
+    """
+
+    by_key: dict[uuid.UUID, list[_FakeBackend]] = {}  # noqa: RUF012
+    calls: list[uuid.UUID] = []  # noqa: RUF012
+
+    def __init__(self, session: object) -> None:
+        self._session = session
+
+    async def list_by_ai_key(self, ai_key_id: uuid.UUID) -> list[_FakeBackend]:
+        _FakeBackendRepo.calls.append(ai_key_id)
+        return list(_FakeBackendRepo.by_key.get(ai_key_id, []))
+
+
 class _FakeTelegram:
     def __init__(self) -> None:
         self.sent: list[str] = []
@@ -93,6 +122,10 @@ def _make_service(
         return outcome
 
     monkeypatch.setattr(mod, "check_key", _fake_check_key)
+    # `_send_alert` резолвит бэки ключа через BackendRepository на сессии сервиса (ADR-046 §1).
+    monkeypatch.setattr(mod, "BackendRepository", _FakeBackendRepo)
+    _FakeBackendRepo.by_key = {}
+    _FakeBackendRepo.calls = []
 
     return AiKeyMonitorService(
         sessionmaker=lambda: _FakeSession(),  # type: ignore[arg-type]
@@ -300,3 +333,121 @@ async def test_run_survives_iteration_error(monkeypatch: pytest.MonkeyPatch) -> 
         await svc.run()
 
     assert state["n"] == 2  # пережил ошибку первой итерации, выполнил вторую
+
+
+# --------------------------------------------------------------------------------------
+# Wiring блока «Бэки:» в РЕАЛЬНОМ пути доставки алерта ключа (ADR-046 §1): `_send_alert`
+# резолвит бэки, использующие ключ (`backends.ai_key_id`), через `BackendRepository` на
+# сессии сервиса и подаёт их в `build_key_error`. Формат строки бэка покрыт побайтово
+# отдельно (test_notifications_backends_block.py) — здесь проверяется, что перечень реально
+# доезжает до ОТПРАВЛЕННОГО сообщения и что при recovery/выключенном боте SELECT'а нет.
+# --------------------------------------------------------------------------------------
+def _seed_key_backends(ai_key_id: uuid.UUID) -> None:
+    """Два бэка ключа, поданных в ОБРАТНОМ требуемом порядке (`position ASC, code ASC`)."""
+    _FakeBackendRepo.by_key[ai_key_id] = [
+        _FakeBackend(position=1, code="web", name="Web", domain="https://web.example.com"),
+        _FakeBackend(position=0, code="api-eu", name="API EU", domain="https://eu.example.com"),
+    ]
+
+
+async def test_key_error_alert_carries_backends_block_byte_exact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = _FakeAiKey(status=AiKeyStatus.pending.value)
+    repo = _FakeRepo(key)
+    tg = _FakeTelegram()
+    svc = _make_service(
+        monkeypatch, repo, telegram=tg, outcome=KeyCheckResult("error", "Недостаточно средств")
+    )
+    _seed_key_backends(key.id)
+
+    await svc.check_one(key.id)
+
+    assert len(tg.sent) == 1
+    # Побайтово — по modules/ai-keys «Формат сообщений Telegram» + блок «Бэки:» (ADR-046 §1);
+    # порядок перечня `position ASC, code ASC` (подан обратный → сортировка in-memory).
+    assert tg.sent[0] == (
+        "🔴🔴🔴СРОЧНО🔴🔴🔴\n"
+        'Ключ "OpenAI Prod" ****bA3T\n'
+        'Ключ не работает: "Недостаточно средств"\n'
+        "\n"
+        "Бэки:\n"
+        'Бэк "API EU" [api-eu] https://eu.example.com\n'
+        'Бэк "Web" [web] https://web.example.com'
+    )
+    assert _FakeBackendRepo.calls == [key.id]
+
+
+async def test_key_error_alert_without_backends_is_byte_equal_to_previous(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Бэков у ключа нет → блок не добавляется: сообщение побайтово равно прежнему."""
+    key = _FakeAiKey(status=AiKeyStatus.pending.value)
+    repo = _FakeRepo(key)
+    tg = _FakeTelegram()
+    svc = _make_service(
+        monkeypatch, repo, telegram=tg, outcome=KeyCheckResult("error", "Недостаточно средств")
+    )
+
+    await svc.check_one(key.id)
+
+    assert _FakeBackendRepo.calls == [key.id]  # спросили…
+    assert tg.sent[0] == (
+        "🔴🔴🔴СРОЧНО🔴🔴🔴\n"
+        'Ключ "OpenAI Prod" ****bA3T\n'
+        'Ключ не работает: "Недостаточно средств"'
+    )  # …но перечень пуст → блока нет
+
+
+async def test_key_recovery_alert_does_not_resolve_backends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Recovery перечнем НЕ расширяется (ADR-046 §1) → SELECT бэков не делается вовсе."""
+    key = _FakeAiKey(status=AiKeyStatus.error.value)
+    repo = _FakeRepo(key)
+    tg = _FakeTelegram()
+    svc = _make_service(monkeypatch, repo, telegram=tg, outcome=KeyCheckResult("working", None))
+    _seed_key_backends(key.id)  # бэки ЕСТЬ, но их не должны запрашивать
+
+    await svc.check_one(key.id)
+
+    assert _FakeBackendRepo.calls == []
+    assert "Бэки:" not in tg.sent[0]
+    assert "🟢🟢🟢ВОССТАНОВЛЕНО🟢🟢🟢" in tg.sent[0]
+
+
+async def test_backends_not_resolved_when_telegram_disabled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Бот выключен → сообщение не формируется, лишний SELECT бэков не делается (§1)."""
+    key = _FakeAiKey(status=AiKeyStatus.pending.value)
+    repo = _FakeRepo(key)
+    svc = _make_service(
+        monkeypatch, repo, telegram=None, outcome=KeyCheckResult("error", "Недостаточно средств")
+    )
+    _seed_key_backends(key.id)
+
+    await svc.check_one(key.id)
+
+    assert repo.updates == [(key.id, AiKeyStatus.error.value, "Недостаточно средств")]
+    assert _FakeBackendRepo.calls == []
+
+
+async def test_poll_once_error_alert_carries_backends_block(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Тот же wiring на цикле опроса (poll_once), а не только на ad-hoc check_one."""
+    key = _FakeAiKey(status=AiKeyStatus.working.value)
+    repo = _FakeRepo(key)
+    tg = _FakeTelegram()
+    svc = _make_service(monkeypatch, repo, telegram=tg, outcome=KeyCheckResult("error", "401"))
+    _seed_key_backends(key.id)
+
+    await svc.poll_once()
+
+    assert _FakeBackendRepo.calls == [key.id]
+    assert tg.sent[0].endswith(
+        "\n\nБэки:\n"
+        'Бэк "API EU" [api-eu] https://eu.example.com\n'
+        'Бэк "Web" [web] https://web.example.com'
+    )

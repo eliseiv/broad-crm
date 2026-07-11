@@ -124,19 +124,34 @@
 
 ### Формат сообщений Telegram (точно)
 
-Метки — как в [modules/notifier](../notifier/README.md#сообщения-ai-ключей). Текст — plain (без parse_mode/Markdown). Имя ключа — в двойных кавычках. `<last4>` = `key_last4` (для короткого ключа, где `key_last4 = NULL`, подставляется пустая строка → `****`).
+Формат — **точно** (plain-текст, имя ключа в двойных кавычках, `<last4>` = `key_last4`; для короткого ключа, где `key_last4 = NULL`, подставляется пустая строка → `****`).
 
-**🔴 Ключ не работает** (переход `pending|working → error`):
+> **Этот текст ПОБУКВЕННО дублируется** в [modules/notifier §Сообщения AI-ключей](../notifier/README.md#сообщения-ai-ключей) и [modules/ai-keys §Формат сообщений Telegram](../ai-keys/README.md#формат-сообщений-telegram-точно). Оба вхождения обязаны совпадать **посимвольно**; при правке — менять оба. Формат строки бэка — источник истины [modules/backends](../backends/README.md#формат-сообщений-telegram-точно-нормативно--источник-истины).
+
+**🔴 Ключ не работает** (переход `pending|working → error`) — **дополняется перечнем бэков, использующих этот ключ** ([ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §1):
 
 ```
 🔴🔴🔴СРОЧНО🔴🔴🔴
 Ключ "<name>" ****<last4>
 Ключ не работает: "<reason>"
+
+Бэки:
+Бэк "<name1>" [<code1>] <domain1>
+Бэк "<name2>" [<code2>] <domain2>
 ```
 
 `<reason>` = актуальный `error_message` («Ключ недействителен» / «Доступ запрещён» / «Недостаточно средств» / «Ошибка провайдера»).
 
-**🟢 Ключ восстановлен** (переход `error → working`):
+**Блок «Бэки:» (нормативно, [ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §1):**
+- **Источник:** `backends WHERE ai_key_id = :ai_key_id` (связь [ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)), порядок — **`position ASC, code ASC`**.
+- **⚠️ Порядок перечня в АЛЕРТЕ ≠ порядок API reverse-lookup — намеренно (нормативно, [ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §1).** Репозиторные методы `BackendRepository.list_by_server` / `list_by_ai_key`, обслуживающие эндпоинты `GET /api/servers|ai-keys/{id}/backends` ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md)), сортируют **`position ASC, created_at DESC, id ASC`** — **этот контракт НЕ меняется**. Для текста алерта нормативен **`position ASC, code ASC`**: `code` UNIQUE ⇒ порядок **тотальный и детерминированный** (тай-брейк однозначен даже при равных `position`/`created_at`), что необходимо для побайтово воспроизводимого формата сообщения и его тестов. Переупорядочение выполняется **in-memory поверх результата репозитория** (отдельный хелпер), а **не** сменой `ORDER BY` — чтобы не трогать публичный контракт reverse-lookup. Два порядка сосуществуют осознанно.
+- **Строка бэка — переиспользуется `_backend_block(code, name, domain)`** побуквенно: `Бэк "<name>" [<code>] <domain>`.
+- **⚠️ Механика сортировки (нормативно): in-memory по КОРТЕЖУ `(position, code)` — перенос тай-брейка в SQL `ORDER BY` ЗАПРЕЩЁН.** Запись «`position ASC, code ASC`» описывает **требуемый порядок**, а не способ его получения. Реализация — Python-сортировка по кортежу `(position, code)`, т.е. по **кодпойнтам** строки `code`. Это **не то же самое**, что `ORDER BY position, code` в PostgreSQL: там порядок задаёт **коллация БД** (напр. `en_US.UTF-8` игнорирует регистр и знаки препинания), поэтому для кодов со **смешанным регистром** SQL-порядок и порядок кодпойнтов **расходятся**. Побайтовая воспроизводимость текста алерта (qa сверяет посимвольно) требует именно детерминизма кодпойнтов и независимости от настроек локали БД. **Не «унифицировать» это в `ORDER BY` при будущем рефакторинге** — порядок молча изменится.
+- **Пустой перечень → блок не добавляется вовсе** (ни строки `Бэки:`, ни пустой строки перед ней) — сообщение побайтово равно прежнему.
+- **Лимит `MAX_ALERT_BACKENDS = 10`:** при `N > 10` печатаются первые 10, последней строкой блока идёт `… и ещё <N-10>` (символ `…` = U+2026). Долг — [TD-053](../../100-known-tech-debt.md).
+- Сигнатура: `build_key_error(name, last4, reason, backends=())`; `BackendRef = tuple[str, str, str]` = `(code, name, domain)`.
+
+**🟢 Ключ восстановлен** (переход `error → working`). **Перечнем бэков НЕ расширяется** (`build_key_recovery(name, last4)` — без изменений):
 
 ```
 🟢🟢🟢ВОССТАНОВЛЕНО🟢🟢🟢
@@ -169,7 +184,7 @@
 - **Секции по провайдерам:** страница делится на секцию **OpenAI** и секцию **Anthropic** (заголовки секций), внутри каждой — своя адаптивная сетка карточек `AiKeyCard` + `AddAiKeyCard`. Пустые секции (нет ключей провайдера) — **скрывать** (не рендерить заголовок без карточек); `AddAiKeyCard` присутствует в каждой видимой секции. UI-детали — [08-design-system.md](../../08-design-system.md#группировка-ии-ключей-по-провайдерам).
 - `AiKeyCard`: имя, provider (OpenAI/Anthropic), маска ключа (`key_masked`, моношрифт), статус-бейдж (**Работает** / **Не работает** / **Проверка…**), причина ошибки при `error`, кнопка **Удалить**.
 - **Клик по карточке = read-only detail-модалка** `AiKeyDetailModal` ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md)): Название/Провайдер/Ключ (`key_masked`) + глаз-reveal полного ключа (под `ai-keys:edit`). Карандаш вверху справа → `AddAiKeyModal mode='edit'`. **Зажатие ~200 мс + движение = перетаскивание** (@dnd-kit, [08-design-system.md](../../08-design-system.md#перестановка-карточек-drag-and-drop)). Кнопка **Удалить** — `stopPropagation`. Паттерн — [08-design-system.md](../../08-design-system.md#detail-view-карточных-страниц-read-only--карандаш--edit-adr-035).
-- `AddAiKeyCard` → `AddAiKeyModal` (Radix Dialog) в режиме **add**: поля **Название**, **Провайдер** (Select), **Ключ** (type=password, toggle видимости). Кнопки **Отмена** / **Добавить**.
+- Кнопка **«Добавить»** в правой зоне заголовка страницы ([ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §2б; `AddAiKeyCard` **упразднена**) → `AddAiKeyModal` (Radix Dialog) в режиме **add**: поля **Название**, **Провайдер** (Select), **Ключ** (type=password, toggle видимости). Кнопки **Отмена** / **Добавить**.
 - **Режим edit `AddAiKeyModal`:** префил `name` и `provider`; поле **Ключ пустое** с подсказкой «Оставьте пустым, чтобы не менять ключ»; иконка-глаз показывает вводимое значение. Кнопка действия — **Сохранить**. `PATCH /api/ai-keys/{id}` отправляет только изменённые поля; пустой `key` не отправляется (или отправляется `""`). После смены `provider`/`key` карточка возвращается в **Проверка…** и polling статуса возобновляется.
 - **Перестановка:** внутри секции своего провайдера через `SortableContext`; на `onDragEnd` — оптимистичное обновление + `PATCH /api/ai-keys/order {provider, ids}`; при ошибке — откат и инвалидация `GET /api/ai-keys`. Между секциями перетаскивание запрещено.
 - Данные и polling — через feature-слой `features/ai-keys` (`api.ts`, `hooks.ts`) на TanStack Query, по образцу `features/servers`. Типы — в `types/api.ts`. Статус `pending` → показывать «Проверка…», лёгкий polling `GET /api/ai-keys/{id}/status` до выхода из `pending`.
@@ -200,6 +215,8 @@ Loading (skeleton), empty (только `AddAiKeyCard` + подсказка), pe
 - [ ] Lint/type-check/format проходят (backend и frontend).
 
 ## Changelog
+
+- 2026-07-11: **Перечень бэков в алерте «Ключ не работает»** (architect, [ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §1; контракт/БД не затронуты). `build_key_error(name, last4, reason, backends=())` дополняется блоком `Бэки:` (`backends WHERE ai_key_id = :id`, порядок `position ASC, code ASC`, лимит 10 + `… и ещё N`, пустой перечень → блока нет). Формат строки бэка — реюз `_backend_block` ([modules/backends](../backends/README.md#формат-сообщений-telegram-точно-нормативно--источник-истины)). **Recovery (`build_key_recovery`) НЕ расширяется.** Раздел «Формат сообщений Telegram» обязан **побуквенно совпадать** с [modules/notifier](../notifier/README.md#сообщения-ai-ключей). **UI:** detail-модалка ключа показывает сразу только **Название**/**Провайдер**; **Ключ** и секция «Бэки» — в свёрнутом блоке **«Информация»** ([ADR-046](../../adr/ADR-046-ui-infra-fix-pack.md) §2в); пустые поля не рендерятся (§3); `AddAiKeyCard` упразднена — «Добавить» переехала в правую зону заголовка (§2б).
 
 - 2026-07-10: **reverse-lookup бэков ([ADR-040](../../adr/ADR-040-backend-relations-secrets-reverse-lookup.md), spec-ready):** `AiKeyListItem += backend_count` (число бэков, использующих ключ, `COUNT` по `backends.ai_key_id`); `GET /api/ai-keys/{id}/backends` (гейт `ai-keys:view`) → `{backends: BackendRef[]}`; в detail-view ключа (`AiKeyDetailModal`) — сворачиваемая секция **«Бэки»** (свёрнуто «Бэков: N», раскрытие → список Код/Название/Домен). Контракт reveal-ключа не меняется.
 - 2026-07-09: **detail-view + reveal полного ключа** ([ADR-035](../../adr/ADR-035-detail-view-secret-reveal.md), spec-ready): клик по карточке → read-only `AiKeyDetailModal` (`key_masked` + глаз), карандаш → edit; `GET /api/ai-keys/{id}/key` (гейт `ai-keys:edit`, `decrypt_secret`, `no-store`, аудит `secret_revealed`). Контракт `AiKeyListItem` не меняется (полный ключ только через reveal).

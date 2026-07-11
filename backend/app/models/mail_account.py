@@ -37,6 +37,11 @@ class MailAccount(Base):
     # id == id ящика в агрегаторе (НЕ autoincrement — присваивается агрегатором).
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     email: Mapped[str] = mapped_column(Text, nullable=False)
+    # «Номер» / «Приложение» (ADR-047 §3, миграция 0024) — редактируемые поля формы.
+    number: Mapped[str | None] = mapped_column(Text, nullable=True)
+    app_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ПРОИЗВОДНОЕ имя `"<number> <app_name>"` (ADR-047 §3.3, TD-052): пересчитывается
+    # сервером при каждом create/update; единственная форма имени, уходящая в агрегатор.
     display_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     # Команда-владелец (per-mailbox). NULL = ящик без команды (пул unassigned).
     team_id: Mapped[uuid.UUID | None] = mapped_column(

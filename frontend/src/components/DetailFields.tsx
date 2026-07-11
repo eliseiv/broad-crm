@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Check, Copy, Eye, EyeOff, Loader2, Pencil } from 'lucide-react';
+import { Check, ChevronDown, Copy, Eye, EyeOff, Loader2, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/cn';
 import type { SecretRevealResponse } from '@/types/api';
@@ -26,6 +26,10 @@ export function DetailEditPencil({ onClick }: { onClick: () => void }) {
  * Строка read-only поля detail-модалки (08-design-system.md «Detail-view карточных
  * страниц»): label вторичным цветом + значение. Моношрифт — для технических значений
  * (IP/хост/домен/маска ключа).
+ *
+ * **Пустое значение (`null` / `undefined` / пустая строка) → строка НЕ рендерится вовсе**
+ * (08-design-system.md «Пустые поля не рендерятся», ADR-046 §3). Прочерк «—» в detail-view
+ * упразднён. Правило действует только в detail-view — таблицы сохраняют плейсхолдеры.
  */
 export function DetailRow({
   label,
@@ -36,6 +40,9 @@ export function DetailRow({
   value: ReactNode;
   mono?: boolean;
 }) {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'string' && value.trim() === '') return null;
+
   return (
     <div className="flex flex-col gap-1">
       <span className="text-[12px] font-medium uppercase tracking-wide text-text-tertiary">
@@ -44,6 +51,46 @@ export function DetailRow({
       <span className={cn('break-words text-sm text-text-primary', mono && 'font-mono')}>
         {value}
       </span>
+    </div>
+  );
+}
+
+/**
+ * Сворачиваемый блок **«Информация»** detail-модалки (08-design-system.md «Состав detail-view»,
+ * ADR-046 §2в): при открытии модалки видны только идентификаторы, всё прочее (связи, секреты,
+ * Git/Примечания, секция «Бэки») — внутри этого блока, **свёрнутого по умолчанию**. Паттерн
+ * сворачивания — тот же, что у секции «Бэки» (`BackendsDetailSection`): кнопка-триггер,
+ * `aria-expanded`/`aria-controls`, `ChevronDown` с поворотом на 180° при раскрытии.
+ *
+ * Блок не рендерится, если внутри не осталось ни одной строки и ни одной секции —
+ * это решает вызывающая модалка (`{hasInfo && <DetailInfoSection>…}`).
+ */
+export function DetailInfoSection({ children }: { children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+
+  return (
+    <div className="rounded-sub border border-border-subtle">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent"
+      >
+        <span className="text-[12px] font-medium uppercase tracking-wide text-text-tertiary">
+          Информация
+        </span>
+        <ChevronDown
+          className={cn('h-4 w-4 text-text-tertiary transition-transform', open && 'rotate-180')}
+          aria-hidden="true"
+        />
+      </button>
+      {open && (
+        <div id={id} className="flex flex-col gap-4 border-t border-border-subtle px-3 py-3">
+          {children}
+        </div>
+      )}
     </div>
   );
 }

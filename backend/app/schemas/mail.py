@@ -102,15 +102,20 @@ class MailReplyResponse(BaseModel):
 
 
 class MailMailbox(BaseModel):
-    """Почтовый ящик из каталога CRM `mail_accounts` (ADR-044 §2/§4).
+    """Почтовый ящик из каталога CRM `mail_accounts` (ADR-044 §2/§4, ADR-047 §3).
 
     `id` = id ящика в агрегаторе; `team_id` — команда-владелец (per-mailbox, `null` —
     unassigned). Поля статуса синка зеркалятся из агрегатора status-каналом. Пароли в
     схему НЕ входят и в ответах не возвращаются (05-security.md).
+
+    `number`/`app_name` — «Номер»/«Приложение»; `display_name` — ПРОИЗВОДНОЕ (read-only
+    для клиента) имя `"<number> <app_name>"`, считает сервер (ADR-047 §3.3).
     """
 
     id: int
     email: str
+    number: str | None
+    app_name: str | None
     display_name: str | None
     team_id: uuid.UUID | None
     is_active: bool
@@ -153,27 +158,35 @@ class MailMailboxTestResponse(BaseModel):
 
 
 class MailMailboxCreateRequest(MailMailboxTestRequest):
-    """Тело POST /api/mail/mailboxes (ADR-044 §4) = поля `test` + привязка/имя.
+    """Тело POST /api/mail/mailboxes (ADR-044 §4, ADR-047 §3) = поля `test` + привязка/имя.
 
     `team_id` (uuid) — команда-владелец; `null` — без команды (unassigned, только
     admin-уровень). Для не-admin `team_id` обязан ∈ `MailScope.team_ids` (иначе 403).
     Креды транзитом в агрегатор; в каталог CRM сохраняется строка без кредов.
+
+    `display_name` в запросе НЕ принимается (ADR-047 §3.2) — сервер вычисляет его из
+    `number`/`app_name`.
     """
 
-    display_name: str | None = None
+    number: str | None = None
+    app_name: str | None = None
     team_id: uuid.UUID | None = None
 
 
 class MailMailboxUpdateRequest(BaseModel):
-    """Тело PATCH /api/mail/mailboxes/{id} (ADR-044 §4). Presence-семантика полей.
+    """Тело PATCH /api/mail/mailboxes/{id} (ADR-044 §4, ADR-047 §3). Presence-семантика.
 
     Передаются только изменяемые поля (`model_fields_set`/`exclude_unset`). Креды —
     транзитом в агрегатор. `team_id` (перенос между командами) — только admin-уровень
     (`MailScope.sees_all_teams`); `null` — снять привязку (unassigned).
+
+    `display_name` в запросе НЕ принимается (ADR-047 §3.2): при изменении `number` или
+    `app_name` сервер пересчитывает его сам и отправляет в агрегатор.
     """
 
     email: str | None = None
-    display_name: str | None = None
+    number: str | None = None
+    app_name: str | None = None
     imap_host: str | None = None
     imap_port: int | None = Field(default=None, ge=_PORT_MIN, le=_PORT_MAX)
     imap_ssl: bool | None = None
@@ -231,13 +244,16 @@ class MailTagRule(BaseModel):
 
 
 class MailTagFull(BaseModel):
-    """Полный тег с правилами (вкладка «Теги»; глобальный каталог, ADR-044 §5)."""
+    """Полный тег с правилами (вкладка «Теги»; глобальный каталог, ADR-044 §5).
+
+    Поля `is_builtin` НЕТ (ADR-047 §1): признак «встроенный тег» упразднён, колонка
+    дропнута миграцией `0023`, удалить можно ЛЮБОЙ тег.
+    """
 
     id: uuid.UUID
     name: str
     color: str
     match_mode: MailTagMatchMode
-    is_builtin: bool
     rules: list[MailTagRule]
     created_at: datetime
     updated_at: datetime

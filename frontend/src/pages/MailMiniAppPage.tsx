@@ -6,9 +6,11 @@ import { Spinner } from '@/components/ui/Spinner';
 import { ApiError } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 import { mailTelegramAuth } from '@/features/mail/api';
+import { buildMailBodySrcDoc } from '@/features/mail/mailBody';
 import { useMailMiniAppAuthStore } from '@/features/mail/miniAppAuth';
 import { useMailMiniAppFeed } from '@/features/mail/miniAppHooks';
 import { applyTelegramTheme, loadTelegramSdk } from '@/features/sms/telegramSdk';
+import type { Theme } from '@/lib/theme';
 import type { MailMessage } from '@/types/api';
 
 /**
@@ -59,8 +61,18 @@ const chromeStyle: CSSProperties = {
   color: 'var(--tg-text, #e6e8ec)',
 };
 
+/**
+ * Тема тела письма в Mini App (ADR-047 §6): резолвится по `colorScheme` клиента Telegram
+ * (общий билдер srcDoc принимает тему параметром). Вне Telegram / без `colorScheme` —
+ * тёмная, как и нейтральный fallback `--tg-*`-токенов (`telegramSdk.FALLBACK_THEME`).
+ */
+function telegramTheme(colorScheme: 'light' | 'dark' | undefined): Theme {
+  return colorScheme === 'light' ? 'light' : 'dark';
+}
+
 export function MailMiniAppPage() {
   const [phase, setPhase] = useState<Phase>('loading');
+  const [bodyTheme, setBodyTheme] = useState<Theme>('dark');
   const setSession = useMailMiniAppAuthStore((s) => s.setSession);
   const initDataRef = useRef<string | null>(null);
   const startedRef = useRef(false);
@@ -103,7 +115,11 @@ export function MailMiniAppPage() {
           // ready/expand best-effort — не критично для SSO.
         }
         applyTelegramTheme(wa);
-        const onThemeChanged = () => applyTelegramTheme(wa);
+        setBodyTheme(telegramTheme(wa.colorScheme));
+        const onThemeChanged = () => {
+          applyTelegramTheme(wa);
+          setBodyTheme(telegramTheme(wa.colorScheme));
+        };
         wa.onEvent?.('themeChanged', onThemeChanged);
         themeCleanup = () => wa.offEvent?.('themeChanged', onThemeChanged);
 
@@ -137,7 +153,7 @@ export function MailMiniAppPage() {
         {phase === 'network' && (
           <MessageState icon="warn" text={T.networkError} onRetry={retryAuth} />
         )}
-        {phase === 'success' && <AuthorizedView />}
+        {phase === 'success' && <AuthorizedView bodyTheme={bodyTheme} />}
       </div>
     </div>
   );
@@ -236,7 +252,7 @@ function TgButton({ children, onClick }: { children: ReactNode; onClick: () => v
  * Клик по карточке открывает read-only full-width detail с полным текстом письма (локальный
  * `useState`, НЕ роутинг). Курсорная догрузка через IntersectionObserver (без кнопки).
  */
-function AuthorizedView() {
+function AuthorizedView({ bodyTheme }: { bodyTheme: Theme }) {
   const messages = useMailMiniAppFeed(true);
   const [selected, setSelected] = useState<MailMessage | null>(null);
   const messagesForbidden =
@@ -286,7 +302,13 @@ function AuthorizedView() {
         {messagesForbidden && <SectionEmpty text={T.messagesEmpty} />}
       </div>
 
-      {selected && <MailMiniAppDetail message={selected} onBack={() => setSelected(null)} />}
+      {selected && (
+        <MailMiniAppDetail
+          message={selected}
+          bodyTheme={bodyTheme}
+          onBack={() => setSelected(null)}
+        />
+      )}
     </div>
   );
 }
@@ -358,21 +380,14 @@ function absoluteDate(iso: string): string {
 }
 
 /**
- * Обёртка srcDoc sandbox-iframe: инъекция серого фона `--surface-2` перед недоверенным телом
- * письма — тот же паттерн, что десктопный MailDetail. Sandbox НЕ ослабляется (без
- * allow-scripts/allow-same-origin — ADR-012).
- */
-function buildHtmlSrcDoc(bodyHtml: string): string {
-  return `<style>html,body{background:#161A22;color:#E6E9EF;margin:0;padding:12px}</style>${bodyHtml}`;
-}
-
-/**
  * Тело письма в detail. `body_html` (недоверенный HTML третьих лиц) рендерится ТОЛЬКО в
  * sandbox-iframe без `allow-scripts`/`allow-same-origin` + `referrerPolicy="no-referrer"`
  * (ADR-012, modules/mail «Изоляция HTML-тела» — инварианты НЕ ослабляются). Иначе — `body_text`
- * моношрифтом с переносами. Тело скроллится в своём контейнере.
+ * моношрифтом с переносами. srcDoc собирает ЕДИНЫЙ билдер `buildMailBodySrcDoc` (общий с
+ * админ-SPA `MailDetail`, ADR-047 §6); тему Mini App резолвит по `colorScheme` Telegram.
+ * Тело скроллится в своём контейнере.
  */
-function MailMiniAppBody({ message }: { message: MailMessage }) {
+function MailMiniAppBody({ message, bodyTheme }: { message: MailMessage; bodyTheme: Theme }) {
   if (!message.body_present) {
     return (
       <div className="flex flex-1 items-center justify-center px-6 py-10 text-center">
@@ -389,7 +404,7 @@ function MailMiniAppBody({ message }: { message: MailMessage }) {
       {hasHtml ? (
         <iframe
           title={T.bodyFrameTitle}
-          srcDoc={buildHtmlSrcDoc(html ?? '')}
+          srcDoc={buildMailBodySrcDoc(html ?? '', bodyTheme)}
           sandbox=""
           referrerPolicy="no-referrer"
           className="min-h-0 w-full flex-1 rounded-lg border border-border-subtle bg-surface-2"
@@ -411,7 +426,15 @@ function MailMiniAppBody({ message }: { message: MailMessage }) {
  * текст выбранного письма из уже загруженного объекта (без нового запроса/эндпоинта). Формы
  * ответа в Mini App НЕТ. 08-design-system.md «Telegram Mini App почты», ADR-044 поправка.
  */
-function MailMiniAppDetail({ message, onBack }: { message: MailMessage; onBack: () => void }) {
+function MailMiniAppDetail({
+  message,
+  bodyTheme,
+  onBack,
+}: {
+  message: MailMessage;
+  bodyTheme: Theme;
+  onBack: () => void;
+}) {
   const backRef = useRef<HTMLButtonElement>(null);
   const { email, display_name: displayName } = message.mail_account;
   const subject = message.subject ?? T.subjectEmpty;
@@ -481,7 +504,7 @@ function MailMiniAppDetail({ message, onBack }: { message: MailMessage; onBack: 
         </p>
       </header>
 
-      <MailMiniAppBody message={message} />
+      <MailMiniAppBody message={message} bodyTheme={bodyTheme} />
     </div>
   );
 }

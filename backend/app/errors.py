@@ -415,14 +415,6 @@ def mail_mailbox_not_found() -> AppError:
     )
 
 
-def mail_group_not_found() -> AppError:
-    return AppError(
-        status_code=status.HTTP_404_NOT_FOUND,
-        code="mail_group_not_found",
-        message="Выбранная команда не найдена",
-    )
-
-
 def mail_tag_not_found() -> AppError:
     return AppError(
         status_code=status.HTTP_404_NOT_FOUND,

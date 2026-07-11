@@ -34,6 +34,7 @@ from app.domain.mail import (
     MailCursorError,
     MailReplyError,
     MailScope,
+    build_display_name,
     decode_mail_cursor,
     encode_mail_cursor,
     validate_reply_addresses,
@@ -101,8 +102,13 @@ _LIMIT_MAX = 200
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
-# Поля тела PATCH, которые транзитом уходят в агрегатор (креды/статус/email/имя).
+# Исходящий payload в агрегатор строится БЕЛЫМ СПИСКОМ, а не «model_dump() минус пара
+# полей» (ADR-047 §3.4): иначе любое новое поле схемы CRM молча утекло бы наружу.
+#
+# Ключи PATCH, которые транзитом уходят в агрегатор (креды/статус/email/имя).
 # `team_id` НЕ входит — перенос между командами локален (агрегатор о командах не знает).
+# `number`/`app_name` НЕ входят — наружу уходит только вычисленный `display_name`
+# (он в списке; агрегатор знает лишь эту форму имени, ADR-047 §3.3/§3.4).
 _MAILBOX_AGGREGATOR_FIELDS = frozenset(
     {
         "email",
@@ -118,6 +124,25 @@ _MAILBOX_AGGREGATOR_FIELDS = frozenset(
         "password",
         "smtp_password",
         "is_active",
+    }
+)
+
+# Ключи тела POST, уходящие в агрегатор при СОЗДАНИИ ящика (креды + `email`). Тот же
+# белый список (ADR-047 §3.4); `display_name` подставляется вычисленным значением,
+# `team_id`/`number`/`app_name` не уходят наружу никогда.
+_MAILBOX_CREATE_AGGREGATOR_FIELDS = frozenset(
+    {
+        "email",
+        "imap_host",
+        "imap_port",
+        "imap_ssl",
+        "smtp_host",
+        "smtp_port",
+        "smtp_ssl",
+        "smtp_starttls",
+        "smtp_username",
+        "password",
+        "smtp_password",
     }
 )
 
@@ -299,17 +324,25 @@ class MailService:
     async def create_mailbox(
         self, *, scope: MailScope, payload: MailMailboxCreateRequest
     ) -> MailMailbox:
-        """Создание ящика (ADR-044 §4): креды транзитом в агрегатор → строка каталога.
+        """Создание ящика (ADR-044 §4, ADR-047 §3): креды в агрегатор → строка каталога.
 
         Авторизация: не-admin обязан указать `team_id ∈ scope.team_ids`; `team_id=null`
         (unassigned) — только admin-уровень. Поток: аггрегатор `POST /mailboxes` (без
         `group_id`, владелец `crm-service`) → присвоенный `id` → вставка `mail_accounts`.
+
+        Исходящий payload — БЕЛЫЙ СПИСОК (креды + `email`) плюс вычисленный
+        `display_name` (ADR-047 §3.4): `team_id`/`number`/`app_name` наружу не уходят.
         """
         self._ensure_configured()
         await self._ensure_team_writable(scope, payload.team_id)
 
-        # В агрегатор уходят креды + email/display_name; team_id — только локально.
-        creds = payload.model_dump(exclude={"team_id"})
+        display_name = build_display_name(payload.number, payload.app_name)
+        creds = {
+            key: value
+            for key, value in payload.model_dump().items()
+            if key in _MAILBOX_CREATE_AGGREGATOR_FIELDS
+        }
+        creds["display_name"] = display_name
         try:
             raw = await self._client.create_mailbox(creds)
         except MailUnavailable as exc:
@@ -324,7 +357,9 @@ class MailService:
             await self._accounts.create(
                 account_id=account_id,
                 email=payload.email,
-                display_name=payload.display_name,
+                number=payload.number,
+                app_name=payload.app_name,
+                display_name=display_name,
                 team_id=payload.team_id,
                 is_active=is_active,
             )
@@ -334,10 +369,15 @@ class MailService:
             # агрегаторе. Провал компенсации не должен ронять исходную ошибку.
             await self._compensate_orphan_mailbox(account_id)
             raise
+        # Ответ собирается из известных значений (а не из ORM-строки): колонки с
+        # server_default после flush экспайрятся и их чтение потребовало бы ленивого
+        # SELECT (MissingGreenlet в async).
         return MailMailbox(
             id=account_id,
             email=payload.email,
-            display_name=payload.display_name,
+            number=payload.number,
+            app_name=payload.app_name,
+            display_name=display_name,
             team_id=payload.team_id,
             is_active=is_active,
             last_synced_at=None,
@@ -348,12 +388,17 @@ class MailService:
     async def update_mailbox(
         self, *, scope: MailScope, mailbox_id: int, payload: MailMailboxUpdateRequest
     ) -> MailMailbox:
-        """Правка ящика (presence-семантика, ADR-044 §4). Гейт mail:edit.
+        """Правка ящика (presence-семантика, ADR-044 §4, ADR-047 §3). Гейт mail:edit.
 
         Не-admin: ящик ∈ scope, иначе 403. Смена `team_id` (перенос) — только
         admin-уровень (`scope.sees_all_teams`), иначе 403; новый `team_id` валидируется
         на существование. Креды/статус/email/имя — транзитом в агрегатор (требуют
         `mail_enabled` → иначе 503); `team_id` — локальный `UPDATE` без сетевого вызова.
+
+        Имя: клиент присылает `number`/`app_name` (не `display_name`). При изменении
+        любого из них сервер пересчитывает производный `display_name` из ЭФФЕКТИВНЫХ
+        значений (новое поле, иначе текущее из БД) и кладёт в агрегаторный payload
+        **его** — сами `number`/`app_name` наружу не уходят (ADR-047 §3.3/§3.4).
         """
         account = await self._load_account_in_scope(scope, mailbox_id)
 
@@ -365,11 +410,19 @@ class MailService:
             if payload.team_id is not None:
                 await self._ensure_team_exists(payload.team_id)
 
-        aggregator_payload = {
+        name_change = "number" in fields_set or "app_name" in fields_set
+        new_number = payload.number if "number" in fields_set else account.number
+        new_app_name = payload.app_name if "app_name" in fields_set else account.app_name
+        new_display_name = build_display_name(new_number, new_app_name)
+
+        aggregator_payload: dict[str, object] = {
             key: value
             for key, value in payload.model_dump(exclude_unset=True).items()
             if key in _MAILBOX_AGGREGATOR_FIELDS
         }
+        if name_change:
+            # Наружу уходит только пересчитанное производное имя (ключ белого списка).
+            aggregator_payload["display_name"] = new_display_name
         if aggregator_payload:
             # Сетевой вызов к агрегатору только при изменении кредов/статуса/email/имени.
             self._ensure_configured()
@@ -384,8 +437,10 @@ class MailService:
 
         if "email" in fields_set and payload.email is not None:
             account.email = payload.email
-        if "display_name" in fields_set:
-            account.display_name = payload.display_name
+        if name_change:
+            account.number = new_number
+            account.app_name = new_app_name
+            account.display_name = new_display_name
         if "is_active" in fields_set and payload.is_active is not None:
             account.is_active = payload.is_active
         if team_id_change:
@@ -627,12 +682,12 @@ class MailService:
         return self._to_tag_full(tag, rules_by_tag.get(tag_id, []))
 
     async def delete_tag(self, tag_id: uuid.UUID) -> None:
-        """Удаление тега (ADR-044 §5). Гейт mail:tags; встроенный → 409; нет тега → 404."""
-        tag = await self._tags.get(tag_id)
-        if tag is None:
+        """Удаление тега (ADR-044 §5, ADR-047 §1). Гейт mail:tags; нет тега → 404.
+
+        Удалить можно ЛЮБОЙ тег: признак «встроенный» упразднён, ветки 409 больше нет.
+        """
+        if await self._tags.get(tag_id) is None:
             raise mail_tag_not_found()
-        if tag.is_builtin:
-            raise mail_conflict()
         await self._tags.delete_tag(tag_id)
 
     async def create_tag_rule(
@@ -697,10 +752,12 @@ class MailService:
 
     @staticmethod
     def _to_mailbox(account: MailAccount) -> MailMailbox:
-        """Проекция строки каталога в схему `MailMailbox` (ADR-044 §4)."""
+        """Проекция строки каталога в схему `MailMailbox` (ADR-044 §4, ADR-047 §3)."""
         return MailMailbox(
             id=account.id,
             email=account.email,
+            number=account.number,
+            app_name=account.app_name,
             display_name=account.display_name,
             team_id=account.team_id,
             is_active=account.is_active,
@@ -726,7 +783,6 @@ class MailService:
             name=tag.name,
             color=tag.color,
             match_mode=cast(MailTagMatchMode, tag.match_mode),
-            is_builtin=tag.is_builtin,
             rules=[self._to_tag_rule(rule) for rule in rules],
             created_at=tag.created_at,
             updated_at=tag.updated_at,

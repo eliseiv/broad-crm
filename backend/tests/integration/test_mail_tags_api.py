@@ -1,7 +1,9 @@
-"""Integration S3 (ADR-044 §5): глобальный каталог тегов — CRUD, дубль, builtin, rules.
+"""Integration S3 (ADR-044 §5, ADR-047 §1): глобальный каталог тегов — CRUD, дубль, rules.
 
 FastAPI-app + реальный Postgres (теги в БД CRM, агрегатор не проксируется). Проверяет:
-создание/правку/удаление тега; дубль имени → 409 mail_conflict; удаление builtin → 409;
+создание/правку/удаление тега; дубль имени → 409 mail_conflict; **удаление ЛЮБОГО тега →
+204** (признак «встроенный» упразднён, ADR-047 §1: поля `is_builtin` нет ни в схеме
+ответа, ни в БД; 409 в модуле остался ТОЛЬКО на занятое имя тега и конфликт ящика);
 CRUD правил; apply-to-existing применяет правила к существующим письмам; чтение под
 `mail:view`, управление под `mail:tags`. Коды по `error.code`.
 """
@@ -19,6 +21,7 @@ from mail_s34_helpers import (
     mail_db,
     seed_account,
     seed_message,
+    seed_rule,
     seed_tag,
     seed_team,
 )
@@ -35,7 +38,8 @@ async def test_create_tag_returns_uuid() -> None:
     assert resp.status_code == 201
     body = resp.json()
     assert body["name"] == "Важное"
-    assert body["is_builtin"] is False
+    # Поля `is_builtin` в схеме MailTagFull больше НЕТ (ADR-047 §1).
+    assert "is_builtin" not in body
     assert body["match_mode"] == "any"
     # id — UUID (36 символов с дефисами).
     assert len(body["id"]) == 36 and body["id"].count("-") == 4
@@ -52,7 +56,7 @@ async def test_duplicate_name_409() -> None:
     assert resp.json()["error"]["code"] == "mail_conflict"
 
 
-# --- Правка / удаление / builtin --------------------------------------------
+# --- Правка / удаление (удалить можно ЛЮБОЙ тег, ADR-047 §1) -----------------
 async def test_update_tag_name_and_color() -> None:
     async with mail_db() as sm:
         async with sm() as s:
@@ -83,7 +87,7 @@ async def test_update_to_existing_name_409() -> None:
 async def test_delete_custom_tag_204() -> None:
     async with mail_db() as sm:
         async with sm() as s:
-            tag = await seed_tag(s, name="Удаляемый", is_builtin=False)
+            tag = await seed_tag(s, name="Удаляемый")
             await s.commit()
             tag_id = str(tag.id)
         async with client(_admin(sm)) as c:
@@ -93,16 +97,23 @@ async def test_delete_custom_tag_204() -> None:
     assert all(t["id"] != tag_id for t in listing.json()["tags"])
 
 
-async def test_delete_builtin_tag_409() -> None:
+async def test_delete_canonical_tag_204_no_409_branch() -> None:
+    """Удаляется ЛЮБОЙ тег, включая канонический из сева миграции 0023 (ADR-047 §1).
+
+    Ветка «409 при удалении встроенного» СНЯТА: признака «встроенный» больше нет.
+    Тег с правилами удаляется вместе с ними (каскад), 409 не поднимается.
+    """
     async with mail_db() as sm:
         async with sm() as s:
-            tag = await seed_tag(s, name="Встроенный", is_builtin=True)
+            tag = await seed_tag(s, name="DPLA.PLA", color="#2563eb")
+            await seed_rule(s, tag_id=tag.id, rule_type="subject_contains", pattern="DPLA")
             await s.commit()
             tag_id = str(tag.id)
         async with client(_admin(sm)) as c:
             resp = await c.delete(f"/api/mail/tags/{tag_id}")
-    assert resp.status_code == 409
-    assert resp.json()["error"]["code"] == "mail_conflict"
+            listing = await c.get("/api/mail/tags")
+    assert resp.status_code == 204
+    assert all(t["id"] != tag_id for t in listing.json()["tags"])
 
 
 async def test_delete_nonexistent_tag_404() -> None:

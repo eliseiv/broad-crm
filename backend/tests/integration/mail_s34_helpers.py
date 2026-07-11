@@ -246,6 +246,8 @@ async def seed_account(
     *,
     account_id: int,
     email: str | None = None,
+    number: str | None = None,
+    app_name: str | None = None,
     display_name: str | None = None,
     team_id: uuid.UUID | None = None,
     is_active: bool = True,
@@ -255,6 +257,8 @@ async def seed_account(
     account = MailAccount(
         id=account_id,
         email=email or f"box{account_id}@example.com",
+        number=number,
+        app_name=app_name,
         display_name=display_name,
         team_id=team_id,
         is_active=is_active,
@@ -311,9 +315,10 @@ async def seed_tag(
     name: str,
     color: str = "#123456",
     match_mode: str = "any",
-    is_builtin: bool = False,
 ) -> MailTag:
-    tag = MailTag(name=name, color=color, match_mode=match_mode, is_builtin=is_builtin)
+    # Признака «встроенный» у тега больше нет (ADR-047 §1): колонка `is_builtin` дропнута
+    # миграцией 0023, удалить можно ЛЮБОЙ тег.
+    tag = MailTag(name=name, color=color, match_mode=match_mode)
     session.add(tag)
     await session.flush()
     return tag

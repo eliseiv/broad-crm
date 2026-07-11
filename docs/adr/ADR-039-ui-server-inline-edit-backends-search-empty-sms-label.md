@@ -1,7 +1,15 @@
 # ADR-039 · UI-пакет: инлайн-редактирование сервера в detail-view + поиск и пустое состояние страницы «Бэки» + лейбл «СМС» в матрице прав `/roles`
 
-- Статус: accepted
+- Статус: **`partially superseded by` [ADR-046](ADR-046-ui-infra-fix-pack.md)**
 - Дата: 2026-07-09
+
+> ⚠️ **ЧАСТИЧНО ОТМЕНЁН [ADR-046](ADR-046-ui-infra-fix-pack.md) §2 (2026-07-11).**
+>
+> **ОТМЕНЕНО — не реализовывать:**
+> - **Группировка бэков по одинаковому `name`** (кластер-контейнер с заголовком «`<name>` · N») — **упразднена**. `/backends` — **одна плоская сетка**, дубли имён стоят рядом благодаря **сортировке по `name`** (ci, tie-break `code`). Заодно на `/backends` **убран DnD**.
+> - **Пустое состояние «только `AddBackendCard`, БЕЗ текста-подсказки»** — **упразднено**. Пунктирные карточки `Add*Card` удалены вовсе; empty → текст **«Бэков пока нет»**, кнопка «Добавить» — в правой зоне заголовка страницы.
+>
+> **ДЕЙСТВУЕТ:** инлайн-редактирование сервера в `ServerDetailModal` (карандаш → редактируемое «Название», `PATCH name`); **клиентский поиск по бэкам** (`code`/`name`/`domain`, плейсхолдер «Поиск по бэкам…», «Ничего не найдено»); лейбл `sms → «СМС»` в матрице прав `/roles`.
 - Затрагивает: [modules/ui](../modules/ui/README.md), [modules/servers](../modules/servers/README.md), [modules/backends](../modules/backends/README.md)
 - Амендмент: [ADR-035](ADR-035-detail-view-secret-reveal.md) (detail-view/editable-scope сервера), [ADR-020](ADR-020-backends-healthcheck-monitor.md) (страница «Бэки»), [ADR-030](ADR-030-sms-module-full-merge.md) (каталог прав `sms`)
 

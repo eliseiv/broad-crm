@@ -193,6 +193,69 @@ async def test_ingest_200_upsert_uses_team_from_state(monkeypatch: pytest.Monkey
     assert acc.display_name == "Иван Пётр"
     assert acc.team_id == team_id
     assert acc.is_active is True
+    # INSERT-ветка разбирает display_name агрегатора правилом ADR-047 §3.1: ведущих цифр
+    # нет → number = NULL, остаток → app_name (инвариант §3.3 держится и на OAuth-пути).
+    assert acc.number is None
+    assert acc.app_name == "Иван Пётр"
+
+
+# ------------- §3.7 п.1: INSERT разбирает display_name агрегатора в number/app_name
+async def test_ingest_insert_parses_display_name_into_number_and_app_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Новый OAuth-ящик: `display_name` агрегатора разбирается тем же правилом §3.1.
+
+    `display_name` сохраняется канонически ПРОИЗВОДНЫМ (`build_display_name` от разобранных
+    частей) — нормализация разделителей/пробелов CRM важнее сырой строки агрегатора.
+    """
+    async with mail_db() as sm:
+        async with sm() as s, s.begin():
+            team = await seed_team(s)
+            team_id = team.id
+        app = await _build(monkeypatch, sm)
+        obj = {
+            "crm_state": _state(team_id=team_id),
+            "mail_account_id": 730,
+            "email": "codex@outlook.com",
+            "display_name": "5108 Klyro Forge (Codex)",
+            "is_active": True,
+        }
+        raw = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        async with _client(app) as c:
+            resp = await c.post("/api/mail/oauth/ingest", content=raw, headers=_headers(raw))
+        assert resp.status_code == 200, resp.text
+        acc = await _fetch_account(sm, 730)
+    assert acc is not None
+    assert acc.number == "5108"
+    assert acc.app_name == "Klyro Forge (Codex)"
+    assert acc.display_name == "5108 Klyro Forge (Codex)"
+
+
+async def test_ingest_insert_canonicalizes_display_name_from_parsed_parts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Сырой `display_name` агрегатора с «грязными» разделителями канонизируется (§3.7 п.1)."""
+    async with mail_db() as sm:
+        async with sm() as s, s.begin():
+            team = await seed_team(s)
+            team_id = team.id
+        app = await _build(monkeypatch, sm)
+        obj = {
+            "crm_state": _state(team_id=team_id),
+            "mail_account_id": 740,
+            "email": "multi@outlook.com",
+            "display_name": "173,57 ,  104",
+            "is_active": True,
+        }
+        raw = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        async with _client(app) as c:
+            resp = await c.post("/api/mail/oauth/ingest", content=raw, headers=_headers(raw))
+        assert resp.status_code == 200, resp.text
+        acc = await _fetch_account(sm, 740)
+    assert acc is not None
+    assert acc.number == "173, 57, 104"  # нормализовано к «запятая + пробел»
+    assert acc.app_name is None
+    assert acc.display_name == "173, 57, 104"  # канон CRM, а не сырая строка агрегатора
 
 
 # ------------------- безопасность: спуф team_id в теле игнорируется (берётся из state)
@@ -237,7 +300,7 @@ async def test_ingest_reconsent_overwrites_team_no_duplicate(
         app = await _build(monkeypatch, sm)
         # Первый консент → team_a.
         raw1 = _body(_state(team_id=id_a), account_id=720, email="rc@outlook.com")
-        # Re-consent того же ящика (id 720) → team_b, новое имя.
+        # Re-consent того же ящика (id 720) → team_b; агрегатор эхо-шлёт «новое» имя.
         obj2 = {
             "crm_state": _state(team_id=id_b),
             "mail_account_id": 720,
@@ -261,8 +324,13 @@ async def test_ingest_reconsent_overwrites_team_no_duplicate(
     acc = rows[0]
     assert acc.team_id == id_b  # детерминированно перезаписан
     assert acc.email == "rc-renamed@outlook.com"
-    assert acc.display_name == "Renamed"
     assert acc.is_active is False
+    # Поля имени при re-consent НЕ перезаписываются (ADR-047 §3.7 п.2): после создания CRM —
+    # источник истины имени (админ мог править «Номер»/«Приложение» через PATCH), агрегатор
+    # лишь эхо-возвращает то, что CRM ему отдала. Имя осталось от первого консента.
+    assert acc.display_name == "Иван Пётр"
+    assert acc.number is None
+    assert acc.app_name == "Иван Пётр"
 
 
 # ------------------------------------ идемпотентность: повтор идентичного ingest

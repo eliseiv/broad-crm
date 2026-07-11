@@ -34,7 +34,7 @@ CRM-система мониторинга backend-сервисов и серве
 | Provisioning (Ansible) | [modules/provisioning/README.md](modules/provisioning/README.md) | backend, devops |
 | Notifier (Telegram-уведомления) | [modules/notifier/README.md](modules/notifier/README.md) | backend |
 | AI Keys (реестр ключей + проверка + алерты) | [modules/ai-keys/README.md](modules/ai-keys/README.md) | backend, frontend |
-| Mail (Почты — read-through-прокси + reply) | [modules/mail/README.md](modules/mail/README.md) | backend, frontend |
+| Mail (Почты — система-запись в БД CRM: лента/ящики/теги + Telegram-доставка + Mini App) | [modules/mail/README.md](modules/mail/README.md) | backend, frontend, devops |
 | Proxies (реестр прокси + монитор доступности + алерты) | [modules/proxies/README.md](modules/proxies/README.md) | backend, frontend |
 | Backends (реестр бэков + healthcheck `/health` + алерты) | [modules/backends/README.md](modules/backends/README.md) | backend, frontend |
 | Teams (CRM-команды: лидер + участники M2M) | [modules/teams/README.md](modules/teams/README.md) | backend, frontend |

@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.mail import build_display_name, parse_display_name
 from app.models.mail_account import MailAccount
 
 
@@ -86,6 +87,8 @@ class MailAccountRepository:
         *,
         account_id: int,
         email: str,
+        number: str | None,
+        app_name: str | None,
         display_name: str | None,
         team_id: uuid.UUID | None,
         is_active: bool,
@@ -93,11 +96,14 @@ class MailAccountRepository:
         """Вставить строку каталога после создания ящика в агрегаторе (§4).
 
         `account_id` — id, присвоенный агрегатором (единый ключ связи писем push'а).
-        Креды в CRM не хранятся (шифрование в агрегаторе).
+        Креды в CRM не хранятся (шифрование в агрегаторе). `display_name` — производное
+        от `number`/`app_name`, считает сервис (ADR-047 §3.3).
         """
         account = MailAccount(
             id=account_id,
             email=email,
+            number=number,
+            app_name=app_name,
             display_name=display_name,
             team_id=team_id,
             is_active=is_active,
@@ -115,18 +121,31 @@ class MailAccountRepository:
         team_id: uuid.UUID | None,
         is_active: bool,
     ) -> None:
-        """Upsert каталожной записи Outlook-ящика (ADR-045 §3). Идемпотентно.
+        """Upsert каталожной записи Outlook-ящика (ADR-045 §3, ADR-047 §3.7). Идемпотентно.
 
-        `id = account_id` (агрегаторский int). `ON CONFLICT (id) DO UPDATE`
-        **детерминированно перезаписывает** email/display_name/team_id/is_active (re-consent
-        того же ящика не создаёт дубля; `team_id` всегда берётся из `crm_state`, §3). Поля
-        синка (`last_synced_at`/`last_sync_error`/`consecutive_failures`/`down_alert_sent_at`)
-        НЕ трогаются — их ведёт status-канал. Токены/креды в CRM не хранятся.
+        `id = account_id` (агрегаторский int). Токены/креды в CRM не хранятся.
+
+        **INSERT (новый OAuth-ящик):** `display_name` агрегатора **разбирается** в
+        `number`/`app_name` тем же правилом, что и backfill-миграция `0024`
+        (`parse_display_name`, ADR-047 §3.1), а `display_name` сохраняется **канонически
+        производным** (`build_display_name` от разобранных частей) — инвариант §3.3
+        («`display_name` — производное») держится и на этом пути записи каталога.
+
+        **ON CONFLICT (id) DO UPDATE (re-consent):** поля имени — `number`, `app_name`,
+        `display_name` — **НЕ перезаписываются** (ADR-047 §3.7 п.2): после создания CRM —
+        источник истины имени (админ мог править «Номер»/«Приложение» через `PATCH`), а
+        агрегатор лишь эхо-возвращает то, что CRM ему отдала; перезапись затёрла бы правку.
+        Обновляются `email`, `is_active`, `team_id` (детерминированно из `crm_state`, §3).
+        Поля синка (`last_synced_at`/`last_sync_error`/`consecutive_failures`/
+        `down_alert_sent_at`) НЕ трогаются — их ведёт status-канал.
         """
+        number, app_name = parse_display_name(display_name)
         stmt = pg_insert(MailAccount).values(
             id=account_id,
             email=email,
-            display_name=display_name,
+            number=number,
+            app_name=app_name,
+            display_name=build_display_name(number, app_name),
             team_id=team_id,
             is_active=is_active,
         )
@@ -134,7 +153,6 @@ class MailAccountRepository:
             index_elements=[MailAccount.id],
             set_={
                 "email": email,
-                "display_name": display_name,
                 "team_id": team_id,
                 "is_active": is_active,
                 "updated_at": func.now(),

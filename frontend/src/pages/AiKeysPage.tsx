@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Plus, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, rectSortingStrategy, SortableContext } from '@dnd-kit/sortable';
-import { AddAiKeyCard } from '@/components/AddAiKeyCard';
 import { AddAiKeyModal } from '@/components/AddAiKeyModal';
 import { AiKeyCard } from '@/components/AiKeyCard';
 import { AiKeyCardSkeleton } from '@/components/AiKeyCardSkeleton';
@@ -83,18 +82,28 @@ function AiKeysList() {
             {isLoading ? 'Загрузка…' : `${keys.length} ${pluralKeys(keys.length)} под мониторингом`}
           </p>
         </div>
-        {!isLoading && !isError && (
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void refetch()}
-            loading={isFetching}
-            aria-label="Обновить список"
-          >
-            <RefreshCw className="h-4 w-4" />
-            Обновить
-          </Button>
-        )}
+        {/* Правая зона действий (08-design-system.md, ADR-046 §2б): вторичное «Обновить»
+            левее, primary «Добавить» — крайнее справа (гейт `ai-keys:create`). */}
+        <div className="flex items-center gap-2">
+          {!isLoading && !isError && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void refetch()}
+              loading={isFetching}
+              aria-label="Обновить список"
+            >
+              <RefreshCw className="h-4 w-4" />
+              Обновить
+            </Button>
+          )}
+          {canCreate && (
+            <Button size="sm" onClick={() => openAdd(undefined)}>
+              <Plus className="h-4 w-4" />
+              Добавить
+            </Button>
+          )}
+        </div>
       </div>
 
       {isLoading && (
@@ -123,19 +132,10 @@ function AiKeysList() {
         </div>
       )}
 
-      {isEmpty && canCreate && (
-        <div className="mx-auto max-w-md">
-          <AddAiKeyCard onClick={() => openAdd(undefined)} />
-          <div className="mt-4 text-center">
-            <p className="text-sm font-medium text-text-primary">Пока нет ключей</p>
-            <p className="mt-1 text-[13px] text-text-secondary">Добавьте первый AI-ключ</p>
-          </div>
-        </div>
-      )}
-
-      {isEmpty && !canCreate && (
-        <div className="mx-auto max-w-md rounded-card border border-dashed border-border-strong bg-surface-1/40 px-6 py-12 text-center">
-          <p className="text-sm font-medium text-text-primary">Список ИИ-ключей пуст</p>
+      {/* Empty: текстовая строка, без карточек-плейсхолдеров (ADR-046 §2б). */}
+      {isEmpty && (
+        <div className="rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">
+          <p className="text-sm font-medium text-text-primary">Ключей пока нет</p>
         </div>
       )}
 
@@ -148,8 +148,6 @@ function AiKeysList() {
                 provider={provider}
                 label={PROVIDER_LABEL[provider]}
                 keys={grouped[provider]}
-                onAdd={() => openAdd(provider)}
-                canCreate={canCreate}
                 canEdit={canEdit}
                 canDelete={canDelete}
               />
@@ -167,8 +165,6 @@ interface AiKeySectionProps {
   provider: AiProvider;
   label: string;
   keys: AiKey[];
-  onAdd: () => void;
-  canCreate: boolean;
   canEdit: boolean;
   canDelete: boolean;
 }
@@ -178,15 +174,7 @@ interface AiKeySectionProps {
  * ТОЛЬКО внутри секции — между провайдерами карточки не перемещаются, 04-api.md,
  * 08-design-system.md). onDragEnd → оптимистичный reorder + PATCH /api/ai-keys/order.
  */
-function AiKeySection({
-  provider,
-  label,
-  keys,
-  onAdd,
-  canCreate,
-  canEdit,
-  canDelete,
-}: AiKeySectionProps) {
+function AiKeySection({ provider, label, keys, canEdit, canDelete }: AiKeySectionProps) {
   const reorderMutation = useReorderAiKeys();
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
@@ -219,7 +207,6 @@ function AiKeySection({
               </SortableItem>
             ))}
           </SortableContext>
-          {canCreate && <AddAiKeyCard onClick={onAdd} />}
         </div>
       </DndContext>
     </section>

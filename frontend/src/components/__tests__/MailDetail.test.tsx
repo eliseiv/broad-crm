@@ -1,8 +1,19 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MailDetail } from '@/components/MailDetail';
 import type { MailMessage } from '@/types/api';
+
+// Изоляция глобального состояния темы: `data-theme` живёт на <html> (общий для всех тестов
+// документ jsdom). Тесты тела письма его меняют — сбрасываем ДО и ПОСЛЕ каждого теста, чтобы
+// зелёный в одиночку тест не краснел в полном прогоне из-за наследования чужой темы.
+beforeEach(() => {
+  delete document.documentElement.dataset.theme;
+});
+
+afterEach(() => {
+  delete document.documentElement.dataset.theme;
+});
 
 // MailDetail рендерит MailReplyForm → useReplyMail; мокаем как no-op мутацию.
 vi.mock('@/features/mail/hooks', () => ({
@@ -50,15 +61,53 @@ describe('MailDetail body isolation & notices', () => {
     expect(screen.queryByTitle('Тело письма')).not.toBeInTheDocument();
   });
 
-  it('injects the unified grey background (#161A22) before the html body and uses bg-surface-2 on the iframe', () => {
+  // ADR-047 §6: хардкод тёмного фона снят — фон и цвет текста тела письма СЛЕДУЮТ ТЕМЕ CRM.
+  // Iframe — собственный документ (CSS-переменные родителя не наследуются), поэтому цвета
+  // подставляются литералами, синхронизированными с токенами index.css.
+  it('injects the DARK theme colors before the html body in dark theme', () => {
+    document.documentElement.dataset.theme = 'dark';
     render(<MailDetail message={makeMessage({ body_html: '<p>Привет</p>' })} onBack={vi.fn()} />);
 
     const iframe = screen.getByTitle('Тело письма') as HTMLIFrameElement;
     const srcdoc = iframe.getAttribute('srcdoc') ?? '';
-    expect(srcdoc).toContain('#161A22');
-    // Инъекция серого фона стоит ПЕРЕД телом письма (08-design-system.md «Единый серый фон»).
+    expect(srcdoc).toContain('background:#161A22'); // --surface-2 тёмной
+    expect(srcdoc).toContain('color:#E6E9EF'); // --text-primary тёмной
+    // Инъекция стиля стоит ПЕРЕД недоверенным телом письма.
     expect(srcdoc.indexOf('#161A22')).toBeLessThan(srcdoc.indexOf('<p>Привет</p>'));
     expect(iframe.className).toContain('bg-surface-2');
+  });
+
+  it('injects the LIGHT theme colors before the html body in light theme (no dark hardcode)', () => {
+    document.documentElement.dataset.theme = 'light';
+    render(<MailDetail message={makeMessage({ body_html: '<p>Привет</p>' })} onBack={vi.fn()} />);
+
+    const iframe = screen.getByTitle('Тело письма') as HTMLIFrameElement;
+    const srcdoc = iframe.getAttribute('srcdoc') ?? '';
+    expect(srcdoc).toContain('background:#F7F8FA'); // --surface-2 светлой
+    expect(srcdoc).toContain('color:#111827'); // --text-primary светлой
+    // Прежний безусловный тёмный фон в светлой теме больше НЕ подставляется.
+    expect(srcdoc).not.toContain('#161A22');
+    expect(srcdoc).not.toContain('#E6E9EF');
+    expect(srcdoc.indexOf('#F7F8FA')).toBeLessThan(srcdoc.indexOf('<p>Привет</p>'));
+  });
+
+  it('отсутствие data-theme → светлый дефолт (инвариант ADR-046 §4.2), не тёмный', () => {
+    delete document.documentElement.dataset.theme;
+    render(<MailDetail message={makeMessage({ body_html: '<p>Привет</p>' })} onBack={vi.fn()} />);
+
+    const srcdoc =
+      (screen.getByTitle('Тело письма') as HTMLIFrameElement).getAttribute('srcdoc') ?? '';
+    expect(srcdoc).toContain('background:#F7F8FA');
+    expect(srcdoc).not.toContain('#161A22');
+  });
+
+  it('изоляция sandbox не ослабляется сменой темы (sandbox="", no-referrer)', () => {
+    document.documentElement.dataset.theme = 'light';
+    render(<MailDetail message={makeMessage({ body_html: '<p>Привет</p>' })} onBack={vi.fn()} />);
+
+    const iframe = screen.getByTitle('Тело письма') as HTMLIFrameElement;
+    expect(iframe.getAttribute('sandbox')).toBe('');
+    expect(iframe.getAttribute('referrerpolicy')).toBe('no-referrer');
   });
 
   it('renders body_text on the same grey surface (pre bg-surface-2)', () => {

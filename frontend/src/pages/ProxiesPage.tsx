@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Plus, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, rectSortingStrategy, SortableContext } from '@dnd-kit/sortable';
-import { AddProxyCard } from '@/components/AddProxyCard';
 import { AddProxyModal } from '@/components/AddProxyModal';
 import { InsufficientPermissions } from '@/components/InsufficientPermissions';
 import { ProxyCard } from '@/components/ProxyCard';
@@ -74,11 +73,21 @@ function ProxiesList() {
 
   return (
     <>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-text-primary">Прокси</h1>
-        <p className="mt-1 text-[13px] text-text-secondary">
-          {isLoading ? 'Загрузка…' : `${proxies.length} прокси под мониторингом`}
-        </p>
+      {/* Шапка: заголовок + правая зона действий; «Добавить» (Plus, primary) — гейт
+          `proxies:create` (08-design-system.md, ADR-046 §2б). AddProxyCard упразднена. */}
+      <div className="mb-6 flex items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-text-primary">Прокси</h1>
+          <p className="mt-1 text-[13px] text-text-secondary">
+            {isLoading ? 'Загрузка…' : `${proxies.length} прокси под мониторингом`}
+          </p>
+        </div>
+        {canCreate && (
+          <Button size="sm" onClick={() => setAddOpen(true)}>
+            <Plus className="h-4 w-4" />
+            Добавить
+          </Button>
+        )}
       </div>
 
       {isLoading && (
@@ -107,19 +116,10 @@ function ProxiesList() {
         </div>
       )}
 
-      {isEmpty && canCreate && (
-        <div className="mx-auto max-w-md">
-          <AddProxyCard onClick={() => setAddOpen(true)} />
-          <div className="mt-4 text-center">
-            <p className="text-sm font-medium text-text-primary">Пока нет прокси</p>
-            <p className="mt-1 text-[13px] text-text-secondary">Добавьте первый прокси</p>
-          </div>
-        </div>
-      )}
-
-      {isEmpty && !canCreate && (
-        <div className="mx-auto max-w-md rounded-card border border-dashed border-border-strong bg-surface-1/40 px-6 py-12 text-center">
-          <p className="text-sm font-medium text-text-primary">Список прокси пуст</p>
+      {/* Empty: текстовая строка, без карточек-плейсхолдеров (ADR-046 §2б). */}
+      {isEmpty && (
+        <div className="rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">
+          <p className="text-sm font-medium text-text-primary">Прокси пока нет</p>
         </div>
       )}
 
@@ -133,7 +133,6 @@ function ProxiesList() {
                 </SortableItem>
               ))}
             </SortableContext>
-            {canCreate && <AddProxyCard onClick={() => setAddOpen(true)} />}
           </div>
         </DndContext>
       )}

@@ -19,7 +19,6 @@ from app.infra.telegram import TelegramClient
 from app.logging import configure_logging, get_logger
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.backend_monitor_service import BackendMonitorService
-from app.services.mail_bootstrap import seed_builtin_mail_tags
 from app.services.mail_dispatcher_service import MailDispatcherService
 from app.services.monitoring_service import MonitoringService
 from app.services.notifier_service import NotifierService
@@ -49,11 +48,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         logger.error("startup_recovery_failed", error_type=type(exc).__name__)
 
-    # Посев builtin-тегов почты (ADR-044 §5): идемпотентно по UNIQUE(name).
-    try:
-        await seed_builtin_mail_tags(get_sessionmaker())
-    except Exception as exc:
-        logger.error("mail_builtin_tags_seed_failed", error_type=type(exc).__name__)
+    # Посева тегов почты в lifespan НЕТ (ADR-047 §1): он воскрешал удалённый владельцем
+    # тег при каждом рестарте. Первичный сев каталога — однократно data-миграцией `0023`.
 
     # Telegram-нотификатор (modules/notifier, ADR-009): фоновая задача только
     # если заданы обе переменные TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID.

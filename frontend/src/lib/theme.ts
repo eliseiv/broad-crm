@@ -1,11 +1,15 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useSyncExternalStore } from 'react';
 
 /**
- * Светлая/тёмная тема (08-design-system.md «Темизация», ADR-033/ADR-041).
+ * Светлая/тёмная тема (08-design-system.md «Темизация», ADR-033/ADR-041/ADR-046 §4).
  * Носитель — `data-theme` на `<html>`. Дефолт при отсутствии сохранённого выбора —
  * СВЕТЛАЯ (`light`, ADR-041), НЕ `prefers-color-scheme`. Явный выбор пользователя
  * пишется в `localStorage['crm-theme']` и переопределяет дефолт («залипает»);
- * за сменой темы ОС приложение больше НЕ следует (подписка снята, ADR-041).
+ * за сменой темы ОС приложение НЕ следует (подписка снята, ADR-041).
+ *
+ * Первичная простановка атрибута — статический no-FOUC-скрипт `/theme-init.js`
+ * (`frontend/public/`, ADR-046 §4.1; inline запрещён CSP). Если он не отработал —
+ * `useTheme()` самолечится при монтировании (ADR-046 §4.3).
  */
 export type Theme = 'light' | 'dark';
 
@@ -39,13 +43,46 @@ export function resolveTheme(): Theme {
 const THEME_COLOR: Record<Theme, string> = { dark: '#0A0C10', light: '#F2F4F7' };
 
 /**
- * Проставить `data-theme` на `<html>` (без записи в storage) и синхронизировать
- * `<meta name="theme-color">`, чтобы браузерный chrome следовал теме (ADR-033).
+ * Подписчики на смену темы (внешний стор для `useSyncExternalStore`): все компоненты,
+ * зависящие от активной темы (хэдер-переключатель, sandbox-iframe тела письма — ADR-047 §6),
+ * перерисовываются одним источником, а не каждый со своей копией состояния.
+ */
+const listeners = new Set<() => void>();
+
+function emitThemeChange(): void {
+  for (const l of listeners) l();
+}
+
+function subscribeTheme(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+/**
+ * Текущая тема по атрибуту `data-theme` на `<html>`. Отсутствие/мусор → дефолт `light`
+ * (инвариант ADR-046 §4.2: «нет атрибута» = светлая, а не тёмная).
+ */
+export function currentTheme(): Theme {
+  const v = document.documentElement.dataset.theme;
+  return v === 'dark' || v === 'light' ? v : DEFAULT_THEME;
+}
+
+/** Задан ли на `<html>` валидный `data-theme` (иначе нужен self-heal, ADR-046 §4.3). */
+function hasValidThemeAttr(): boolean {
+  const v = document.documentElement.dataset.theme;
+  return v === 'dark' || v === 'light';
+}
+
+/**
+ * Проставить `data-theme` на `<html>` (без записи в storage), синхронизировать
+ * `<meta name="theme-color">` (браузерный chrome следует теме, ADR-033) и уведомить
+ * подписчиков.
  */
 export function applyTheme(theme: Theme): void {
   document.documentElement.dataset.theme = theme;
   const meta = document.querySelector('meta[name="theme-color"]');
   if (meta) meta.setAttribute('content', THEME_COLOR[theme]);
+  emitThemeChange();
 }
 
 /** Явно выбрать тему: записать выбор в storage и применить. */
@@ -59,22 +96,31 @@ export function persistTheme(theme: Theme): void {
 }
 
 /**
- * Хук темы для хэдера `AppLayout`. Инициализируется текущим `data-theme`
- * (проставлен no-FOUC-скриптом в `index.html`). За сменой темы ОС приложение НЕ
- * следует (ADR-041): дефолт при отсутствии выбора — `light`, подписка на
- * `matchMedia` снята. `toggle` пишет явный выбор в `localStorage` и «залипает».
+ * Реактивное значение активной темы (read-only). Используется там, где тему нужно
+ * подставить литералом и перерисовать при переключении — sandbox-iframe тела письма
+ * (собственный документ, CSS-переменные родителя в него не наследуются, ADR-047 §6).
+ */
+export function useThemeValue(): Theme {
+  return useSyncExternalStore(subscribeTheme, currentTheme, () => DEFAULT_THEME);
+}
+
+/**
+ * Хук темы для хэдера `AppLayout`. Значение — из `data-theme` на `<html>` (проставлен
+ * статическим `/theme-init.js`). **Self-heal (ADR-046 §4.3):** если при монтировании
+ * атрибута нет или в нём мусор (скрипт не отработал — CSP/JS выключен/ошибка), хук сам
+ * вызывает `applyTheme(resolveTheme())`; при штатно отработавшем скрипте — no-op.
+ * За сменой темы ОС приложение НЕ следует (ADR-041). `toggle` пишет явный выбор в
+ * `localStorage` и «залипает».
  */
 export function useTheme(): { theme: Theme; toggle: () => void } {
-  const [theme, setThemeState] = useState<Theme>(
-    () => (document.documentElement.dataset.theme as Theme | undefined) ?? resolveTheme(),
-  );
+  const theme = useThemeValue();
+
+  useEffect(() => {
+    if (!hasValidThemeAttr()) applyTheme(resolveTheme());
+  }, []);
 
   const toggle = useCallback(() => {
-    setThemeState((prev) => {
-      const next: Theme = prev === 'dark' ? 'light' : 'dark';
-      persistTheme(next);
-      return next;
-    });
+    persistTheme(currentTheme() === 'dark' ? 'light' : 'dark');
   }, []);
 
   return { theme, toggle };

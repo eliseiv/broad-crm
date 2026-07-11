@@ -172,4 +172,54 @@ describe('lib/theme', () => {
       expect(document.documentElement.dataset.theme).toBe('light');
     });
   });
+
+  /**
+   * Self-heal (ADR-046 §4.3): если no-FOUC-скрипт `/theme-init.js` не отработал (CSP,
+   * JS выключен, ошибка), на `<html>` нет валидного `data-theme`. Хук при монтировании
+   * обязан сам вызвать `applyTheme(resolveTheme())` — иначе отсутствие атрибута
+   * детерминированно давало бы «тёмную вспышку навсегда» (корень бага фикса 3).
+   */
+  describe('useTheme self-heal при отсутствии data-theme (ADR-046 §4.3)', () => {
+    it('нет атрибута + нет сохранённого выбора → проставляет дефолт light', () => {
+      installMatchMedia(true); // ОС тёмная — на дефолт НЕ влияет (ADR-041)
+      expect(document.documentElement.dataset.theme).toBeUndefined();
+
+      const { result } = renderHook(() => useTheme());
+
+      expect(document.documentElement.dataset.theme).toBe('light');
+      expect(result.current.theme).toBe('light');
+    });
+
+    it('нет атрибута + сохранённый выбор dark → применяет сохранённый выбор', () => {
+      installMatchMedia(false);
+      localStorage.setItem(STORAGE_KEY, 'dark');
+      expect(document.documentElement.dataset.theme).toBeUndefined();
+
+      const { result } = renderHook(() => useTheme());
+
+      expect(document.documentElement.dataset.theme).toBe('dark');
+      expect(result.current.theme).toBe('dark');
+    });
+
+    it('мусор в data-theme → лечится до resolveTheme() (не остаётся мусором)', () => {
+      installMatchMedia(false);
+      document.documentElement.dataset.theme = 'neon';
+
+      const { result } = renderHook(() => useTheme());
+
+      expect(document.documentElement.dataset.theme).toBe('light');
+      expect(result.current.theme).toBe('light');
+    });
+
+    it('штатно отработавший скрипт → self-heal is no-op (тему не перебивает)', () => {
+      installMatchMedia(false);
+      localStorage.setItem(STORAGE_KEY, 'dark');
+      document.documentElement.dataset.theme = 'dark'; // скрипт уже проставил
+
+      const { result } = renderHook(() => useTheme());
+
+      expect(document.documentElement.dataset.theme).toBe('dark');
+      expect(result.current.theme).toBe('dark');
+    });
+  });
 });

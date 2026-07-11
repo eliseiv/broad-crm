@@ -1,6 +1,10 @@
 # ADR-043 — Ленивый провижининг почтовой группы «команда = почтовая группа»: авто-создание группы при первой почте, `team_id` в write-контракте ящика, `MailScope.team_ids`
 
-Статус: `accepted` · Дата: 2026-07-10
+Статус: **`superseded by` [ADR-044](ADR-044-mail-full-merge-into-crm.md)** · Дата: 2026-07-10 · Супессия: 2026-07-10
+
+> ⚠️ **ОТМЕНЁН.** Групповая модель «команда = почтовая группа» упразднена целиком: групп в агрегаторе больше нет, `ensure_team_mail_group` / CAS на `teams.mail_group_id` / ленивый провижининг / external `POST|DELETE /api/external/teams` — **не существуют**. Ящик привязан к команде напрямую (`mail_accounts.team_id`). Действующая архитектура — **[ADR-044](ADR-044-mail-full-merge-into-crm.md)**; действующий контракт — [04-api.md §Mail](../04-api.md#mail) и [modules/mail](../modules/mail/README.md). **Не реализуйте ничего по этому документу.**
+>
+> **Что пережило супессию:** `MailScope.team_ids` (стал основным механизмом scope — `group_ids` удалён); `team_id` (UUID) в write-контракте ящика; правило «перенос ящика между командами — только admin-уровень». Колонка `teams.mail_group_id` осталась в БД как **мёртвый легаси-остаток** ([ADR-047](ADR-047-mail-fix-pack.md) §0, [TD-051](../100-known-tech-debt.md)) — ни один mail-путь её не читает.
 
 Амендмент [ADR-038](ADR-038-mail-headless-integration.md) (§2 backfill / §3 `MailScope`), [ADR-022](ADR-022-teams-nav-categories.md) / [ADR-026](ADR-026-teams-optional-leader-auto-transfer.md) (форма команды). Парный ADR в mail-агрегаторе — `ADR-0042` (external team create + guarded delete). Частично закрывает [TD-036](../100-known-tech-debt.md).
 

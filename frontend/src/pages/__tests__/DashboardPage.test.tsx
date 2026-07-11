@@ -51,6 +51,8 @@ function mailbox(id: number, isActive: boolean): MailMailbox {
   return {
     id,
     email: `box${id}@postapp.store`,
+    number: null,
+    app_name: null,
     display_name: null,
     team_id: null,
     is_active: isActive,

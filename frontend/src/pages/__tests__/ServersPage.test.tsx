@@ -90,8 +90,13 @@ describe('ServersPage', () => {
 
     serversHook.value = { ...serversHook.value, isLoading: false, data: { items: [] } };
     rerender(<ServersPage />);
-    expect(screen.getByText('Пока нет серверов')).toBeInTheDocument();
-    expect(screen.getByText('Добавьте первый сервер, чтобы начать мониторинг')).toBeInTheDocument();
+    // Empty (ADR-046 §2б): единая текстовая строка; пары «Пока нет … / Добавьте первый …»
+    // и карточка-плейсхолдер AddServerCard упразднены.
+    expect(screen.getByText('Серверов пока нет')).toBeInTheDocument();
+    expect(screen.queryByText('Пока нет серверов')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('Добавьте первый сервер, чтобы начать мониторинг'),
+    ).not.toBeInTheDocument();
 
     serversHook.value = { ...serversHook.value, data: { items: [server()] } };
     rerender(<ServersPage />);
@@ -128,22 +133,32 @@ describe('ServersPage', () => {
 
     // Логаут вынесен в AppLayout — ServersPage его больше не отрисовывает.
     expect(screen.queryByRole('button', { name: /выйти/i })).not.toBeInTheDocument();
-    expect(screen.getByText('Пока нет серверов')).toBeInTheDocument();
+    expect(screen.getByText('Серверов пока нет')).toBeInTheDocument();
   });
 
-  it('read-only user (no create) sees «Список серверов пуст» without the add hint (ADR-021)', () => {
+  it('read-only user (no create): тот же empty-текст, но без кнопки «Добавить» (ADR-046 §2б)', () => {
     loginAs({ isSuperadmin: false, role: 'Наблюдатель', permissions: { servers: ['view'] } });
     serversHook.value = { ...serversHook.value, data: { items: [] } };
 
     render(<ServersPage />, { wrapper });
 
-    expect(screen.getByText('Список серверов пуст')).toBeInTheDocument();
-    // Add-hint показывается ТОЛЬКО при праве create.
-    expect(screen.queryByText('Пока нет серверов')).not.toBeInTheDocument();
+    // Отдельного read-only-варианта empty-state больше НЕТ: текст единый независимо от прав,
+    // кнопка «Добавить» живёт в шапке и сама гейтится `servers:create`.
+    expect(screen.getByText('Серверов пока нет')).toBeInTheDocument();
+    expect(screen.queryByText('Список серверов пуст')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Добавить/ })).not.toBeInTheDocument();
+  });
+
+  it('кнопка «Добавить» — в правой зоне заголовка при servers:create (ADR-046 §2б)', () => {
+    serversHook.value = { ...serversHook.value, data: { items: [] } };
+
+    render(<ServersPage />, { wrapper });
+
+    expect(screen.getByRole('button', { name: /Добавить/ })).toBeInTheDocument();
+    // Карточка-плейсхолдер AddServerCard удалена и из сетки, и из пустого состояния.
     expect(
-      screen.queryByText('Добавьте первый сервер, чтобы начать мониторинг'),
+      screen.queryByText('Добавить сервер для мониторинга', { exact: false }),
     ).not.toBeInTheDocument();
-    expect(screen.queryByText('Добавить')).not.toBeInTheDocument();
   });
 
   it('read-only user (no create) sees the list without the add-server card', () => {

@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Plus, RefreshCw } from 'lucide-react';
 import { toast } from 'sonner';
 import { closestCenter, DndContext, PointerSensor, useSensor, useSensors } from '@dnd-kit/core';
 import type { DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, rectSortingStrategy, SortableContext } from '@dnd-kit/sortable';
-import { AddServerCard } from '@/components/AddServerCard';
 import { AddServerModal } from '@/components/AddServerModal';
 import { InsufficientPermissions } from '@/components/InsufficientPermissions';
 import { ServerCard } from '@/components/ServerCard';
@@ -75,16 +74,27 @@ function ServersList() {
   return (
     <>
       {/*
-        Без ручной кнопки «Обновить» (08-design-system.md «Страница Серверы», ADR-013
-        смежная правка): данные обновляются штатным polling/refetch TanStack Query.
+        Шапка страницы: заголовок слева + правая зона действий (08-design-system.md
+        «Заголовок страницы и правая зона действий», ADR-046 §2б). Кнопка «Добавить» —
+        primary, крайняя справа, гейт `servers:create`. Пунктирная `AddServerCard`
+        упразднена. Кнопки «Обновить» на этой странице нет (ADR-013): данные обновляются
+        штатным polling/refetch TanStack Query.
       */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold text-text-primary">Серверы</h1>
-        <p className="mt-1 text-[13px] text-text-secondary">
-          {isLoading
-            ? 'Загрузка…'
-            : `${servers.length} ${pluralServers(servers.length)} под мониторингом`}
-        </p>
+      <div className="mb-6 flex items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-text-primary">Серверы</h1>
+          <p className="mt-1 text-[13px] text-text-secondary">
+            {isLoading
+              ? 'Загрузка…'
+              : `${servers.length} ${pluralServers(servers.length)} под мониторингом`}
+          </p>
+        </div>
+        {canCreate && (
+          <Button size="sm" onClick={() => setAddOpen(true)}>
+            <Plus className="h-4 w-4" />
+            Добавить
+          </Button>
+        )}
       </div>
 
       {isLoading && (
@@ -115,21 +125,11 @@ function ServersList() {
         </div>
       )}
 
-      {isEmpty && canCreate && (
-        <div className="mx-auto max-w-md">
-          <AddServerCard onClick={() => setAddOpen(true)} />
-          <div className="mt-4 text-center">
-            <p className="text-sm font-medium text-text-primary">Пока нет серверов</p>
-            <p className="mt-1 text-[13px] text-text-secondary">
-              Добавьте первый сервер, чтобы начать мониторинг
-            </p>
-          </div>
-        </div>
-      )}
-
-      {isEmpty && !canCreate && (
-        <div className="mx-auto max-w-md rounded-card border border-dashed border-border-strong bg-surface-1/40 px-6 py-12 text-center">
-          <p className="text-sm font-medium text-text-primary">Список серверов пуст</p>
+      {/* Empty: текстовая строка по центру, без карточек-плейсхолдеров (ADR-046 §2б).
+          Текст единый независимо от прав — добавление живёт в кнопке шапки. */}
+      {isEmpty && (
+        <div className="rounded-card border border-border-subtle bg-surface-1 px-6 py-16 text-center">
+          <p className="text-sm font-medium text-text-primary">Серверов пока нет</p>
         </div>
       )}
 
@@ -143,7 +143,6 @@ function ServersList() {
                 </SortableItem>
               ))}
             </SortableContext>
-            {canCreate && <AddServerCard onClick={() => setAddOpen(true)} />}
           </div>
         </DndContext>
       )}

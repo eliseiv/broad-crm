@@ -127,6 +127,35 @@ class _FakeStateRepo:
         _FakeStateRepo.store[server_id] = _FakeRow(online, zone_cpu, zone_ram, zone_ssd)
 
 
+class _FakeBackend:
+    """Строка `backends` для перечня бэков в алерте (ADR-046 §1): position/code/name/domain."""
+
+    def __init__(self, *, position: int, code: str, name: str, domain: str) -> None:
+        self.position = position
+        self.code = code
+        self.name = name
+        self.domain = domain
+
+
+class _FakeBackendRepo:
+    """Стаб BackendRepository: `_attach_backends` открывает ДОП. короткую сессию (ADR-046 §1).
+
+    Перечень резолвится ТОЛЬКО для алертящих серверов — стаб копит запрошенные server_id,
+    чтобы это можно было проверить. По умолчанию бэков нет → блок «Бэки:» не добавляется и
+    текст сообщения побайтово равен прежнему.
+    """
+
+    by_server: ClassVar[dict[uuid.UUID, list[_FakeBackend]]] = {}
+    calls: ClassVar[list[uuid.UUID]] = []
+
+    def __init__(self, session: object) -> None:
+        self._session = session
+
+    async def list_by_server(self, server_id: uuid.UUID) -> list[_FakeBackend]:
+        _FakeBackendRepo.calls.append(server_id)
+        return list(_FakeBackendRepo.by_server.get(server_id, []))
+
+
 class _FakeMonitoring:
     def __init__(self) -> None:
         self.result: dict[str, InstanceMetrics] = {}
@@ -161,10 +190,15 @@ def patched_db(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(ns, "get_sessionmaker", lambda: (lambda: _FakeSession()))
     monkeypatch.setattr(ns, "ServerRepository", _FakeServerRepo)
     monkeypatch.setattr(ns, "NotifierServerStateRepository", _FakeStateRepo)
+    # `_attach_backends` (ADR-046 §1) открывает доп. короткую сессию и читает бэки
+    # алертящих серверов через BackendRepository — стабим и его (сети/БД в unit нет).
+    monkeypatch.setattr(ns, "BackendRepository", _FakeBackendRepo)
     _FakeServerRepo.servers = []
     _FakeStateRepo.store = {}
     _FakeStateRepo.upsert_calls = []
     _FakeSession.added = []
+    _FakeBackendRepo.by_server = {}
+    _FakeBackendRepo.calls = []
 
 
 def _alert_logs() -> list[NotifierAlertLog]:
@@ -499,3 +533,187 @@ async def test_run_survives_iteration_error(monkeypatch: pytest.MonkeyPatch) -> 
         await svc.run()
 
     assert state["n"] == 2  # пережил ошибку первой итерации, выполнил вторую
+
+
+# --------------------------------------------------------------------------------------
+# Wiring блока «Бэки:» в РЕАЛЬНОМ пути доставки (ADR-046 §1): `_attach_backends` открывает
+# доп. короткую сессию, читает бэки алертящего сервера и ПОВТОРНО зовёт `evaluate` с ними.
+# Билдеры покрыты побайтово отдельно (test_notifications_backends_block.py) — здесь
+# проверяется, что перечень реально доезжает до ОТПРАВЛЕННОГО сообщения, что резолв идёт
+# ТОЛЬКО для алертящих серверов (перф-инвариант §1) и что второй `evaluate` не портит
+# state-машину.
+# --------------------------------------------------------------------------------------
+def _seed_backends(sid: uuid.UUID) -> None:
+    """Два бэка сервера, поданных в ОБРАТНОМ требуемом порядке (сортировка — на нашей стороне)."""
+    _FakeBackendRepo.by_server[sid] = [
+        _FakeBackend(position=1, code="web", name="Web", domain="https://web.example.com"),
+        _FakeBackend(position=0, code="api-eu", name="API EU", domain="https://eu.example.com"),
+    ]
+
+
+async def test_critical_alert_message_carries_backends_block_byte_exact(
+    patched_db: None,
+) -> None:
+    sid = uuid.uuid4()
+    inst = "10.0.0.7:9100"
+    _FakeServerRepo.servers = [_FakeServer(sid, "web", "10.0.0.7", inst)]
+    _seed_state(sid, online=True, cpu="green", ram="green", ssd="green")
+    _seed_backends(sid)
+    mon = _FakeMonitoring()
+    mon.result = {inst: _online(cpu="red")}
+    tg = _FakeTelegram()
+    svc = _make_service(mon, tg)
+
+    await svc.poll_once()
+
+    assert len(tg.sent) == 1
+    # Побайтово — по modules/notifier «Блок "Бэки:" в алертах об ОШИБКАХ»; порядок перечня
+    # `position ASC, code ASC` (подан обратный → сортировка сделана in-memory).
+    assert tg.sent[0] == (
+        "🔴🔴🔴СРОЧНО🔴🔴🔴\n"
+        'Сервер "web"\n'
+        "IP 10.0.0.7\n"
+        "\n"
+        "CPU: Нагрузка более 95%\n"
+        "\n"
+        "Бэки:\n"
+        'Бэк "API EU" [api-eu] https://eu.example.com\n'
+        'Бэк "Web" [web] https://web.example.com'
+    )
+    # В durable-лог (ADR-018) уходит ОТПРАВЛЕННАЯ строка целиком, включая блок «Бэки:».
+    logs = _alert_logs()
+    assert [row.kind for row in logs] == ["critical"]
+    assert logs[0].message == tg.sent[0]
+
+
+async def test_offline_alert_message_carries_backends_block(patched_db: None) -> None:
+    sid = uuid.uuid4()
+    inst = "10.0.0.8:9100"
+    _FakeServerRepo.servers = [_FakeServer(sid, "db", "10.0.0.8", inst)]
+    _seed_state(sid, online=True, cpu="green", ram="green", ssd="green")
+    _FakeBackendRepo.by_server[sid] = [
+        _FakeBackend(position=0, code="api-eu", name="API EU", domain="https://eu.example.com")
+    ]
+    mon = _FakeMonitoring()
+    mon.result = {
+        inst: InstanceMetrics(online=False, uptime_seconds=None, last_updated=None, metrics=None)
+    }
+    tg = _FakeTelegram()
+    svc = _make_service(mon, tg)
+
+    await svc.poll_once()
+
+    assert tg.sent[0] == (
+        "🔴🔴🔴СРОЧНО🔴🔴🔴\n"
+        'Сервер "db"\n'
+        "IP 10.0.0.8\n"
+        "\n"
+        "Сервер не доступен\n"
+        "\n"
+        "Бэки:\n"
+        'Бэк "API EU" [api-eu] https://eu.example.com'
+    )
+
+
+async def test_backends_resolved_only_for_alerting_servers(patched_db: None) -> None:
+    """Перф-инвариант ADR-046 §1: SELECT бэков делается ТОЛЬКО для алертящих серверов."""
+    alerting = uuid.uuid4()
+    healthy = uuid.uuid4()
+    inst_a, inst_h = "10.0.0.7:9100", "10.0.0.8:9100"
+    _FakeServerRepo.servers = [
+        _FakeServer(alerting, "web", "10.0.0.7", inst_a),
+        _FakeServer(healthy, "idle", "10.0.0.8", inst_h),
+    ]
+    _seed_state(alerting, online=True, cpu="green", ram="green", ssd="green")
+    _seed_state(healthy, online=True, cpu="green", ram="green", ssd="green")
+    _seed_backends(alerting)
+    _seed_backends(healthy)  # у здорового бэки ЕСТЬ, но их не должны запрашивать
+    mon = _FakeMonitoring()
+    mon.result = {inst_a: _online(cpu="red"), inst_h: _online()}
+    tg = _FakeTelegram()
+    svc = _make_service(mon, tg)
+
+    await svc.poll_once()
+
+    assert _FakeBackendRepo.calls == [alerting]
+    assert len(tg.sent) == 1
+    assert "Бэки:" in tg.sent[0]
+
+
+async def test_recovery_alert_does_not_resolve_backends(patched_db: None) -> None:
+    """Recovery перечнем НЕ расширяется (решение владельца) → и SELECT'а бэков не делает."""
+    sid = uuid.uuid4()
+    inst = "10.0.0.12:9100"
+    _FakeServerRepo.servers = [_FakeServer(sid, "cam", "10.0.0.12", inst)]
+    _seed_state(sid, online=False, cpu=None, ram=None, ssd=None)
+    _seed_backends(sid)
+    mon = _FakeMonitoring()
+    mon.result = {inst: _online("green", "green", "green")}
+    tg = _FakeTelegram()
+    svc = _make_service(mon, tg)
+
+    await svc.poll_once()
+
+    assert _FakeBackendRepo.calls == []  # резолв не вызывался вовсе
+    assert "🟢🟢🟢ВОССТАНОВЛЕНО🟢🟢🟢" in tg.sent[0]
+    assert "Бэки:" not in tg.sent[0]
+
+
+async def test_no_backends_for_alerting_server_keeps_message_byte_equal(
+    patched_db: None,
+) -> None:
+    """Бэков у алертящего сервера нет → блок не добавляется (сообщение как прежде)."""
+    sid = uuid.uuid4()
+    inst = "10.0.0.7:9100"
+    _FakeServerRepo.servers = [_FakeServer(sid, "web", "10.0.0.7", inst)]
+    _seed_state(sid, online=True, cpu="green", ram="green", ssd="green")
+    mon = _FakeMonitoring()
+    mon.result = {inst: _online(cpu="red")}
+    tg = _FakeTelegram()
+    svc = _make_service(mon, tg)
+
+    await svc.poll_once()
+
+    assert _FakeBackendRepo.calls == [sid]  # спросили…
+    assert "Бэки:" not in tg.sent[0]  # …но перечень пуст → блока нет
+    assert tg.sent[0] == (
+        "🔴🔴🔴СРОЧНО🔴🔴🔴\n" 'Сервер "web"\n' "IP 10.0.0.7\n" "\n" "CPU: Нагрузка более 95%"
+    )
+
+
+async def test_persisted_state_identical_with_and_without_backends(patched_db: None) -> None:
+    """`_attach_backends` зовёт `evaluate` ВТОРОЙ раз, и персистится результат ВТОРОГО вызова.
+
+    Корректность state-машины теперь молча держится на чистоте `evaluate` (функция без
+    сети/БД, состояние от `backends` не зависит — меняется только текст сообщений).
+    Фиксируем это: состояние, ушедшее в UPSERT, обязано быть идентично состоянию при
+    пустом перечне бэков.
+    """
+    inst = "10.0.0.7:9100"
+
+    async def _run(with_backends: bool) -> tuple[list[uuid.UUID], tuple[object, ...]]:
+        sid = uuid.uuid4()
+        _FakeServerRepo.servers = [_FakeServer(sid, "web", "10.0.0.7", inst)]
+        _FakeStateRepo.store = {}
+        _FakeStateRepo.upsert_calls = []
+        _FakeBackendRepo.by_server = {}
+        _FakeBackendRepo.calls = []
+        _seed_state(sid, online=True, cpu="green", ram="green", ssd="green")
+        if with_backends:
+            _seed_backends(sid)
+        mon = _FakeMonitoring()
+        mon.result = {inst: _online(cpu="red", ram="yellow")}
+        tg = _FakeTelegram()
+        await _make_service(mon, tg).poll_once()
+        row = _FakeStateRepo.store[sid]
+        return (
+            [uuid.UUID(int=0) for _ in _FakeStateRepo.upsert_calls],  # число UPSERT'ов
+            (row.online, row.zone_cpu, row.zone_ram, row.zone_ssd),
+        )
+
+    calls_without, state_without = await _run(with_backends=False)
+    calls_with, state_with = await _run(with_backends=True)
+
+    assert calls_with == calls_without  # столько же UPSERT'ов
+    assert state_with == state_without  # и то же самое состояние
+    assert state_with == (True, "red", "yellow", "green")

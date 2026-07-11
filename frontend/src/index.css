@@ -3,45 +3,16 @@
 @tailwind utilities;
 
 /*
- * Цветовые токены — 08-design-system.md «Цветовые токены» / «Темизация» (ADR-033).
- * Тема-зависимы: тёмные значения — на :root (и явно [data-theme=dark]), светлые —
- * под [data-theme=light]. Компоненты ссылаются на переменные — при смене темы
- * меняются только значения. Носитель темы — data-theme на <html> (см. index.html
- * no-FOUC-скрипт + src/lib/theme.ts).
+ * Цветовые токены — 08-design-system.md «Цветовые токены» / «Темизация»
+ * (ADR-033 + ADR-046 §4.2).
+ *
+ * СВЕТЛЫЕ значения — на голом :root (и дублируются под [data-theme=light]);
+ * ТЁМНЫЕ — только под [data-theme=dark]. Инвариант: отсутствие атрибута data-theme
+ * означает ДЕФОЛТ СВЕТЛУЮ (ADR-041), а не тёмную — прежняя структура («тёмные на
+ * :root») делала провал no-FOUC-скрипта детерминированно тёмным экраном (ADR-046 §4).
+ * Носитель темы — data-theme на <html> (public/theme-init.js + src/lib/theme.ts).
  */
 :root,
-[data-theme='dark'] {
-  --bg-base: #0a0c10;
-  --surface-1: #11141a;
-  --surface-2: #161a22;
-  --surface-3: #1e232d;
-  --border-subtle: #232834;
-  --border-strong: #2e3542;
-  --text-primary: #e6e9ef;
-  --text-secondary: #9aa4b2;
-  --text-tertiary: #5c6573;
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --status-green: #22c55e;
-  --status-yellow: #eab308;
-  --status-red: #ef4444;
-  --gauge-track: #262c38;
-
-  /* Градиенты дуги gauge (тема-зависимы, ADR-033) */
-  --gauge-green-from: #16a34a;
-  --gauge-green-to: #4ade80;
-  --gauge-yellow-from: #ca8a04;
-  --gauge-yellow-to: #facc15;
-  --gauge-red-from: #dc2626;
-  --gauge-red-to: #f87171;
-
-  /* Тема-зависимые тени карточек (ADR-033 — вместо статичных boxShadow в конфиге) */
-  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.4);
-  --shadow-sub: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 4px 12px rgba(0, 0, 0, 0.3);
-
-  color-scheme: dark;
-}
-
 [data-theme='light'] {
   --bg-base: #f2f4f7;
   --surface-1: #ffffff;
@@ -72,6 +43,38 @@
   --shadow-sub: 0 1px 2px rgba(16, 24, 40, 0.05), 0 4px 12px rgba(16, 24, 40, 0.06);
 
   color-scheme: light;
+}
+
+[data-theme='dark'] {
+  --bg-base: #0a0c10;
+  --surface-1: #11141a;
+  --surface-2: #161a22;
+  --surface-3: #1e232d;
+  --border-subtle: #232834;
+  --border-strong: #2e3542;
+  --text-primary: #e6e9ef;
+  --text-secondary: #9aa4b2;
+  --text-tertiary: #5c6573;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --status-green: #22c55e;
+  --status-yellow: #eab308;
+  --status-red: #ef4444;
+  --gauge-track: #262c38;
+
+  /* Градиенты дуги gauge (тема-зависимы, ADR-033) */
+  --gauge-green-from: #16a34a;
+  --gauge-green-to: #4ade80;
+  --gauge-yellow-from: #ca8a04;
+  --gauge-yellow-to: #facc15;
+  --gauge-red-from: #dc2626;
+  --gauge-red-to: #f87171;
+
+  /* Тема-зависимые тени карточек (ADR-033 — вместо статичных boxShadow в конфиге) */
+  --shadow-card: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 24px rgba(0, 0, 0, 0.4);
+  --shadow-sub: 0 1px 0 rgba(255, 255, 255, 0.02) inset, 0 4px 12px rgba(0, 0, 0, 0.3);
+
+  color-scheme: dark;
 }
 
 @layer base {

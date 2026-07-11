@@ -245,7 +245,7 @@ async def delete_tag(
     service: MailServiceDep,
     _p: TagsDep,
 ) -> Response:
-    """Удаление тега (ADR-044 §5). Гейт mail:tags; встроенный тег → 409."""
+    """Удаление тега (ADR-044 §5, ADR-047 §1). Гейт mail:tags; удалить можно ЛЮБОЙ тег."""
     await service.delete_tag(tag_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

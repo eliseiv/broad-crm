@@ -1,6 +1,14 @@
 # ADR-033 · UI-пакет: плоская навигация + светлая/тёмная тема + упрощение таблицы «Номера»
 
-- **Статус:** accepted
+- **Статус:** accepted (**тема-часть частично переопределена** — [ADR-041](ADR-041-login-theme-session-ux.md), [ADR-046](ADR-046-ui-infra-fix-pack.md))
+
+> ⚠️ **ТЕМА-ЧАСТЬ ЭТОГО ADR ЧАСТИЧНО ПЕРЕОПРЕДЕЛЕНА — реализуйте по актуальным docs, не по этому тексту.**
+> - **Дефолт темы — СВЕТЛАЯ**, а не системный `prefers-color-scheme` ([ADR-041](ADR-041-login-theme-session-ux.md)): подписка на `matchMedia` снята; нет сохранённого выбора → `light`.
+> - **No-FOUC-скрипт — НЕ inline, а отдельный статический файл** ([ADR-046](ADR-046-ui-infra-fix-pack.md) §4.1): прод-CSP `script-src 'self'` **не исполняет** inline-скрипт → `data-theme` не проставлялся, и это был root cause бага «каждая перезагрузка = тёмная тема». `'unsafe-inline'` **не вводится**.
+> - **CSS-структура развёрнута** ([ADR-046](ADR-046-ui-infra-fix-pack.md) §4.2): **светлые** значения — на голом **`:root`**, **тёмные** — под `[data-theme='dark']`. Отсутствие атрибута = **светлая** тема, а не тёмная.
+> - Плюс **self-heal** в `useTheme()` и `Cache-Control: no-cache` на `index.html`.
+>
+> **ДЕЙСТВУЕТ из ADR-033:** носитель темы — `data-theme` на `<html>`; персист `localStorage['crm-theme']`; переключатель-иконка `Sun`/`Moon`; полная light-палитра и тема-зависимые тени; плоская навигация; упрощение таблицы «Номера». Актуальная спецификация — [08-design-system.md §Темизация](../08-design-system.md#темизация-светлаятёмная).
 - **Дата:** 2026-07-09
 - **Спринт:** C
 - **Амендмент к:** [ADR-022](ADR-022-teams-nav-categories.md) (навигация), [ADR-023](ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)/[ADR-029](ADR-029-ui-login-password-nav-team-form.md) (рестайл нав-дропдауна), [ADR-030](ADR-030-sms-module-full-merge.md) (таблица «Номера»)

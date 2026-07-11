@@ -63,7 +63,13 @@ describe('ServerCard detail → edit (ADR-035)', () => {
 
     const dialog = within(await screen.findByRole('dialog'));
     expect(dialog.getByText('Просмотр')).toBeInTheDocument();
-    // Detail-поля read-only: Название / IP / Пользователь.
+    // Видимая зона detail — только идентификаторы (Название / IP); «Пользователь» и «Пароль»
+    // ушли в свёрнутый по умолчанию блок «Информация» (ADR-046 §2в).
+    expect(dialog.getByText('Server 01')).toBeInTheDocument();
+    expect(dialog.getByText('10.0.0.10')).toBeInTheDocument();
+    expect(dialog.queryByText('Пользователь')).not.toBeInTheDocument();
+
+    await user.click(dialog.getByRole('button', { name: 'Информация' }));
     expect(dialog.getByText('Пользователь')).toBeInTheDocument();
     expect(dialog.getByText('root')).toBeInTheDocument();
     // edit-модалка ещё не открыта.

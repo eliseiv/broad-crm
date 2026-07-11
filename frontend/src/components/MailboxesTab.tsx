@@ -174,10 +174,12 @@ export function MailboxesTab() {
         <div className="scrollbar-none overflow-x-auto rounded-card border border-border-subtle bg-surface-1">
           <table className="w-full min-w-[760px] border-collapse text-left">
             <thead>
+              {/* Отдельной колонки «Статус» НЕТ (ADR-047 §5): кружок переехал внутрь
+                  идентификационной ячейки ящика. Колонка «Команда» получает долю ширины,
+                  достаточную для чтения значения целиком (ADR-047 §4). */}
               <tr className="text-[12px] font-medium uppercase tracking-wide text-text-tertiary">
-                <th className="px-3 py-3 font-medium">Статус</th>
                 <th className="px-3 py-3 font-medium">Почта</th>
-                <th className="px-3 py-3 font-medium">Команда</th>
+                <th className="w-[22rem] px-3 py-3 font-medium">Команда</th>
                 <th className="px-3 py-3 font-medium">Синхронизация</th>
                 {/* relative: даёт абсолютному `sr-only` позиционированного предка ВНУТРИ
                     overflow-x-auto обёртки, иначе его containing block — ICB, и он выпадает

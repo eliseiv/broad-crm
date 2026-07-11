@@ -4,6 +4,29 @@
 
 В PostgreSQL хранится **реестр серверов + статус провижининга**, **реестр AI-ключей + статус проверки**, **реестр прокси + статус доступности** ([ADR-019](adr/ADR-019-proxies-availability-monitor.md)), **персистентное состояние Telegram-нотификатора per-server** ([ADR-014](adr/ADR-014-persist-notifier-state-alert-on-first-elevated.md)) и **append-only durable-лог отправленных серверных алертов** ([ADR-018](adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). Метрики (CPU/RAM/SSD/uptime/up) НЕ дублируются в БД как временной ряд — источник истины Prometheus ([ADR-003](adr/ADR-003-prometheus-istochnik-metrik.md)); нотификатор хранит лишь **последнюю наблюдённую зону** (green/yellow/red) и флаг доступности для дедупа алертов между итерациями/рестартами, а не сами значения метрик. С Спринта 3 в БД хранится **реестр пользователей и ролей** для RBAC (`users`/`roles`, [ADR-021](adr/ADR-021-rbac-users-roles.md)). **Супер-админ (`.env`-учётка) в БД НЕ хранится** — он bootstrap вне БД ([ADR-008](adr/ADR-008-admin-iz-env.md) с амендментом [ADR-021](adr/ADR-021-rbac-users-roles.md)); в таблице `users` только дополнительные пользователи. Со Спринта A ([ADR-022](adr/ADR-022-teams-nav-categories.md)) добавлены **CRM-команды** (`teams` + M2M `user_teams`) и опциональный `users.email`.
 
+## Требования к миграциям (ОБЩИЕ, нормативно — для ВСЕХ модулей)
+
+Правила ниже действуют для **любой** новой Alembic-миграции (servers / ai-keys / proxies / backends / users / teams / sms / mail / …), а не только для той, при которой были сформулированы. Проверять при создании **каждой** миграции.
+
+### 1. `revision` id — не длиннее 32 символов
+
+Служебная таблица Alembic хранит идентификатор в колонке **`alembic_version.version_num` типа `VARCHAR(32)`**. Идентификатор длиннее 32 символов **физически неприменим**.
+
+- **Цена промаха — НЕ косметическая:** `alembic upgrade head` выполняется в **entrypoint backend-контейнера** ([07-deployment.md](07-deployment.md#откат-миграций-бд)), поэтому слишком длинный id **роняет контейнер на деплое** с `StringDataRightTruncationError` — не в тестах, а в проде.
+- **Имя ФАЙЛА миграции длиной не ограничено** и остаётся описательным. Расхождение «файл длиннее, чем `revision` id» — **допустимо и предпочтительно** укорачиванию читаемого имени файла.
+- При укорочении — **причина фиксируется в docstring самой миграции**, чтобы следующий разработчик не «исправил» id обратно на имя файла.
+- **Пример (реальный):** файл `0024_mail_accounts_number_app_name.py` (34 символа — id из такого имени НЕ проходит), `revision = "0024_mail_accounts_num_app_name"` (31 символ), `down_revision = "0023_mail_tags_drop_is_builtin"` (30 символов) — [подробности](#миграция-0024_mail_accounts_number_app_name-концепт-adr-047-3).
+
+### 2. Рабочий `downgrade()` — обязателен
+
+Каждая миграция обязана иметь **работающий** `downgrade()` (не `pass`) — нормативное требование политики отката, [07-deployment.md §Откат миграций БД](07-deployment.md#откат-миграций-бд).
+
+### 3. Миграции НЕ импортируют код приложения
+
+Данные (seed-наборы, правила разбора и т.п.) **вшиваются в тело миграции**. Импорт `app.*` из миграции запрещён: удаление/переименование модуля приложения сломало бы миграцию **задним числом** (прецедент — [ADR-047](adr/ADR-047-mail-fix-pack.md) §1). Как следствие, дублирование одного правила в миграции и в `app/domain/*` **допустимо и осознанно**; источник истины правила — docs/ADR, обе реализации обязаны ему соответствовать.
+
+---
+
 ## ER-диаграмма
 
 ```mermaid
@@ -655,7 +678,7 @@ CREATE INDEX ix_users_role_id ON users (role_id);
 
 ## Таблицы `teams` и `user_teams` (CRM-команды)
 
-**CRM-команды** — группировка пользователей вокруг лидера ([ADR-022](adr/ADR-022-teams-nav-categories.md)). Модуль — [modules/teams](modules/teams/README.md), API — [04-api.md](04-api.md#teams). **Не путать с mail-«командами»** (`groups` внешнего сервиса, `GET /api/mail/teams`, схема `MailTeam` — [ADR-017](adr/ADR-017-dashboard-client-aggregation-mail-server-filters.md)): это разные сущности в разных неймспейсах (`/api/teams` vs `/api/mail/teams`), CRM-команды хранятся в БД, mail-«команды» — прокси без хранения. `user_teams` — **первая M2M-таблица в проекте** (прежде все связи — FK-колонки).
+**CRM-команды** — группировка пользователей вокруг лидера ([ADR-022](adr/ADR-022-teams-nav-categories.md)). Модуль — [modules/teams](modules/teams/README.md), API — [04-api.md](04-api.md#teams). **Команда в системе ОДНА — CRM-команда** ([ADR-044](adr/ADR-044-mail-full-merge-into-crm.md)): прежних mail-«команд» (`groups` агрегатора, схема `MailTeam`, эндпоинт `GET /api/mail/teams`) **не существует**, дизамбигуация снята. Почтовый ящик привязан к CRM-команде **напрямую** — `mail_accounts.team_id` ([Таблицы модуля «Почты»](#таблицы-модуля-почты-mail_accounts-mail_messages-mail_tags-)). Колонка `teams.mail_group_id` — **мёртвый легаси-остаток** ([TD-051](100-known-tech-debt.md)), на почту не влияет. `user_teams` — **первая M2M-таблица в проекте** (прежде все связи — FK-колонки).
 
 ### Таблица `teams`
 
@@ -663,7 +686,7 @@ CREATE INDEX ix_users_role_id ON users (role_id);
 |------|-----|-------------|----------|
 | `id` | `uuid` | PK, `DEFAULT gen_random_uuid()` | Идентификатор команды. |
 | `name` | `text` | `NOT NULL`, `UNIQUE`, CHECK (см. ниже) | Название команды. Уникально — дубликат → `409 team_name_taken`. Правило набора символов — как у `username` («свободный» DB-CHECK + Pydantic). |
-| `mail_group_id` | `integer` | **`NULL`**, `UNIQUE` | **Привязка к группе mail-агрегатора** ([ADR-038](adr/ADR-038-mail-headless-integration.md), миграция `0018`). Соответствие CRM-команда (UUID) ↔ группа агрегатора (`groups.id`, int) **1:1**. `NULL` — команда без привязки к почте. `UNIQUE` — одна группа агрегатора принадлежит максимум одной CRM-команде. **Источник истины владения ящиком — агрегатор** (`mail_accounts.group_id`); это поле — лишь маппинг команда↔группа. Принадлежность ящика команде: `mailbox.group_id == team.mail_group_id`. Резолв `MailScope.group_ids` — по `user_teams`→`mail_group_id` (без локального кэша каталога ящиков). Ограничение 1:1 — [TD-033](100-known-tech-debt.md). Не FK (группа живёт в БД внешнего сервиса, не в CRM). |
+| `mail_group_id` | `integer` | **`NULL`**, `UNIQUE` | **⚠️ МЁРТВЫЙ ЛЕГАСИ-ОСТАТОК — на почту не влияет** ([ADR-047](adr/ADR-047-mail-fix-pack.md) §0, [TD-051](100-known-tech-debt.md)). Колонка добавлена миграцией `0018` под отменённую групповую модель ([ADR-038](adr/ADR-038-mail-headless-integration.md)/[ADR-043](adr/ADR-043-lazy-mail-group-provisioning.md), обе `superseded`). После [ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) **групп в агрегаторе нет**, владение ящиком определяется **`mail_accounts.team_id`**, и **ни один путь модуля «Почты» эту колонку не читает** (проверено по коду). Предписанный [ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) §2 post-ETL-drop **ещё не выполнен** — колонка и поля `mail_group_id` в контракте `/api/teams` живы. **Не задавать, не читать, новую логику не вешать.** Удаление — [TD-051](100-known-tech-debt.md). |
 | `leader_id` | `uuid` | **`NULL`**, FK → `users(id)` **`ON DELETE SET NULL`** | Лидер команды ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)). **`NULL` — команда без лидера.** Удаление пользователя-лидера **не блокируется** (лидерство авто-передаётся сервисом, остаток — `SET NULL`; `409 user_is_team_leader` **упразднён**). **Инвариант: если `leader_id` задан — он ∈ участники** (в `user_teams` есть строка `(leader_id, id)`) — обеспечивает сервис. |
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
@@ -716,7 +739,9 @@ CREATE INDEX ix_user_teams_team_id ON user_teams (team_id);
 > ALTER TABLE teams ADD COLUMN mail_group_id integer NULL;
 > ALTER TABLE teams ADD CONSTRAINT uq_teams_mail_group_id UNIQUE (mail_group_id);
 > ```
-> `down_revision` — текущая голова цепочки на момент реализации (S2). `downgrade()`: `ALTER TABLE teams DROP CONSTRAINT uq_teams_mail_group_id; ALTER TABLE teams DROP COLUMN mail_group_id;`. Существующие команды получают `mail_group_id = NULL`. Заполнение: **ленивый провижининг** — авто-создание группы по первому добавлению почты в команду ([ADR-043](adr/ADR-043-lazy-mail-group-provisioning.md), `POST /api/mail/mailboxes` с `team_id`); ручная (пере)привязка к существующей группе — через `PATCH /api/teams/{id}` (edit-селектор).
+> `downgrade()`: `ALTER TABLE teams DROP CONSTRAINT uq_teams_mail_group_id; ALTER TABLE teams DROP COLUMN mail_group_id;`.
+>
+> **⚠️ Колонка МЁРТВАЯ ([ADR-047](adr/ADR-047-mail-fix-pack.md) §0, [TD-051](100-known-tech-debt.md)).** [ADR-038](adr/ADR-038-mail-headless-integration.md) и [ADR-043](adr/ADR-043-lazy-mail-group-provisioning.md), под которые она вводилась, **отменены** [ADR-044](adr/ADR-044-mail-full-merge-into-crm.md): групп в агрегаторе нет, ящик привязан к команде через **`mail_accounts.team_id`**, ленивого провижининга группы не существует. Колонка сохраняется только потому, что предписанный ADR-044 §2 drop **не выполнен**. Никакой mail-логики на неё вешать нельзя.
 
 ### Индексы и обоснование
 - `UNIQUE(teams.name)` — детерминированный `409 team_name_taken`.
@@ -1232,3 +1257,136 @@ ALTER TABLE servers DROP COLUMN position;
 ```
 
 > Backfill использует `created_at DESC` — тот же порядок, что показывался до появления drag-and-drop (новые сверху), поэтому визуальный порядок карточек после миграции не меняется.
+
+---
+
+## Таблицы модуля «Почты» (`mail_accounts`, `mail_messages`, `mail_tags`, …)
+
+Решение — [ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) (полный перенос почты в CRM; **разворот** «без хранения» [ADR-012](adr/ADR-012-mail-read-through-proxy.md)/[ADR-038](adr/ADR-038-mail-headless-integration.md)) + [ADR-047](adr/ADR-047-mail-fix-pack.md) (фикс-пакет 2026-07-11). Миграции: **`0021_create_mail_module`**, **`0022_create_mail_sent_messages`**, **`0023_mail_tags_drop_is_builtin`**, **`0024_mail_accounts_number_app_name`**. Модуль — [modules/mail](modules/mail/README.md), контракт — [04-api.md#mail](04-api.md#mail).
+
+**CRM — система-запись:** письма/теги/каталог ящиков/история Telegram-уведомлений хранятся здесь. IMAP/SMTP-**креды в CRM НЕ хранятся** (транзит в агрегатор, шифрование там; Fernet к почте не применяется).
+
+**Вложений нет** (не переносятся by design — [TD-034](100-known-tech-debt.md)). **Таблиц `mail_forwarding`/`mail_message_forwards` нет** (forwarding отложен — [TD-040](100-known-tech-debt.md)).
+
+### Таблица `mail_accounts` (каталог ящиков)
+
+| Колонка | Тип | Ограничения | Комментарий |
+|---------|-----|-------------|-------------|
+| `id` | `integer` | PK, **`autoincrement=False`** | **Равен id ящика в агрегаторе** (присваивает агрегатор при создании). Единый ключ упрощает push (`mail_account_id` — тот же int) |
+| `email` | `text` | NOT NULL | Адрес ящика |
+| `number` | `text` | `NULL` | **«Номер»** ([ADR-047](adr/ADR-047-mail-fix-pack.md) §3, миграция `0024`) |
+| `app_name` | `text` | `NULL` | **«Приложение»** ([ADR-047](adr/ADR-047-mail-fix-pack.md) §3, миграция `0024`) |
+| `display_name` | `text` | `NULL` | **ПРОИЗВОДНОЕ** — `"<number> <app_name>"` (пустые части опускаются). Пересчитывается сервером при каждом create/update; **единственная форма имени, уходящая в агрегатор**. Денормализация — [TD-052](100-known-tech-debt.md) |
+| `team_id` | `uuid` | `NULL`, FK `teams(id)` **`ON DELETE SET NULL`** | **Команда-владелец (per-mailbox).** `NULL` — ящик без команды (unassigned → уведомлений не получит никто, [TD-042](100-known-tech-debt.md)). Групп-индирекции нет |
+| `is_active` | `boolean` | NOT NULL, default `true` | Статус синка (зеркалится status-каналом) |
+| `last_synced_at` | `timestamptz` | `NULL` | Зеркало из агрегатора |
+| `last_sync_error` | `text` | `NULL` | Зеркало из агрегатора |
+| `consecutive_failures` | `integer` | NOT NULL, default `0` | Зеркало из агрегатора |
+| `down_alert_sent_at` | `timestamptz` | `NULL` | **Идемпотентность mailbox-down алерта** «ровно один на переход»: guarded `UPDATE … WHERE down_alert_sent_at IS NULL`; сброс в `NULL` при re-enable |
+| `created_at` / `updated_at` | `timestamptz` | NOT NULL | |
+
+Индекс: `ix_mail_accounts_team_id (team_id)`.
+
+### Таблица `mail_messages` (system of record писем)
+
+| Колонка | Тип | Ограничения | Комментарий |
+|---------|-----|-------------|-------------|
+| `id` | `bigint` | PK, BIGSERIAL | Отражает **порядок прихода push'а**, а не дату письма (см. сортировку ниже) |
+| `mail_account_id` | `integer` | NOT NULL, FK `mail_accounts(id)` **`ON DELETE CASCADE`** | Ящик-получатель |
+| `uidvalidity` / `uid` | `bigint` | NOT NULL | Часть ключа идемпотентности |
+| `message_id_header` | `text` | `NULL` | RFC `Message-ID` (threading) |
+| `subject` | `text` | `NULL` | |
+| `from_addr` | `text` | NOT NULL | |
+| `from_name` | `text` | `NULL` | |
+| `to_addrs` | `text` | NOT NULL, default `''` | |
+| `cc_addrs` | `text` | `NULL` | |
+| `internal_date` | `timestamptz` | NOT NULL | **Истинная дата письма — ключ сортировки ленты** |
+| `body_text` | `text` | NOT NULL, default `''` | |
+| `body_html` | `text` | `NULL` | Недоверенный контент → только sandbox-iframe |
+| `body_truncated` | `boolean` | NOT NULL, default `false` | |
+| `body_present` | `boolean` | NOT NULL, default `true` | |
+| `in_reply_to` / `refs_header` | `text` | `NULL` | Threading |
+| `notified_at` | `timestamptz` | `NULL` | High-water для Telegram-диспетчера: `NULL` = не обработано |
+| `created_at` | `timestamptz` | NOT NULL, default `now()` | |
+
+- **`UNIQUE (mail_account_id, uidvalidity, uid)`** = `uq_mail_messages_account_uidv_uid` — **идемпотентность push** (`ON CONFLICT DO NOTHING`).
+- **Порядок ленты — `internal_date DESC, id DESC`, НЕ по `id`:** `id` отражает порядок прихода push'а; recovery-ре-пуш старого письма иначе «всплыл» бы в топ как новейший.
+- **Курсор пагинации — компаундный `(internal_date, id)`** (`internal_date` не уникален — массовая рассылка приходит одной секундой; пагинация по одному полю дала бы пропуски/дубли на границах страниц).
+- Индексы: `ix_mail_messages_account_feed (mail_account_id, internal_date DESC, id DESC)`, `ix_mail_messages_feed (internal_date DESC, id DESC)`, partial `ix_mail_messages_notify (id) WHERE notified_at IS NULL` (очередь диспетчера — тут id-порядок корректен).
+
+### Таблицы тегов: `mail_tags`, `mail_tag_rules`, `mail_message_tags`
+
+**`mail_tags`** — **глобальный админский каталог** (у тега **нет владельца**; применяется ко всем письмам всех команд).
+
+| Колонка | Тип | Ограничения | Комментарий |
+|---------|-----|-------------|-------------|
+| `id` | `uuid` | PK, default `gen_random_uuid()` | |
+| `name` | `text` | NOT NULL, **`UNIQUE`** (`uq_mail_tags_name`) | Глобально уникальное имя (натуральный ключ идемпотентных вставок) |
+| `color` | `text` | NOT NULL, CHECK `ck_mail_tags_color` = `color ~ '^#[0-9A-Fa-f]{6}$'` | HEX из палитры 8 цветов |
+| `match_mode` | `text` | NOT NULL, default `any`, CHECK `ck_mail_tags_match_mode` = `match_mode IN ('any','all')` | |
+| `created_at` / `updated_at` | `timestamptz` | NOT NULL | |
+
+> **Колонки `is_builtin` НЕТ** — дропнута миграцией **`0023`** ([ADR-047](adr/ADR-047-mail-fix-pack.md) §1). Признак «встроенный тег» упразднён: **удалить можно ЛЮБОЙ тег**, ветка `409` снята, **сев тегов в lifespan убран** (иначе удалённый тег воскресал при рестарте). Первичный сев 10 канонических тегов — **однократно data-миграцией `0023`** (`ON CONFLICT (name) DO NOTHING`).
+
+**`mail_tag_rules`**: `id uuid PK`, `tag_id uuid NOT NULL REFERENCES mail_tags(id) ON DELETE CASCADE`, `type text NOT NULL` CHECK `ck_mail_tag_rules_type` = `type IN ('subject_contains','body_contains','sender_contains','sender_exact')`, `pattern text NOT NULL` (1..256), `created_at timestamptz NOT NULL`.
+
+> CHECK и enum типов — **четырёхзначные, не меняются**. `sender_exact` **убран из UI-списка создания** правила, но остаётся валидным значением контракта и корректно отображается ([ADR-047](adr/ADR-047-mail-fix-pack.md) §2, [TD-055](100-known-tech-debt.md)).
+
+**`mail_message_tags`**: `message_id bigint REFERENCES mail_messages(id) ON DELETE CASCADE`, `tag_id uuid REFERENCES mail_tags(id) ON DELETE CASCADE`, `PRIMARY KEY (message_id, tag_id)`. Вставка привязок — всегда `ON CONFLICT DO NOTHING` (идемпотентно).
+
+### Таблицы Telegram: `mail_telegram_links`, `mail_telegram_notifications`, `mail_user_settings`
+
+**`mail_telegram_links`**: `telegram_user_id bigint PRIMARY KEY` (**= `chat_id`** приватного чата — стабильный ключ **доставки**), `user_id uuid NULL REFERENCES users(id) ON DELETE CASCADE` (1:N, **nullable** — orphan-линк без CRM-пользователя), `username text NULL` (**нормализованный lower-case** Telegram-username — ключ первичного **связывания**), `created_at`, `dead_at timestamptz NULL`.
+
+> **`chat_id` первичен для ДОСТАВКИ, `username` — для первичного СВЯЗЫВАНИЯ.** Bot API шлёт только по числовому `chat_id`. Смена username у **связанного** пользователя доставку не ломает. Резолв orphan-линка — регистронезависимо: `lower(users.telegram) == username`.
+
+**`mail_telegram_notifications`** (дедуп доставки + история): `id uuid PK`, `message_id bigint NOT NULL REFERENCES mail_messages(id) ON DELETE CASCADE`, `telegram_user_id bigint NOT NULL` (без FK — снапшот чата), `status text NOT NULL DEFAULT 'pending'` CHECK `status IN ('pending','sent','failed','dead')`, `attempts integer NOT NULL DEFAULT 0`, `last_error text NULL`, `sent_at timestamptz NULL`, `created_at`/`updated_at`. **`UNIQUE (message_id, telegram_user_id)`** = `uq_mail_tg_notif_msg_chat` — идемпотентность «ровно один на переход»; она же гасит повторную рассылку при рестарте посреди fan-out.
+
+**`mail_user_settings`** (opt-out уведомлений): `user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE`, `tg_notifications_enabled boolean NOT NULL DEFAULT true`, `updated_at`. Отсутствие строки = **уведомления включены**.
+
+### Таблица `mail_sent_messages` (миграция `0022`)
+
+Журнал отправленных reply (CRM — инициатор): `id uuid PK DEFAULT gen_random_uuid()`, `mail_account_id integer NOT NULL REFERENCES mail_accounts(id) ON DELETE CASCADE`, `user_id uuid NULL REFERENCES users(id) ON DELETE SET NULL` (автор), `to_addrs text NOT NULL`, `cc_addrs text NULL`, `subject text NULL`, `body_text text NOT NULL`, `in_reply_to text NULL`, `refs_header text NULL`, `smtp_message_id text NULL`, `sent_at timestamptz NOT NULL DEFAULT now()`.
+
+### Миграция `0023_mail_tags_drop_is_builtin` (концепт, [ADR-047](adr/ADR-047-mail-fix-pack.md) §1)
+
+`down_revision = "0022_create_mail_sent_messages"`. **Порядок шагов обязателен** (сначала данные, потом drop):
+
+1. **Data-seed канонических тегов** (перенос сева из lifespan; данные **вшиты в тело миграции** — миграция не импортирует код приложения, иначе удаление модуля сломает её задним числом): вставить **10 тегов** (`DPLA.PLA`, `Отменить подписку`, `Продление аккаунта`, `Диспут`, `Бан Аккаунта`, `Релиз`, `Реджект`, `Ревью`, `Ждет Ревью`, `Нужна замена реквизитов`) с их `color`/`match_mode` — `INSERT ... ON CONFLICT (name) DO NOTHING` (на проде теги уже есть → но-оп). Правила (`mail_tag_rules`) вставлять **только для впервые созданных** тегов: у `mail_tag_rules` натурального уникального ключа нет, повторный прогон иначе задублирует правила.
+2. `ALTER TABLE mail_tags DROP COLUMN is_builtin;`
+
+**`downgrade()`**: `ALTER TABLE mail_tags ADD COLUMN is_builtin boolean NOT NULL DEFAULT false;` (данные признака не восстанавливаются — он упразднён; откат возвращает только форму схемы).
+
+### Миграция `0024_mail_accounts_number_app_name` (концепт, [ADR-047](adr/ADR-047-mail-fix-pack.md) §3)
+
+**Идентификаторы (нормативно, [ADR-047](adr/ADR-047-mail-fix-pack.md) §3.5):**
+- **Имя файла:** `0024_mail_accounts_number_app_name.py`
+- **`revision` (revision id):** **`"0024_mail_accounts_num_app_name"`** (31 символ) — **укорочен намеренно**, см. правило ниже
+- **`down_revision`:** `"0023_mail_tags_drop_is_builtin"` (30 символов)
+
+> **Почему id укорочен — это ПРИМЕР применения общего правила**, а не частный случай mail: **`revision` id ≤ 32 символов** (`alembic_version.version_num` — `VARCHAR(32)`). Имя из 34 символов уронило бы `alembic upgrade` в entrypoint контейнера с `StringDataRightTruncationError`. Полная норма (действует для **ВСЕХ** модулей и будущих миграций) — [§Требования к миграциям](#требования-к-миграциям-общие-нормативно--для-всех-модулей).
+
+```sql
+ALTER TABLE mail_accounts ADD COLUMN number   text NULL;
+ALTER TABLE mail_accounts ADD COLUMN app_name text NULL;
+-- + backfill из display_name (правило разбора — ниже)
+```
+
+**Правило backfill (нормативно):** ведущая числовая часть (включая перечисление через запятую) → `number`; остаток текста → `app_name`.
+
+- Regex: `^\s*(\d+(?:\s*,\s*\d+)*)\s*(.*)$` над `display_name`.
+  - Совпало → `number` = группа 1, **нормализованная** к разделителю «запятая + пробел» (`", ".join(токены)`); `app_name` = группа 2 после `strip()` (пусто → `NULL`).
+  - Не совпало (нет ведущих цифр) → `number = NULL`, `app_name = trim(display_name)` (пусто → `NULL`).
+- `display_name IS NULL` → обе колонки `NULL`.
+
+**Нормативные тест-кейсы (примеры владельца — обязаны воспроизводиться побуквенно):**
+
+| `display_name` | → `number` | → `app_name` |
+|----------------|-----------|--------------|
+| `5108 Klyro Forge (Codex)` | `5108` | `Klyro Forge (Codex)` |
+| `173, 57, 104` | `173, 57, 104` | `NULL` |
+| `WIU` | `NULL` | `WIU` |
+
+**`display_name` НЕ дропается** — становится производным (сервер пересчитывает его при следующем create/update ящика; существующие значения остаются валидными). Обоснование — [ADR-047](adr/ADR-047-mail-fix-pack.md) §3.3.
+
+**`downgrade()`**: `ALTER TABLE mail_accounts DROP COLUMN app_name; ALTER TABLE mail_accounts DROP COLUMN number;` (`display_name` уже содержит склейку — данные не теряются).

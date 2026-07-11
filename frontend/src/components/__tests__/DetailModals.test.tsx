@@ -126,6 +126,118 @@ function makeBackend(over: Partial<Backend> = {}): Backend {
 
 beforeEach(() => vi.clearAllMocks());
 
+/**
+ * Раскрывает свёрнутый по умолчанию блок «Информация» (ADR-046 §2в): при открытии модалки
+ * видны ТОЛЬКО идентификаторы, всё прочее (связи, секреты, git/note, секция «Бэки») — внутрь
+ * этого блока. Тесты, которым нужны поля из «Информации», обязаны сперва её раскрыть.
+ */
+async function openInfo(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await user.click(screen.getByRole('button', { name: 'Информация' }));
+}
+
+describe('DetailInfoSection — блок «Информация» свёрнут по умолчанию (ADR-046 §2в)', () => {
+  it('содержимое «Информации» не отрендерено, пока блок не раскрыт', () => {
+    render(<ServerDetailModal open onOpenChange={vi.fn()} server={makeServer()} canEdit />);
+
+    const trigger = screen.getByRole('button', { name: 'Информация' });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    // Идентификаторы видны сразу.
+    expect(screen.getByText('Server 01')).toBeInTheDocument();
+    expect(screen.getByText('10.0.0.10')).toBeInTheDocument();
+    // Содержимое «Информации» (ssh_user, пароль, секция «Бэки») в DOM отсутствует.
+    expect(screen.queryByText('Пользователь')).not.toBeInTheDocument();
+    expect(screen.queryByText(MASK)).not.toBeInTheDocument();
+  });
+
+  it('клик по триггеру раскрывает блок (aria-expanded=true) и показывает содержимое', async () => {
+    const user = userEvent.setup();
+    render(<ServerDetailModal open onOpenChange={vi.fn()} server={makeServer()} canEdit />);
+
+    await openInfo(user);
+
+    expect(screen.getByRole('button', { name: 'Информация' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(screen.getByText('Пользователь')).toBeInTheDocument();
+    expect(screen.getByText('root')).toBeInTheDocument();
+  });
+
+  it('BackendDetailModal: пустая «Информация» → блок НЕ рендерится вовсе (ADR-046 §2в)', () => {
+    // Бэк без связей, секретов, git и note — внутри «Информации» не осталось ни строки.
+    render(
+      <BackendDetailModal
+        open
+        onOpenChange={vi.fn()}
+        backend={makeBackend()}
+        canEdit
+        onEdit={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Информация' })).not.toBeInTheDocument();
+    // Идентификаторы при этом видны.
+    expect(screen.getByText('api-eu')).toBeInTheDocument();
+    expect(screen.getByText('API EU')).toBeInTheDocument();
+  });
+
+  it('BackendDetailModal: хотя бы одно непустое поле → блок «Информация» рендерится', () => {
+    render(
+      <BackendDetailModal
+        open
+        onOpenChange={vi.fn()}
+        backend={makeBackend({ note: 'важное' })}
+        canEdit
+        onEdit={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Информация' })).toBeInTheDocument();
+  });
+});
+
+describe('DetailRow — пустые поля в detail-view НЕ рендерятся (ADR-046 §3)', () => {
+  it('строка с пустым значением не рендерится (прочерк «—» упразднён)', async () => {
+    const user = userEvent.setup();
+    // Прокси без логина: строка «Логин» не рендерится, «—» нигде не появляется.
+    render(
+      <ProxyDetailModal
+        open
+        onOpenChange={vi.fn()}
+        proxy={makeProxy({ username: null })}
+        canEdit
+        onEdit={vi.fn()}
+      />,
+    );
+
+    await openInfo(user);
+
+    expect(screen.queryByText('Логин')).not.toBeInTheDocument();
+    expect(screen.queryByText('—')).not.toBeInTheDocument();
+    // Непустые поля на месте.
+    expect(screen.getByText('SOCKS5')).toBeInTheDocument();
+  });
+
+  it('BackendDetailModal: пустые «Сервер»/«ИИ-ключ» не рендерятся, непустые — рендерятся', async () => {
+    const user = userEvent.setup();
+    render(
+      <BackendDetailModal
+        open
+        onOpenChange={vi.fn()}
+        backend={makeBackend({ server_name: 'Server 01', ai_key_name: null, note: 'n' })}
+        canEdit
+        onEdit={vi.fn()}
+      />,
+    );
+
+    await openInfo(user);
+
+    expect(screen.getByText('Сервер')).toBeInTheDocument();
+    expect(screen.getByText('Server 01')).toBeInTheDocument();
+    expect(screen.queryByText('ИИ-ключ')).not.toBeInTheDocument();
+  });
+});
+
 describe('ServerDetailModal (ADR-039 inline-edit)', () => {
   it('рендерит detail-поля; карандаш под servers:edit открывает inline-edit имени', async () => {
     const user = userEvent.setup();
@@ -135,6 +247,8 @@ describe('ServerDetailModal (ADR-039 inline-edit)', () => {
     expect(dialog.getByText('Название')).toBeInTheDocument();
     expect(dialog.getByText('Server 01')).toBeInTheDocument();
     expect(dialog.getByText('10.0.0.10')).toBeInTheDocument();
+    // «Пользователь» — внутри свёрнутой «Информации» (ADR-046 §2в).
+    await openInfo(user);
     expect(dialog.getByText('Пользователь')).toBeInTheDocument();
     expect(dialog.getByText('root')).toBeInTheDocument();
 
@@ -179,6 +293,8 @@ describe('ServerDetailModal (ADR-039 inline-edit)', () => {
     serversApi.revealServerPassword.mockResolvedValue({ value: 'ssh-plE1n' });
     render(<ServerDetailModal open onOpenChange={vi.fn()} server={makeServer()} canEdit />);
 
+    await openInfo(user); // «Пароль» — внутри «Информации»
+
     // До клика секрет не запрашивается.
     expect(serversApi.revealServerPassword).not.toHaveBeenCalled();
     expect(screen.getByText(MASK)).toBeInTheDocument();
@@ -190,15 +306,20 @@ describe('ServerDetailModal (ADR-039 inline-edit)', () => {
     expect(await screen.findByText('ssh-plE1n')).toBeInTheDocument();
   });
 
-  it('canEdit=false → карандаша нет, пароль — статичная маска без глаза', () => {
+  it('canEdit=false → карандаша нет, пароль — статичная маска без глаза', async () => {
+    const user = userEvent.setup();
     render(<ServerDetailModal open onOpenChange={vi.fn()} server={makeServer()} canEdit={false} />);
 
     expect(screen.queryByRole('button', { name: 'Редактировать' })).not.toBeInTheDocument();
+
+    await openInfo(user);
+
     expect(screen.queryByRole('button', { name: 'Показать пароль' })).not.toBeInTheDocument();
     expect(screen.getByText(MASK)).toBeInTheDocument();
   });
 
-  it('свёрнутая секция «Бэки» показывает счётчик backend_count без запроса', () => {
+  it('свёрнутая секция «Бэки» показывает счётчик backend_count без запроса', async () => {
+    const user = userEvent.setup();
     render(
       <ServerDetailModal
         open
@@ -207,6 +328,9 @@ describe('ServerDetailModal (ADR-039 inline-edit)', () => {
         canEdit
       />,
     );
+
+    // Секция «Бэки» вложена ВНУТРЬ «Информации» (сворачиваемая внутри сворачиваемой).
+    await openInfo(user);
 
     const dialog = within(screen.getByRole('dialog'));
     expect(dialog.getByText('Бэков: 3')).toBeInTheDocument();
@@ -222,9 +346,13 @@ describe('ProxyDetailModal (ADR-035)', () => {
     );
 
     const dialog = within(screen.getByRole('dialog'));
-    expect(dialog.getByText('SOCKS5')).toBeInTheDocument();
+    // Видны сразу — идентификаторы (Название/Хост/Порт).
     expect(dialog.getByText('proxy.example.com')).toBeInTheDocument();
     expect(dialog.getByText('1080')).toBeInTheDocument();
+
+    // Тип/Логин/Пароль — внутри «Информации» (ADR-046 §2в).
+    await openInfo(user);
+    expect(dialog.getByText('SOCKS5')).toBeInTheDocument();
     expect(dialog.getByText('user01')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Показать пароль' }));
@@ -232,7 +360,8 @@ describe('ProxyDetailModal (ADR-035)', () => {
     expect(await screen.findByText('proxy-secr3t')).toBeInTheDocument();
   });
 
-  it('has_password=false → «Пароль: —» без кнопки-глаза', () => {
+  it('has_password=false → строка «Пароль» НЕ рендерится вовсе («Пароль: —» упразднён, ADR-046 §3)', async () => {
+    const user = userEvent.setup();
     render(
       <ProxyDetailModal
         open
@@ -243,10 +372,14 @@ describe('ProxyDetailModal (ADR-035)', () => {
       />,
     );
 
+    await openInfo(user);
+
     expect(screen.queryByRole('button', { name: 'Показать пароль' })).not.toBeInTheDocument();
-    // Есть строка «Пароль» со значением-прочерком.
+    // Ни строки «Пароль», ни прочерка «—»: секрет не задан → строки нет (нормативная строка
+    // словаря «Пароль: —» упразднена).
     const dialog = within(screen.getByRole('dialog'));
-    expect(dialog.getByText('Пароль')).toBeInTheDocument();
+    expect(dialog.queryByText('Пароль')).not.toBeInTheDocument();
+    expect(dialog.queryByText('—')).not.toBeInTheDocument();
   });
 });
 
@@ -259,7 +392,14 @@ describe('AiKeyDetailModal (ADR-035/ADR-040)', () => {
     );
 
     const dialog = within(screen.getByRole('dialog'));
+    // Видны сразу — Название и Провайдер.
     expect(dialog.getByText('OpenAI')).toBeInTheDocument();
+    expect(dialog.getByText('OpenAI Prod')).toBeInTheDocument();
+    // Поле «Ключ» — внутри «Информации» (ADR-046 §2в).
+    expect(dialog.queryByText('sk-p…bA3T')).not.toBeInTheDocument();
+
+    await openInfo(user);
+
     // Маска = key_masked (полный ключ скрыт до reveal).
     expect(dialog.getByText('sk-p…bA3T')).toBeInTheDocument();
     expect(dialog.queryByText('sk-proj-FULL-VALUE')).not.toBeInTheDocument();
@@ -282,7 +422,7 @@ describe('AiKeyDetailModal (ADR-035/ADR-040)', () => {
 });
 
 describe('BackendDetailModal (ADR-040)', () => {
-  it('рендерит Код/Название/Домен/Сервер/ИИ-ключ; без секретов reveal-глаза нет; карандаш → onEdit', async () => {
+  it('рендерит идентификаторы Код/Название/Домен; без секретов reveal-глаза нет; карандаш → onEdit', async () => {
     const user = userEvent.setup();
     const onEdit = vi.fn();
     render(
@@ -296,12 +436,14 @@ describe('BackendDetailModal (ADR-040)', () => {
     );
 
     const dialog = within(screen.getByRole('dialog'));
+    // Видимая зона — ТОЛЬКО идентификаторы (ADR-046 §2в).
     expect(dialog.getByText('Код')).toBeInTheDocument();
     expect(dialog.getByText('api-eu')).toBeInTheDocument();
     expect(dialog.getByText('API EU')).toBeInTheDocument();
     expect(dialog.getByText('https://api.example.com/')).toBeInTheDocument();
-    expect(dialog.getByText('Сервер')).toBeInTheDocument();
-    expect(dialog.getByText('ИИ-ключ')).toBeInTheDocument();
+    // Связи не заданы → строки не рендерятся (ADR-046 §3), а «Информация» пуста → её нет.
+    expect(dialog.queryByText('Сервер')).not.toBeInTheDocument();
+    expect(dialog.queryByText('ИИ-ключ')).not.toBeInTheDocument();
     // Секреты не заданы (has_*=false) — reveal-глаза нет.
     expect(dialog.queryByRole('button', { name: /Показать/ })).not.toBeInTheDocument();
 
@@ -323,6 +465,9 @@ describe('BackendDetailModal (ADR-040)', () => {
       />,
     );
 
+    // Секреты — внутри «Информации» (ADR-046 §2в).
+    await openInfo(user);
+
     // До клика секреты не запрашиваются — обе строки под маской.
     expect(backendsApi.revealBackendApiKey).not.toHaveBeenCalled();
     expect(backendsApi.revealBackendAdminApiKey).not.toHaveBeenCalled();
@@ -338,7 +483,8 @@ describe('BackendDetailModal (ADR-040)', () => {
     expect(await screen.findByText('sk-admin-PLAIN')).toBeInTheDocument();
   });
 
-  it('server_name/ai_key_name показываются как значения связей, git — ссылкой', () => {
+  it('server_name/ai_key_name показываются как значения связей, git — ссылкой', async () => {
+    const user = userEvent.setup();
     render(
       <BackendDetailModal
         open
@@ -352,6 +498,8 @@ describe('BackendDetailModal (ADR-040)', () => {
         onEdit={vi.fn()}
       />,
     );
+
+    await openInfo(user); // связи и git — внутри «Информации»
 
     const dialog = within(screen.getByRole('dialog'));
     expect(dialog.getByText('Server 01')).toBeInTheDocument();

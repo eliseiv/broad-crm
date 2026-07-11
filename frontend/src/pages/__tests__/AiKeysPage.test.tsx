@@ -107,8 +107,12 @@ describe('AiKeysPage grouping', () => {
     aiKeysHook.value = { ...aiKeysHook.value, data: { items: [] } };
     render(<AiKeysPage />, { wrapper });
 
-    expect(screen.getByText('Пока нет ключей')).toBeInTheDocument();
+    // Empty (ADR-046 §2б): нормативная строка «Ключей пока нет»; AddAiKeyCard упразднена.
+    expect(screen.getByText('Ключей пока нет')).toBeInTheDocument();
+    expect(screen.queryByText('Пока нет ключей')).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { level: 2 })).not.toBeInTheDocument();
+    // Добавление — кнопкой в правой зоне заголовка (гейт `ai-keys:create`).
+    expect(screen.getByRole('button', { name: /Добавить/ })).toBeInTheDocument();
   });
 
   it('user without ai-keys:view sees the page-scoped stub, list is not rendered (ADR-021 §6)', () => {

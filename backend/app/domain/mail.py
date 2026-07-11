@@ -96,6 +96,49 @@ def validate_reply_addresses(addresses: list[str]) -> None:
             raise MailReplyError(f"Некорректный адрес получателя: {addr}")
 
 
+# --- Производное имя ящика (ADR-047 §3.3) ------------------------------------
+
+# Ведущая числовая часть (одно число или перечисление через запятую) + остаток текста
+# (ADR-047 §3.1 — источник истины правила). DOTALL: остаток забирается целиком.
+# ВНИМАНИЕ: копия этого правила живёт в миграции `0024` (Alembic-миграции не импортируют
+# код приложения — ADR-047 §3.7 п.3). Обе реализации обязаны соответствовать §3.1 и
+# покрываются одними нормативными тест-кейсами.
+_LEADING_NUMBER_RE = re.compile(r"^\s*(\d+(?:\s*,\s*\d+)*)\s*(.*)$", re.DOTALL)
+
+
+def parse_display_name(value: str | None) -> tuple[str | None, str | None]:
+    """`display_name` → (`number`, `app_name`) по правилу разбора ADR-047 §3.1.
+
+    Ведущая числовая часть (включая перечисление через запятую) → `number`
+    (нормализуется к разделителю «запятая + пробел»); остаток текста → `app_name`
+    (пустой → `None`). Нет ведущих цифр → `number = None`, `app_name` = `value.strip()`.
+    `value is None`/пустой → обе части `None`.
+
+    Единая чистая функция (ADR-047 §3.7 п.3): переиспользуется OAuth-ingest'ом
+    (`MailAccountRepository.upsert_catalog`) и любым будущим путём импорта каталога.
+    """
+    if value is None:
+        return None, None
+    match = _LEADING_NUMBER_RE.match(value)
+    if match is None:
+        rest = value.strip()
+        return None, rest or None
+    number = ", ".join(token.strip() for token in match.group(1).split(","))
+    app_name = match.group(2).strip()
+    return number, app_name or None
+
+
+def build_display_name(number: str | None, app_name: str | None) -> str | None:
+    """`display_name` = `"<number> <app_name>"` (ADR-047 §3.3) — производное поле.
+
+    Пустые/пробельные части опускаются; обе пусты → `None`. Пересчитывается сервером при
+    каждом create/update ящика; клиент `display_name` не передаёт. Это единственная форма
+    имени, уходящая во внешний контракт агрегатора (`number`/`app_name` наружу не идут).
+    """
+    parts = [part.strip() for part in (number, app_name) if part and part.strip()]
+    return " ".join(parts) if parts else None
+
+
 __all__ = [
     "MAX_REPLY_BODY_BYTES",
     "MAX_REPLY_RECIPIENTS",
@@ -103,7 +146,9 @@ __all__ = [
     "MailCursorError",
     "MailReplyError",
     "MailScope",
+    "build_display_name",
     "decode_mail_cursor",
     "encode_mail_cursor",
+    "parse_display_name",
     "validate_reply_addresses",
 ]
