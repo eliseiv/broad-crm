@@ -200,7 +200,10 @@ export function ServerCard({ server, canEdit = true, canDelete = true }: ServerC
         )}
 
         {(isOnline || isOffline) && (
-          <div className="grid grid-cols-3 gap-3">
+          // Раскладка метрик — фиксированная grid-cols-3 (нормативно, 08-design-system.md).
+          // Шаг сетки ужат на узких вьюпортах (gap-2; на xl — прежний gap-3): это часть
+          // решения переполнения строки значения РАЗМЕРОМ, а не обрезкой (см. MetricSubCard).
+          <div className="grid grid-cols-3 gap-2 xl:gap-3">
             <MetricSubCard kind="cpu" metric={server.metrics?.cpu ?? null} />
             <MetricSubCard kind="ram" metric={server.metrics?.ram ?? null} />
             <MetricSubCard kind="ssd" metric={server.metrics?.ssd ?? null} />

@@ -48,7 +48,7 @@ export function MetricSubCard({ kind, metric }: MetricSubCardProps) {
   const detailText = renderDetail(metric);
 
   return (
-    <div className="flex min-w-0 flex-col overflow-hidden rounded-sub border border-border-subtle bg-surface-2 p-2.5 shadow-sub">
+    <div className="flex min-w-0 flex-col rounded-sub border border-border-subtle bg-surface-2 px-1 py-2.5 shadow-sub xl:px-2.5">
       <div className="flex items-center justify-between">
         <div className="flex min-w-0 items-center gap-1.5">
           <span
@@ -66,22 +66,29 @@ export function MetricSubCard({ kind, metric }: MetricSubCardProps) {
       </div>
 
       {/*
-        Значение детали — на ОТДЕЛЬНОЙ строке во всю внутреннюю ширину под-карточки,
-        text-[10px] leading-tight whitespace-nowrap (одна строка) + min-w-0 (не даёт
-        под-карточке расширять grid-трек, защита от наезда на соседа).
-        Иконка убрана из строки значения, чтобы освободить место под текст.
-        Формат «value/total unit» без пробелов вокруг «/»: «728.6/913.8 ГБ» = 14 моно-глифов
-        × ~0.6em ≈ 84px нужной ширины (needed@10px ≈ 84px).
-        overflow-hidden стоит на КОРНЕ под-карточки (L51) как КОНТЕЙНЕР:
-          • десктоп xl (3-кол ≈ 90px, max ≈ 104px ≥ needed ~84px) — значение помещается
-            ЦЕЛИКОМ и НЕ режется;
-          • планшет-портрет (md ≤ ~823px, 2-кол ≈ 75px < 84px) — значение контейнерно
-            усекается в границах под-карточки, без наезда на соседнюю метрику.
-        Усечение на md — принятое ограничение TD-023.
+        Значение детали — на ОТДЕЛЬНОЙ строке во всю внутреннюю ширину под-карточки.
+        Формат («value/total ГБ», десятичные) — НОРМАТИВНЫЙ (08-design-system.md, «Под-карточки
+        метрик») и НЕ меняется. Числовое значение обязано читаться ЦЕЛИКОМ на всех штатных
+        вьюпортах: усечение (truncate / overflow-hidden / клиппинг) как способ «уместить»
+        значимый контент — ЗАПРЕЩЕНО (CLAUDE.md: «переполнение решается размером, а не
+        скрытием контента»). Прежнее контейнерное усечение на узких экранах (TD-023) снято.
+
+        Переполнение решается РАЗМЕРОМ и РАСКЛАДКОЙ (grid-cols-3 сохранена):
+          1) горизонтальный padding под-карточки на узких вьюпортах ужат (px-1.5, на xl —
+             прежние px-2.5) → внутренняя ширина растёт с ~72px до ~84px;
+          2) шаг сетки метрик на узких вьюпортах ужат (gap-2, на xl — прежний gap-3,
+             см. ServerCard) → ещё ~+3px;
+          3) `whitespace-nowrap` снят: если значение всё же длиннее строки (экстремально
+             длинные тоталы), оно ПЕРЕНОСИТСЯ по пробелу перед единицей («1899.9/2048.5» +
+             «ГБ»), а не обрезается; `break-words` — страховка для патологически длинного
+             числового токена. Контент остаётся читаемым ПОЛНОСТЬЮ в любом случае.
+        `overflow-hidden` с корня под-карточки СНЯТ (он и был механизмом усечения): Gauge —
+        `w-full` и не переполняет контейнер, а `min-w-0` по-прежнему не даёт под-карточке
+        расширять grid-трек и наезжать на соседнюю метрику.
       */}
       <div className="mt-1 border-t border-border-subtle pt-2.5">
         {detailText ? (
-          <p className="w-full min-w-0 whitespace-nowrap text-center font-mono text-[10px] font-medium leading-tight text-text-primary">
+          <p className="w-full min-w-0 break-words text-center font-mono text-[10px] font-medium leading-tight text-text-primary">
             {detailText}
           </p>
         ) : (
