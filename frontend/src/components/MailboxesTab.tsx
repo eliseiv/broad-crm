@@ -1,8 +1,8 @@
 import { useMemo, useState } from 'react';
 import type { ChangeEvent } from 'react';
-import { AlertTriangle, Inbox, Mail, Plus, RefreshCw, Search } from 'lucide-react';
+import { AlertTriangle, Inbox, Mail, Plus, RefreshCw } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
-import { Input } from '@/components/ui/Input';
+import { Combobox } from '@/components/ui/Combobox';
 import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { MailboxFormModal } from '@/components/MailboxFormModal';
@@ -11,6 +11,7 @@ import { cn } from '@/lib/cn';
 import { ApiError } from '@/lib/api';
 import { useCan, useSeesAllMailTeams } from '@/features/auth/hooks';
 import { useMailboxesManage } from '@/features/mail/hooks';
+import { mailboxSearchKeywords, matchesMailboxQuery } from '@/features/mail/mailboxSearch';
 import { useTeams } from '@/features/teams/hooks';
 
 /** Значение опции «Без команды» в клиентском фильтре по команде (ящики с `team_id = null`). */
@@ -76,10 +77,13 @@ function CenteredState({
 export function MailboxesTab() {
   const [filter, setFilter] = useState<ActivityFilter>('all');
   const [addOpen, setAddOpen] = useState(false);
-  // Поиск и фильтр по команде — КЛИЕНТСКИЕ (ADR-050 §1): каталог ящиков грузится ЦЕЛИКОМ
-  // (пагинации в контракте `GET /api/mail/mailboxes` нет), поэтому клиентская фильтрация
-  // полна и точна. Серверных параметров `q`/`team_id` у эндпоинта НЕТ — backend не меняется.
+  // Поиск/выбор почты и фильтр по команде — КЛИЕНТСКИЕ (ADR-050 §1, ADR-052 §3): каталог
+  // ящиков грузится ЦЕЛИКОМ (пагинации в контракте `GET /api/mail/mailboxes` нет), поэтому
+  // клиентская фильтрация полна и точна. Серверных `q`/`team_id` у эндпоинта НЕТ.
+  // ГИБРИДНАЯ семантика `ui/Combobox` `mode='search'` (ADR-052 §3.1): текст и выбор
+  // ВЗАИМОИСКЛЮЧАЮЩИ (ввод сбрасывает выбор — это делает сам примитив).
   const [search, setSearch] = useState('');
+  const [selectedMailboxId, setSelectedMailboxId] = useState<number | null>(null);
   const [teamFilter, setTeamFilter] = useState('');
 
   const canCreate = useCan('mail', 'create');
@@ -100,23 +104,22 @@ export function MailboxesTab() {
 
   const isNotConfigured = query.error instanceof ApiError && query.error.status === 503;
 
-  // Порядок применения фильтров (ADR-050 §1.3): серверный `is_active` → клиентский поиск →
-  // клиентский фильтр по команде. Все три комбинируются (AND); ни один не сбрасывает другие.
-  const searchQuery = search.trim().toLowerCase();
-  const searchActive = searchQuery.length > 0;
+  // Порядок применения фильтров (ADR-050 §1.3 в редакции ADR-052 §3.2): серверный `is_active`
+  // → клиентский combobox (ВЫБОР ИЛИ ТЕКСТ) → клиентский фильтр по команде. Все три
+  // комбинируются (AND); ни один не сбрасывает другие — В ОБЕ СТОРОНЫ: смена сегмента/команды
+  // НЕ сбрасывает выбор почты и текст (ADR-052 §3.1а). Выбранный ящик вне набора → таблица
+  // пуста → «Ничего не найдено» (штатное пустое пересечение, авто-сброса НЕТ).
+  const searchActive = selectedMailboxId !== null || search.trim() !== '';
   const teamFilterActive = teamFilter !== '';
 
   const visible = useMemo(() => {
     let rows = mailboxes;
-    if (searchQuery) {
-      // Поля поиска — ровно три (ADR-050 §1.1): `number`, `app_name`, `email`. Подстрока,
-      // регистронезависимо. `display_name` не входит (производная склейка number+app_name).
-      rows = rows.filter(
-        (mb) =>
-          (mb.number ?? '').toLowerCase().includes(searchQuery) ||
-          (mb.app_name ?? '').toLowerCase().includes(searchQuery) ||
-          mb.email.toLowerCase().includes(searchQuery),
-      );
+    // Выбор из списка → ровно один ящик («быстрый переход к конкретной почте»); иначе текст →
+    // ВСЕ совпадения по единому предикату (таблица НЕ схлопывается до одной строки при вводе).
+    if (selectedMailboxId !== null) {
+      rows = rows.filter((mb) => mb.id === selectedMailboxId);
+    } else if (search.trim() !== '') {
+      rows = rows.filter((mb) => matchesMailboxQuery(mb, search));
     }
     if (teamFilter) {
       rows = rows.filter((mb) =>
@@ -124,7 +127,20 @@ export function MailboxesTab() {
       );
     }
     return rows;
-  }, [mailboxes, searchQuery, teamFilter]);
+  }, [mailboxes, selectedMailboxId, search, teamFilter]);
+
+  // Опции списка — из ТОГО ЖЕ набора, что рендерит таблица (серверный сегмент активности уже
+  // применён). Опции сброса («Все почты») здесь НЕТ — сброс делает `X` / `Escape` (ADR-052 §3).
+  // Лейбл — тот же, что на вкладке «Сообщения»; ключи поиска — единый предикат (§3.3).
+  const mailboxOptions = useMemo(
+    () =>
+      mailboxes.map((mb) => ({
+        value: String(mb.id),
+        label: mb.display_name ? `${mb.display_name} ${mb.email}` : mb.email,
+        keywords: mailboxSearchKeywords(mb),
+      })),
+    [mailboxes],
+  );
 
   // Опции фильтра по команде: «Все команды» (сброс) → команды из GET /api/teams → «Без команды»
   // (ящики с `team_id = null` — иначе были бы нефильтруемы). ADR-050 §1.2.
@@ -177,13 +193,20 @@ export function MailboxesTab() {
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div className="flex flex-wrap items-center gap-3">
         {segment}
+        {/* Поиск/выбор почты — `ui/Combobox` `mode='search'` (ADR-052 §3): ввод фильтрует
+            ТАБЛИЦУ (все совпадения) и список; выбор опции сужает таблицу до ОДНОЙ строки.
+            Иконка — `ChevronDown` (не `Search`). */}
         <div className="w-64">
-          <Input
+          <Combobox
             aria-label="Поиск по почтам"
+            mode="search"
             placeholder="Поиск по почтам…"
-            value={search}
-            trailing={<Search className="h-4 w-4 text-text-tertiary" aria-hidden="true" />}
-            onChange={(e) => setSearch(e.target.value)}
+            options={mailboxOptions}
+            value={selectedMailboxId != null ? String(selectedMailboxId) : null}
+            onChange={(v) => setSelectedMailboxId(v ? Number(v) : null)}
+            query={search}
+            onQueryChange={setSearch}
+            loading={query.isLoading}
           />
         </div>
         {/* Фильтр по команде — та же норма, что у фильтра «Команда» вкладки «Сообщения»

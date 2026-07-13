@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { ChangeEvent } from 'react';
 import { AlertTriangle, Inbox, Mail, MailOpen, RefreshCw, Tag } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { Combobox } from '@/components/ui/Combobox';
 import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { InsufficientPermissions } from '@/components/InsufficientPermissions';
@@ -19,9 +20,13 @@ import {
   useMarkMailRead,
   useUnmarkMailRead,
 } from '@/features/mail/hooks';
+import { mailboxSearchKeywords } from '@/features/mail/mailboxSearch';
 import { useTeams } from '@/features/teams/hooks';
 
 type Tab = 'messages' | 'mailboxes' | 'tags';
+
+/** Лейбл `pinned`-опции сброса фильтра «Почта» (ADR-052 §1.1а: «нет фильтра» = ОДНО состояние). */
+const ALL_MAILBOXES_LABEL = 'Все почты';
 
 /**
  * Высота двухпанельного блока: наследуется от flex-fill `<main>` (`flex-1 min-h-0`) —
@@ -193,14 +198,22 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
   // Клиентский фильтр «С тегами» поверх серверного набора (теги внешний API не фильтрует).
   const [onlyTagged, setOnlyTagged] = useState(false);
 
+  // Текст поля «Почта» (ADR-052 §2). Он ЭФЕМЕРНЫЙ (`mode='select'`): фильтрует ТОЛЬКО
+  // выпадающий список, ленту НЕ трогает. Инициализация — лейбл опции сброса: «нет фильтра» =
+  // ровно одно состояние (`value=''` + `query='Все почты'`, кнопка `X` не рендерится).
+  const [mailboxQuery, setMailboxQuery] = useState(ALL_MAILBOXES_LABEL);
+
   // Опции дропдаунов. «Все почты»/«Все команды» — первая опция (сброс серверного фильтра).
+  // «Все почты» — `pinned`: фильтром не отсекается, всегда видна первой (сброс обязан
+  // оставаться достижимым при любом запросе). Ключи поиска — единый предикат (ADR-052 §3.3).
   const mailboxOptions = useMemo(() => {
     const boxes = mailboxesQuery.data?.mailboxes ?? [];
     return [
-      { value: '', label: 'Все почты' },
+      { value: '', label: ALL_MAILBOXES_LABEL, pinned: true },
       ...boxes.map((mb) => ({
         value: String(mb.id),
         label: mb.display_name ? `${mb.display_name} ${mb.email}` : mb.email,
+        keywords: mailboxSearchKeywords(mb),
       })),
     ];
   }, [mailboxesQuery.data]);
@@ -213,10 +226,13 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
     ];
   }, [teamsQuery.data]);
 
-  // Комбинируемы (AND): выбор одного не сбрасывает другой (ADR-044 §7).
-  const handleMailboxChange = (e: ChangeEvent<HTMLSelectElement>) => {
-    const v = e.target.value;
-    setMailAccountId(v ? Number(v) : undefined);
+  // Комбинируемы (AND): выбор одного не сбрасывает другой (ADR-044 §7). Семантика выбора
+  // почты НЕ изменилась (ADR-052 §2): `mail_account_id` → серверный фильтр ленты (входит в
+  // queryKey `useMailFeed`, сбрасывает пагинацию). `null` трактуем как опцию сброса `''`
+  // (оборонительно — при наличии `pinned`-сброса примитив его не шлёт).
+  const handleMailboxChange = (v: string | null) => {
+    const next = v ?? '';
+    setMailAccountId(next ? Number(next) : undefined);
   };
   const handleTeamChange = (e: ChangeEvent<HTMLSelectElement>) => {
     const v = e.target.value;
@@ -364,12 +380,19 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
             <MailOpen className="h-4 w-4" aria-hidden="true" />
             Непрочитанные
           </Button>
+          {/* «Почта» — `ui/Combobox` `mode='select'` (ADR-052 §2): ввод фильтрует ТОЛЬКО
+              выпадающий список, ленту меняет ТОЛЬКО выбор опции. `placeholder` не задаётся —
+              поле никогда не пусто (в нём лейбл выбранной опции). */}
           <div className="w-40">
-            <Select
+            <Combobox
               aria-label="Почта"
+              mode="select"
               options={mailboxOptions}
               value={mailAccountId != null ? String(mailAccountId) : ''}
               onChange={handleMailboxChange}
+              query={mailboxQuery}
+              onQueryChange={setMailboxQuery}
+              loading={mailboxesQuery.isLoading}
             />
           </div>
           {seesAllMailTeams && (

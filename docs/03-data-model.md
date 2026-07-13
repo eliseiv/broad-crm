@@ -1331,7 +1331,7 @@ ALTER TABLE servers DROP COLUMN position;
 | `display_name` | `text` | `NULL` | **ПРОИЗВОДНОЕ** — `"<number> <app_name>"` (пустые части опускаются). Пересчитывается сервером при каждом create/update; **единственная форма имени, уходящая в агрегатор**. Денормализация — [TD-052](100-known-tech-debt.md) |
 | `team_id` | `uuid` | `NULL`, FK `teams(id)` **`ON DELETE SET NULL`** | **Команда-владелец (per-mailbox).** `NULL` — ящик без команды (unassigned → уведомлений не получит никто, [TD-042](100-known-tech-debt.md)). Групп-индирекции нет |
 | `is_active` | `boolean` | NOT NULL, default `true` | Статус синка (зеркалится status-каналом) |
-| `last_synced_at` | `timestamptz` | `NULL` | Зеркало из агрегатора |
+| `last_synced_at` | `timestamptz` | `NULL` | Зеркало из агрегатора: время последней **УСПЕШНОЙ** синхронизации (норма — [ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) §3 + агрегаторский `ADR-0046` §1: ошибочные ветки поле не обновляют). У сбоящего ящика значение **не освежается** — это норма, а не пропущенный push |
 | `last_sync_error` | `text` | `NULL` | Зеркало из агрегатора |
 | `consecutive_failures` | `integer` | NOT NULL, default `0` | Зеркало из агрегатора |
 | `down_alert_sent_at` | `timestamptz` | `NULL` | **Идемпотентность mailbox-down алерта** «ровно один на переход»: guarded `UPDATE … WHERE down_alert_sent_at IS NULL`; сброс в `NULL` при re-enable |
