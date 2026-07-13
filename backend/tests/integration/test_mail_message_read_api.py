@@ -3,12 +3,15 @@
 FastAPI-app + **реальный Postgres** (обязателен: детект гонки читает имя нарушенной
 constraint из `exc.orig.__cause__` asyncpg — на моках/SQLite регрессия не ловится).
 
-Покрыто (ADR-050 §2.2/§2.3/§2.5/§2.8, «Последствия · QA»):
+Покрыто (ADR-050 §2.2/§2.3/§2.8 + **ADR-051 §2**, «Последствия · QA»):
 - идемпотентность POST/DELETE (повтор → 204; `read_at` при повторе НЕ обновляется);
 - 404 mail_message_not_found на чужое письмо (вне `MailScope`) и на несуществующее —
   неотличимы (анти-энумерация);
-- 403 forbidden супер-админу из `.env` (нет строки в `users`) на обе операции; `is_unread`
-  у него всегда `false`, `unread=true` → пустая страница;
+- **супер-админ из `.env` имеет ПОЛНОЦЕННОЕ личное состояние** (ADR-051 §2 отменяет норму
+  ADR-050 §2.5): отмечает письмо → `204`, откатывает → `204`, `is_unread` — реальное личное
+  значение, `unread=true` отдаёт непрочитанные (а не пустую страницу). Его идентичность —
+  системная строка-якорь `SUPERADMIN_USER_ID` (ADR-051 §1.1), и отметки персональны:
+  прочтение супер-админом не гасит индикатор БД-пользователю;
 - персональность: два пользователя, одно письмо — разные `is_unread`;
 - фильтр `unread=true`: курсорная догрузка (страница 2) без потерь/дублей; AND с фильтрами
   ящика/команды;
@@ -66,8 +69,13 @@ def _db_admin(user_id: uuid.UUID) -> Any:
 
 
 def _env_superadmin() -> Any:
-    """Супер-админ из `.env` (ADR-008): строки в `users` нет ⇒ `user_id is None` (§2.5)."""
-    return build_principal(user_id=None, is_superadmin=True)
+    """Супер-админ из `.env` (ADR-008): идентичность — константа якоря (ADR-051 §1.2).
+
+    `user_id` НЕ передаём намеренно — билдер подставляет `SUPERADMIN_USER_ID` ровно так же,
+    как это делает прод (`get_current_principal`, без запроса в БД). Сама строка-якорь есть
+    в тестовой БД: её сеет фикстура `mail_db()` (ADR-051 §1.3).
+    """
+    return build_principal(is_superadmin=True)
 
 
 async def _read_rows(sm: async_sessionmaker[AsyncSession]) -> list[tuple[Any, ...]]:
@@ -176,11 +184,21 @@ async def test_foreign_and_missing_message_are_indistinguishable_404(
     assert [r[1] for r in await _read_rows(sm)] == [1]
 
 
-# --- Супер-админ из `.env` (нет строки в `users`) ---------------------------
+# --- Супер-админ из `.env`: ПОЛНОЦЕННОЕ личное состояние (ADR-051 §2) --------
+#
+# Норма ADR-050 §2.5 («403 на отметку, is_unread всегда false, unread=true → пустая
+# страница») ОТМЕНЕНА ADR-051 §2. Идентичность супер-админа — системная строка-якорь
+# (SUPERADMIN_USER_ID, ADR-051 §1.1), поэтому FK `mail_message_reads.user_id → users.id`
+# выполним и прочитанность работает ровно как у БД-пользователя.
 
 
-async def test_env_superadmin_gets_403_on_mark_and_unmark(monkeypatch: pytest.MonkeyPatch) -> None:
-    """403 forbidden на обе операции — как на `GET/PATCH /api/mail/me/settings` (§2.5)."""
+async def test_env_superadmin_marks_and_unmarks_read_204(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Супер-админ отмечает письмо → `204`; отметка пишется на `SUPERADMIN_USER_ID`.
+
+    Разворот ADR-050 §2.5 (было `403`). Откат в «непрочитано» — тоже `204`, строка снимается.
+    """
+    from app.domain.superadmin import SUPERADMIN_USER_ID
+
     await _enable_mail(monkeypatch)
     async with mail_db() as sm:
         async with sm() as s:
@@ -191,19 +209,64 @@ async def test_env_superadmin_gets_403_on_mark_and_unmark(monkeypatch: pytest.Mo
 
         async with client(_app(sm, _env_superadmin())) as c:
             post = await c.post("/api/mail/messages/1/read")
+            rows_after_mark = await _read_rows(sm)
+            repeat = await c.post("/api/mail/messages/1/read")  # идемпотентность
             delete = await c.delete("/api/mail/messages/1/read")
+            rows_after_unmark = await _read_rows(sm)
 
-    assert post.status_code == 403
-    assert post.json()["error"]["code"] == "forbidden"
-    assert delete.status_code == 403
-    assert delete.json()["error"]["code"] == "forbidden"
-    assert await _read_rows(sm) == []
+    assert post.status_code == 204
+    assert repeat.status_code == 204
+    assert delete.status_code == 204
+    # Отметка принадлежит ЯКОРЮ (константный user_id), а не «никому».
+    assert [(r[0], r[1]) for r in rows_after_mark] == [(SUPERADMIN_USER_ID, 1)]
+    assert rows_after_unmark == []
 
 
-async def test_env_superadmin_is_unread_always_false_and_unread_filter_empty(
+async def test_env_superadmin_is_unread_is_real_and_personal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """У супер-админа личного состояния нет: `is_unread=false`, `unread=true` → пусто (§2.5)."""
+    """`is_unread` супер-админа — РЕАЛЬНОЕ личное значение, а не константа `false` (§2).
+
+    Плюс персональность в обе стороны: прочтение супер-админом не гасит индикатор
+    БД-пользователю той же команды (у якоря собственный `user_id`).
+    """
+    await _enable_mail(monkeypatch)
+    async with mail_db() as sm:
+        async with sm() as s:
+            team = await seed_team(s)
+            role = await seed_role(s, permissions=_VIEW_ONLY)
+            user = await seed_user(s, role)
+            await add_membership(s, user.id, team.id)
+            await seed_account(s, account_id=1, team_id=team.id)
+            await seed_message(s, account_id=1, uid=1, internal_date=dt(2026, 7, 1))
+            await seed_message(s, account_id=1, uid=2, internal_date=dt(2026, 7, 2))
+            await s.commit()
+            user_id = user.id
+
+        async with client(_app(sm, _env_superadmin())) as c:
+            before = await c.get("/api/mail/messages")
+            assert (await c.post("/api/mail/messages/2/read")).status_code == 204
+            after = await c.get("/api/mail/messages")
+
+        # Тот же ящик глазами БД-пользователя команды — его состояние НЕ затронуто.
+        async with client(_app(sm, _operator(user_id))) as c:
+            operator_feed = await c.get("/api/mail/messages")
+
+    # До отметки оба письма непрочитаны (а не «всегда false», как было в §2.5).
+    assert [m["is_unread"] for m in before.json()["messages"]] == [True, True]
+    # Порядок `internal_date DESC` ⇒ первым идёт письмо id=2 (оно и прочитано).
+    assert [(m["id"], m["is_unread"]) for m in after.json()["messages"]] == [(2, False), (1, True)]
+    # Прочитанность ЛИЧНАЯ: у оператора оба письма по-прежнему непрочитаны.
+    assert [m["is_unread"] for m in operator_feed.json()["messages"]] == [True, True]
+
+
+async def test_env_superadmin_unread_filter_returns_messages_not_empty_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`unread=true` под супер-админом отдаёт непрочитанные — НЕ пустую страницу (§2).
+
+    Прямой разворот ADR-050 §2.5: анти-джойн (ADR-050 §2.4) работает по `user_id` якоря.
+    """
     await _enable_mail(monkeypatch)
     async with mail_db() as sm:
         async with sm() as s:
@@ -214,16 +277,14 @@ async def test_env_superadmin_is_unread_always_false_and_unread_filter_empty(
             await s.commit()
 
         async with client(_app(sm, _env_superadmin())) as c:
-            feed = await c.get("/api/mail/messages")
-            unread_only = await c.get("/api/mail/messages", params={"unread": "true"})
+            unread_all = await c.get("/api/mail/messages", params={"unread": "true"})
+            assert (await c.post("/api/mail/messages/2/read")).status_code == 204
+            unread_after = await c.get("/api/mail/messages", params={"unread": "true"})
 
-    assert feed.status_code == 200
-    body = feed.json()
-    assert len(body["messages"]) == 2
-    assert [m["is_unread"] for m in body["messages"]] == [False, False]
-    # Фильтр непрочитанных даёт пустую страницу (согласовано с is_unread=false).
-    assert unread_only.status_code == 200
-    assert unread_only.json() == {"messages": [], "next_cursor": None}
+    # Было бы `[]` по отменённой норме §2.5 — теперь обычная выборка.
+    assert [m["id"] for m in unread_all.json()["messages"]] == [2, 1]
+    # Прочитанное письмо выпадает из фильтра.
+    assert [m["id"] for m in unread_after.json()["messages"]] == [1]
 
 
 # --- Персональность ---------------------------------------------------------

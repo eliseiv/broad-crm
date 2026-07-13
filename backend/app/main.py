@@ -17,6 +17,7 @@ from app.infra.prometheus import get_prometheus_client
 from app.infra.sms_telegram import SmsBotClient
 from app.infra.telegram import TelegramClient
 from app.logging import configure_logging, get_logger
+from app.repositories.user_repository import ensure_superadmin_anchor
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.backend_monitor_service import BackendMonitorService
 from app.services.mail_dispatcher_service import MailDispatcherService
@@ -47,6 +48,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         logger.info("startup_recovery", recovered=recovered, file_sd_regenerated=regenerated)
     except Exception as exc:
         logger.error("startup_recovery_failed", error_type=type(exc).__name__)
+
+    # Системная строка-якорь супер-админа (ADR-051 §1.3): идемпотентный bootstrap
+    # (INSERT … ON CONFLICT DO NOTHING) — повторный старт/несколько воркеров — но-оп.
+    # Порядок «миграции → приложение» гарантирован entrypoint'ом backend-контейнера
+    # (`alembic upgrade head && uvicorn …`, 07-deployment.md §Порядок запуска) ⇒ роль
+    # `admin` из data-миграции 0008 уже есть. Посев ролей в lifespan НЕ вводится
+    # (ADR-047 §1) — bootstrap создаёт роль сам только на пустой таблице ролей.
+    # Ошибка (БД недоступна) НЕ валит старт: супер-админ обязан входить и при проблемах
+    # с БД (fallback-инвариант ADR-008).
+    try:
+        async with get_sessionmaker()() as session:
+            await ensure_superadmin_anchor(session)
+    except Exception as exc:
+        logger.error("superadmin_anchor_bootstrap_failed", error_type=type(exc).__name__)
 
     # Посева тегов почты в lifespan НЕТ (ADR-047 §1): он воскрешал удалённый владельцем
     # тег при каждом рестарте. Первичный сев каталога — однократно data-миграцией `0023`.

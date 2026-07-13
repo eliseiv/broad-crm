@@ -17,6 +17,7 @@ from app.db import get_session, get_sessionmaker
 from app.domain.mail import MailScope
 from app.domain.permissions import full_catalog_permissions, permissions_subset
 from app.domain.sms import SmsScope
+from app.domain.superadmin import SUPERADMIN_USER_ID
 from app.errors import forbidden, unauthorized
 from app.infra.jwt import SetupTokenClaims, TokenError, decode_access_token, decode_setup_token
 from app.infra.mail_client import get_mail_client
@@ -80,12 +81,14 @@ class Principal:
     role: str
     permissions: dict[str, list[str]]
     is_superadmin: bool
-    # user_id из claim `uid` (UUID) — ТОЛЬКО у БД-пользователя; супер-админ → None
-    # (он не строка в `users`). Default None: `get_current_principal` всегда задаёт
-    # значение явно, дефолт лишь для конструирования супер-админ-принципала в тестах.
-    # Нужен для scope видимости SMS и привязки Telegram
-    # (05-security.md#расширение-principal, ADR-030 §6). На прочие эндпоинты не влияет.
-    user_id: uuid.UUID | None = None
+    # Идентичность принципала — НЕ-опциональна (ADR-051 §1.2): принципала без `user_id`
+    # больше не существует. БД-пользователь → claim `uid`; супер-админ (`.env`) →
+    # константа `SUPERADMIN_USER_ID` (системная строка-якорь), БЕЗ запроса в БД
+    # (fallback-инвариант ADR-008 сохранён). Снятие `| None` из ТИПА — гарант: mypy не даст
+    # будущей персональной фиче снова споткнуться о «принципала без идентичности».
+    # Нужен для scope видимости SMS/почты, привязки Telegram и личного состояния
+    # (05-security.md#расширение-principal, ADR-030 §6, ADR-050/051).
+    user_id: uuid.UUID
 
 
 async def get_current_principal(
@@ -94,9 +97,11 @@ async def get_current_principal(
 ) -> Principal:
     """Декодит JWT и формирует принципал (свежая загрузка прав из БД, ADR-021).
 
-    Супер-админ → полный каталог. БД-пользователь → права роли по `uid`; если
-    пользователь не найден ИЛИ `is_active=false` → 401 (JWT аннулируется без
-    пере-логина). Легаси-токен (без role/superadmin/uid) → 401.
+    Супер-админ → полный каталог + `user_id = SUPERADMIN_USER_ID` (константа якоря,
+    ADR-051 §1.2: ни одного запроса в БД, JWT не меняется — `uid` супер-админу в токен
+    не кладётся, уже выпущенные токены продолжают работать). БД-пользователь → права
+    роли по `uid`; если пользователь не найден ИЛИ `is_active=false` → 401 (JWT
+    аннулируется без пере-логина). Легаси-токен (без role/superadmin/uid) → 401.
     """
     if credentials is None or not credentials.credentials:
         raise unauthorized()
@@ -111,7 +116,7 @@ async def get_current_principal(
             role="admin",
             permissions=full_catalog_permissions(),
             is_superadmin=True,
-            user_id=None,
+            user_id=SUPERADMIN_USER_ID,
         )
 
     if claims.uid is None:
@@ -232,13 +237,13 @@ async def get_sms_scope(principal: PrincipalDep, session: DbSession) -> SmsScope
 
     Предикат — `principal_sees_all_sms_teams` (общий с `GET /api/auth/me`). При полном
     каталоге прав роль считается admin-уровнем и видит SMS всех команд. Иначе —
-    видимость по командам из `user_teams` (`user_id=None` → пустой набор).
+    видимость по командам из `user_teams` (нет команд → пустой набор). Ветка «принципал
+    без `user_id`» снята: её больше не существует (ADR-051 §1.2), а у супер-админа
+    `sees_all_teams=True` — до выборки команд дело не доходит.
     """
     sees_all_teams = principal_sees_all_sms_teams(principal)
     if sees_all_teams:
         return SmsScope(sees_all_teams=True, team_ids=frozenset())
-    if principal.user_id is None:
-        return SmsScope(sees_all_teams=False, team_ids=frozenset())
     stmt = select(user_teams.c.team_id).where(user_teams.c.user_id == principal.user_id)
     result = await session.execute(stmt)
     return SmsScope(sees_all_teams=False, team_ids=frozenset(result.scalars().all()))
@@ -261,14 +266,12 @@ async def get_mail_scope(principal: PrincipalDep, session: DbSession) -> MailSco
 
     «Видит все команды» ⇔ супер-админ ИЛИ полный каталог прав. Иначе `team_ids` =
     команды пользователя из `user_teams` (per-mailbox `mail_accounts.team_id`; групп
-    больше нет — ADR-044 §7). `user_id=None` или нет команд → пустой набор → пустая
-    видимость (анти-энумерация).
+    больше нет — ADR-044 §7). Нет команд → пустой набор → пустая видимость
+    (анти-энумерация). Ветка «принципал без `user_id`» снята (ADR-051 §1.2).
     """
     sees_all_teams = principal_sees_all_mail_teams(principal)
     if sees_all_teams:
         return MailScope(sees_all_teams=True, team_ids=frozenset())
-    if principal.user_id is None:
-        return MailScope(sees_all_teams=False, team_ids=frozenset())
     stmt = select(user_teams.c.team_id).where(user_teams.c.user_id == principal.user_id)
     result = await session.execute(stmt)
     return MailScope(sees_all_teams=False, team_ids=frozenset(result.scalars().all()))

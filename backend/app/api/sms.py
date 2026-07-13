@@ -132,6 +132,11 @@ async def telegram_link(
 ) -> TelegramLinkResponse:
     """Привязка своего Telegram к своему CRM-юзеру (только JWT, вне матрицы `sms`).
 
-    Супер-админ без `uid` привязать линк не может → 403 forbidden (ADR-030 §7).
+    Супер-админ (`.env`) привязать линк не может → 403 forbidden (ADR-030 §7,
+    security-основание — ADR-051 §1.6: bootstrap-учётка остаётся console-only).
     """
-    return await service.link(user_id=principal.user_id, init_data=payload.init_data)
+    return await service.link(
+        user_id=principal.user_id,
+        is_superadmin=principal.is_superadmin,
+        init_data=payload.init_data,
+    )

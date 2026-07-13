@@ -95,6 +95,11 @@ class SmsTelegramLinkRepository:
 
         JOIN `user_teams` → `users` → `sms_telegram_links` (`dead_at IS NULL`).
         Один пользователь с несколькими живыми привязками → несколько получателей.
+
+        **Системная строка-якорь супер-админа исключена ЯВНО** (`NOT is_system`, ADR-051
+        §1.4(в)): выборка читает `users` в обход `UserRepository`; неявно якорь отсекали
+        бы лишь INNER JOIN'ы (у него нет строк ни в `user_teams`, ни в
+        `sms_telegram_links`). Явный фильтр — defense-in-depth.
         """
         stmt = (
             select(User.id, SmsTelegramLink.telegram_user_id)
@@ -102,6 +107,7 @@ class SmsTelegramLinkRepository:
             .join(SmsTelegramLink, SmsTelegramLink.user_id == User.id)
             .where(
                 user_teams.c.team_id == team_id,
+                User.is_system.is_(False),
                 SmsTelegramLink.dead_at.is_(None),
             )
         )

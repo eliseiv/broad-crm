@@ -66,12 +66,20 @@ class SmsTelegramLinkService:
             raise invalid_init_data()
         return result
 
-    async def link(self, *, user_id: uuid.UUID | None, init_data: str) -> TelegramLinkResponse:
+    async def link(
+        self, *, user_id: uuid.UUID, is_superadmin: bool, init_data: str
+    ) -> TelegramLinkResponse:
         """Привязка своего Telegram к своему CRM-юзеру (идемпотентный upsert).
 
-        Супер-админ без `uid` привязать линк не может → 403 forbidden (ADR-030 §7).
+        **Супер-админ (`.env`) → 403 forbidden** (ADR-030 §7, основание — ADR-051 §1.6).
+        Условие переписано с `user_id is None` на `is_superadmin`: строка-якорь у него
+        теперь есть (FK выполним), но Telegram-привязка bootstrap-учётке ЗАПРЕЩЕНА по
+        security-основанию — иначе Mini App-SSO выпустил бы для этого Telegram-аккаунта
+        CRM-JWT с ролью якоря (`admin`), т.е. владение Telegram-аккаунтом стало бы
+        беспарольным, неотзываемым из UI путём к admin-уровню в обход `ADMIN_PASSWORD`.
+        Поведение снаружи не меняется: как и раньше — 403.
         """
-        if user_id is None:
+        if is_superadmin:
             raise forbidden()
         validated = self._verify(init_data)
 

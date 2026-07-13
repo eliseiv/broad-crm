@@ -55,9 +55,33 @@ async def mail_db() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await conn.execute(sa_text(f"TRUNCATE {_TRUNCATE} RESTART IDENTITY CASCADE"))
-        yield async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+        sm = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+        await _bootstrap_superadmin_anchor(sm)
+        yield sm
     finally:
         await engine.dispose()
+
+
+async def _bootstrap_superadmin_anchor(sm: async_sessionmaker[AsyncSession]) -> None:
+    """Сеет системную строку-якорь супер-админа — СРАЗУ после `create_all`/TRUNCATE.
+
+    Нормативно (ADR-051 §1.3): в тестах `lifespan` не выполняется, поэтому единственного
+    писателя якоря (`UserRepository.ensure_superadmin_anchor`) обязана вызвать фикстура —
+    ДО любого теста с принципалом супер-админа. Иначе якоря в БД нет и личное состояние
+    супер-админа падает на FK (`mail_message_reads.user_id → users.id`): `500` вместо `204`.
+
+    Метод владеет своей транзакцией и коммитит сам ⇒ ему передаётся ОТДЕЛЬНАЯ сессия.
+
+    ⚠️ Побочный эффект (ADR-051 §1.1, шаг (3) цепочки резолва роли): фикстуры сеют роли со
+    случайными именами, роли `admin` среди них нет ⇒ bootstrap САМ создаёт роль `admin` с
+    полным каталогом прав. Она есть в КАЖДОЙ интеграционной тестовой БД: ассерты на состав
+    и длину списка ролей обязаны её учитывать, а удалить её нельзя (`409 role_in_use` —
+    её держит якорь, §1.5).
+    """
+    from app.repositories.user_repository import UserRepository
+
+    async with sm() as session:
+        await UserRepository(session).ensure_superadmin_anchor()
 
 
 async def seed_role(

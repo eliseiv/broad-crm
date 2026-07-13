@@ -70,16 +70,28 @@ def make_principal(
     role: str = "admin",
     permissions: dict[str, list[str]] | None = None,
     is_superadmin: bool = True,
+    user_id: _uuid.UUID | None = None,
 ) -> Any:
-    """Строит `Principal` (супер-админ по умолчанию — полный каталог прав)."""
+    """Строит `Principal` (супер-админ по умолчанию — полный каталог прав).
+
+    `user_id` — НЕ-опционален в типе (ADR-051 §1.2): принципала без идентичности больше
+    не существует. Умолчание: супер-админ → константа `SUPERADMIN_USER_ID` (строка-якорь,
+    ADR-051 §1.1); БД-пользователь → случайный UUID (тестам обычно важен лишь факт
+    наличия идентичности, а не конкретное значение — иначе `user_id` передаётся явно).
+    """
     from app.api.deps import Principal
     from app.domain.permissions import full_catalog_permissions
+    from app.domain.superadmin import SUPERADMIN_USER_ID
+
+    if user_id is None:
+        user_id = SUPERADMIN_USER_ID if is_superadmin else _uuid.uuid4()
 
     return Principal(
         username=username,
         role=role,
         permissions=full_catalog_permissions() if permissions is None else permissions,
         is_superadmin=is_superadmin,
+        user_id=user_id,
     )
 
 

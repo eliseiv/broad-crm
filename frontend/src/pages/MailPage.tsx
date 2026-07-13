@@ -12,7 +12,7 @@ import { MailNotificationsToggle } from '@/components/MailNotificationsToggle';
 import { TagsTab } from '@/components/TagsTab';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { useCanViewPage, useIsSuperadmin, useSeesAllMailTeams } from '@/features/auth/hooks';
+import { useCanViewPage, useSeesAllMailTeams } from '@/features/auth/hooks';
 import {
   useMailFeed,
   useMailMailboxes,
@@ -173,14 +173,13 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
   // курсорную догрузку — известный дефект тумблера «С тегами»).
   const [unreadOnly, setUnreadOnly] = useState(false);
 
-  // Супер-админ из `.env` не имеет строки в `users` ⇒ личного состояния прочитанности нет
-  // (ADR-050 §2.5): индикатор, фильтр «Непрочитанные» и кнопка отката ему НЕ рендерятся,
-  // POST/DELETE …/read не вызываются (backend вернул бы 403).
-  const isSuperadmin = useIsSuperadmin();
-  const readStateEnabled = !isSuperadmin;
+  // Гейта прочитанности по `me.is_superadmin` НЕТ (ADR-051 §3; норма ADR-050 §2.5 отменена):
+  // индикатор, фильтр «Непрочитанные» и кнопка отката рендерятся ЛЮБОМУ носителю `mail:view`,
+  // включая супер-админа из `.env` — у него есть системная строка-якорь в `users`, и
+  // POST/DELETE …/read под ним возвращают 204.
 
   const { messages, phase, error, hasMore, isFetchingMore, isReloading, loadMore, reload } =
-    useMailFeed({ mailAccountId, teamId, unread: readStateEnabled && unreadOnly });
+    useMailFeed({ mailAccountId, teamId, unread: unreadOnly });
   const mailboxesQuery = useMailMailboxes();
   const { mutate: markRead } = useMarkMailRead();
   const unmarkMutation = useUnmarkMailRead();
@@ -261,7 +260,6 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
   // инвалидэйта — поэтому при активном фильтре «Непрочитанные» строка остаётся на месте.
   const lastMarkedIdRef = useRef<number | null>(null);
   useEffect(() => {
-    if (!readStateEnabled) return;
     if (selectedId === null) {
       lastMarkedIdRef.current = null;
       return;
@@ -269,7 +267,7 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
     if (lastMarkedIdRef.current === selectedId) return;
     lastMarkedIdRef.current = selectedId;
     markRead(selectedId);
-  }, [selectedId, readStateEnabled, markRead]);
+  }, [selectedId, markRead]);
 
   // IntersectionObserver на sentinel в конце списка — догрузка более старых (без кнопки).
   const sentinelRef = useRef<HTMLDivElement>(null);
@@ -355,18 +353,17 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
             <Tag className="h-4 w-4" />С тегами
           </Button>
           {/* «Непрочитанные» — СЕРВЕРНЫЙ тумблер (ADR-050 §2.8): включение уходит в
-              `unread=true`, сбрасывает пагинацию. Не рендерится супер-админу из `.env`. */}
-          {readStateEnabled && (
-            <Button
-              variant={unreadOnly ? 'primary' : 'ghost'}
-              size="sm"
-              aria-pressed={unreadOnly}
-              onClick={() => setUnreadOnly((v) => !v)}
-            >
-              <MailOpen className="h-4 w-4" aria-hidden="true" />
-              Непрочитанные
-            </Button>
-          )}
+              `unread=true`, сбрасывает пагинацию. Рендерится ВСЕМ носителям `mail:view`,
+              включая супер-админа (ADR-051 §3). */}
+          <Button
+            variant={unreadOnly ? 'primary' : 'ghost'}
+            size="sm"
+            aria-pressed={unreadOnly}
+            onClick={() => setUnreadOnly((v) => !v)}
+          >
+            <MailOpen className="h-4 w-4" aria-hidden="true" />
+            Непрочитанные
+          </Button>
           <div className="w-40">
             <Select
               aria-label="Почта"
@@ -393,7 +390,7 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
               <Inbox className="h-9 w-9 text-text-tertiary" aria-hidden="true" />
               {/* Пустой результат серверного фильтра «Непрочитанные» — своя строка (ADR-050). */}
               <p className="text-sm font-semibold text-text-primary">
-                {unreadOnly && readStateEnabled ? 'Непрочитанных писем нет' : 'Писем пока нет'}
+                {unreadOnly ? 'Непрочитанных писем нет' : 'Писем пока нет'}
               </p>
             </div>
           ) : (
@@ -404,7 +401,6 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
                   message={message}
                   isActive={message.id === selectedId}
                   onSelect={handleSelect}
-                  showUnread={readStateEnabled}
                 />
               ))}
               {onlyTagged && visibleMessages.length === 0 && !hasMore && !isFetchingMore && (
@@ -432,9 +428,9 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
           <MailDetail
             message={selected}
             onBack={() => setMobileDetail(false)}
-            // Кнопка «Отметить непрочитанным» — только у не-супер-админа и только когда
-            // письмо уже прочитано (условие `is_unread === false` проверяет сам MailDetail).
-            onMarkUnread={readStateEnabled ? (id) => unmarkMutation.mutate(id) : undefined}
+            // Кнопка «Отметить непрочитанным» — всем носителям `mail:view` (ADR-051 §3) и
+            // только когда письмо уже прочитано (условие `is_unread === false` — в MailDetail).
+            onMarkUnread={(id) => unmarkMutation.mutate(id)}
             markUnreadPending={unmarkMutation.isPending}
           />
         ) : (
@@ -442,7 +438,7 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
             icon={<Mail className="h-9 w-9 text-text-tertiary" aria-hidden="true" />}
             title={
               isEmpty
-                ? unreadOnly && readStateEnabled
+                ? unreadOnly
                   ? 'Непрочитанных писем нет'
                   : 'Писем пока нет'
                 : 'Выберите письмо'

@@ -2,7 +2,7 @@
 
 ## Принцип
 
-В PostgreSQL хранится **реестр серверов + статус провижининга**, **реестр AI-ключей + статус проверки**, **реестр прокси + статус доступности** ([ADR-019](adr/ADR-019-proxies-availability-monitor.md)), **персистентное состояние Telegram-нотификатора per-server** ([ADR-014](adr/ADR-014-persist-notifier-state-alert-on-first-elevated.md)) и **append-only durable-лог отправленных серверных алертов** ([ADR-018](adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). Метрики (CPU/RAM/SSD/uptime/up) НЕ дублируются в БД как временной ряд — источник истины Prometheus ([ADR-003](adr/ADR-003-prometheus-istochnik-metrik.md)); нотификатор хранит лишь **последнюю наблюдённую зону** (green/yellow/red) и флаг доступности для дедупа алертов между итерациями/рестартами, а не сами значения метрик. С Спринта 3 в БД хранится **реестр пользователей и ролей** для RBAC (`users`/`roles`, [ADR-021](adr/ADR-021-rbac-users-roles.md)). **Супер-админ (`.env`-учётка) в БД НЕ хранится** — он bootstrap вне БД ([ADR-008](adr/ADR-008-admin-iz-env.md) с амендментом [ADR-021](adr/ADR-021-rbac-users-roles.md)); в таблице `users` только дополнительные пользователи. Со Спринта A ([ADR-022](adr/ADR-022-teams-nav-categories.md)) добавлены **CRM-команды** (`teams` + M2M `user_teams`) и опциональный `users.email`.
+В PostgreSQL хранится **реестр серверов + статус провижининга**, **реестр AI-ключей + статус проверки**, **реестр прокси + статус доступности** ([ADR-019](adr/ADR-019-proxies-availability-monitor.md)), **персистентное состояние Telegram-нотификатора per-server** ([ADR-014](adr/ADR-014-persist-notifier-state-alert-on-first-elevated.md)) и **append-only durable-лог отправленных серверных алертов** ([ADR-018](adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). Метрики (CPU/RAM/SSD/uptime/up) НЕ дублируются в БД как временной ряд — источник истины Prometheus ([ADR-003](adr/ADR-003-prometheus-istochnik-metrik.md)); нотификатор хранит лишь **последнюю наблюдённую зону** (green/yellow/red) и флаг доступности для дедупа алертов между итерациями/рестартами, а не сами значения метрик. С Спринта 3 в БД хранится **реестр пользователей и ролей** для RBAC (`users`/`roles`, [ADR-021](adr/ADR-021-rbac-users-roles.md)). **Учётка супер-админа (`.env`) в БД НЕ хранится** — вход и права он получает вне БД ([ADR-008](adr/ADR-008-admin-iz-env.md) с амендментами [ADR-021](adr/ADR-021-rbac-users-roles.md), [ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md)); в `users` есть лишь его **системная строка-якорь** (`is_system`, [ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md)) — техническая FK-цель личного состояния, невидимая для API. Со Спринта A ([ADR-022](adr/ADR-022-teams-nav-categories.md)) добавлены **CRM-команды** (`teams` + M2M `user_teams`) и опциональный `users.email`.
 
 ## Требования к миграциям (ОБЩИЕ, нормативно — для ВСЕХ модулей)
 
@@ -538,7 +538,7 @@ ALTER TABLE backends ADD CONSTRAINT ck_backends_domain
 
 ## Таблицы `roles` и `users` (RBAC)
 
-Реестр ролей и пользователей для многопользовательского режима с правами на все страницы. Модуль — [modules/auth](modules/auth/README.md), API — [04-api.md](04-api.md#users), [04-api.md](04-api.md#roles), решение — [ADR-021](adr/ADR-021-rbac-users-roles.md). **Супер-админ (`.env`) сюда НЕ пишется** — он bootstrap вне БД ([ADR-008](adr/ADR-008-admin-iz-env.md) + амендмент). В таблице `users` — только дополнительные пользователи.
+Реестр ролей и пользователей для многопользовательского режима с правами на все страницы. Модуль — [modules/auth](modules/auth/README.md), API — [04-api.md](04-api.md#users), [04-api.md](04-api.md#roles), решение — [ADR-021](adr/ADR-021-rbac-users-roles.md). **Учётка супер-админа (`.env`) сюда НЕ пишется** — вход и права он получает вне БД ([ADR-008](adr/ADR-008-admin-iz-env.md) + амендменты). **Но с [ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md) в `users` есть его СИСТЕМНАЯ СТРОКА-ЯКОРЬ** (`is_system = true`) — техническая FK-цель личного состояния (прочитанность писем), **невидимая** для Users/Roles/Teams API, входа и Telegram-SSO: [«Системная строка-якорь»](#системная-строка-якорь-супер-админа-adr-051). В «рабочем» смысле в `users` по-прежнему только дополнительные пользователи.
 
 ```mermaid
 erDiagram
@@ -604,11 +604,63 @@ erDiagram
 | `password_hash` | `text` | `NULL` | bcrypt-хэш пароля ([05-security.md](05-security.md#хэширование-паролей-bcrypt)). **`NULL` = беспарольный пользователь** (пароль ещё не задан — модель «открытого первого входа», [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). Непустой — bcrypt-хэш. Plaintext никогда не хранится/не логируется/не возвращается. |
 | `role_id` | `uuid` | `NOT NULL`, FK → `roles(id)` `ON DELETE RESTRICT` | Роль пользователя. Удаление назначенной роли запрещено (`409 role_in_use`). |
 | `is_active` | `boolean` | `NOT NULL`, `DEFAULT true` | Активен ли пользователь. `false` → вход запрещён, а действующий JWT аннулируется на следующем запросе (`401`, свежая загрузка из БД). Приоритетен для статуса: `false` → `status="inactive"` независимо от `first_login_at`. |
+| `is_system` | `boolean` | `NOT NULL`, `DEFAULT false`, частичный `UNIQUE` — `uq_users_system_singleton ON users (is_system) WHERE is_system` (**объявляется в МОДЕЛИ `User.__table_args__`**, миграция `0026` его зеркалит — иначе схема тестов (`metadata.create_all`) разошлась бы с продом) | **Системная строка-якорь супер-админа** ([ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md); миграция `0026`). `true` — ровно **одна** техническая строка (FK-цель личного состояния консольного супер-админа); `false` — обычный пользователь. **Наружу не отдаётся ни в одном контракте.** Строки с `is_system = true` **невидимы** для `GET /api/users`, состава/лидерства команд, резолва логина и Telegram-SSO (правило — [«Системная строка-якорь»](#системная-строка-якорь-супер-админа-adr-051)). |
 | `first_login_at` | `timestamptz` | `NULL` | **Момент первого успешного входа** ([ADR-028](adr/ADR-028-user-status-first-login.md); миграция `0015`). `NULL` = ещё ни разу не входил. Проставляется приложением при **первом** успешном входе — идемпотентно (`if first_login_at is None`): в парольной ветке `POST /api/auth/login` (после bcrypt-проверки) и в `POST /api/auth/set-password` (беспарольный после установки сразу залогинен). Наружу **не отдаётся** — источник производного `UserListItem.status` ([04-api.md](04-api.md#схема-userlistitem)). |
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
 
 > **Тристатус пользователя (нормативно, [ADR-028](adr/ADR-028-user-status-first-login.md)).** UI-статус — производное поле `UserListItem.status ∈ {"pending","active","inactive"}` (не колонка БД): `is_active=false` → `"inactive"` («Неактивен»); `is_active=true` И `first_login_at IS NULL` → `"pending"` («Ожидает входа»); `is_active=true` И `first_login_at IS NOT NULL` → `"active"` («Активен»). «Активен» — только после первого входа. Вычисляется на сервере в схеме ответа.
+
+#### Системная строка-якорь супер-админа (ADR-051)
+
+**Зачем.** Личное состояние с FK на `users` (сейчас — прочитанность писем `mail_message_reads`, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md)) физически невозможно для принципала без строки в `users`. Владелец работает на проде под консольным супер-админом ⇒ [ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md) заводит ему **системную строку-якорь**. Якорь — **идентичность, и только она**: не учётка, не источник прав, не способ входа, не канал доставки.
+
+**Нормативные значения строки** (создаётся идемпотентным bootstrap'ом приложения — см. ниже):
+
+| Поле | Значение |
+|------|----------|
+| `id` | **`00000000-0000-0000-0000-000000000001`** — константа `SUPERADMIN_USER_ID` (`app/domain/superadmin.py`). Фиксирована ⇒ `Principal.user_id` супер-админа подставляется **без запроса в БД**, а смена `ADMIN_USER`/`ADMIN_PASSWORD` **не теряет** его личное состояние |
+| `username` | **`superadmin@system`** — константа `SUPERADMIN_USERNAME`. Зарезервировано **by construction**: `@` отвергается правилом `username` (Pydantic, ниже) ⇒ такое имя **невозможно** создать через API (`422`); DB-CHECK его пропускает. Наружу не отдаётся (`Principal.username` супер-админа = `ADMIN_USER` из claim `sub`) |
+| `password_hash` | **bcrypt-хэш случайного секрета**, plaintext отбрасывается («locked»). **`NULL` ЗАПРЕЩЁН:** `NULL` = беспарольный ⇒ ветка «открытого первого входа» ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) выдала бы setup-token тому, кто назовёт этот `username` → эскалация до роли `admin` |
+| `role_id` | **Цепочка резолва bootstrap'ом: (1)** роль `admin` по имени → **(2)** самая ранняя роль (`created_at ASC, id ASC`) → **(3)** ролей нет вовсе ⇒ bootstrap **сам создаёт роль `admin`** с полным каталогом (тот же сид, что в data-миграции `0008`) — ветки «якорь не создан» нет. Пустая таблица ролей — **вырожденное состояние** (свежая БД без data-миграций либо удалены ВСЕ роли): БД в нём нерабочая, поэтому создание роли-заглушки = восстановление работоспособности, а не воскрешение данных (роль получает 0 носителей). После первого bootstrap ветка (3) недостижима — якорь пиннит роль через FK `RESTRICT`. **Заглушка под FK: правами НЕ наделяет** — права супер-админа берутся из `full_catalog_permissions()` по claim `superadmin=true`, БД-роль не читается |
+| `is_active` | `true` |
+| `telegram` | `NULL` (и никогда не задаётся — Telegram-привязка супер-админу запрещена, `403`) |
+| `is_system` | `true` (единственная такая строка — частичный уникальный индекс) |
+
+**Невидимость якоря — единое правило (нормативно).** Оно реализуется в **одном** месте — `UserRepository`, а не спец-проверками в сервисах:
+
+- **Методы-резолверы исключают `is_system`** (`WHERE NOT users.is_system`): `list_all`, `get_by_id`, `get_with_teams`, `get_by_username`, `get_by_telegram`, `get_existing_ids`, `delete_by_id`. Следствия: якоря **нет** в `GET /api/users`; `PATCH`/`DELETE /api/users/{SUPERADMIN_USER_ID}` → **`404 user_not_found`**; якорь **нельзя** назначить лидером/участником команды (**`422`**) ⇒ строк в `user_teams` у него нет и быть не может; он **не резолвится** при логине (`AuthService._resolve_db_user`) и при Telegram-SSO (`MailTelegramService._resolve_user`, `SmsTelegramLinkService.auth`).
+- **Методы уникальности видят все строки** (`exists_by_username`, `exists_by_telegram`) — они зеркалят DB-констрейнты (иначе `409` подменился бы `500`-IntegrityError).
+- **Роли** ([04-api.md](04-api.md#roles)): `user_count` (`RoleRepository.list_all_with_counts`/`count_users`) якорь **исключает** (не врать в UI); гард `is_in_use` — **включает** (зеркало FK `ON DELETE RESTRICT`) ⇒ роль, которую держит якорь (по умолчанию `admin`), **не удаляется**: `409 role_in_use`.
+
+**Bootstrap (идемпотентный, в приложении — НЕ в миграции).** `UserRepository.ensure_superadmin_anchor()` **владеет своей транзакцией и коммитит её сам** (резолв/создание роли + вставка + верификация — **один коммит**; сервиса-обёртки у него нет, вызывается из `lifespan` и из тестовой фикстуры напрямую ⇒ вызывающий передаёт **отдельную** сессию, без чужой незакоммиченной работы). Алгоритм: резолв роли (цепочка выше, **самодостаточен**) → `INSERT … ON CONFLICT DO NOTHING` (без target — накрывает `pk_users`, `uq_users_username`, `uq_users_system_singleton`) → `SELECT` по `SUPERADMIN_USER_ID` для верификации; строки нет → ERROR-лог `superadmin_anchor_missing`, приложение **всё равно поднимается** (fallback-инвариант [ADR-008](adr/ADR-008-admin-iz-env.md)). Повторные старты/воркеры — но-оп; существующая строка **не перезаписывается**. Причина «не в миграции»: [миграции не импортируют код приложения](#3-миграции-не-импортируют-код-приложения), а строке нужны `hash_password` и константы якоря.
+
+**ПОРЯДОК ВЫЗОВА (нормативно):**
+- **прод/staging** — `app/main.py::lifespan` (после `startup_recovery`). Порядок «миграции → приложение» гарантирован entrypoint'ом backend-контейнера (`alembic upgrade head && uvicorn …`, [07-deployment.md §Порядок запуска](07-deployment.md#порядок-запуска)) ⇒ роль `admin` из `0008` уже есть. **Посев ролей в `lifespan` не вводится.**
+- **тесты** — фикстура БД обязана вызвать `ensure_superadmin_anchor(session)` **сразу после `Base.metadata.create_all`** (`lifespan` там не выполняется). Роли `admin` в тестовых фикстурах нет — её создаст сам bootstrap (шаг (3) цепочки).
+
+> **⚠️ Цена ручного удаления якоря.** `mail_message_reads.user_id → users(id)` — **`ON DELETE CASCADE`**: `DELETE FROM users WHERE is_system` (возможно только прямым SQL — через API нельзя) **безвозвратно стирает всю прочитанность супер-админа**; рестарт восстановит **пустой** якорь. Самолечение относится к существованию строки, а не к её содержимому.
+
+**Инвариант пустоты связей (нормативно, [ADR-051 §1.4(в)](adr/ADR-051-superadmin-db-anchor-personal-state.md)):** у якоря **нет и не может быть** строк в `user_teams`, `mail_telegram_links`, `sms_telegram_links`, `mail_user_settings` (членство → `422`, Telegram-привязка → `403`, `telegram IS NULL`).
+
+**Fan-out-выборки получателей ОБЯЗАНЫ нести явный `WHERE NOT users.is_system`** (нормативно): `MailTelegramLinkRepository.team_recipients`, **`sees_all_candidates`**, `SmsTelegramLinkRepository.recipients_for_team` читают `users` **напрямую**, мимо `UserRepository`. Сегодня якорь отсекает лишь `INNER JOIN` на Telegram-линк — **неявное** условие, нарушение которого (INNER→LEFT/OUTER, новая выборка без линка) **не ловится машинным гейтом**. Явный фильтр = defense-in-depth; особенно критично для `sees_all_candidates` (отбор **по правам роли**, а роль якоря — `admin` с полным каталогом). Замена INNER→LEFT без сохранения фильтра остаётся **запрещённой**.
+
+### Миграция `0026_users_is_system` (концепт, [ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md) §1.1)
+
+**Идентификаторы (нормативно):**
+- **Имя файла:** `0026_users_is_system.py`
+- **`revision`:** **`"0026_users_is_system"`** — **20 символов** ≤ `alembic_version.version_num VARCHAR(32)`
+- **`down_revision`:** **`"0025_mail_message_reads"`** — фактическая голова цепочки
+
+```sql
+ALTER TABLE users ADD COLUMN is_system boolean NOT NULL DEFAULT false;
+CREATE UNIQUE INDEX uq_users_system_singleton ON users (is_system) WHERE is_system;
+```
+
+- **Только схема.** Строку-якорь миграция **НЕ вставляет** (её создаёт bootstrap приложения — выше).
+- **Индекс — зеркало модели:** он объявлен в `User.__table_args__`; миграция повторяет его один-в-один (расхождение модель↔миграция = дефект).
+- **Backfill не нужен:** `DEFAULT false` корректен для всех существующих строк (на проде — 9).
+- **`downgrade()` (нормативно):** `DELETE FROM users WHERE is_system;` → `DROP INDEX uq_users_system_singleton;` → `ALTER TABLE users DROP COLUMN is_system;`. **Удаление строки обязательно:** иначе якорь остался бы обычным пользователем с ролью `admin` — видимым в `/api/users` и **редактируемым** (можно задать ему пароль). Цена: CASCADE унесёт отметки прочитанности супер-админа (на откатываемой версии они всё равно неработоспособны).
 
 #### Правило `username` (кириллица-допускающее, нормативно)
 
@@ -1361,7 +1413,7 @@ ALTER TABLE servers DROP COLUMN position;
 - **PK — составной `(user_id, message_id)`** (`pk_mail_message_reads`). Он же обслуживает **оба** горячих пути: батч-лукап `WHERE user_id = :uid AND message_id = ANY(:page_ids)` (вычисление `is_unread` для страницы ленты) и анти-джойн `NOT EXISTS (…)` (фильтр `unread=true`). Отдельный индекс по `(user_id)` **не нужен** — PK ведёт с `user_id`.
 - **`ix_mail_message_reads_message_id (message_id)` — ОБЯЗАТЕЛЕН.** PK ведёт с `user_id`, поэтому поиск по `message_id` его **не использует**, а `ON DELETE CASCADE` со стороны `mail_messages` (каскад `mail_accounts` → `mail_messages` → `mail_message_reads` при удалении ящика) без этого индекса выполнял бы **seq scan** по всей таблице отметок **на каждое удаляемое письмо** — удаление ящика со 100k писем стало бы неприемлемо долгим.
 - **Прочитанность ЛИЧНАЯ** (требование владельца): признак принадлежит **паре** (пользователь, письмо), а не письму — колонка `mail_messages.is_read` физически не могла бы этого выразить (прочтение коллегой гасило бы индикатор всем).
-- **Супер-админ из `.env`** ([ADR-008](adr/ADR-008-admin-iz-env.md)) строки в `users` **не имеет** (`Principal.user_id is None`) ⇒ отметок иметь не может: `POST`/`DELETE …/read` → **`403`**, `is_unread` → всегда `false` ([04-api.md](04-api.md#личная-прочитанность-писем-нормативно-adr-050)). То же ограничение, что у `mail_user_settings`.
+- **Супер-админ из `.env`** ([ADR-008](adr/ADR-008-admin-iz-env.md)) **имеет отметки как любой другой пользователь** — его `user_id` = константный **`SUPERADMIN_USER_ID`** системной строки-якоря в `users` ([ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md), [«Системная строка-якорь»](#системная-строка-якорь-супер-админа-adr-051)). Прежняя норма [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) §2.5 (`403` / `is_unread=false` / пустая страница) **отменена**. Ограничение `mail_user_settings` (`403`) при этом **сохранено** — по security-основанию ([ADR-051 §1.6](adr/ADR-051-superadmin-db-anchor-personal-state.md)), а не из-за отсутствия строки.
 
 ### Миграция `0025_mail_message_reads` (концепт, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) §2.1)
 

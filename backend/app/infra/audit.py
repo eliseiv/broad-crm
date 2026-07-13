@@ -22,14 +22,15 @@ logger = get_logger(__name__)
 def log_secret_revealed(principal: Principal, *, resource_type: str, resource_id: str) -> None:
     """Пишет аудит-событие `secret_revealed` при успешном reveal (ADR-035, нормативно).
 
-    Поля: `actor` (username принципала), `user_id` (UUID БД-пользователя или None
-    у супер-админа), `resource_type` (`server`/`proxy`/`ai_key`/`backend`),
-    `resource_id`, `at`. Само значение секрета НЕ передаётся и НЕ логируется.
+    Поля: `actor` (username принципала), `user_id` (UUID; у супер-админа — константа
+    системной строки-якоря `SUPERADMIN_USER_ID`, ADR-051 §1.2 — принципала без
+    идентичности больше не существует), `resource_type` (`server`/`proxy`/`ai_key`/
+    `backend`), `resource_id`, `at`. Само значение секрета НЕ передаётся и НЕ логируется.
     """
     logger.info(
         "secret_revealed",
         actor=principal.username,
-        user_id=str(principal.user_id) if principal.user_id is not None else None,
+        user_id=str(principal.user_id),
         resource_type=resource_type,
         resource_id=resource_id,
         at=datetime.now(UTC).isoformat(),

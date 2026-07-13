@@ -144,6 +144,12 @@ class MailTelegramLinkRepository:
         JOIN `user_teams` → `users` (`is_active`) → `mail_telegram_links` (`dead_at IS
         NULL`), LEFT JOIN `mail_user_settings` (opt-out `tg_notifications_enabled=false`
         → исключить). Один пользователь с несколькими живыми привязками → несколько строк.
+
+        **Системная строка-якорь супер-админа исключена ЯВНО** (`NOT is_system`, ADR-051
+        §1.4(в)): выборка читает `users` в обход `UserRepository`, и неявно якорь отсекали
+        бы лишь INNER JOIN'ы (у него нет строк ни в `user_teams`, ни в
+        `mail_telegram_links`). Явный фильтр — defense-in-depth: замена любого из этих
+        JOIN на LEFT/OUTER иначе молча впустила бы якорь в получатели.
         """
         stmt = (
             select(User.id, MailTelegramLink.telegram_user_id)
@@ -153,6 +159,7 @@ class MailTelegramLinkRepository:
             .where(
                 user_teams.c.team_id == team_id,
                 User.is_active.is_(True),
+                User.is_system.is_(False),
                 MailTelegramLink.dead_at.is_(None),
                 func.coalesce(MailUserSettings.tg_notifications_enabled, True).is_(True),
             )
@@ -164,8 +171,13 @@ class MailTelegramLinkRepository:
         """Кандидаты admin-уровня: все живые привязки активных юзеров + права роли.
 
         Сервис фильтрует по предикату «полный каталог прав» (§6 «super_admin с живым
-        линком»). Opt-out исключён здесь же. `.env`-супер-админа тут нет (он не строка
-        `users`).
+        линком»). Opt-out исключён здесь же.
+
+        **Системная строка-якорь супер-админа исключена ЯВНО** (`NOT is_system`, ADR-051
+        §1.4(в)) — здесь это критично: выборка отбирает кандидатов ПО ПРАВАМ РОЛИ, а роль
+        якоря — `admin` (полный каталог). Неявно его отсекал бы только INNER JOIN на
+        `mail_telegram_links` (Telegram-привязка супер-админу запрещена, 403 — §1.6);
+        держать единственную преграду неявной нельзя.
         """
         stmt = (
             select(User.id, MailTelegramLink.telegram_user_id, Role.permissions)
@@ -174,6 +186,7 @@ class MailTelegramLinkRepository:
             .outerjoin(MailUserSettings, MailUserSettings.user_id == User.id)
             .where(
                 User.is_active.is_(True),
+                User.is_system.is_(False),
                 MailTelegramLink.dead_at.is_(None),
                 func.coalesce(MailUserSettings.tg_notifications_enabled, True).is_(True),
             )

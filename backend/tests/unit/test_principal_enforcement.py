@@ -14,23 +14,50 @@ from typing import Any
 
 import pytest
 from app.api.deps import Principal, get_current_principal, require, require_admin
+from app.domain.superadmin import SUPERADMIN_USER_ID
 from app.errors import AppError
 from app.infra.jwt import issue_access_token
 from fastapi.security import HTTPAuthorizationCredentials
 
 
-class _FakeSession:
-    """Фейк AsyncSession: `get(User, pk)` возвращает засеянного пользователя или None."""
+class _FakeResult:
+    """Результат `session.execute(select(User)...)`: цепочка `.unique().scalar_one_or_none()`."""
 
     def __init__(self, user: Any | None) -> None:
         self._user = user
-        self.get_calls = 0
 
-    async def get(self, _model: Any, pk: uuid.UUID) -> Any | None:
-        self.get_calls += 1
-        if self._user is not None and self._user.id == pk:
-            return self._user
-        return None
+    def unique(self) -> _FakeResult:
+        return self
+
+    def scalar_one_or_none(self) -> Any | None:
+        return self._user
+
+
+class _FakeSession:
+    """Фейк AsyncSession для `UserRepository.get_by_id`.
+
+    `get_by_id` резолвит пользователя через `select(...)`, а НЕ `session.get(...)`
+    (ADR-051 §1.4: предикат `NOT is_system` невыразим в PK-lookup через identity-map)
+    ⇒ фейк перехватывает именно `execute`. Счётчик `execute_calls` доказывает, что
+    построение принципала супер-админа не делает НИ ОДНОГО запроса в БД (ADR-051 §1.2,
+    fallback-инвариант ADR-008): его `user_id` — константа якоря.
+    """
+
+    def __init__(self, user: Any | None) -> None:
+        self._user = user
+        self.execute_calls = 0
+
+    async def execute(self, statement: Any) -> _FakeResult:
+        self.execute_calls += 1
+        # Фильтр по id: строка отдаётся, только если запрошен именно её id.
+        params = statement.compile().params
+        wanted = next(
+            (v for v in params.values() if isinstance(v, uuid.UUID)),
+            None,
+        )
+        if self._user is not None and self._user.id == wanted:
+            return _FakeResult(self._user)
+        return _FakeResult(None)
 
 
 def _creds(token: str | None) -> HTTPAuthorizationCredentials | None:
@@ -57,7 +84,9 @@ async def test_superadmin_token_yields_full_catalog_without_db_hit() -> None:
     assert principal.is_superadmin is True
     assert principal.role == "admin"
     assert principal.permissions["servers"] == ["view", "create", "edit", "delete"]
-    assert session.get_calls == 0  # супер-админ не читает БД
+    assert session.execute_calls == 0  # супер-админ не читает БД
+    # ADR-051 §1.2: идентичность супер-админа — константа якоря, БЕЗ запроса в БД.
+    assert principal.user_id == SUPERADMIN_USER_ID
 
 
 @pytest.mark.asyncio
@@ -74,7 +103,8 @@ async def test_db_user_token_loads_permissions_from_db() -> None:
     assert principal.username == "Никита"
     assert principal.role == "Оператор"
     assert principal.permissions == {"servers": ["view"], "mail": ["view"]}
-    assert session.get_calls == 1
+    assert principal.user_id == user.id  # БД-пользователь → его собственный id (claim `uid`)
+    assert session.execute_calls == 1
 
 
 @pytest.mark.asyncio
@@ -158,7 +188,18 @@ async def test_malformed_uuid_uid_is_401() -> None:
 
 
 def _principal(*, is_superadmin: bool, role: str, permissions: dict[str, list[str]]) -> Principal:
-    return Principal(username="u", role=role, permissions=permissions, is_superadmin=is_superadmin)
+    """Принципал для гейтов `require`/`require_admin`.
+
+    `user_id` обязателен (ADR-051 §1.2): супер-админ → константа якоря
+    `SUPERADMIN_USER_ID`, БД-пользователь → произвольный UUID (гейты прав его не читают).
+    """
+    return Principal(
+        username="u",
+        role=role,
+        permissions=permissions,
+        is_superadmin=is_superadmin,
+        user_id=SUPERADMIN_USER_ID if is_superadmin else uuid.uuid4(),
+    )
 
 
 @pytest.mark.asyncio

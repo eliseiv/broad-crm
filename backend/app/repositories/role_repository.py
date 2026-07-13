@@ -34,11 +34,16 @@ class RoleRepository:
         """Все роли с числом носителей (`user_count`), сортировка `created_at ASC, id`.
 
         Агрегат `COUNT(users) GROUP BY role_id` через LEFT JOIN — роли без носителей
-        отдаются с `user_count=0` (ADR-022). Супер-админ (`.env`) в `users` отсутствует.
+        отдаются с `user_count=0` (ADR-022).
+
+        **Отображение исключает системную строку-якорь** (`NOT is_system`, ADR-051 §1.5):
+        роль `admin` не должна получать фантомного «+1 пользователь» в UI. Предикат — в
+        условии JOIN (а не в `WHERE`), иначе LEFT JOIN выродился бы в INNER и роли без
+        носителей пропали бы из выдачи.
         """
         stmt = (
             select(Role, func.count(User.id))
-            .outerjoin(User, User.role_id == Role.id)
+            .outerjoin(User, (User.role_id == Role.id) & User.is_system.is_(False))
             .group_by(Role.id)
             .order_by(Role.created_at.asc(), Role.id.asc())
         )
@@ -46,8 +51,11 @@ class RoleRepository:
         return [(role, int(count)) for role, count in result.all()]
 
     async def count_users(self, role_id: uuid.UUID) -> int:
-        """Число пользователей с этой ролью (для `user_count` в ответе POST/PATCH)."""
-        stmt = select(func.count(User.id)).where(User.role_id == role_id)
+        """Число пользователей с этой ролью (для `user_count` в ответе POST/PATCH).
+
+        Отображение — якорь исключён (`NOT is_system`, ADR-051 §1.5).
+        """
+        stmt = select(func.count(User.id)).where(User.role_id == role_id, User.is_system.is_(False))
         result = await self._session.execute(stmt)
         return int(result.scalar_one())
 
@@ -68,7 +76,14 @@ class RoleRepository:
         return result.first() is not None
 
     async def is_in_use(self, role_id: uuid.UUID) -> bool:
-        """Назначена ли роль хотя бы одному пользователю (для 409 role_in_use)."""
+        """Назначена ли роль хотя бы одному пользователю (для 409 role_in_use).
+
+        **Гард удаления ВКЛЮЧАЕТ системную строку-якорь** (фильтра `is_system` здесь НЕТ —
+        ADR-051 §1.5): метод обязан быть зеркалом FK `users.role_id → roles.id ON DELETE
+        RESTRICT`, иначе `DELETE /api/roles/{id}` вместо `409 role_in_use` упал бы
+        IntegrityError → 500. Осознанное следствие: роль, которую держит якорь (по
+        умолчанию встроенная `admin`), не удаляется даже при `user_count = 0`.
+        """
         stmt = select(User.id).where(User.role_id == role_id).limit(1)
         result = await self._session.execute(stmt)
         return result.first() is not None

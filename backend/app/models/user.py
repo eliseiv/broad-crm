@@ -1,7 +1,9 @@
 """Модель таблицы `users` (03-data-model.md#таблицы-roles-и-users-rbac, ADR-021).
 
 Дополнительные (БД) пользователи многопользовательского режима. Супер-админ (`.env`)
-сюда НЕ пишется. `username` допускает кириллицу/юникод-буквы (DB-CHECK — «свободный»
+БД-пользователем НЕ является; в `users` у него есть лишь **системная строка-якорь**
+(`is_system=true`, ADR-051) — FK-цель личного состояния, невидимая для реестра, логина
+и Telegram-SSO. `username` допускает кириллицу/юникод-буквы (DB-CHECK — «свободный»
 инвариант; полное правило — Pydantic/app.domain.identity). Пароль — только bcrypt-хэш
 (`password_hash`), plaintext не хранится. `role_id` FK → roles ON DELETE RESTRICT
 (роль с носителями удалить нельзя → 409 role_in_use). Роль подгружается eager
@@ -19,6 +21,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     ForeignKey,
+    Index,
     Text,
     func,
     text,
@@ -44,6 +47,16 @@ class User(Base):
             "AND username !~ '[[:cntrl:]]'",
             name="ck_users_username",
         ),
+        # Системная строка-якорь супер-админа — ровно ОДНА (ADR-051 §1.1). Индекс
+        # объявлен в МОДЕЛИ, а миграция 0026 его зеркалит: иначе схема тестов
+        # (`Base.metadata.create_all`) разошлась бы с прод-схемой, и регрессия,
+        # создающая вторую системную строку, прошла бы зелёные тесты.
+        Index(
+            "uq_users_system_singleton",
+            "is_system",
+            unique=True,
+            postgresql_where=text("is_system"),
+        ),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(
@@ -66,6 +79,12 @@ class User(Base):
         nullable=False,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
+    # Системная строка-якорь супер-админа (ADR-051, миграция 0026). `true` — ровно одна
+    # техническая строка (FK-цель личного состояния консольного супер-админа); `false` —
+    # обычный пользователь. Наружу НЕ отдаётся ни в одном контракте. Строки с
+    # `is_system=true` невидимы для методов-резолверов `UserRepository` (реестр, логин,
+    # Telegram-SSO, валидация ссылок) — правило 03-data-model.md#системная-строка-якорь.
+    is_system: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     # Момент ПЕРВОГО успешного входа (ADR-028, миграция 0015). NULL = ещё ни разу не
     # входил. Проставляется идемпотентно (`if None`) в парольной ветке login и в
     # set-password. Наружу не отдаётся — источник производного UserListItem.status.

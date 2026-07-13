@@ -175,7 +175,7 @@ class MailService:
         self,
         *,
         scope: MailScope,
-        user_id: uuid.UUID | None,
+        user_id: uuid.UUID,
         before: str | None,
         limit: int,
         mail_account_ids: list[int] | None,
@@ -192,9 +192,10 @@ class MailService:
 
         `unread=true` (ADR-050 §2.2) — только непрочитанные ТЕКУЩИМ принципалом; фильтр
         уходит анти-джойном ВНУТРЬ keyset-запроса. Отсутствие / `false` → фильтр не
-        применяется (`false` ≠ «только прочитанные»). Супер-админ из `.env`
-        (`user_id is None` — нет строки в `users`, личного состояния нет) при `unread=true`
-        → пустая страница без обращения к БД (§2.5).
+        применяется (`false` ≠ «только прочитанные»). Супер-админ — **не исключение**
+        (ADR-051 §2, отменяет ADR-050 §2.5): у него есть собственная идентичность
+        (строка-якорь), поэтому `unread=true` отдаёт обычную страницу непрочитанных, а не
+        пустую.
         """
         if limit < _LIMIT_MIN or limit > _LIMIT_MAX:
             raise invalid_limit()
@@ -204,9 +205,6 @@ class MailService:
                 cursor = decode_mail_cursor(before)
             except MailCursorError as exc:
                 raise invalid_cursor() from exc
-
-        if unread and user_id is None:
-            return MailListResponse(messages=[], next_cursor=None)
 
         visible = await self._resolve_visible_accounts(
             scope=scope, mail_account_ids=mail_account_ids, team_id=team_id
@@ -232,50 +230,37 @@ class MailService:
 
     # --- Личная прочитанность писем (ADR-050 §2) ----------------------------
 
-    async def mark_read(
-        self, *, scope: MailScope, user_id: uuid.UUID | None, message_id: int
-    ) -> None:
+    async def mark_read(self, *, scope: MailScope, user_id: uuid.UUID, message_id: int) -> None:
         """Пометить письмо прочитанным текущим пользователем (ADR-050 §2.2). Гейт mail:view.
 
         Идемпотентно (`ON CONFLICT DO NOTHING`): повтор — не ошибка, `read_at` не
         обновляется. Письмо вне `MailScope`/несуществующее → 404 (анти-энумерация).
-        Супер-админ из `.env` (нет строки в `users`) → 403 (§2.5), как на
-        `GET`/`PATCH /api/mail/me/settings`.
+        **Супер-админ — не исключение** (ADR-051 §2, отменяет ADR-050 §2.5): личное
+        состояние работает и под ним (FK ведёт на его строку-якорь), прежний 403 снят.
 
         ГОНКА (нормативно, ADR-050 §2.2): письмо может быть удалено (`DELETE` ящика →
         CASCADE) уже ПОСЛЕ scope-проверки, но ДО `INSERT` → нарушение FK `message_id`.
         Такой `IntegrityError` транслируется в тот же 404 mail_message_not_found (это
         ровно «письма нет»), а не всплывает как 500. Нарушение FK по `user_id` НЕ
-        маскируется под 404 (пользователь удалён посреди собственного запроса — это не
-        «письмо не найдено») и пробрасывается как есть.
+        маскируется под 404 (строка пользователя/якоря исчезла посреди собственного
+        запроса — это не «письмо не найдено») и пробрасывается как есть.
         """
-        resolved_user_id = self._require_db_user(user_id)
         await self._load_message_in_scope(scope, message_id)
         try:
-            await self._reads.mark_read(user_id=resolved_user_id, message_id=message_id)
+            await self._reads.mark_read(user_id=user_id, message_id=message_id)
         except IntegrityError as exc:
             if self._is_message_fk_violation(exc):
                 raise mail_message_not_found() from exc
             raise
 
-    async def unmark_read(
-        self, *, scope: MailScope, user_id: uuid.UUID | None, message_id: int
-    ) -> None:
+    async def unmark_read(self, *, scope: MailScope, user_id: uuid.UUID, message_id: int) -> None:
         """Вернуть письмо в «непрочитано» для текущего пользователя (ADR-050 §2.7).
 
-        Идемпотентно: отметки не было — не ошибка. Гейт/scope/супер-админ — как у
-        `mark_read` (тот же 403 и тот же 404).
+        Идемпотентно: отметки не было — не ошибка. Гейт/scope — как у `mark_read` (тот же
+        404). Супер-админу доступно (ADR-051 §2).
         """
-        resolved_user_id = self._require_db_user(user_id)
         await self._load_message_in_scope(scope, message_id)
-        await self._reads.unmark_read(user_id=resolved_user_id, message_id=message_id)
-
-    @staticmethod
-    def _require_db_user(user_id: uuid.UUID | None) -> uuid.UUID:
-        """Личное состояние есть только у БД-пользователя; супер-админ из `.env` → 403."""
-        if user_id is None:
-            raise forbidden()
-        return user_id
+        await self._reads.unmark_read(user_id=user_id, message_id=message_id)
 
     @staticmethod
     def _is_message_fk_violation(exc: IntegrityError) -> bool:
@@ -327,14 +312,14 @@ class MailService:
         return list(visible)
 
     async def _serialize_messages(
-        self, rows: list[MailMessageModel], *, user_id: uuid.UUID | None
+        self, rows: list[MailMessageModel], *, user_id: uuid.UUID
     ) -> list[MailMessage]:
         """Проекция строк писем в схему ленты (ящик + теги батч-запросами, ADR-044 §2).
 
         `is_unread` (ADR-050 §2.4) — ОДИН батч-запрос по PK на уже отобранную страницу
         (`message_id = ANY(:page_ids)`), а НЕ JOIN в keyset-запрос ленты и не N+1.
-        Супер-админ из `.env` (`user_id is None`) личного состояния не имеет → `false`
-        для всех писем, лишнего запроса нет (§2.5).
+        Значение ЛИЧНОЕ для любого принципала, включая супер-админа (ADR-051 §2, отменяет
+        ADR-050 §2.5: прежнее «всегда false» снято).
         """
         if not rows:
             return []
@@ -342,9 +327,7 @@ class MailService:
         message_ids = [row.id for row in rows]
         accounts = await self._accounts.get_many(account_ids)
         tags_by_message = await self._tags.tags_for_messages(message_ids)
-        read_ids: set[int] = set()
-        if user_id is not None:
-            read_ids = await self._reads.read_ids(user_id=user_id, message_ids=message_ids)
+        read_ids = await self._reads.read_ids(user_id=user_id, message_ids=message_ids)
 
         messages: list[MailMessage] = []
         for row in rows:
@@ -372,7 +355,7 @@ class MailService:
                     body_html=row.body_html,
                     body_present=row.body_present,
                     body_truncated=row.body_truncated,
-                    is_unread=user_id is not None and row.id not in read_ids,
+                    is_unread=row.id not in read_ids,
                     tags=tags,
                 )
             )

@@ -58,9 +58,27 @@ async def sms_db() -> AsyncIterator[async_sessionmaker[AsyncSession]]:
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
             await conn.execute(sa_text(f"TRUNCATE {_TRUNCATE} RESTART IDENTITY CASCADE"))
-        yield async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+        sm = async_sessionmaker(engine, expire_on_commit=False, autoflush=False)
+        await _bootstrap_superadmin_anchor(sm)
+        yield sm
     finally:
         await engine.dispose()
+
+
+async def _bootstrap_superadmin_anchor(sm: async_sessionmaker[AsyncSession]) -> None:
+    """Сеет системную строку-якорь супер-админа — СРАЗУ после `create_all`/TRUNCATE.
+
+    Нормативно (ADR-051 §1.3): в тестах `lifespan` не выполняется ⇒ единственного писателя
+    якоря (`UserRepository.ensure_superadmin_anchor`) обязана вызвать фикстура. Метод
+    владеет своей транзакцией и коммитит сам ⇒ ему передаётся ОТДЕЛЬНАЯ сессия.
+
+    ⚠️ Побочный эффект (ADR-051 §1.1, шаг (3)): роли `admin` в фикстурах нет ⇒ bootstrap
+    создаёт её сам, и она присутствует в КАЖДОЙ интеграционной тестовой БД.
+    """
+    from app.repositories.user_repository import UserRepository
+
+    async with sm() as session:
+        await UserRepository(session).ensure_superadmin_anchor()
 
 
 def build_principal(
@@ -70,9 +88,19 @@ def build_principal(
     role: str = "admin",
     permissions: dict[str, list[str]] | None = None,
 ) -> Any:
-    """Строит `Principal` с явным `user_id` (для scope SMS/привязки Telegram)."""
+    """Строит `Principal` с идентичностью (`user_id` не-опционален — ADR-051 §1.2).
+
+    Супер-админ без явного `user_id` → константа `SUPERADMIN_USER_ID` (системная
+    строка-якорь), как и в проде (`get_current_principal`). Наличие идентичности НЕ даёт
+    якорю Telegram-привязку: `POST /api/sms/telegram/link` под супер-админом — по-прежнему
+    `403`, но по security-основанию (ADR-051 §1.6), а не «нет `user_id`».
+    """
     from app.api.deps import Principal
     from app.domain.permissions import full_catalog_permissions
+    from app.domain.superadmin import SUPERADMIN_USER_ID
+
+    if user_id is None:
+        user_id = SUPERADMIN_USER_ID if is_superadmin else uuid.uuid4()
 
     return Principal(
         username="tester",
