@@ -69,6 +69,29 @@ class MailAccountRepository:
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
+    async def count_by_teams(self, team_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """`{team_id: число ящиков}` для набора команд (агрегат `mailbox_count`, ADR-048 §1).
+
+        Батч для `GET /api/teams` (без N+1): один `GROUP BY team_id` по индексу
+        `ix_mail_accounts_team_id`. Команды без ящиков в результат не попадают —
+        вызывающий подставляет `0`.
+        """
+        ids = list(team_ids)
+        if not ids:
+            return {}
+        stmt = (
+            select(MailAccount.team_id, func.count())
+            .where(MailAccount.team_id.in_(ids))
+            .group_by(MailAccount.team_id)
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return {tid: int(cnt) for tid, cnt in rows if tid is not None}
+
+    async def count_by_team(self, team_id: uuid.UUID) -> int:
+        """Число ящиков одной команды (агрегат `mailbox_count` для тел 201/200, ADR-048 §1)."""
+        stmt = select(func.count()).select_from(MailAccount).where(MailAccount.team_id == team_id)
+        return int((await self._session.execute(stmt)).scalar_one())
+
     async def ids_by_teams(self, team_ids: Iterable[uuid.UUID]) -> set[int]:
         """Множество id ящиков команд из набора (scope-фильтр ленты, ADR-044 §7)."""
         ids = list(team_ids)

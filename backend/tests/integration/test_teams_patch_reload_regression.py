@@ -32,6 +32,7 @@ import pytest
 from app.models import Base
 from app.models.role import Role
 from app.models.user import User
+from app.repositories.mail_account_repository import MailAccountRepository
 from app.repositories.sms_number_repository import SmsNumberRepository
 from app.repositories.team_repository import TeamRepository
 from app.repositories.user_repository import UserRepository
@@ -75,6 +76,7 @@ def _service(session: AsyncSession) -> TeamService:
         teams=TeamRepository(session),
         users=UserRepository(session),
         numbers=SmsNumberRepository(session),
+        mailboxes=MailAccountRepository(session),
     )
 
 

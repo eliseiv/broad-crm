@@ -527,6 +527,61 @@ class _FakeSmsNumberRepo:
         return sorted(rows, key=lambda n: (n.created_at, n.id), reverse=True)
 
 
+class _FakeMailAccount:
+    """Фейк ORM почтового ящика (для mailbox_count в TeamService, ADR-048 §1).
+
+    Достаточно полей, которые читает агрегат: `id`/`team_id`. Креды/хосты/статус синка
+    в фейке не нужны — `TeamService` их не касается (сужение ADR-044 §4)."""
+
+    def __init__(
+        self,
+        *,
+        id: int,
+        email: str,
+        team_id: _uuid.UUID | None,
+        number: str | None,
+        app_name: str | None,
+        display_name: str | None,
+        is_active: bool,
+    ) -> None:
+        self.id = id
+        self.email = email
+        self.team_id = team_id
+        self.number = number
+        self.app_name = app_name
+        self.display_name = display_name
+        self.is_active = is_active
+
+
+class _FakeMailAccountRepo:
+    """In-memory замена MailAccountRepository (подмножество для TeamService, ADR-048 §1).
+
+    Симметрична `_FakeSmsNumberRepo`: батч-агрегат `count_by_teams` (список команд) +
+    одиночный `count_by_team` (тела 201/200), плюс `list_by_team` (секция «Почты команды»)."""
+
+    def __init__(self, db: RbacFakeDb) -> None:
+        self._db = db
+
+    @property
+    def session(self) -> _FakeSession:
+        return self._db.session
+
+    async def count_by_teams(self, team_ids: Any) -> dict[_uuid.UUID, int]:
+        ids = set(team_ids)
+        counts: dict[_uuid.UUID, int] = {}
+        for mailbox in self._db.mailboxes.values():
+            if mailbox.team_id in ids:
+                counts[mailbox.team_id] = counts.get(mailbox.team_id, 0) + 1
+        return counts
+
+    async def count_by_team(self, team_id: _uuid.UUID) -> int:
+        return sum(1 for mb in self._db.mailboxes.values() if mb.team_id == team_id)
+
+    async def list_by_team(self, team_id: _uuid.UUID) -> list[Any]:
+        rows = [mb for mb in self._db.mailboxes.values() if mb.team_id == team_id]
+        return sorted(rows, key=lambda mb: (mb.email, mb.id))
+
+
 class RbacFakeDb:
     """In-memory «БД» для user/role/team репозиториев (общее состояние + сессия).
 
@@ -539,14 +594,17 @@ class RbacFakeDb:
         self.users: dict[_uuid.UUID, Any] = {}
         self.teams: dict[_uuid.UUID, Any] = {}
         self.numbers: dict[int, Any] = {}
+        self.mailboxes: dict[int, Any] = {}
         self.user_repo = _FakeUserRepo(self)
         self.role_repo = _FakeRoleRepo(self)
         self.team_repo = _FakeTeamRepo(self)
         self.number_repo = _FakeSmsNumberRepo(self)
+        self.mailbox_repo = _FakeMailAccountRepo(self)
         # Монотонный источник `user_teams.created_at` (детерминированный порядок
         # авто-передачи лидерства без зависимости от разрешения системного таймера).
         self._member_seq = 0
         self._number_seq = 0
+        self._mailbox_seq = 0
 
     def next_created_at(self) -> datetime:
         """Строго возрастающая «дата добавления» участника (детерминизм ADR-026)."""
@@ -650,6 +708,30 @@ class RbacFakeDb:
         )
         self.numbers[number.id] = number
         return number
+
+    def add_mailbox(
+        self,
+        email: str,
+        *,
+        team: Any = None,
+        number: str | None = None,
+        app_name: str | None = None,
+        display_name: str | None = None,
+        is_active: bool = True,
+    ) -> Any:
+        """Создаёт почтовый ящик каталога (для mailbox_count в TeamService, ADR-048 §1)."""
+        self._mailbox_seq += 1
+        mailbox = _FakeMailAccount(
+            id=self._mailbox_seq,
+            email=email,
+            team_id=team.id if team is not None else None,
+            number=number,
+            app_name=app_name,
+            display_name=display_name,
+            is_active=is_active,
+        )
+        self.mailboxes[mailbox.id] = mailbox
+        return mailbox
 
 
 @pytest.fixture

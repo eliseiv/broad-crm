@@ -8,7 +8,7 @@ import { Card } from '@/components/ui/Card';
 import { Spinner } from '@/components/ui/Spinner';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { membersPlural, numbersPlural } from '@/lib/plural';
+import { mailsPlural, membersPlural, numbersPlural } from '@/lib/plural';
 import { useCan, useCanViewPage } from '@/features/auth/hooks';
 import { useTeams } from '@/features/teams/hooks';
 import { useUsers } from '@/features/users/hooks';
@@ -163,6 +163,10 @@ function TeamsList() {
                     <div className="flex shrink-0 items-center gap-3">
                       <span className="whitespace-nowrap font-mono text-[13px] text-text-secondary">
                         {numbersPlural(team.number_count)}
+                      </span>
+                      {/* Чип «N почт» (mailbox_count, ADR-048 §1) — рядом с номерами/участниками. */}
+                      <span className="whitespace-nowrap font-mono text-[13px] text-text-secondary">
+                        {mailsPlural(team.mailbox_count)}
                       </span>
                       <span className="whitespace-nowrap font-mono text-[13px] text-text-secondary">
                         {membersPlural(team.member_count)}

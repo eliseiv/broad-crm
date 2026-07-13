@@ -26,7 +26,12 @@ def db() -> RbacFakeDb:
 
 
 def _service(db: RbacFakeDb) -> TeamService:
-    return TeamService(teams=db.team_repo, users=db.user_repo, numbers=db.number_repo)
+    return TeamService(
+        teams=db.team_repo,
+        users=db.user_repo,
+        numbers=db.number_repo,
+        mailboxes=db.mailbox_repo,
+    )
 
 
 def _user(db: RbacFakeDb, name: str) -> object:
@@ -447,3 +452,81 @@ async def test_update_team_leader_kept_when_still_member(db: RbacFakeDb) -> None
 
     assert item.leader_id == leader.id
     assert {m.id for m in item.members} == {leader.id, add.id}
+
+
+# --- mailbox_count (ADR-048 §1) ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_list_teams_mailbox_count_is_zero_for_team_without_mailboxes(
+    db: RbacFakeDb,
+) -> None:
+    """Команда без ящиков → `mailbox_count = 0` (не null, не пропуск ключа; ADR-048 §1)."""
+    leader = _user(db, "Никита")
+    db.add_team("Продажи", leader)
+    service = _service(db)
+
+    items = (await service.list_teams()).items
+
+    assert [t.mailbox_count for t in items] == [0]
+
+
+@pytest.mark.asyncio
+async def test_list_teams_mailbox_count_counts_only_own_mailboxes(db: RbacFakeDb) -> None:
+    """Батч-агрегат считает ящики по своей команде; чужие/unassigned не попадают."""
+    leader = _user(db, "Никита")
+    sales = db.add_team("Продажи", leader)
+    support = db.add_team("Поддержка", leader)
+    db.add_mailbox("a@example.com", team=sales)
+    db.add_mailbox("b@example.com", team=sales)
+    db.add_mailbox("c@example.com", team=support)
+    db.add_mailbox("unassigned@example.com", team=None)
+    service = _service(db)
+
+    counts = {t.name: t.mailbox_count for t in (await service.list_teams()).items}
+
+    assert counts == {"Продажи": 2, "Поддержка": 1}
+
+
+@pytest.mark.asyncio
+async def test_create_team_body_has_mailbox_count_zero(db: RbacFakeDb) -> None:
+    """Тело 201 содержит `mailbox_count` (у новой команды ящиков нет → 0)."""
+    leader = _user(db, "Никита")
+    service = _service(db)
+
+    item = await service.create_team(TeamCreateRequest(name="Продажи", leader_id=leader.id))
+
+    assert item.mailbox_count == 0
+
+
+@pytest.mark.asyncio
+async def test_update_team_body_has_current_mailbox_count(db: RbacFakeDb) -> None:
+    """Тело 200 PATCH содержит актуальный `mailbox_count` (одиночный агрегат)."""
+    leader = _user(db, "Никита")
+    team = db.add_team("Продажи", leader)
+    db.add_mailbox("a@example.com", team=team)
+    db.add_mailbox("b@example.com", team=team)
+    service = _service(db)
+
+    item = await service.update_team(team.id, TeamUpdateRequest(name="Продажи EU"))
+
+    assert item.mailbox_count == 2
+
+
+@pytest.mark.asyncio
+async def test_mailbox_count_recomputed_after_mailbox_transferred_to_other_team(
+    db: RbacFakeDb,
+) -> None:
+    """Перенос ящика в другую команду → счётчики пересчитываются (агрегат на лету)."""
+    leader = _user(db, "Никита")
+    sales = db.add_team("Продажи", leader)
+    support = db.add_team("Поддержка", leader)
+    mailbox = db.add_mailbox("a@example.com", team=sales)
+    service = _service(db)
+
+    before = {t.name: t.mailbox_count for t in (await service.list_teams()).items}
+    mailbox.team_id = support.id
+    after = {t.name: t.mailbox_count for t in (await service.list_teams()).items}
+
+    assert before == {"Продажи": 1, "Поддержка": 0}
+    assert after == {"Продажи": 0, "Поддержка": 1}

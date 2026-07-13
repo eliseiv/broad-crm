@@ -88,6 +88,7 @@ const TEAMS: TeamListResponse = {
       leader_username: 'Никита',
       member_count: 3,
       number_count: 2,
+      mailbox_count: 3,
       members: [
         { id: 'u1', username: 'Никита' },
         { id: 'u2', username: 'Мария' },
@@ -117,6 +118,20 @@ describe('TeamsPage аккордеон + чип number_count (ADR-030)', () => {
   it('чип number_count: рендерит numbersPlural (2 → «2 номера»)', () => {
     render(<TeamsPage />, { wrapper });
     expect(screen.getByText('2 номера')).toBeInTheDocument();
+  });
+
+  // Чип «N почт» (mailbox_count, ADR-048 §1): формы мн.ч. — нормативный словарь
+  // 08-design-system.md; `0` допустим (склонение — хелпер `mailsPlural`).
+  it.each([
+    [0, '0 почт'],
+    [1, '1 почта'],
+    [3, '3 почты'],
+  ])('чип mailbox_count: %i → «%s»', (count, expected) => {
+    state.teams = {
+      items: [{ ...TEAMS.items[0], mailbox_count: count }],
+    };
+    render(<TeamsPage />, { wrapper });
+    expect(screen.getByText(expected)).toBeInTheDocument();
   });
 
   it('аккордеон: клик по карточке раскрывает панель (aria-expanded), повторный клик сворачивает', async () => {

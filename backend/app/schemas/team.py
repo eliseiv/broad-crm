@@ -71,6 +71,9 @@ class TeamListItem(BaseModel):
     # Число SMS-номеров команды (COUNT sms_phone_numbers WHERE team_id = id, ADR-030).
     # Денормализованный агрегат для чипа «N номеров»; может быть 0.
     number_count: int
+    # Число почтовых ящиков команды (COUNT mail_accounts WHERE team_id = id, ADR-048 §1).
+    # Агрегат на лету (индекс ix_mail_accounts_team_id) для чипа «N почт»; может быть 0.
+    mailbox_count: int
     members: list[TeamMember]
     created_at: datetime
     updated_at: datetime

@@ -298,10 +298,18 @@ class MailTagApplyResponse(BaseModel):
 
 
 class TeamMailboxItem(BaseModel):
-    """Ящик команды для detail-панели /teams (минимальная схема без кредов, ADR-044 §4)."""
+    """Ящик команды для detail-панели /teams (минимальная схема без кредов, ADR-044 §4).
+
+    Расширена `number`/`app_name` («Номер»/«Приложение», ADR-048 §2). Креды/хосты и
+    статус синка (`last_synced_at`/`last_sync_error`/`consecutive_failures`) в схему
+    НЕ входят — сужение ADR-044 §4 сохраняется. `display_name` остаётся в контракте
+    (производное имя), но в строке detail-панели не рендерится (ADR-048 §2/§3).
+    """
 
     id: int
     email: str
+    number: str | None
+    app_name: str | None
     display_name: str | None
     is_active: bool
 

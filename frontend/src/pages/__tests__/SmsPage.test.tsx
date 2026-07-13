@@ -115,6 +115,7 @@ function makeTeam(id: string, name: string): TeamListItem {
     leader_username: null,
     member_count: 0,
     number_count: 0,
+    mailbox_count: 0,
     members: [],
     created_at: '2026-07-08T09:00:00Z',
     updated_at: '2026-07-08T09:00:00Z',

@@ -45,6 +45,8 @@ function makeMailbox(id: number, over: Partial<TeamMailboxItem> = {}): TeamMailb
   return {
     id,
     email: `box${id}@postapp.store`,
+    number: null,
+    app_name: null,
     display_name: null,
     is_active: true,
     ...over,
@@ -59,6 +61,7 @@ function makeTeam(over: Partial<TeamListItem> = {}): TeamListItem {
     leader_username: 'Никита',
     member_count: 2,
     number_count: 1,
+    mailbox_count: 1,
     members: [
       { id: 'u1', username: 'Никита' },
       { id: 'u2', username: 'Мария' },
@@ -199,18 +202,98 @@ describe('TeamDetailPanel (свёрнутые секции + ленивая за
     expect(teamMailboxes.calls.some((c) => c.enabled === true && c.id === 't1')).toBe(true);
   });
 
-  it('почты: неактивный ящик → кружок «Неактивна» (красный), display_name показан', async () => {
+  // Статус — ВИДИМЫЙ текст «Активна»/«Неактивна» (не sr-only), критерий — только
+  // `is_active` (08-design-system.md §Страница «Команды», ADR-048 §3).
+  it('почты: неактивный ящик → статус «Неактивна» видимым текстом', async () => {
+    const user = userEvent.setup();
+    teamMailboxes.value = query({
+      data: { mailboxes: [makeMailbox(1, { is_active: false })] },
+    });
+    render(<TeamDetailPanel team={TEAM} id="panel-1" />);
+    await user.click(mailboxesToggle());
+
+    const status = screen.getByText('Неактивна');
+    expect(status).toBeVisible();
+    expect(status).not.toHaveClass('sr-only');
+    expect(screen.queryByText('Активна')).not.toBeInTheDocument();
+  });
+
+  it('почты: строка ящика рендерит «Номер» и «Приложение» (ADR-048 §3)', async () => {
     const user = userEvent.setup();
     teamMailboxes.value = query({
       data: {
-        mailboxes: [makeMailbox(1, { display_name: 'Продажи-вход', is_active: false })],
+        mailboxes: [
+          makeMailbox(1, {
+            email: 'inbox@postapp.store',
+            number: '5108',
+            app_name: 'Klyro Forge (Codex)',
+          }),
+        ],
       },
     });
     render(<TeamDetailPanel team={TEAM} id="panel-1" />);
     await user.click(mailboxesToggle());
 
-    expect(screen.getByText('Неактивна')).toBeInTheDocument();
-    expect(screen.getByText('Продажи-вход')).toBeInTheDocument();
+    expect(screen.getByText('inbox@postapp.store')).toBeInTheDocument();
+    expect(screen.getByText('Номер')).toBeInTheDocument();
+    expect(screen.getByText('5108')).toBeInTheDocument();
+    expect(screen.getByText('Приложение')).toBeInTheDocument();
+    expect(screen.getByText('Klyro Forge (Codex)')).toBeInTheDocument();
+  });
+
+  // Лейбл без значения не показывается никогда (ADR-047 §5, унаследовано ADR-048 §3):
+  // при `null` не рендерится ВСЯ пара «лейбл + значение».
+  it('почты: number/app_name = null → пары «лейбл + значение» не рендерятся', async () => {
+    const user = userEvent.setup();
+    teamMailboxes.value = query({
+      data: { mailboxes: [makeMailbox(1, { number: null, app_name: null })] },
+    });
+    render(<TeamDetailPanel team={TEAM} id="panel-1" />);
+    await user.click(mailboxesToggle());
+
+    // Секция «Номера команды» свёрнута → лейблы могут быть только из строки почты.
+    expect(screen.queryByText('Номер')).not.toBeInTheDocument();
+    expect(screen.queryByText('Приложение')).not.toBeInTheDocument();
+    // Строка при обоих null = статус + email.
+    expect(screen.getByText('box1@postapp.store')).toBeInTheDocument();
+    expect(screen.getByText('Активна')).toBeInTheDocument();
+  });
+
+  it('почты: только number задан → «Приложение» не рендерится, «Номер» рендерится', async () => {
+    const user = userEvent.setup();
+    teamMailboxes.value = query({
+      data: { mailboxes: [makeMailbox(1, { number: '5108', app_name: null })] },
+    });
+    render(<TeamDetailPanel team={TEAM} id="panel-1" />);
+    await user.click(mailboxesToggle());
+
+    expect(screen.getByText('Номер')).toBeInTheDocument();
+    expect(screen.getByText('5108')).toBeInTheDocument();
+    expect(screen.queryByText('Приложение')).not.toBeInTheDocument();
+  });
+
+  // display_name — производное («<number> <app_name>», ADR-047 §3.3): поле остаётся в
+  // схеме, но в строке detail-панели НЕ рендерится (ADR-048 §2/§3), иначе имя дублируется.
+  it('почты: display_name в строке НЕ рендерится (ADR-048 §2)', async () => {
+    const user = userEvent.setup();
+    teamMailboxes.value = query({
+      data: {
+        mailboxes: [
+          makeMailbox(1, {
+            number: '5108',
+            app_name: 'Klyro Forge (Codex)',
+            display_name: '5108 Klyro Forge (Codex)',
+          }),
+        ],
+      },
+    });
+    render(<TeamDetailPanel team={TEAM} id="panel-1" />);
+    await user.click(mailboxesToggle());
+
+    expect(screen.queryByText('5108 Klyro Forge (Codex)')).not.toBeInTheDocument();
+    // Составляющие показаны явно — по отдельности.
+    expect(screen.getByText('5108')).toBeInTheDocument();
+    expect(screen.getByText('Klyro Forge (Codex)')).toBeInTheDocument();
   });
 
   it('почты: ящиков нет → «Почт нет» (групп агрегатора больше нет, ADR-044)', async () => {

@@ -38,6 +38,7 @@ const TEAMS: TeamListItem[] = [
     leader_username: 'Лидер',
     member_count: 1,
     number_count: 0,
+    mailbox_count: 0,
     members: [{ id: 'x', username: 'Лидер' }],
     created_at: '2026-07-08T09:00:00Z',
     updated_at: '2026-07-08T09:00:00Z',

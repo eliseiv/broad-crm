@@ -1285,7 +1285,7 @@ ALTER TABLE servers DROP COLUMN position;
 | `down_alert_sent_at` | `timestamptz` | `NULL` | **Идемпотентность mailbox-down алерта** «ровно один на переход»: guarded `UPDATE … WHERE down_alert_sent_at IS NULL`; сброс в `NULL` при re-enable |
 | `created_at` / `updated_at` | `timestamptz` | NOT NULL | |
 
-Индекс: `ix_mail_accounts_team_id (team_id)`.
+Индекс: `ix_mail_accounts_team_id (team_id)` — обслуживает выборку «ящики команды» (`GET /api/teams/{id}/mailboxes`, `MailScope`) и агрегат `TeamListItem.mailbox_count` (`COUNT(*) … GROUP BY team_id`, [ADR-048](adr/ADR-048-teams-mailbox-count-mail-row.md); отдельной денормализованной колонки-счётчика нет — по образцу `number_count`).
 
 ### Таблица `mail_messages` (system of record писем)
 

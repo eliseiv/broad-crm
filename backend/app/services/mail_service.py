@@ -294,12 +294,21 @@ class MailService:
         return MailMailboxesResponse(mailboxes=[self._to_mailbox(a) for a in accounts])
 
     async def list_team_mailboxes(self, team_id: uuid.UUID) -> TeamMailboxesResponse:
-        """Ящики команды для detail-панели /teams (ADR-044 §4)."""
+        """Ящики команды для detail-панели /teams (ADR-044 §4, поля number/app_name — ADR-048 §2).
+
+        Новых запросов/JOIN'ов нет: `list_by_team` уже читает строку `mail_accounts`
+        целиком. Креды/хосты/статус синка наружу не отдаются (сужение ADR-044 §4).
+        """
         accounts = await self._accounts.list_by_team(team_id)
         return TeamMailboxesResponse(
             mailboxes=[
                 TeamMailboxItem(
-                    id=a.id, email=a.email, display_name=a.display_name, is_active=a.is_active
+                    id=a.id,
+                    email=a.email,
+                    number=a.number,
+                    app_name=a.app_name,
+                    display_name=a.display_name,
+                    is_active=a.is_active,
                 )
                 for a in accounts
             ]

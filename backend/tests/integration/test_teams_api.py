@@ -24,7 +24,10 @@ def _build_app(db: RbacFakeDb, principal: Any) -> Any:
     app = create_app(get_settings())
     app.dependency_overrides[deps.get_current_principal] = lambda: principal
     app.dependency_overrides[deps.get_team_service] = lambda: TeamService(
-        teams=db.team_repo, users=db.user_repo, numbers=db.number_repo
+        teams=db.team_repo,
+        users=db.user_repo,
+        numbers=db.number_repo,
+        mailboxes=db.mailbox_repo,
     )
     return app
 

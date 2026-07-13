@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { membersPlural, pluralRu, usersPlural } from '@/lib/plural';
+import { mailsPlural, membersPlural, numbersPlural, pluralRu, usersPlural } from '@/lib/plural';
 
 const FORMS = { one: 'ядро', few: 'ядра', many: 'ядер' };
 
@@ -53,5 +53,37 @@ describe('membersPlural (число участников команды)', () =>
     [22, '22 участника'],
   ])('%i → «%s»', (n, expected) => {
     expect(membersPlural(n)).toBe(expected);
+  });
+});
+
+describe('numbersPlural (число SMS-номеров команды)', () => {
+  it.each([
+    [1, '1 номер'],
+    [2, '2 номера'],
+    [4, '4 номера'],
+    [5, '5 номеров'],
+    [0, '0 номеров'],
+    [11, '11 номеров'],
+    [22, '22 номера'],
+  ])('%i → «%s»', (n, expected) => {
+    expect(numbersPlural(n)).toBe(expected);
+  });
+});
+
+// Формы «почта / почты / почт» — нормативный словарь 08-design-system.md
+// («Счётчик почт (mailbox_count) — чип на карточке», ADR-048 §1). `0` допустим.
+describe('mailsPlural (число почтовых ящиков команды, mailbox_count)', () => {
+  it.each([
+    [0, '0 почт'],
+    [1, '1 почта'],
+    [2, '2 почты'],
+    [3, '3 почты'],
+    [4, '4 почты'],
+    [5, '5 почт'],
+    [11, '11 почт'],
+    [21, '21 почта'],
+    [22, '22 почты'],
+  ])('%i → «%s»', (n, expected) => {
+    expect(mailsPlural(n)).toBe(expected);
   });
 });

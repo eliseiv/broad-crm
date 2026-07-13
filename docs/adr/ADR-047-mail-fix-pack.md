@@ -89,7 +89,7 @@
 - **`MailMailboxCreateRequest`**: поле `display_name` **удаляется** из тела запроса, вместо него — `number: string|null?`, `app_name: string|null?` (оба опц.). Остальное (поля `MailMailboxTestRequest` + `team_id`) без изменений.
 - **`MailMailboxUpdateRequest`**: `display_name` **удаляется**, добавляются `number: string|null?`, `app_name: string|null?` (presence-семантика сохраняется).
 - **`display_name` клиентом НЕ принимается** — сервер вычисляет его сам (§3.3). Это устраняет двоемыслие «кто хозяин имени».
-- `TeamMailboxItem` (`GET /api/teams/{id}/mailboxes`) — **не меняется** (там `display_name`, производное значение; клиенту detail-панели `/teams` этого достаточно).
+- ~~`TeamMailboxItem` (`GET /api/teams/{id}/mailboxes`) — **не меняется** (там `display_name`, производное значение; клиенту detail-панели `/teams` этого достаточно).~~ **⚠️ РАЗВЁРНУТО [ADR-048](ADR-048-teams-mailbox-count-mail-row.md) §2 (2026-07-13):** `TeamMailboxItem` **расширен** полями `number`/`app_name`, а `display_name` в строке detail-панели `/teams` **не рендерится** (строка почты получила тот же визуальный язык, что строка ящика на `/mail`: крупный жирный «Номер» + «Приложение» пилюлей `ui/Pill tone="accent"`). Действующий контракт — [04-api.md](../04-api.md#get-apiteamsidmailboxes).
 
 #### §3.3. `display_name` — производное поле (нормативно)
 

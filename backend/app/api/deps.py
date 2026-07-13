@@ -27,6 +27,7 @@ from app.infra.telegram import TelegramClient
 from app.models.team import user_teams
 from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.backend_repository import BackendRepository
+from app.repositories.mail_account_repository import MailAccountRepository
 from app.repositories.proxy_repository import ProxyRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.server_repository import ServerRepository
@@ -204,11 +205,13 @@ def get_role_service(session: DbSession) -> RoleService:
 
 
 def get_team_service(session: DbSession) -> TeamService:
-    """Сервис реестра CRM-команд (матрица teams:*, ADR-022; number_count/numbers ADR-030)."""
+    """Сервис реестра CRM-команд (матрица teams:*, ADR-022; number_count/numbers ADR-030;
+    mailbox_count — ADR-048 §1, гейт тот же `teams:view`, MailScope не применяется §4)."""
     return TeamService(
         teams=TeamRepository(session),
         users=UserRepository(session),
         numbers=SmsNumberRepository(session),
+        mailboxes=MailAccountRepository(session),
     )
 
 

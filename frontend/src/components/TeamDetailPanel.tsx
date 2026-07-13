@@ -38,21 +38,38 @@ function NumberRow({ number }: { number: TeamNumberItem }) {
 }
 
 /**
- * Строка ящика команды (08-design-system.md §«Почты команды», ADR-038): цветной кружок
- * статуса (`Badge` dot: green — активна, red — неактивна) + адрес (+ display_name).
- * Схема `TeamMailboxItem` — без кредов/статуса синка. Адрес виден полностью (break-all).
+ * Строка ящика команды (08-design-system.md §«Почты команды», ADR-048 §3) — ОДНА
+ * логическая строка: кружок статуса (`Badge` dot: green — `is_active`, red — иначе;
+ * критерий только `is_active` — полей ошибок синка схема `TeamMailboxItem` не содержит)
+ * → адрес → «Номер» (крупно, полужирно — те же классы, что в строке ящика на /mail)
+ * → «Приложение» пилюлей `ui/Pill tone="accent"` (тот же примитив, что на /mail).
+ * Пустое значение → пара «лейбл + значение» не рендерится. `display_name` не рендерится
+ * (производное от number/app_name, ADR-048 §2). Переполнение — переносом (flex-wrap),
+ * значения видны полностью: обрезка запрещена (CLAUDE.md).
  */
 function MailboxRow({ mailbox }: { mailbox: TeamMailboxItem }) {
+  const number = mailbox.number?.trim() ? mailbox.number : null;
+  const appName = mailbox.app_name?.trim() ? mailbox.app_name : null;
+
   return (
-    <div className="flex flex-col gap-1 rounded-sub border border-border-subtle bg-surface-2 px-3 py-2.5">
-      <div className="flex items-center gap-2">
-        <Badge tone={mailbox.is_active ? 'green' : 'red'} dot>
-          {mailbox.is_active ? 'Активна' : 'Неактивна'}
-        </Badge>
-      </div>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 rounded-sub border border-border-subtle bg-surface-2 px-3 py-2.5">
+      <Badge tone={mailbox.is_active ? 'green' : 'red'} dot>
+        {mailbox.is_active ? 'Активна' : 'Неактивна'}
+      </Badge>
       <span className="break-all font-mono text-[13px] text-text-primary">{mailbox.email}</span>
-      {mailbox.display_name && (
-        <span className="break-words text-[12px] text-text-secondary">{mailbox.display_name}</span>
+      {number && (
+        <span className="flex items-baseline gap-2">
+          <span className="text-[13px] text-text-secondary">Номер</span>
+          <span className="break-words text-lg font-bold leading-tight text-text-primary">
+            {number}
+          </span>
+        </span>
+      )}
+      {appName && (
+        <span className="flex items-center gap-2">
+          <span className="text-[13px] text-text-secondary">Приложение</span>
+          <Pill label={appName} tone="accent" wrap title={appName} />
+        </span>
       )}
     </div>
   );

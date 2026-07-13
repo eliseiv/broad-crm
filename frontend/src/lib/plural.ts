@@ -27,3 +27,11 @@ export function membersPlural(n: number): string {
 export function numbersPlural(n: number): string {
   return `${n} ${pluralRu(n, { one: 'номер', few: 'номера', many: 'номеров' })}`;
 }
+
+/**
+ * «N почта / почты / почт» (число почтовых ящиков команды, `mailbox_count`;
+ * 08-design-system.md §Страница «Команды», ADR-048 §1).
+ */
+export function mailsPlural(n: number): string {
+  return `${n} ${pluralRu(n, { one: 'почта', few: 'почты', many: 'почт' })}`;
+}

@@ -496,12 +496,21 @@ export interface MailTagApplyResponse {
 }
 
 /**
- * Ящик команды для detail-панели /teams (04-api.md, TeamMailboxItem; ADR-038).
- * Минимальная схема без кредов/статуса синка (гейт `teams:view`, не `mail:view`).
+ * Ящик команды для detail-панели /teams (04-api.md, TeamMailboxItem; ADR-038,
+ * расширена ADR-048 §2). Минимальная схема без кредов/статуса синка (гейт
+ * `teams:view`, не `mail:view`).
  */
 export interface TeamMailboxItem {
   id: number;
   email: string;
+  /** «Номер» ящика (mail_accounts.number, ADR-047 §3); `null` — не задан. */
+  number: string | null;
+  /** «Приложение» ящика (mail_accounts.app_name, ADR-047 §3); `null` — не задано. */
+  app_name: string | null;
+  /**
+   * Производное имя ящика («<number> <app_name>», TD-052). В строке detail-панели
+   * /teams НЕ рендерится (ADR-048 §2/§3) — составляющие показаны явно.
+   */
   display_name: string | null;
   is_active: boolean;
 }
@@ -912,6 +921,12 @@ export interface TeamListItem {
    * список номеров — GET /api/teams/{id}/numbers.
    */
   number_count: number;
+  /**
+   * Число почтовых ящиков команды (04-api.md, COUNT mail_accounts WHERE team_id;
+   * ADR-048 §1). Может быть 0. Агрегат для чипа «N почт» на карточке команды;
+   * список почт — GET /api/teams/{id}/mailboxes.
+   */
+  mailbox_count: number;
   /** Участники команды (включая лидера, если задан; может быть пустым). */
   members: TeamMember[];
   created_at: string;
