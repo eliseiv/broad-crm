@@ -36,10 +36,69 @@ function makeMessage(overrides: Partial<MailMessage> = {}): MailMessage {
     body_html: null,
     body_present: true,
     body_truncated: false,
+    // Персональная непрочитанность (ADR-050 §2.2) — обязательное поле схемы `MailMessage`.
+    is_unread: false,
     tags: [{ id: '7a1f0c2e-0000-4000-8000-000000000007', name: 'важное', color: '#EF4444' }],
     ...overrides,
   };
 }
+
+// Кнопка «Отметить непрочитанным» в шапке детали (ADR-050 §2.7): рендерится ТОЛЬКО когда
+// письмо уже прочитано (`is_unread === false`) И передан обработчик (супер-админу из `.env`
+// MailPage его не передаёт — личного состояния у него нет, §2.5).
+describe('MailDetail — «Отметить непрочитанным» (ADR-050 §2.7)', () => {
+  it('прочитанное письмо + обработчик → кнопка есть, клик отдаёт id письма', async () => {
+    const user = userEvent.setup();
+    const onMarkUnread = vi.fn();
+    render(
+      <MailDetail
+        message={makeMessage({ is_unread: false })}
+        onBack={vi.fn()}
+        onMarkUnread={onMarkUnread}
+      />,
+    );
+
+    await user.click(screen.getByRole('button', { name: /Отметить непрочитанным/ }));
+
+    expect(onMarkUnread).toHaveBeenCalledTimes(1);
+    expect(onMarkUnread).toHaveBeenCalledWith(1042);
+  });
+
+  it('письмо ещё непрочитано (is_unread=true) → кнопки нет (откатывать нечего)', () => {
+    render(
+      <MailDetail
+        message={makeMessage({ is_unread: true })}
+        onBack={vi.fn()}
+        onMarkUnread={vi.fn()}
+      />,
+    );
+
+    expect(
+      screen.queryByRole('button', { name: /Отметить непрочитанным/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('обработчик не передан (супер-админ из `.env`) → кнопки нет', () => {
+    render(<MailDetail message={makeMessage({ is_unread: false })} onBack={vi.fn()} />);
+
+    expect(
+      screen.queryByRole('button', { name: /Отметить непрочитанным/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('идёт запрос отката (markUnreadPending) → кнопка disabled (нет двойной отправки)', () => {
+    render(
+      <MailDetail
+        message={makeMessage({ is_unread: false })}
+        onBack={vi.fn()}
+        onMarkUnread={vi.fn()}
+        markUnreadPending
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: /Отметить непрочитанным/ })).toBeDisabled();
+  });
+});
 
 describe('MailDetail body isolation & notices', () => {
   it('renders body_html only inside a strict sandbox iframe (no scripts/same-origin)', () => {

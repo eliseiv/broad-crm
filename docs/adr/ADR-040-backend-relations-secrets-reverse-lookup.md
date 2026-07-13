@@ -4,6 +4,9 @@
 - Дата: 2026-07-09
 - Затрагивает: [modules/backends](../modules/backends/README.md), [modules/servers](../modules/servers/README.md), [modules/ai-keys](../modules/ai-keys/README.md), [modules/ui](../modules/ui/README.md)
 - Амендмент: [ADR-020](ADR-020-backends-healthcheck-monitor.md) (бэк был «без секрета/связей»), [ADR-035](ADR-035-detail-view-secret-reveal.md) (reveal секретов), [ADR-007](ADR-007-shifrovanie-fernet.md) (Fernet)
+- **Амендирован:** [ADR-046](ADR-046-ui-infra-fix-pack.md) §2в (секции переехали в свёрнутый блок «Информация» detail-модалок) · **[ADR-049](ADR-049-servers-backends-card-first-detail.md) §1–§3 (2026-07-13)**
+
+> **⚠️ §5 (Frontend) ЧАСТИЧНО РАЗВЁРНУТ [ADR-049](ADR-049-servers-backends-card-first-detail.md) — место жительства UI изменилось, КОНТРАКТ НЕТ.** Изменилось **только где рисуется** информация: секция **«Бэки» сервера** переехала из `ServerDetailModal` **на `ServerCard`** («Бэков: N» по `backend_count`, ленивый список по раскрытию); блок **«Информация» бэка** переехал из `BackendDetailModal` (**упразднена**) **на `BackendCard`**. **Не изменились:** модель (`server_id`/`ai_key_id`/`api_key_encrypted`/`admin_api_key_encrypted`/`git`/`note`, миграция `0019`), reveal-эндпоинты и их гейт `backends:edit`, `GET /api/servers/{id}/backends` / `GET /api/ai-keys/{id}/backends`, схема `BackendRef`, порядок `position ASC, created_at DESC, id`, поля `backend_count` в `ServerListItem`/`AiKeyListItem`. Секция «Бэки» у **ИИ-ключа** осталась **в detail-модалке**.
 
 ## Контекст
 
@@ -70,8 +73,11 @@
 ### 5. Frontend (фиксы 6/7/8)
 
 - **Форма бэка (`AddBackendModal` add+edit)** — доп. **сворачиваемая секция «Информация»** (свёрнута по умолчанию, все поля опциональны). **Порядок полей:** **Сервер** (`Select` из `GET /api/servers`, первая опция «Не выбрано»), **ИИ-ключ** (`Select` из `GET /api/ai-keys`, «Не выбрано»), **API KEY** (`Input`, маска + глаз-toggle вводимого значения — как поле ключа `AddAiKeyModal`), **ADMIN API KEY** (то же), **Git** (`Input`, URL), **Примечания** (`Textarea`, **последнее поле**). В edit-режиме FK/`git`/`note` префилятся; поля секретов пустые с подсказкой «Оставьте пустым, чтобы не менять» (очистка секрета через пустое поле в UI **не** выполняется — см. [TD-035](../100-known-tech-debt.md); FK очищается выбором «Не выбрано»; `git`/`note` очищаются очисткой поля).
-- **`BackendDetailModal`** — Код/Название/Домен + **Сервер** (`server_name`/«—») + **ИИ-ключ** (`ai_key_name`/«—») + **API KEY** / **ADMIN API KEY** (`••••` + глаз-reveal под `backends:edit`, если `has_*`; иначе «—») + **Git** (`git`/«—», ссылка) + **Примечания** (`note`/«—»).
-- **`ServerDetailModal` / `AiKeyDetailModal`** — снизу сворачиваемая секция «Бэки» (свёрнута = «Бэков: N» по `backend_count`; раскрытие → ленивый reverse-lookup эндпоинт → список Код/Название/Домен; состояния loading/empty «Бэков нет»/error).
+- ~~**`BackendDetailModal`** — Код/Название/Домен + **Сервер** (`server_name`/«—») + **ИИ-ключ** (`ai_key_name`/«—») + **API KEY** / **ADMIN API KEY** (`••••` + глаз-reveal под `backends:edit`, если `has_*`; иначе «—») + **Git** (`git`/«—», ссылка) + **Примечания** (`note`/«—»).~~
+  **⚠️ РАЗВЁРНУТО [ADR-049](ADR-049-servers-backends-card-first-detail.md) §3 (2026-07-13): `BackendDetailModal` УПРАЗДНЕНА** (файл удалён). Тот же состав (Сервер / ИИ-ключ / API KEY / ADMIN API KEY / Git / Примечания) живёт в **свёрнутом блоке «Информация» НА КАРТОЧКЕ `BackendCard`**; карандаш — в блоке действий карточки. Прочерки «—» упразднены ещё раньше ([ADR-046](ADR-046-ui-infra-fix-pack.md) §3): пустое поле **не рендерится**. Гарантии reveal — те же.
+- **Сворачиваемая секция «Бэки»** (свёрнута = «Бэков: N» по `backend_count`; раскрытие → ленивый reverse-lookup эндпоинт → список Код/Название/Домен; состояния loading / empty «Бэков нет» / error). **Поведение секции не менялось; изменилось её МЕСТО:**
+  - **`AiKeyDetailModal` — БЕЗ ИЗМЕНЕНИЙ:** секция остаётся в detail-модалке (внутри свёрнутой «Информации», [ADR-046](ADR-046-ui-infra-fix-pack.md) §2в).
+  - ~~**`ServerDetailModal`** — секция снизу модалки.~~ **⚠️ РАЗВЁРНУТО [ADR-049](ADR-049-servers-backends-card-first-detail.md) §2 (2026-07-13):** у **сервера** секция живёт **на карточке `ServerCard`**, а **не** в `ServerDetailModal` (у которого блок «Информация» вовсе упразднён). Преднагрузка списков при рендере сетки — **запрещена**; триггер на карточке гасит всплытие и не является drag-ручкой.
 
 ## Последствия
 

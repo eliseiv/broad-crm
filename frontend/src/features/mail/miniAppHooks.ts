@@ -1,8 +1,12 @@
 import { useMemo } from 'react';
-import { useInfiniteQuery } from '@tanstack/react-query';
-import { listMail, MAIL_PAGE_LIMIT } from '@/features/mail/api';
+import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import type { InfiniteData } from '@tanstack/react-query';
+import { listMail, markMailRead, MAIL_PAGE_LIMIT } from '@/features/mail/api';
 import { getMailMiniAppToken } from '@/features/mail/miniAppAuth';
-import type { MailMessage } from '@/types/api';
+import type { MailListResponse, MailMessage } from '@/types/api';
+
+/** queryKey ленты Mini App (изолирован от админской страницы «Почты»). */
+const miniAppFeedKey = ['mail-miniapp', 'messages'] as const;
 
 /**
  * Хуки просмотра ленты для Mini App почты (`/tg/mail`, ADR-044 §7). Ходят на тот же
@@ -32,7 +36,7 @@ export interface MailMiniAppMessagesResult {
  */
 export function useMailMiniAppFeed(enabled: boolean): MailMiniAppMessagesResult {
   const query = useInfiniteQuery({
-    queryKey: ['mail-miniapp', 'messages'] as const,
+    queryKey: miniAppFeedKey,
     queryFn: ({ pageParam, signal }) =>
       // skipAuthReset: 401 (истёкший SSO-JWT Mini App) обрабатывается локально через
       // phase='error', НЕ вызывая clearSession() — изолированная Mini-App-сессия не
@@ -77,4 +81,33 @@ export function useMailMiniAppFeed(enabled: boolean): MailMiniAppMessagesResult 
       void query.refetch();
     },
   };
+}
+
+/**
+ * Пометка письма прочитанным ПРИ ОТКРЫТИИ в Mini App (`POST /api/mail/messages/{id}/read`,
+ * ADR-050 §2.6) — **тем же эндпоинтом**, что и веб: Mini App несёт обычный CRM access-JWT с
+ * `uid` реального пользователя (SSO), поэтому личная прочитанность работает идентично.
+ * Спец-эндпоинта для Mini App нет и не нужно. `skipAuthReset` — истёкший SSO-JWT не роняет
+ * админ-стор. Best-effort: ошибка не ломает показ письма. Кэш ленты Mini App правится
+ * локально (без инвалидэйта — иначе перезапрос всех страниц бесконечного скролла).
+ */
+export function useMarkMailMiniAppRead() {
+  const queryClient = useQueryClient();
+  return useMutation<void, unknown, number>({
+    mutationFn: (messageId) => markMailRead(messageId, getMailMiniAppToken() ?? undefined, true),
+    onSuccess: (_data, messageId) => {
+      queryClient.setQueryData<InfiniteData<MailListResponse>>(miniAppFeedKey, (data) => {
+        if (!data) return data;
+        return {
+          ...data,
+          pages: data.pages.map((page) => ({
+            ...page,
+            messages: page.messages.map((m) =>
+              m.id === messageId ? { ...m, is_unread: false } : m,
+            ),
+          })),
+        };
+      });
+    },
+  });
 }

@@ -796,11 +796,26 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 - **Создание ящика** (`POST /mailboxes`, `POST /mailboxes/oauth/authorize`) при `sees_all_teams=false`: `team_id` обязан ∈ `team_ids`, иначе `403 forbidden`. **`team_id = null` (ящик без команды) — только admin-уровень**; не-admin с `null` → `403`. Несуществующая `team_id` → `404 team_not_found` (осознанный мягкий оракул: `team_id` — неперечислимый UUID на write-пути).
 - **Перенос ящика** (`PATCH .../{id}` с присутствующим `team_id`) — **ТОЛЬКО admin-уровень** (`sees_all_teams=true`), даже если пользователь состоит в обеих командах (требование владельца). Отдельного действия `mail:transfer` нет.
 - **Мутация/удаление/синк ящика по `id`** при `sees_all_teams=false`: ящик обязан иметь `team_id ∈ team_ids`, иначе `403 forbidden`.
+- **Отметка прочитанности** (`POST`/`DELETE /api/mail/messages/{id}/read`, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md)): письмо вне scope → **`404 mail_message_not_found`** (та же анти-энумерация, что у reply — чужое письмо неотличимо от несуществующего). Отметить чужое письмо нельзя.
 - **Теги** — глобальный каталог, scope команд не применяется: чтение под `mail:view`, управление под `mail:tags`.
 
 ### RBAC
 
-`CATALOG["mail"] = ("view","create","edit","delete","sync","tags")`. `reply` — под `view`. Маппинг действие→эндпоинты — [05-security.md](05-security.md#каталог-прав-канон-на-сервере). `GET /api/auth/me` отдаёт `sees_all_mail_teams`.
+`CATALOG["mail"] = ("view","create","edit","delete","sync","tags")`. `reply` — под `view`. **Отметка прочитанности (`POST`/`DELETE /api/mail/messages/{id}/read`) — тоже под `view`** ([ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) §2.3): это личный артефакт **чтения**, а не мутация домена (не меняет ни письмо, ни ящик, ни то, что видят другие); кто вправе прочитать письмо, тот вправе отметить **своё** прочтение. Нового действия в каталоге **не вводится**. Маппинг действие→эндпоинты — [05-security.md](05-security.md#каталог-прав-канон-на-сервере). `GET /api/auth/me` отдаёт `sees_all_mail_teams`.
+
+### Личная прочитанность писем (нормативно, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md))
+
+Прочитанность — **ЛИЧНАЯ у каждого пользователя** (не общая на команду): хранится в таблице связи `mail_message_reads (user_id, message_id)` ([03-data-model.md](03-data-model.md#таблица-mail_message_reads-миграция-0025-adr-050)), существование строки = «прочитано». Один и тот же `id` письма у разных пользователей даёт **разные** `is_unread`.
+
+**Супер-админ из `.env`** ([ADR-008](adr/ADR-008-admin-iz-env.md)) — **не строка в `users`** (`Principal.user_id is None`), FK `mail_message_reads.user_id` для него невыполним. Нормативно:
+
+| Путь | Поведение для супер-админа |
+|------|----------------------------|
+| `POST` / `DELETE /api/mail/messages/{id}/read` | **`403 forbidden`** — как `GET`/`PATCH /api/mail/me/settings` (нет БД-строки) |
+| `is_unread` в `MailMessage` | **всегда `false`** (личного состояния нет) |
+| `GET /api/mail/messages?unread=true` | **пустая страница** (`messages: []`, `next_cursor: null`) |
+
+UI скрывает индикатор непрочитанного, фильтр «Непрочитанные» и кнопку «Отметить непрочитанным» при `me.is_superadmin === true` — это UX; граница — backend-`403`.
 
 ### Коды ошибок модуля
 
@@ -813,9 +828,9 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 | `401` | `not_authenticated` | Машинные эндпоинты: невалидная HMAC-подпись / timestamp вне окна / битый `crm_state` |
 | `401` | `invalid_init_data` | `POST /api/mail/telegram/auth`: неверная подпись Telegram `initData` |
 | `401` | `init_data_expired` | `POST /api/mail/telegram/auth`: `auth_date` старше `MAIL_TG_INITDATA_TTL_SEC` |
-| `403` | `forbidden` | Нет действия в правах роли (RBAC `require`); мутация/синк/удаление ящика вне `MailScope`; создание ящика для чужой команды; `team_id = null` у не-admin; **перенос** ящика не-админом; `GET`/`PATCH /api/mail/me/settings` для супер-админа из `.env` (нет БД-строки) |
+| `403` | `forbidden` | Нет действия в правах роли (RBAC `require`); мутация/синк/удаление ящика вне `MailScope`; создание ящика для чужой команды; `team_id = null` у не-admin; **перенос** ящика не-админом; `GET`/`PATCH /api/mail/me/settings` для супер-админа из `.env` (нет БД-строки); **`POST`/`DELETE /api/mail/messages/{id}/read` для супер-админа из `.env`** (нет БД-строки — [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) §2.5) |
 | `403` | `mail_operator_not_provisioned` | `POST /api/mail/telegram/auth`: Telegram-пользователь не сопоставлен ни с одним CRM-пользователем (`users.telegram`) |
-| `404` | `mail_message_not_found` | Письмо не найдено **или** вне `MailScope` (анти-энумерация); проброс `404` агрегатора при отправке reply |
+| `404` | `mail_message_not_found` | Письмо не найдено **или** вне `MailScope` (анти-энумерация); проброс `404` агрегатора при отправке reply; **`POST`/`DELETE /api/mail/messages/{id}/read` по неизвестному/чужому письму** ([ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) §2.2) |
 | `404` | `mail_mailbox_not_found` | Ящик не найден (`PATCH`/`DELETE`/`sync` по неизвестному `id`) |
 | `404` | `mail_tag_not_found` | Тег/правило не найдены |
 | `404` | `team_not_found` | Переданная `team_id` не существует в CRM |
@@ -848,6 +863,7 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
   "body_html": "<p>Здравствуйте...</p>",
   "body_present": true,
   "body_truncated": false,
+  "is_unread": true,
   "tags": [ { "id": "7f1c…", "name": "Релиз", "color": "#16a34a" } ]
 }
 ```
@@ -866,7 +882,10 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 | `body_html` | string \| null | HTML-тело (рендерится **только** в sandbox-iframe — [modules/mail](modules/mail/README.md#изоляция-html-тела-нормативно--инвариант-adr-012-не-ослаблен)) |
 | `body_present` | boolean | Тело доступно |
 | `body_truncated` | boolean | Тело усечено при приёме |
+| `is_unread` | boolean | **ЛИЧНОЕ производное** ([ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md)): `true` ⇔ для **текущего принципала** нет строки `mail_message_reads(user_id, message_id)`. **Не nullable.** Один и тот же `id` письма у разных пользователей даёт **разные** значения. Для супер-админа из `.env` — **всегда `false`** (нет БД-строки ⇒ нет личного состояния). Меняется вызовами `POST`/`DELETE /api/mail/messages/{id}/read`. Поле `read_at` наружу **не отдаётся** |
 | `tags` | `MailTag[]` | Теги письма |
+
+> **`MailMessage` — ОДНА схема и для ленты, и для детали** (отдельного `GET /api/mail/messages/{id}` не существует; деталь рендерится из уже загруженного объекта). Значит `is_unread` приходит **и в элементе ленты, и в детали** — одним и тем же полем.
 
 `MailAccountRef = { id: integer, email: string, display_name: string | null }`.
 `MailTag = { id: string(uuid), name: string, color: string }` (`color` — HEX из палитры; рендер — [тег-чип](08-design-system.md#тег-чип-нормативно)).
@@ -885,8 +904,13 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 | `limit` | integer? | `1..200`, default `50`. Вне диапазона → `400 invalid_limit` |
 | `mail_account_id` | integer[]? | **Повторяемый** параметр (`?mail_account_id=3&mail_account_id=7`) — фильтр по ящикам. AND-комбинируется с `team_id` и пересекается со `MailScope` |
 | `team_id` | string(uuid)? | Фильтр по команде-владельцу ящика. AND-комбинируется с `mail_account_id` |
+| `unread` | boolean? | **Только непрочитанные ТЕКУЩИМ принципалом** ([ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md)). `true` → фильтр применён; отсутствует / `false` → **фильтр НЕ применяется** (`false` ≠ «только прочитанные» — такого режима нет). AND-комбинируется с `mail_account_id`/`team_id` и пересекается со `MailScope`. Супер-админ из `.env` при `unread=true` → **пустая страница** |
 
 > **Компаундный keyset (нормативно).** `internal_date` **не уникален** (массовая рассылка приходит одной секундой) → пагинация по одному полю даёт пропуски/дубли на границах страниц. Предикат следующей страницы: `WHERE (internal_date, id) < (:cursor_internal_date, :cursor_id) ORDER BY internal_date DESC, id DESC`.
+>
+> **Фильтр `unread=true` применяется ВНУТРИ keyset-запроса (нормативно, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) §2.4)** — анти-джойном `NOT EXISTS (SELECT 1 FROM mail_message_reads r WHERE r.message_id = mail_messages.id AND r.user_id = :uid)` (резолвится по PK `(user_id, message_id)`). Порядок и формат курсора **не меняются**. **Клиентская фильтрация непрочитанных ЗАПРЕЩЕНА** — лента курсорная, фильтр над загруженным набором ломает догрузку.
+>
+> **Поле `is_unread` вычисляется ВТОРЫМ батч-запросом по уже отобранной странице** (`SELECT message_id FROM mail_message_reads WHERE user_id = :uid AND message_id = ANY(:page_ids)`), **не** JOIN'ом в keyset-запрос: один запрос на батч по PK, **не** N+1. **Badge-счётчик непрочитанных не вводится** (потребовал бы `COUNT` по всей ленте на каждый рендер).
 >
 > **Фильтры и scope.** Эффективное множество ящиков = `MailScope` ∩ (`mail_account_id`, если задан) ∩ (ящики `team_id`, если задан). Несуществующий/чужой id → просто не попадает в пересечение → **пустая страница** (`messages: []`), не `404`.
 
@@ -928,6 +952,27 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 
 > **Rate-limit.** Прежний per-IP лимит анонимного external-reply не применяется: reply — **JWT/RBAC-эндпоинт CRM** (`mail:view`), abuse-поверхность закрыта аутентификацией пользователя ([ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) §8).
 
+### POST `/api/mail/messages/{message_id}/read`
+
+Пометить письмо **прочитанным текущим пользователем** ([ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md)). Требует JWT (**`mail:view`**). Прочитанность **личная** — отметка ставится только для принципала запроса и не влияет на других членов команды.
+
+- **Тела запроса нет.** **Response — `204 No Content`** (тела ответа нет).
+- **Идемпотентен:** `INSERT … ON CONFLICT (user_id, message_id) DO NOTHING`. Повторный вызов → тоже `204`; **`read_at` при повторе НЕ обновляется** (важно первое открытие).
+- **Кто вызывает:** UI при **открытии** письма — веб `/mail` (смена выбранного письма, **включая авто-выбор самого свежего** при загрузке вкладки/смене фильтра) **и** Telegram Mini App `/tg/mail` (тот же эндпоинт под тем же CRM-JWT — Mini App несёт обычный access-token с `uid`, [ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) §6).
+
+**Ошибки:** `401 unauthorized`; **`403 forbidden`** (нет `mail:view` **или** супер-админ из `.env` — нет БД-строки); **`404 mail_message_not_found`** (письмо не существует **или** вне `MailScope` — анти-энумерация, чужое неотличимо от несуществующего).
+
+> **⚠️ Гонка «письмо удалено между проверкой и записью» (нормативно, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) §2.2).** Письмо может быть удалено (`DELETE` ящика → CASCADE) уже после scope-проверки, но до `INSERT … ON CONFLICT` → нарушение FK `message_id` → `IntegrityError`. **Он обязан транслироваться в `404 mail_message_not_found`** (а не всплывать как `500`): семантически это ровно «письма нет». **Новых кодов ошибок не вводится.** Нарушение FK по `user_id` в `404` **НЕ транслируется** (это не «письмо не найдено»).
+
+### DELETE `/api/mail/messages/{message_id}/read`
+
+Вернуть письмо в **«непрочитано»** для текущего пользователя ([ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) §2.7). Требует JWT (**`mail:view`**).
+
+- **Response — `204 No Content`.** **Идемпотентен:** отметки не было → всё равно `204`.
+- **Кто вызывает:** кнопка **«Отметить непрочитанным»** в шапке детали письма (веб `/mail`; рендерится только при `is_unread === false`). **В Mini App этой кнопки НЕТ.**
+
+**Ошибки:** те же — `401`, **`403 forbidden`** (нет `mail:view` / супер-админ из `.env`), **`404 mail_message_not_found`**.
+
 ### Схема `MailMailbox`
 
 Ящик из каталога CRM (`mail_accounts`). **Пароли (`password`/`smtp_password`) в схему НЕ входят и в ответах не возвращаются** ([05-security.md](05-security.md#транзит-imapsmtp-кредов-mail-нормативно)).
@@ -964,11 +1009,13 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 
 Список ящиков **из БД CRM**. Требует JWT (`mail:view`). Фильтруется `MailScope` (не-admin — только ящики своих команд).
 
-**Query:** `is_active` — `boolean?` (`true` — только активные, `false` — только неактивные, не задан — все).
+**Query:** `is_active` — `boolean?` (`true` — только активные, `false` — только неактивные, не задан — все). **Это ЕДИНСТВЕННЫЙ query-параметр эндпоинта.**
 
-**Response 200** — `MailMailboxesResponse`: `{ "mailboxes": [ /* MailMailbox[] */ ] }` (может быть пустым; вне scope — пустой).
+**Response 200** — `MailMailboxesResponse`: `{ "mailboxes": [ /* MailMailbox[] */ ] }` (может быть пустым; вне scope — пустой). **Пагинации нет** — список возвращается **целиком** (NFR-1: ящиков немного; на проде 121).
 
 **Ошибки:** `401`, `403 forbidden` (нет `mail:view`).
+
+> **⚠️ Поиск и фильтр по команде на вкладке «Почты» — КЛИЕНТСКИЕ (нормативно, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) §1).** Параметры **`q`/`search`/`team_id` у этого эндпоинта НЕ вводятся**: список грузится целиком, поэтому клиентская фильтрация полна и точна (тот же выбор, что для поиска по бэкам, [ADR-039](adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md)). Поиск — по трём полям `MailMailbox`: **`number`**, **`app_name`**, **`email`** (подстрока, регистронезависимо). Фильтр по команде — по `team_id` элемента. **Backend по этому фиксу не меняется.** Это осознанное отличие от `GET /api/mail/messages`, где `team_id` **серверный** (лента курсорная — клиентский фильтр сломал бы догрузку).
 
 ### POST `/api/mail/mailboxes/test`
 

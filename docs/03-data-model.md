@@ -1262,7 +1262,7 @@ ALTER TABLE servers DROP COLUMN position;
 
 ## Таблицы модуля «Почты» (`mail_accounts`, `mail_messages`, `mail_tags`, …)
 
-Решение — [ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) (полный перенос почты в CRM; **разворот** «без хранения» [ADR-012](adr/ADR-012-mail-read-through-proxy.md)/[ADR-038](adr/ADR-038-mail-headless-integration.md)) + [ADR-047](adr/ADR-047-mail-fix-pack.md) (фикс-пакет 2026-07-11). Миграции: **`0021_create_mail_module`**, **`0022_create_mail_sent_messages`**, **`0023_mail_tags_drop_is_builtin`**, **`0024_mail_accounts_number_app_name`**. Модуль — [modules/mail](modules/mail/README.md), контракт — [04-api.md#mail](04-api.md#mail).
+Решение — [ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) (полный перенос почты в CRM; **разворот** «без хранения» [ADR-012](adr/ADR-012-mail-read-through-proxy.md)/[ADR-038](adr/ADR-038-mail-headless-integration.md)) + [ADR-047](adr/ADR-047-mail-fix-pack.md) (фикс-пакет 2026-07-11). Миграции: **`0021_create_mail_module`**, **`0022_create_mail_sent_messages`**, **`0023_mail_tags_drop_is_builtin`**, **`0024_mail_accounts_number_app_name`**, **`0025_mail_message_reads`** ([ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) — личная прочитанность писем). Модуль — [modules/mail](modules/mail/README.md), контракт — [04-api.md#mail](04-api.md#mail).
 
 **CRM — система-запись:** письма/теги/каталог ящиков/история Telegram-уведомлений хранятся здесь. IMAP/SMTP-**креды в CRM НЕ хранятся** (транзит в агрегатор, шифрование там; Fernet к почте не применяется).
 
@@ -1347,6 +1347,42 @@ ALTER TABLE servers DROP COLUMN position;
 ### Таблица `mail_sent_messages` (миграция `0022`)
 
 Журнал отправленных reply (CRM — инициатор): `id uuid PK DEFAULT gen_random_uuid()`, `mail_account_id integer NOT NULL REFERENCES mail_accounts(id) ON DELETE CASCADE`, `user_id uuid NULL REFERENCES users(id) ON DELETE SET NULL` (автор), `to_addrs text NOT NULL`, `cc_addrs text NULL`, `subject text NULL`, `body_text text NOT NULL`, `in_reply_to text NULL`, `refs_header text NULL`, `smtp_message_id text NULL`, `sent_at timestamptz NOT NULL DEFAULT now()`.
+
+### Таблица `mail_message_reads` (миграция `0025`, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md))
+
+**Личная прочитанность писем** — таблица связи «пользователь × письмо». **Существование строки = «прочитано» ЭТИМ пользователем**; отсутствие = «не прочитано». Отдельного булева поля нет (оно было бы избыточным).
+
+| Колонка | Тип | Ограничения | Смысл |
+|---------|-----|-------------|-------|
+| `user_id` | `uuid` | `NOT NULL`, FK → `users(id)` **`ON DELETE CASCADE`** | Пользователь CRM. Удалили пользователя — его отметки уходят |
+| `message_id` | `bigint` | `NOT NULL`, FK → `mail_messages(id)` **`ON DELETE CASCADE`** | Письмо (`mail_messages.id` — `BIGSERIAL`). Удалили письмо/ящик — отметки уходят |
+| `read_at` | `timestamptz` | `NOT NULL DEFAULT now()` | Когда пользователь открыл письмо. **В контракт не отдаётся** (диагностика). При повторной пометке **не обновляется** (`ON CONFLICT DO NOTHING`) |
+
+- **PK — составной `(user_id, message_id)`** (`pk_mail_message_reads`). Он же обслуживает **оба** горячих пути: батч-лукап `WHERE user_id = :uid AND message_id = ANY(:page_ids)` (вычисление `is_unread` для страницы ленты) и анти-джойн `NOT EXISTS (…)` (фильтр `unread=true`). Отдельный индекс по `(user_id)` **не нужен** — PK ведёт с `user_id`.
+- **`ix_mail_message_reads_message_id (message_id)` — ОБЯЗАТЕЛЕН.** PK ведёт с `user_id`, поэтому поиск по `message_id` его **не использует**, а `ON DELETE CASCADE` со стороны `mail_messages` (каскад `mail_accounts` → `mail_messages` → `mail_message_reads` при удалении ящика) без этого индекса выполнял бы **seq scan** по всей таблице отметок **на каждое удаляемое письмо** — удаление ящика со 100k писем стало бы неприемлемо долгим.
+- **Прочитанность ЛИЧНАЯ** (требование владельца): признак принадлежит **паре** (пользователь, письмо), а не письму — колонка `mail_messages.is_read` физически не могла бы этого выразить (прочтение коллегой гасило бы индикатор всем).
+- **Супер-админ из `.env`** ([ADR-008](adr/ADR-008-admin-iz-env.md)) строки в `users` **не имеет** (`Principal.user_id is None`) ⇒ отметок иметь не может: `POST`/`DELETE …/read` → **`403`**, `is_unread` → всегда `false` ([04-api.md](04-api.md#личная-прочитанность-писем-нормативно-adr-050)). То же ограничение, что у `mail_user_settings`.
+
+### Миграция `0025_mail_message_reads` (концепт, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) §2.1)
+
+**Идентификаторы (нормативно, правило [§Требования к миграциям](#требования-к-миграциям-общие-нормативно--для-всех-модулей)):**
+- **Имя файла:** `0025_mail_message_reads.py`
+- **`revision`:** **`"0025_mail_message_reads"`** — **23 символа**, укладывается в предел `alembic_version.version_num VARCHAR(32)` (укорачивать **не требуется**)
+- **`down_revision`:** **`"0024_mail_accounts_num_app_name"`** (31 символ) — фактическая голова цепочки
+
+```sql
+CREATE TABLE mail_message_reads (
+  user_id    uuid        NOT NULL REFERENCES users(id)         ON DELETE CASCADE,
+  message_id bigint      NOT NULL REFERENCES mail_messages(id) ON DELETE CASCADE,
+  read_at    timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT pk_mail_message_reads PRIMARY KEY (user_id, message_id)
+);
+CREATE INDEX ix_mail_message_reads_message_id ON mail_message_reads (message_id);
+```
+
+- **Backfill не требуется:** пустая таблица = «все письма непрочитаны для всех» — корректное начальное состояние.
+- **`downgrade()`** — рабочий: `DROP TABLE mail_message_reads;`.
+- Миграция чисто **аддитивная**: существующие таблицы не меняются, данные не теряются.
 
 ### Миграция `0023_mail_tags_drop_is_builtin` (концепт, [ADR-047](adr/ADR-047-mail-fix-pack.md) §1)
 

@@ -4,6 +4,7 @@ from app.models.ai_key import AiKey, AiKeyStatus, AiProvider
 from app.models.base import Base
 from app.models.mail_account import MailAccount
 from app.models.mail_message import MailMessage
+from app.models.mail_message_read import MailMessageRead
 from app.models.mail_sent_message import MailSentMessage
 from app.models.mail_tag import MailMessageTag, MailTag, MailTagRule
 from app.models.mail_telegram import MailTelegramLink, MailTelegramNotification
@@ -30,6 +31,7 @@ __all__ = [
     "Base",
     "MailAccount",
     "MailMessage",
+    "MailMessageRead",
     "MailMessageTag",
     "MailSentMessage",
     "MailTag",

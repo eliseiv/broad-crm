@@ -24,6 +24,7 @@ from typing import TypeVar, cast
 
 from fastapi import status
 from pydantic import BaseModel, ValidationError
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
@@ -62,6 +63,7 @@ from app.models.mail_message import MailMessage as MailMessageModel
 from app.models.mail_tag import MailTag as MailTagModel
 from app.models.mail_tag import MailTagRule as MailTagRuleModel
 from app.repositories.mail_account_repository import MailAccountRepository
+from app.repositories.mail_message_read_repository import MailMessageReadRepository
 from app.repositories.mail_message_repository import MailMessageRepository
 from app.repositories.mail_sent_message_repository import MailSentMessageRepository
 from app.repositories.mail_tag_repository import MailTagRepository
@@ -99,6 +101,12 @@ logger = get_logger(__name__)
 
 _LIMIT_MIN = 1
 _LIMIT_MAX = 200
+
+# FK `mail_message_reads.message_id → mail_messages.id` (миграция 0025). Его нарушение на
+# `POST …/read` = письмо удалено гонкой между scope-проверкой и INSERT → 404, а не 500
+# (ADR-050 §2.2). Имя FK `user_id` тут НЕ участвует намеренно: его нарушение под 404 не
+# маскируется.
+_MESSAGE_READS_MESSAGE_FK = "fk_mail_message_reads_message_id"
 
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
@@ -156,6 +164,7 @@ class MailService:
         self._settings = settings
         self._accounts = MailAccountRepository(session)
         self._messages = MailMessageRepository(session)
+        self._reads = MailMessageReadRepository(session)
         self._tags = MailTagRepository(session)
         self._sent = MailSentMessageRepository(session)
         self._teams = TeamRepository(session)
@@ -166,18 +175,26 @@ class MailService:
         self,
         *,
         scope: MailScope,
+        user_id: uuid.UUID | None,
         before: str | None,
         limit: int,
         mail_account_ids: list[int] | None,
         team_id: uuid.UUID | None,
+        unread: bool | None = None,
     ) -> MailListResponse:
         """Лента писем из `mail_messages` (компаундный keyset, ADR-044 §2/§7).
 
-        Порядок `internal_date DESC, id DESC`. Фильтры `mail_account_id` (повторяемый) и
-        `team_id` AND-комбинируемы, пересекаются со scope команд пользователя. Вне scope
-        (не-admin с пустым `team_ids` / несуществующий фильтр) → пустая страница без
-        выборки писем (анти-энумерация). `before` — opaque-курсор пары `(internal_date,
+        Порядок `internal_date DESC, id DESC`. Фильтры `mail_account_id` (повторяемый),
+        `team_id` и `unread` AND-комбинируемы, пересекаются со scope команд пользователя.
+        Вне scope (не-admin с пустым `team_ids` / несуществующий фильтр) → пустая страница
+        без выборки писем (анти-энумерация). `before` — opaque-курсор пары `(internal_date,
         id)`; битый → 400 invalid_cursor. `limit` вне [1..200] → 400 invalid_limit.
+
+        `unread=true` (ADR-050 §2.2) — только непрочитанные ТЕКУЩИМ принципалом; фильтр
+        уходит анти-джойном ВНУТРЬ keyset-запроса. Отсутствие / `false` → фильтр не
+        применяется (`false` ≠ «только прочитанные»). Супер-админ из `.env`
+        (`user_id is None` — нет строки в `users`, личного состояния нет) при `unread=true`
+        → пустая страница без обращения к БД (§2.5).
         """
         if limit < _LIMIT_MIN or limit > _LIMIT_MAX:
             raise invalid_limit()
@@ -188,6 +205,9 @@ class MailService:
             except MailCursorError as exc:
                 raise invalid_cursor() from exc
 
+        if unread and user_id is None:
+            return MailListResponse(messages=[], next_cursor=None)
+
         visible = await self._resolve_visible_accounts(
             scope=scope, mail_account_ids=mail_account_ids, team_id=team_id
         )
@@ -195,7 +215,10 @@ class MailService:
             return MailListResponse(messages=[], next_cursor=None)
 
         rows = await self._messages.list_feed(
-            mail_account_ids=visible, cursor=cursor, limit=limit + 1
+            mail_account_ids=visible,
+            cursor=cursor,
+            limit=limit + 1,
+            unread_for_user_id=user_id if unread else None,
         )
         has_more = len(rows) > limit
         page = rows[:limit]
@@ -204,8 +227,72 @@ class MailService:
             last = page[-1]
             next_cursor = encode_mail_cursor(last.internal_date, last.id)
 
-        messages = await self._serialize_messages(page)
+        messages = await self._serialize_messages(page, user_id=user_id)
         return MailListResponse(messages=messages, next_cursor=next_cursor)
+
+    # --- Личная прочитанность писем (ADR-050 §2) ----------------------------
+
+    async def mark_read(
+        self, *, scope: MailScope, user_id: uuid.UUID | None, message_id: int
+    ) -> None:
+        """Пометить письмо прочитанным текущим пользователем (ADR-050 §2.2). Гейт mail:view.
+
+        Идемпотентно (`ON CONFLICT DO NOTHING`): повтор — не ошибка, `read_at` не
+        обновляется. Письмо вне `MailScope`/несуществующее → 404 (анти-энумерация).
+        Супер-админ из `.env` (нет строки в `users`) → 403 (§2.5), как на
+        `GET`/`PATCH /api/mail/me/settings`.
+
+        ГОНКА (нормативно, ADR-050 §2.2): письмо может быть удалено (`DELETE` ящика →
+        CASCADE) уже ПОСЛЕ scope-проверки, но ДО `INSERT` → нарушение FK `message_id`.
+        Такой `IntegrityError` транслируется в тот же 404 mail_message_not_found (это
+        ровно «письма нет»), а не всплывает как 500. Нарушение FK по `user_id` НЕ
+        маскируется под 404 (пользователь удалён посреди собственного запроса — это не
+        «письмо не найдено») и пробрасывается как есть.
+        """
+        resolved_user_id = self._require_db_user(user_id)
+        await self._load_message_in_scope(scope, message_id)
+        try:
+            await self._reads.mark_read(user_id=resolved_user_id, message_id=message_id)
+        except IntegrityError as exc:
+            if self._is_message_fk_violation(exc):
+                raise mail_message_not_found() from exc
+            raise
+
+    async def unmark_read(
+        self, *, scope: MailScope, user_id: uuid.UUID | None, message_id: int
+    ) -> None:
+        """Вернуть письмо в «непрочитано» для текущего пользователя (ADR-050 §2.7).
+
+        Идемпотентно: отметки не было — не ошибка. Гейт/scope/супер-админ — как у
+        `mark_read` (тот же 403 и тот же 404).
+        """
+        resolved_user_id = self._require_db_user(user_id)
+        await self._load_message_in_scope(scope, message_id)
+        await self._reads.unmark_read(user_id=resolved_user_id, message_id=message_id)
+
+    @staticmethod
+    def _require_db_user(user_id: uuid.UUID | None) -> uuid.UUID:
+        """Личное состояние есть только у БД-пользователя; супер-админ из `.env` → 403."""
+        if user_id is None:
+            raise forbidden()
+        return user_id
+
+    @staticmethod
+    def _is_message_fk_violation(exc: IntegrityError) -> bool:
+        """Нарушен ли именно FK `message_id` (письмо удалено гонкой), а не FK `user_id`.
+
+        Имя нарушенной constraint несёт `asyncpg.ForeignKeyViolationError.constraint_name`,
+        и лежит она в `exc.orig.__cause__`: на самом `exc.orig` (DBAPI-обёртка
+        SQLAlchemy `AsyncAdapt_asyncpg_dbapi.IntegrityError`) атрибута НЕТ — проверено на
+        живом PostgreSQL 16 + asyncpg. Fallback по тексту — на случай смены обёртки.
+        Различение обязательно (ADR-050 §2.2): нарушение FK `user_id` под 404 маскировать
+        нельзя.
+        """
+        cause = getattr(exc.orig, "__cause__", None)
+        constraint = getattr(cause, "constraint_name", None)
+        if isinstance(constraint, str):
+            return constraint == _MESSAGE_READS_MESSAGE_FK
+        return _MESSAGE_READS_MESSAGE_FK in str(exc.orig)
 
     async def _resolve_visible_accounts(
         self,
@@ -239,14 +326,25 @@ class MailService:
             visible &= extra
         return list(visible)
 
-    async def _serialize_messages(self, rows: list[MailMessageModel]) -> list[MailMessage]:
-        """Проекция строк писем в схему ленты (ящик + теги батч-запросами, ADR-044 §2)."""
+    async def _serialize_messages(
+        self, rows: list[MailMessageModel], *, user_id: uuid.UUID | None
+    ) -> list[MailMessage]:
+        """Проекция строк писем в схему ленты (ящик + теги батч-запросами, ADR-044 §2).
+
+        `is_unread` (ADR-050 §2.4) — ОДИН батч-запрос по PK на уже отобранную страницу
+        (`message_id = ANY(:page_ids)`), а НЕ JOIN в keyset-запрос ленты и не N+1.
+        Супер-админ из `.env` (`user_id is None`) личного состояния не имеет → `false`
+        для всех писем, лишнего запроса нет (§2.5).
+        """
         if not rows:
             return []
         account_ids = {row.mail_account_id for row in rows}
         message_ids = [row.id for row in rows]
         accounts = await self._accounts.get_many(account_ids)
         tags_by_message = await self._tags.tags_for_messages(message_ids)
+        read_ids: set[int] = set()
+        if user_id is not None:
+            read_ids = await self._reads.read_ids(user_id=user_id, message_ids=message_ids)
 
         messages: list[MailMessage] = []
         for row in rows:
@@ -274,6 +372,7 @@ class MailService:
                     body_html=row.body_html,
                     body_present=row.body_present,
                     body_truncated=row.body_truncated,
+                    is_unread=user_id is not None and row.id not in read_ids,
                     tags=tags,
                 )
             )
@@ -562,15 +661,7 @@ class MailService:
         Нормы (§8): body непустой ≤1 MiB; ≤100 адресов to+cc, e-mail regex; subject ≤998.
         """
         self._ensure_configured()
-        message = await self._messages.get(message_id)
-        if message is None:
-            raise mail_message_not_found()
-        account = await self._accounts.get(message.mail_account_id)
-        if account is None:
-            raise mail_message_not_found()
-        if not scope.sees_all_teams and account.team_id not in scope.team_ids:
-            # Анти-энумерация: чужое письмо неотличимо от несуществующего.
-            raise mail_message_not_found()
+        message = await self._load_message_in_scope(scope, message_id)
 
         to_addrs, cc_addrs, subject, body = self._prepare_reply(message, payload)
         in_reply_to = message.message_id_header
@@ -749,6 +840,23 @@ class MailService:
         """Команда существует в CRM, иначе 404 team_not_found (ADR-044 §4)."""
         if await self._teams.get(team_id) is None:
             raise team_not_found()
+
+    async def _load_message_in_scope(self, scope: MailScope, message_id: int) -> MailMessageModel:
+        """Письмо из БД CRM с проверкой `MailScope` (ADR-044 §7, ADR-050 §2.3).
+
+        Нет письма, нет ящика-владельца или ящик вне scope → 404 mail_message_not_found:
+        анти-энумерация — чужое письмо неотличимо от несуществующего. Общий путь reply и
+        отметок прочитанности.
+        """
+        message = await self._messages.get(message_id)
+        if message is None:
+            raise mail_message_not_found()
+        account = await self._accounts.get(message.mail_account_id)
+        if account is None:
+            raise mail_message_not_found()
+        if not scope.sees_all_teams and account.team_id not in scope.team_ids:
+            raise mail_message_not_found()
+        return message
 
     async def _load_account_in_scope(self, scope: MailScope, mailbox_id: int) -> MailAccount:
         """Ящик из каталога с проверкой scope (ADR-044 §7): нет → 404, вне scope → 403."""

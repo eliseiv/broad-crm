@@ -44,7 +44,16 @@ class MailTag(BaseModel):
 
 
 class MailMessage(BaseModel):
-    """Письмо ленты (проекция `mail_messages` + ящик + теги, ADR-044 §2)."""
+    """Письмо ленты (проекция `mail_messages` + ящик + теги, ADR-044 §2).
+
+    Схема ОДНА и для ленты, и для детали (отдельного `GET /messages/{id}` нет), поэтому
+    `is_unread` приходит в обоих местах одним полем.
+
+    `is_unread` (ADR-050 §2.2) — ЛИЧНОЕ производное: `true` ⇔ для ТЕКУЩЕГО принципала нет
+    строки `mail_message_reads(user_id, message_id)`. Один и тот же `id` письма у разных
+    пользователей даёт разные значения. Супер-админ из `.env` (нет строки в `users`) →
+    всегда `false`. `read_at` наружу не отдаётся.
+    """
 
     id: int
     subject: str | None
@@ -58,6 +67,7 @@ class MailMessage(BaseModel):
     body_html: str | None
     body_present: bool
     body_truncated: bool
+    is_unread: bool
     tags: list[MailTag]
 
 

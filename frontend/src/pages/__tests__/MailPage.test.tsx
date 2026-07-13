@@ -40,6 +40,12 @@ const teams = vi.hoisted(() => ({
   value: { data: { items: [{ id: 'team-3', name: 'Продажи' }] } } as unknown,
 }));
 
+// Мутации личной прочитанности (ADR-050 §2.6/§2.7): спаим ФАКТ и АРГУМЕНТ вызова —
+// `POST …/read` обязан уходить РОВНО ОДИН раз на СМЕНУ письма (не на каждый рендер),
+// `DELETE …/read` — по кнопке «Отметить непрочитанным».
+const markReadSpy = vi.hoisted(() => vi.fn());
+const unmarkReadSpy = vi.hoisted(() => vi.fn());
+
 vi.mock('@/features/mail/hooks', () => ({
   useMailFeed: (args: unknown) => {
     useMailFeedSpy(args);
@@ -52,6 +58,8 @@ vi.mock('@/features/mail/hooks', () => ({
   // Шапка вкладок рендерит MailNotificationsToggle → useMailSettings/useUpdateMailSettings.
   useMailSettings: () => ({ data: undefined, isLoading: false, isError: false }),
   useUpdateMailSettings: () => ({ mutate: vi.fn(), isPending: false }),
+  useMarkMailRead: () => ({ mutate: markReadSpy, isPending: false }),
+  useUnmarkMailRead: () => ({ mutate: unmarkReadSpy, isPending: false }),
 }));
 
 // Дропдаун «Команда» тянет CRM-команды через feature teams (ADR-044 §7).
@@ -91,7 +99,7 @@ function triggerIntersection(): void {
   });
 }
 
-function makeMessage(id: number, tags: MailMessage['tags'] = []): MailMessage {
+function makeMessage(id: number, tags: MailMessage['tags'] = [], isUnread = false): MailMessage {
   return {
     id,
     subject: `Письмо ${id}`,
@@ -105,6 +113,8 @@ function makeMessage(id: number, tags: MailMessage['tags'] = []): MailMessage {
     body_html: null,
     body_present: true,
     body_truncated: false,
+    // Персональный признак непрочитанности (ADR-050 §2.2) — обязательное поле контракта.
+    is_unread: isUnread,
     tags,
   };
 }
@@ -490,5 +500,245 @@ describe('MailPage view-guard (mail:view)', () => {
     // (`sees_all_mail_teams`, ADR-038 §3): у роли mail:view он скрыт (анти-энумерация).
     expect(screen.getByLabelText('Почта')).toBeInTheDocument();
     expect(screen.queryByLabelText('Команда')).not.toBeInTheDocument();
+  });
+});
+
+// --- Личная прочитанность писем (ADR-050 §2) ---------------------------------
+//
+// Прогоняем под ОБЫЧНЫМ пользователем (`mail:view`, НЕ супер-админ из `.env`): личное
+// состояние прочитанности есть только у БД-пользователя (§2.5).
+describe('MailPage — пометка «прочитано» при открытии (ADR-050 §2.6)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ioCallback = null;
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    logout();
+  });
+
+  it('авто-выбор самого свежего письма шлёт РОВНО ОДИН POST …/read (тело отрендерено ⇒ открыто)', () => {
+    feed.value = baseFeed({
+      messages: [makeMessage(2, [], true), makeMessage(1, [], true)],
+    });
+    render(<MailPage />);
+
+    // Авто-выбранное свежее письмо тоже помечается прочитанным (нормативно, §2.6).
+    expect(markReadSpy).toHaveBeenCalledTimes(1);
+    expect(markReadSpy).toHaveBeenCalledWith(2);
+  });
+
+  it('повторные рендеры при неизменном выбранном письме POST повторно НЕ шлют (триггер = смена письма)', () => {
+    feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], true)] });
+    const { rerender } = render(<MailPage />);
+    expect(markReadSpy).toHaveBeenCalledTimes(1);
+
+    // Ре-рендер (напр. ре-фетч ленты) при том же selectedId — нового запроса нет.
+    rerender(<MailPage />);
+    rerender(<MailPage />);
+
+    expect(markReadSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('смена выбранного письма кликом шлёт ровно один POST на НОВОЕ письмо', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], true)] });
+    render(<MailPage />);
+    expect(markReadSpy).toHaveBeenCalledTimes(1); // авто-выбор id=2
+
+    await user.click(screen.getByText('Письмо 1'));
+
+    expect(markReadSpy).toHaveBeenCalledTimes(2);
+    expect(markReadSpy).toHaveBeenLastCalledWith(1);
+  });
+
+  it('непрочитанное письмо в списке несёт sr-only «Непрочитано» (не только цвет/вес, a11y)', () => {
+    feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], false)] });
+    render(<MailPage />);
+
+    // Ровно одно непрочитанное письмо в списке.
+    expect(screen.getAllByText('Непрочитано')).toHaveLength(1);
+  });
+});
+
+describe('MailPage — откат «Отметить непрочитанным» (ADR-050 §2.7)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ioCallback = null;
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    logout();
+  });
+
+  it('кнопка рендерится ТОЛЬКО когда письмо уже прочитано (is_unread === false)', () => {
+    feed.value = baseFeed({ messages: [makeMessage(2, [], true)] });
+    const { rerender } = render(<MailPage />);
+
+    // Открытое письмо ещё числится непрочитанным → кнопки отката нет.
+    expect(
+      screen.queryByRole('button', { name: /Отметить непрочитанным/ }),
+    ).not.toBeInTheDocument();
+
+    // После успешного 204 кэш ленты правится точечно: is_unread=false → кнопка появляется.
+    feed.value = baseFeed({ messages: [makeMessage(2, [], false)] });
+    rerender(<MailPage />);
+
+    expect(screen.getByRole('button', { name: /Отметить непрочитанным/ })).toBeInTheDocument();
+  });
+
+  it('клик шлёт DELETE …/read, НЕ закрывает деталь и НЕ ретриггерит авто-пометку', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2, [], false), makeMessage(1, [], false)] });
+    render(<MailPage />);
+    expect(markReadSpy).toHaveBeenCalledTimes(1); // авто-пометка при открытии
+
+    await user.click(screen.getByRole('button', { name: /Отметить непрочитанным/ }));
+
+    expect(unmarkReadSpy).toHaveBeenCalledTimes(1);
+    expect(unmarkReadSpy).toHaveBeenCalledWith(2);
+    // Деталь осталась открытой (письмо не «схлопнулось»).
+    expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
+
+    // Кэш ленты обновился (is_unread=true), письмо ОСТАЛОСЬ выбранным: авто-пометка повторно
+    // не срабатывает — её триггер — СМЕНА письма, а не рендер (иначе откат затирался бы).
+    feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], false)] });
+    render(<MailPage />);
+    expect(markReadSpy).toHaveBeenCalledTimes(2); // ровно +1 за новый монтаж, не больше
+  });
+});
+
+describe('MailPage — серверный фильтр «Непрочитанные» (ADR-050 §2.8)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ioCallback = null;
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    logout();
+  });
+
+  it('тумблер уходит в ЗАПРОС ленты (unread=true) — фильтрация серверная, не клиентская', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2, [], true)] });
+    render(<MailPage />);
+
+    const toggle = screen.getByRole('button', { name: /Непрочитанные/ });
+    expect(toggle).toHaveAttribute('aria-pressed', 'false');
+    expect(useMailFeedSpy).toHaveBeenLastCalledWith(expect.objectContaining({ unread: false }));
+
+    await user.click(toggle);
+
+    expect(screen.getByRole('button', { name: /Непрочитанные/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(useMailFeedSpy).toHaveBeenLastCalledWith(expect.objectContaining({ unread: true }));
+  });
+
+  it('AND-комбинируется с дропдаунами «Почта»/«Команда» (ни один не сбрасывает другой)', async () => {
+    const user = userEvent.setup();
+    loginAs({
+      isSuperadmin: false,
+      role: 'Менеджер',
+      seesAllMailTeams: true,
+      permissions: { mail: ['view'], teams: ['view'] },
+    });
+    feed.value = baseFeed({ messages: [makeMessage(2, [], true)] });
+    render(<MailPage />);
+
+    await user.click(screen.getByRole('button', { name: /Непрочитанные/ }));
+    await user.selectOptions(screen.getByLabelText('Почта') as HTMLSelectElement, '7');
+    await user.selectOptions(screen.getByLabelText('Команда') as HTMLSelectElement, 'team-3');
+
+    expect(useMailFeedSpy).toHaveBeenLastCalledWith({
+      mailAccountId: 7,
+      teamId: 'team-3',
+      unread: true,
+    });
+  });
+
+  it('открытое письмо при активном фильтре ОСТАЁТСЯ в списке (ленту не инвалидируем)', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], true)] });
+    const { rerender } = render(<MailPage />);
+
+    await user.click(screen.getByRole('button', { name: /Непрочитанные/ }));
+    await user.click(screen.getByText('Письмо 1'));
+    expect(markReadSpy).toHaveBeenLastCalledWith(1);
+
+    // Точечная правка кэша ленты (is_unread=false) вместо инвалидэйта — набор писем тот же.
+    feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], false)] });
+    rerender(<MailPage />);
+
+    // Строка НЕ исчезает из-под курсора (в списке — элемент, в детали — заголовок), а
+    // индикатор непрочитанного гаснет только у неё (§2.8).
+    const listItem = screen
+      .getAllByRole('button')
+      .find((el) => el.getAttribute('aria-current') === 'true');
+    expect(listItem?.textContent).toContain('Письмо 1');
+    expect(screen.getByRole('heading', { name: 'Письмо 1' })).toBeInTheDocument();
+    expect(screen.getAllByText('Непрочитано')).toHaveLength(1);
+  });
+
+  it('пустой результат фильтра → нормативная строка «Непрочитанных писем нет»', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2, [], true)] });
+    const { rerender } = render(<MailPage />);
+
+    await user.click(screen.getByRole('button', { name: /Непрочитанные/ }));
+    feed.value = baseFeed({ messages: [] });
+    rerender(<MailPage />);
+
+    // И в списке, и в заглушке детали — своя строка (не «Писем пока нет»).
+    expect(screen.getAllByText('Непрочитанных писем нет')).toHaveLength(2);
+    expect(screen.queryByText('Писем пока нет')).not.toBeInTheDocument();
+  });
+});
+
+describe('MailPage — супер-админ из `.env` не имеет личного состояния (ADR-050 §2.5)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    ioCallback = null;
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+    loginSuperadmin();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    logout();
+  });
+
+  it('контролов прочитанности нет и POST/DELETE …/read не вызываются', async () => {
+    const user = userEvent.setup();
+    // Даже если сервер (гипотетически) прислал is_unread=true — UI супер-админу его не
+    // показывает и запросов не шлёт (backend вернул бы 403).
+    feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], false)] });
+    render(<MailPage />);
+
+    // Ни тумблера «Непрочитанные», ни индикатора, ни кнопки отката.
+    expect(screen.queryByRole('button', { name: /Непрочитанные/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('Непрочитано')).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Отметить непрочитанным/ }),
+    ).not.toBeInTheDocument();
+    // Пометка при открытии не выполняется (ни авто-выбором, ни кликом).
+    expect(markReadSpy).not.toHaveBeenCalled();
+
+    await user.click(screen.getByText('Письмо 1'));
+
+    expect(markReadSpy).not.toHaveBeenCalled();
+    expect(unmarkReadSpy).not.toHaveBeenCalled();
+    // В запрос ленты `unread` не уходит.
+    expect(useMailFeedSpy).toHaveBeenLastCalledWith(expect.objectContaining({ unread: false }));
   });
 });

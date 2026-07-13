@@ -52,10 +52,10 @@ function server(overrides: Partial<Server> = {}): Server {
   };
 }
 
-describe('ServerCard detail → edit (ADR-035)', () => {
+describe('ServerCard detail → edit (ADR-035, состав — ADR-049 §1)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('клик по карточке открывает detail-модалку (Просмотр), НЕ edit', async () => {
+  it('клик по карточке открывает detail-модалку (Просмотр), НЕ edit; креды видны сразу', async () => {
     const user = userEvent.setup();
     render(<ServerCard server={server()} />, { wrapper });
 
@@ -63,15 +63,14 @@ describe('ServerCard detail → edit (ADR-035)', () => {
 
     const dialog = within(await screen.findByRole('dialog'));
     expect(dialog.getByText('Просмотр')).toBeInTheDocument();
-    // Видимая зона detail — только идентификаторы (Название / IP); «Пользователь» и «Пароль»
-    // ушли в свёрнутый по умолчанию блок «Информация» (ADR-046 §2в).
+    // ADR-049 §1: Название → IP → Пользователь → Пароль — в ГЛАВНОМ блоке, без сворачивания;
+    // блок «Информация» в detail-модалке сервера УПРАЗДНЁН.
     expect(dialog.getByText('Server 01')).toBeInTheDocument();
     expect(dialog.getByText('10.0.0.10')).toBeInTheDocument();
-    expect(dialog.queryByText('Пользователь')).not.toBeInTheDocument();
-
-    await user.click(dialog.getByRole('button', { name: 'Информация' }));
     expect(dialog.getByText('Пользователь')).toBeInTheDocument();
     expect(dialog.getByText('root')).toBeInTheDocument();
+    expect(dialog.getByText('Пароль')).toBeInTheDocument();
+    expect(dialog.queryByRole('button', { name: 'Информация' })).not.toBeInTheDocument();
     // edit-модалка ещё не открыта.
     expect(screen.queryByText('Изменить сервер')).not.toBeInTheDocument();
     expect(hooks.updateMutate).not.toHaveBeenCalled();

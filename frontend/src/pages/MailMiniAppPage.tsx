@@ -5,10 +5,11 @@ import { MailTags } from '@/components/MailTags';
 import { Spinner } from '@/components/ui/Spinner';
 import { ApiError } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
+import { cn } from '@/lib/cn';
 import { mailTelegramAuth } from '@/features/mail/api';
 import { buildMailBodySrcDoc } from '@/features/mail/mailBody';
 import { useMailMiniAppAuthStore } from '@/features/mail/miniAppAuth';
-import { useMailMiniAppFeed } from '@/features/mail/miniAppHooks';
+import { useMailMiniAppFeed, useMarkMailMiniAppRead } from '@/features/mail/miniAppHooks';
 import { applyTelegramTheme, loadTelegramSdk } from '@/features/sms/telegramSdk';
 import type { Theme } from '@/lib/theme';
 import type { MailMessage } from '@/types/api';
@@ -35,6 +36,8 @@ const T = {
   bodyFrameTitle: 'Тело письма',
   bodyUnavailable: 'Тело письма недоступно',
   bodyTruncated: 'Письмо показано не полностью',
+  /** sr-only-текст индикатора непрочитанного (ADR-050 §2.8; не полагаться только на цвет/вес). */
+  unread: 'Непрочитано',
 } as const;
 
 /**
@@ -255,6 +258,18 @@ function TgButton({ children, onClick }: { children: ReactNode; onClick: () => v
 function AuthorizedView({ bodyTheme }: { bodyTheme: Theme }) {
   const messages = useMailMiniAppFeed(true);
   const [selected, setSelected] = useState<MailMessage | null>(null);
+  const { mutate: markRead } = useMarkMailMiniAppRead();
+
+  // Пометка ПРИ ОТКРЫТИИ (ADR-050 §2.6): клик по карточке → detail-оверлей → POST …/read тем
+  // же эндпоинтом, что и веб (Mini App несёт обычный CRM-JWT с `uid`). Best-effort: ошибка
+  // отметки не мешает читать письмо. Фильтра «Непрочитанные» и кнопки отката в Mini App НЕТ.
+  const openMessage = useCallback(
+    (message: MailMessage) => {
+      setSelected(message);
+      markRead(message.id);
+    },
+    [markRead],
+  );
   const messagesForbidden =
     messages.phase === 'error' &&
     messages.error instanceof ApiError &&
@@ -288,7 +303,7 @@ function AuthorizedView({ bodyTheme }: { bodyTheme: Theme }) {
         {!messagesForbidden && messages.phase === 'ready' && messages.messages.length > 0 && (
           <div className="flex flex-col gap-2.5">
             {messages.messages.map((m) => (
-              <MailMiniAppCard key={m.id} message={m} onOpen={setSelected} />
+              <MailMiniAppCard key={m.id} message={m} onOpen={openMessage} />
             ))}
             <div ref={sentinelRef} aria-hidden="true" className="h-px" />
             {messages.isFetchingMore && (
@@ -343,6 +358,14 @@ function MailMiniAppCard({
       className="flex cursor-pointer flex-col gap-1.5 rounded-card border border-border-subtle bg-surface-1 p-4 text-left transition-colors hover:border-border-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
     >
       <div className="flex items-start justify-between gap-3">
+        {message.is_unread && (
+          <>
+            {/* Индикатор непрочитанного — тот же визуальный язык, что в вебе: точка `--accent`
+                + полужирная тема + sr-only «Непрочитано» (ADR-050 §2.8). */}
+            <span aria-hidden="true" className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-accent" />
+            <span className="sr-only">{T.unread}</span>
+          </>
+        )}
         <span className="min-w-0 flex-1 break-words text-sm font-semibold text-text-primary">
           {message.from_name || message.from_addr}
         </span>
@@ -356,11 +379,11 @@ function MailMiniAppCard({
         </span>
       )}
       <p
-        className={
-          message.subject === null
-            ? 'break-words text-[13px] text-text-secondary'
-            : 'break-words text-[13px] text-text-primary'
-        }
+        className={cn(
+          'break-words text-[13px]',
+          message.subject === null ? 'text-text-secondary' : 'text-text-primary',
+          message.is_unread && 'font-semibold',
+        )}
       >
         {subject}
       </p>

@@ -1,6 +1,9 @@
-import { useState } from 'react';
-import { AlertTriangle, Inbox, Mail, Plus, RefreshCw } from 'lucide-react';
+import { useMemo, useState } from 'react';
+import type { ChangeEvent } from 'react';
+import { AlertTriangle, Inbox, Mail, Plus, RefreshCw, Search } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { Input } from '@/components/ui/Input';
+import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { MailboxFormModal } from '@/components/MailboxFormModal';
 import { MailboxRow } from '@/components/MailboxRow';
@@ -9,6 +12,9 @@ import { ApiError } from '@/lib/api';
 import { useCan, useSeesAllMailTeams } from '@/features/auth/hooks';
 import { useMailboxesManage } from '@/features/mail/hooks';
 import { useTeams } from '@/features/teams/hooks';
+
+/** Значение опции «Без команды» в клиентском фильтре по команде (ящики с `team_id = null`). */
+const NO_TEAM = '__no_team__';
 
 /** Значение сегмента активности → query `is_active` (не задан / true / false). */
 type ActivityFilter = 'all' | 'active' | 'inactive';
@@ -70,21 +76,70 @@ function CenteredState({
 export function MailboxesTab() {
   const [filter, setFilter] = useState<ActivityFilter>('all');
   const [addOpen, setAddOpen] = useState(false);
+  // Поиск и фильтр по команде — КЛИЕНТСКИЕ (ADR-050 §1): каталог ящиков грузится ЦЕЛИКОМ
+  // (пагинации в контракте `GET /api/mail/mailboxes` нет), поэтому клиентская фильтрация
+  // полна и точна. Серверных параметров `q`/`team_id` у эндпоинта НЕТ — backend не меняется.
+  const [search, setSearch] = useState('');
+  const [teamFilter, setTeamFilter] = useState('');
 
   const canCreate = useCan('mail', 'create');
   const canEdit = useCan('mail', 'edit');
   const canSync = useCan('mail', 'sync');
   const canDelete = useCan('mail', 'delete');
-  // Перенос ящика между командами (смена team_id) — только admin-уровень (ADR-044 §4).
-  const canTransfer = useSeesAllMailTeams();
+  // Admin-уровень видимости почты (`me.sees_all_mail_teams`): гейт переноса ящика между
+  // командами (ADR-044 §4) И гейт рендера фильтра по команде (ADR-050 §1.2 — та же норма,
+  // что у фильтра «Команда» вкладки «Сообщения», ADR-036).
+  const seesAllMailTeams = useSeesAllMailTeams();
+  const canTransfer = seesAllMailTeams;
 
   const query = useMailboxesManage(toIsActive(filter));
   // CRM-команды (GET /api/teams) — источник дропдауна переноса и резолва имени команды.
   const teamsQuery = useTeams();
-  const teams = teamsQuery.data?.items ?? [];
-  const mailboxes = query.data?.mailboxes ?? [];
+  const teams = useMemo(() => teamsQuery.data?.items ?? [], [teamsQuery.data]);
+  const mailboxes = useMemo(() => query.data?.mailboxes ?? [], [query.data]);
 
   const isNotConfigured = query.error instanceof ApiError && query.error.status === 503;
+
+  // Порядок применения фильтров (ADR-050 §1.3): серверный `is_active` → клиентский поиск →
+  // клиентский фильтр по команде. Все три комбинируются (AND); ни один не сбрасывает другие.
+  const searchQuery = search.trim().toLowerCase();
+  const searchActive = searchQuery.length > 0;
+  const teamFilterActive = teamFilter !== '';
+
+  const visible = useMemo(() => {
+    let rows = mailboxes;
+    if (searchQuery) {
+      // Поля поиска — ровно три (ADR-050 §1.1): `number`, `app_name`, `email`. Подстрока,
+      // регистронезависимо. `display_name` не входит (производная склейка number+app_name).
+      rows = rows.filter(
+        (mb) =>
+          (mb.number ?? '').toLowerCase().includes(searchQuery) ||
+          (mb.app_name ?? '').toLowerCase().includes(searchQuery) ||
+          mb.email.toLowerCase().includes(searchQuery),
+      );
+    }
+    if (teamFilter) {
+      rows = rows.filter((mb) =>
+        teamFilter === NO_TEAM ? mb.team_id === null : mb.team_id === teamFilter,
+      );
+    }
+    return rows;
+  }, [mailboxes, searchQuery, teamFilter]);
+
+  // Опции фильтра по команде: «Все команды» (сброс) → команды из GET /api/teams → «Без команды»
+  // (ящики с `team_id = null` — иначе были бы нефильтруемы). ADR-050 §1.2.
+  const teamFilterOptions = useMemo(
+    () => [
+      { value: '', label: 'Все команды' },
+      ...teams.map((t) => ({ value: t.id, label: t.name })),
+      { value: NO_TEAM, label: 'Без команды' },
+    ],
+    [teams],
+  );
+
+  const handleTeamFilterChange = (e: ChangeEvent<HTMLSelectElement>) => {
+    setTeamFilter(e.target.value);
+  };
 
   const segment = (
     <div
@@ -115,9 +170,37 @@ export function MailboxesTab() {
     </div>
   );
 
+  // Тулбар вкладки (ADR-050 §1): поиск и фильтр по команде — В ОДНОЙ СТРОКЕ, рядом с
+  // сегментом «Все/Активные/Неактивные». При нехватке ширины контролы переносятся
+  // (`flex-wrap`), значимый текст не обрезается.
   const toolbar = (
     <div className="flex flex-wrap items-center justify-between gap-3">
-      {segment}
+      <div className="flex flex-wrap items-center gap-3">
+        {segment}
+        <div className="w-64">
+          <Input
+            aria-label="Поиск по почтам"
+            placeholder="Поиск по почтам…"
+            value={search}
+            trailing={<Search className="h-4 w-4 text-text-tertiary" aria-hidden="true" />}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+        {/* Фильтр по команде — та же норма, что у фильтра «Команда» вкладки «Сообщения»
+            (ADR-036): рендерится ТОЛЬКО при `sees_all_mail_teams === true`; для прочих
+            ролей отсутствует (не пустой, не disabled) — опции берутся из `GET /api/teams`
+            под чужим гейтом `teams:view`. */}
+        {seesAllMailTeams && (
+          <div className="w-48">
+            <Select
+              aria-label="Команда"
+              options={teamFilterOptions}
+              value={teamFilter}
+              onChange={handleTeamFilterChange}
+            />
+          </div>
+        )}
+      </div>
       {canCreate && (
         <Button size="sm" onClick={() => setAddOpen(true)}>
           <Plus className="h-4 w-4" />
@@ -158,19 +241,25 @@ export function MailboxesTab() {
         />
       )}
 
-      {!query.isLoading && !query.isError && mailboxes.length === 0 && (
+      {/* Пустой каталог — «Почт пока нет»; активный фильтр/поиск без совпадений —
+          «Ничего не найдено» (ADR-050 §1.1: эти состояния НЕ путать). */}
+      {!query.isLoading && !query.isError && visible.length === 0 && (
         <CenteredState
           icon={<Inbox className="h-10 w-10 text-text-tertiary" aria-hidden="true" />}
-          title={filter === 'all' ? 'Почт пока нет' : 'Ничего не найдено'}
+          title={
+            filter === 'all' && !searchActive && !teamFilterActive
+              ? 'Почт пока нет'
+              : 'Ничего не найдено'
+          }
           hint={
-            filter === 'all' && canCreate
+            filter === 'all' && !searchActive && !teamFilterActive && canCreate
               ? 'Добавьте первый почтовый ящик, чтобы получать письма.'
               : undefined
           }
         />
       )}
 
-      {!query.isLoading && !query.isError && mailboxes.length > 0 && (
+      {!query.isLoading && !query.isError && visible.length > 0 && (
         <div className="scrollbar-none overflow-x-auto rounded-card border border-border-subtle bg-surface-1">
           <table className="w-full min-w-[760px] border-collapse text-left">
             <thead>
@@ -190,7 +279,7 @@ export function MailboxesTab() {
               </tr>
             </thead>
             <tbody>
-              {mailboxes.map((mb) => (
+              {visible.map((mb) => (
                 <MailboxRow
                   key={mb.id}
                   mailbox={mb}

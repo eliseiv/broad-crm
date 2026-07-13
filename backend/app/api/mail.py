@@ -54,6 +54,7 @@ Limit = Annotated[int, Query()]
 MailAccountIds = Annotated[list[int] | None, Query(alias="mail_account_id")]
 TeamId = Annotated[uuid.UUID | None, Query()]
 IsActive = Annotated[bool | None, Query()]
+Unread = Annotated[bool | None, Query()]
 
 
 # --- Чтение (из БД CRM) -----------------------------------------------------
@@ -63,25 +64,32 @@ IsActive = Annotated[bool | None, Query()]
 async def list_messages(
     service: MailServiceDep,
     scope: MailScopeDep,
-    _p: ViewDep,
+    p: ViewDep,
     before: Before = None,
     limit: Limit = 50,
     mail_account_id: MailAccountIds = None,
     team_id: TeamId = None,
+    unread: Unread = None,
 ) -> MailListResponse:
     """Лента писем из `mail_messages` (компаундный keyset, ADR-044 §2/§7).
 
-    Порядок `internal_date DESC, id DESC`. Фильтры `mail_account_id` (повторяемый) и
-    `team_id` AND-комбинируемы; для не-админа пересекаются со `MailScope.team_ids` (вне
-    scope → пустая страница, анти-энумерация). `before` — opaque-курсор пары
-    `(internal_date, id)`; `limit` в диапазоне 1..200.
+    Порядок `internal_date DESC, id DESC`. Фильтры `mail_account_id` (повторяемый),
+    `team_id` и `unread` AND-комбинируемы; для не-админа пересекаются со
+    `MailScope.team_ids` (вне scope → пустая страница, анти-энумерация). `before` —
+    opaque-курсор пары `(internal_date, id)`; `limit` в диапазоне 1..200.
+
+    `unread=true` (ADR-050 §2.2) — только непрочитанные текущим принципалом (анти-джойн
+    внутри keyset-запроса); отсутствие / `false` → фильтр не применяется. Поле `is_unread`
+    каждого письма — личное производное для текущего принципала.
     """
     return await service.list_messages(
         scope=scope,
+        user_id=p.user_id,
         before=before,
         limit=limit,
         mail_account_ids=mail_account_id,
         team_id=team_id,
+        unread=unread,
     )
 
 
@@ -122,6 +130,43 @@ async def reply_message(
     return await service.reply(
         scope=scope, user_id=p.user_id, message_id=message_id, payload=payload
     )
+
+
+# --- Личная прочитанность писем (ADR-050 §2) --------------------------------
+
+
+@router.post("/messages/{message_id}/read", status_code=status.HTTP_204_NO_CONTENT)
+async def mark_message_read(
+    message_id: int,
+    service: MailServiceDep,
+    scope: MailScopeDep,
+    p: ViewDep,
+) -> Response:
+    """Пометить письмо прочитанным ТЕКУЩИМ пользователем (ADR-050 §2.2). Гейт mail:view.
+
+    Прочитанность личная: отметка не влияет на других членов команды. Идемпотентен
+    (повтор → тоже 204, `read_at` не обновляется). Письмо вне scope/несуществующее → 404
+    (анти-энумерация). Супер-админ из `.env` (нет строки в `users`) → 403 (§2.5).
+    Вызывается UI при ОТКРЫТИИ письма — и в вебе `/mail`, и в Mini App `/tg/mail` (та же
+    ручка под тем же CRM-JWT).
+    """
+    await service.mark_read(scope=scope, user_id=p.user_id, message_id=message_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.delete("/messages/{message_id}/read", status_code=status.HTTP_204_NO_CONTENT)
+async def unmark_message_read(
+    message_id: int,
+    service: MailServiceDep,
+    scope: MailScopeDep,
+    p: ViewDep,
+) -> Response:
+    """Вернуть письмо в «непрочитано» для текущего пользователя (ADR-050 §2.7).
+
+    Гейт mail:view. Идемпотентен (отметки не было → тоже 204). Те же 403/404, что у POST.
+    """
+    await service.unmark_read(scope=scope, user_id=p.user_id, message_id=message_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # --- Запись: почтовые ящики (креды транзитом в агрегатор) -------------------

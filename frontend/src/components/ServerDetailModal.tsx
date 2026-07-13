@@ -1,18 +1,12 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { BackendsDetailSection } from '@/components/BackendsDetailSection';
-import {
-  DetailEditPencil,
-  DetailInfoSection,
-  DetailRow,
-  SecretRevealField,
-} from '@/components/DetailFields';
+import { DetailEditPencil, DetailRow, SecretRevealField } from '@/components/DetailFields';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { ApiError } from '@/lib/api';
 import { revealServerPassword } from '@/features/servers/api';
-import { useServerBackends, useUpdateServer } from '@/features/servers/hooks';
+import { useUpdateServer } from '@/features/servers/hooks';
 import type { Server } from '@/types/api';
 
 interface ServerDetailModalProps {
@@ -31,21 +25,21 @@ function validateName(name: string): string | undefined {
 }
 
 /**
- * Read-only detail-модалка сервера (08-design-system.md «Detail-view», ADR-035/ADR-046 §2в)
- * с инлайн-редактированием названия (ADR-039): короткий клик по карточке открывает её.
- * Сразу видны только **идентификаторы**: Название (карандаш → inline-edit прямо в видимой
- * зоне, `PATCH name`, Сохранить/Отмена) и IP. Пользователь (`ssh_user`), Пароль (reveal под
- * `servers:edit`) и сворачиваемая секция «Бэки» (`backend_count`, ленивый reverse-lookup,
- * ADR-040) — внутри свёрнутого блока «Информация». Отдельная edit-модалка сервера не
- * используется.
+ * Read-only detail-модалка сервера (08-design-system.md «Detail-view», ADR-035; состав —
+ * **ADR-049 §1**) с инлайн-редактированием названия (ADR-039). Сразу, **без сворачивания**,
+ * видны ЧЕТЫРЕ строки: **Название** (карандаш → inline-edit прямо в видимой зоне, `PATCH
+ * name`, Сохранить/Отмена) → **IP** → **Пользователь** (`ssh_user`) → **Пароль** (reveal под
+ * `servers:edit`). Креды — основной рабочий контекст сервера, поэтому свёрнутый блок
+ * **«Информация» УПРАЗДНЁН** (разворот ADR-046 §2в), а секция **«Бэки» переехала на карточку**
+ * (`ServerCard`, ADR-049 §2) — дублировать её и здесь запрещено. Обе строки кредов рендерятся
+ * всегда (`ssh_user`/`ssh_password_encrypted` — NOT NULL; флаг `has_password` не вводится).
+ * Reveal не ослаблен: маска `••••••••`, значение — только по клику на глаз (ADR-049 §4).
  */
 export function ServerDetailModal({ open, onOpenChange, server, canEdit }: ServerDetailModalProps) {
   const [editing, setEditing] = useState(false);
   const [nameDraft, setNameDraft] = useState(server.name);
   const [nameError, setNameError] = useState<string | null>(null);
-  const [backendsOpen, setBackendsOpen] = useState(false);
   const updateMutation = useUpdateServer(server.id);
-  const backendsQuery = useServerBackends(server.id, backendsOpen);
 
   // Сброс inline-edit при закрытии модалки (следующее открытие — read-only).
   useEffect(() => {
@@ -143,27 +137,17 @@ export function ServerDetailModal({ open, onOpenChange, server, canEdit }: Serve
 
         <DetailRow label="IP" value={server.ip} mono />
 
-        {/* Секция «Бэки» есть всегда ⇒ блок «Информация» рендерится всегда. */}
-        <DetailInfoSection>
-          <DetailRow label="Пользователь" value={server.ssh_user} mono />
-          {/* SSH-пароль задаётся при создании сервера ⇒ секрет есть всегда: строка с
-              маской + глаз рендерится всегда (ADR-046 §3 — «секрет есть → строка есть»). */}
-          <SecretRevealField
-            label="Пароль"
-            canReveal={canEdit}
-            reveal={(signal) => revealServerPassword(server.id, signal)}
-            showAria="Показать пароль"
-            hideAria="Скрыть пароль"
-          />
-
-          <BackendsDetailSection
-            count={server.backend_count}
-            id={`server-${server.id}-backends`}
-            open={backendsOpen}
-            onToggle={() => setBackendsOpen((v) => !v)}
-            query={backendsQuery}
-          />
-        </DetailInfoSection>
+        {/* Порядок (нормативно, ADR-049 §1): Название → IP → Пользователь → Пароль. */}
+        <DetailRow label="Пользователь" value={server.ssh_user} mono />
+        {/* SSH-пароль задаётся при создании сервера ⇒ секрет есть всегда: строка с
+            маской + глаз рендерится всегда (ADR-046 §3 — «секрет есть → строка есть»). */}
+        <SecretRevealField
+          label="Пароль"
+          canReveal={canEdit}
+          reveal={(signal) => revealServerPassword(server.id, signal)}
+          showAria="Показать пароль"
+          hideAria="Скрыть пароль"
+        />
       </div>
     </Modal>
   );

@@ -5,10 +5,18 @@ uid) DO NOTHING RETURNING id` (повтор доставки не дублиру
 keyset** по паре `(internal_date, id)` (MINOR-2): `internal_date` не уникален (массовая
 рассылка приходит одной секундой), сортировка/пагинация только по нему дала бы пропуски
 и дубли на границах страниц. Курсор несёт обе компоненты, сравнение row-wise.
+
+Фильтр «только непрочитанные» (ADR-050 §2.4) применяется **ВНУТРИ** этого keyset-запроса
+анти-джойном `NOT EXISTS` (резолвится по PK `mail_message_reads (user_id, message_id)`):
+клиентская фильтрация запрещена — лента курсорная, фильтр над загруженным набором ломает
+догрузку. Порядок и формат курсора при этом не меняются. Обратное — поле `is_unread`: оно
+считается ВТОРЫМ батч-запросом по уже отобранной странице (`MailMessageReadRepository`), а
+не JOIN'ом сюда (план этого запроса держится на индексе `(internal_date DESC, id DESC)`).
 """
 
 from __future__ import annotations
 
+import uuid
 from datetime import datetime
 
 from sqlalchemy import and_, or_, select
@@ -16,6 +24,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.mail_message import MailMessage
+from app.models.mail_message_read import MailMessageRead
 from app.schemas.mail_ingest import MailIngestMessage
 
 
@@ -66,6 +75,7 @@ class MailMessageRepository:
         mail_account_ids: list[int] | None,
         cursor: tuple[datetime, int] | None,
         limit: int,
+        unread_for_user_id: uuid.UUID | None = None,
     ) -> list[MailMessage]:
         """Компаундный keyset-листинг ленты (ADR-044 §2, порядок `internal_date DESC, id DESC`).
 
@@ -74,12 +84,26 @@ class MailMessageRepository:
         запроса, анти-энумерация). `cursor` — позиция `(internal_date, id)` для предиката
         `(internal_date, id) < (d0, id0)`. Вызывающий передаёт `limit + 1` для определения
         следующей страницы.
+
+        `unread_for_user_id` (ADR-050 §2.4) — фильтр «только непрочитанные ЭТИМ
+        пользователем»: анти-джойн `NOT EXISTS (mail_message_reads)` ВНУТРИ запроса (иначе
+        фильтрация над уже загруженной страницей ломала бы курсорную догрузку). `None` —
+        фильтр не применяется.
         """
         if mail_account_ids is not None and len(mail_account_ids) == 0:
             return []
         stmt = select(MailMessage)
         if mail_account_ids is not None:
             stmt = stmt.where(MailMessage.mail_account_id.in_(mail_account_ids))
+        if unread_for_user_id is not None:
+            stmt = stmt.where(
+                ~select(MailMessageRead.message_id)
+                .where(
+                    MailMessageRead.message_id == MailMessage.id,
+                    MailMessageRead.user_id == unread_for_user_id,
+                )
+                .exists()
+            )
         if cursor is not None:
             d0, id0 = cursor
             stmt = stmt.where(

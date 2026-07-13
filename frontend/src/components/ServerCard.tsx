@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Clock, Loader2, Server as ServerIcon, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { BackendsDetailSection } from '@/components/BackendsDetailSection';
 import { ServerDetailModal } from '@/components/ServerDetailModal';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -11,7 +12,12 @@ import { Modal } from '@/components/ui/Modal';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
 import { formatRelativeTime, formatUptime } from '@/lib/format';
-import { serversKey, useDeleteServer, useServerStatus } from '@/features/servers/hooks';
+import {
+  serversKey,
+  useDeleteServer,
+  useServerBackends,
+  useServerStatus,
+} from '@/features/servers/hooks';
 import type { ProvisionStatus, Server } from '@/types/api';
 
 interface ServerCardProps {
@@ -40,6 +46,11 @@ export function ServerCard({ server, canEdit = true, canDelete = true }: ServerC
   const deleteMutation = useDeleteServer();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
+  // Секция «Бэки» на карточке (ADR-049 §2). Список грузится ТОЛЬКО по раскрытию: `enabled`
+  // ленивого хука = `backendsOpen`. Свёрнутая карточка не делает НИ ОДНОГО запроса —
+  // преднагрузка списков для всех карточек сетки ЗАПРЕЩЕНА (это был бы N+1 на N карточек).
+  const [backendsOpen, setBackendsOpen] = useState(false);
+  const backendsQuery = useServerBackends(server.id, backendsOpen);
 
   const status: ProvisionStatus = statusQuery.data?.provision_status ?? server.provision_status;
   const errorMessage = statusQuery.data?.error_message ?? null;
@@ -201,6 +212,34 @@ export function ServerCard({ server, canEdit = true, canDelete = true }: ServerC
             Не в сети. Обновлено: {formatRelativeTime(server.last_updated)}.
           </p>
         )}
+
+        {/*
+          Секция «Бэков: N» внизу карточки (ADR-049 §2). Разведение жестов (нормативно,
+          обязательно): карточка ОДНОВРЕМЕННО кликабельна целиком (→ ServerDetailModal) и
+          является drag-ручкой DnD (listeners @dnd-kit висят на обёртке SortableItem).
+          Поэтому обёртка секции гасит всплытие pointer/click/keydown: раскрытие НЕ открывает
+          detail-модалку и НЕ инициирует перетаскивание карточки. Сам триггер — собственный
+          <button aria-expanded/aria-controls> внутри BackendsDetailSection.
+          `mt-auto` прижимает секцию к низу карточки при разной высоте тела.
+        */}
+        <div
+          className="mt-auto"
+          onPointerDown={(e) => e.stopPropagation()}
+          onClick={(e) => e.stopPropagation()}
+          onKeyDown={(e) => e.stopPropagation()}
+          role="presentation"
+        >
+          <BackendsDetailSection
+            count={server.backend_count}
+            id={`server-${server.id}-backends`}
+            open={backendsOpen}
+            onToggle={() => setBackendsOpen((v) => !v)}
+            query={backendsQuery}
+            // backend_count = 0 → строка «Бэков: 0» рендерится, но секция НЕ раскрывается
+            // (нет chevron, нет role="button", нет запроса) — информативный счётчик.
+            collapsible={server.backend_count > 0}
+          />
+        </div>
       </Card>
 
       <Modal

@@ -24,8 +24,12 @@ const feed = vi.hoisted(() => ({
     reload: vi.fn(),
   } as unknown,
 }));
+// Пометка «прочитано ПРИ ОТКРЫТИИ» в Mini App (ADR-050 §2.6) — тот же `POST …/read`, что и в
+// вебе (Mini App несёт обычный CRM-JWT с `uid`, спец-эндпоинта нет). Спаим факт и аргумент.
+const markReadSpy = vi.hoisted(() => vi.fn());
 vi.mock('@/features/mail/miniAppHooks', () => ({
   useMailMiniAppFeed: () => feed.value,
+  useMarkMailMiniAppRead: () => ({ mutate: markReadSpy, isPending: false }),
 }));
 
 /** Минимальный Telegram WebApp с непустым initData (успешный контекст запуска из бота). */
@@ -64,6 +68,8 @@ function mailMessage(overrides: Partial<MailMessage> = {}): MailMessage {
     body_html: '<p>Тело письма в <b>HTML</b>.</p>',
     body_present: true,
     body_truncated: false,
+    // Персональная непрочитанность (ADR-050 §2.2) — обязательное поле контракта ленты.
+    is_unread: false,
     tags: [],
     ...overrides,
   };
@@ -350,5 +356,76 @@ describe('MailMiniAppPage detail (read-only, ADR-044 поправка 2026-07-10
     expect(dialog).toHaveTextContent('Получено на:');
     expect(dialog).toHaveTextContent('raw@team.com');
     expect(dialog).not.toHaveTextContent('<raw@team.com>');
+  });
+});
+
+// Личная прочитанность в Mini App (ADR-050 §2.6/§2.8): пометка ПРИ ОТКРЫТИИ тем же эндпоинтом,
+// индикатор непрочитанного в карточке. Фильтра «Непрочитанные» и кнопки отката в Mini App НЕТ.
+describe('MailMiniAppPage — прочитанность (ADR-050 §2.6/§2.8)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    useMailMiniAppAuthStore.getState().clear();
+    feed.value = {
+      messages: [],
+      phase: 'ready',
+      error: null,
+      hasMore: false,
+      isFetchingMore: false,
+      loadMore: vi.fn(),
+      reload: vi.fn(),
+    };
+  });
+
+  it('клик по карточке открывает деталь и шлёт РОВНО ОДИН POST …/read с id письма', async () => {
+    setSuccessWithMessages([mailMessage({ id: 42, is_unread: true })]);
+    render(<MailMiniAppPage />);
+    const card = await screen.findByRole('button', { name: /Alice Sender/ });
+
+    expect(markReadSpy).not.toHaveBeenCalled();
+
+    fireEvent.click(card);
+
+    await screen.findByRole('dialog');
+    expect(markReadSpy).toHaveBeenCalledTimes(1);
+    expect(markReadSpy).toHaveBeenCalledWith(42);
+  });
+
+  it('открытие с клавиатуры (Enter) тоже помечает письмо прочитанным', async () => {
+    setSuccessWithMessages([mailMessage({ id: 7, is_unread: true })]);
+    render(<MailMiniAppPage />);
+    const card = await screen.findByRole('button', { name: /Alice Sender/ });
+
+    fireEvent.keyDown(card, { key: 'Enter' });
+
+    await screen.findByRole('dialog');
+    expect(markReadSpy).toHaveBeenCalledTimes(1);
+    expect(markReadSpy).toHaveBeenCalledWith(7);
+  });
+
+  it('непрочитанная карточка несёт sr-only «Непрочитано»; прочитанная — нет', async () => {
+    setSuccessWithMessages([
+      mailMessage({ id: 1, is_unread: true }),
+      mailMessage({ id: 2, is_unread: false, from_name: 'Bob Reader' }),
+    ]);
+    render(<MailMiniAppPage />);
+    await screen.findByRole('button', { name: /Alice Sender/ });
+
+    // Индикатор только у непрочитанного письма (не полагаемся на цвет/вес — a11y).
+    expect(screen.getAllByText('Непрочитано')).toHaveLength(1);
+  });
+
+  it('в Mini App НЕТ фильтра «Непрочитанные» и кнопки отката «Отметить непрочитанным»', async () => {
+    setSuccessWithMessages([mailMessage({ id: 1, is_unread: true })]);
+    render(<MailMiniAppPage />);
+    const card = await screen.findByRole('button', { name: /Alice Sender/ });
+
+    expect(screen.queryByRole('button', { name: /Непрочитанные/ })).not.toBeInTheDocument();
+
+    fireEvent.click(card);
+    await screen.findByRole('dialog');
+
+    expect(
+      screen.queryByRole('button', { name: /Отметить непрочитанным/ }),
+    ).not.toBeInTheDocument();
   });
 });

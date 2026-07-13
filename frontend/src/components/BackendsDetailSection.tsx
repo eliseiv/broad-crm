@@ -16,13 +16,21 @@ interface BackendsQueryResult {
 interface BackendsDetailSectionProps {
   /** Счётчик из list-схемы (`backend_count`) — показывается свёрнутым, без запроса. */
   count: number;
-  /** aria-controls id (уникальность внутри модалки). */
+  /** aria-controls id (уникальность внутри модалки/карточки). */
   id: string;
   /** Раскрыта ли секция (состоянием владеет родитель — он же вызывает ленивый хук). */
   open: boolean;
   onToggle: () => void;
   /** Результат ленивого reverse-lookup-хука (`enabled=open`); запрос уходит при раскрытии. */
   query: BackendsQueryResult;
+  /**
+   * Можно ли раскрыть секцию. `false` → статичная информативная строка «Бэков: 0» БЕЗ
+   * chevron, БЕЗ `role="button"` и БЕЗ запроса (ADR-049 §2: на карточке сервера при
+   * `backend_count = 0` счётчик всё равно рендерится — иначе высота карточек в сетке была бы
+   * неоднородной, — но пустого аккордеона не заводим). По умолчанию — раскрываемая
+   * (поведение detail-модалки ИИ-ключа, ADR-040 — без изменений).
+   */
+  collapsible?: boolean;
 }
 
 /** Строка бэка в раскрытой секции: Код / Название / Домен (`BackendRef`), только просмотр. */
@@ -36,11 +44,30 @@ function BackendRefRow({ backend }: { backend: BackendRef }) {
   );
 }
 
+/** Статичная (нераскрываемая) строка счётчика: «Бэки» + «Бэков: 0» — ADR-049 §2. */
+function BackendsCountRow({ count }: { count: number }) {
+  return (
+    <div className="rounded-sub border border-border-subtle">
+      <div className="flex w-full items-center justify-between gap-2 px-3 py-2.5">
+        <span className="text-[12px] font-medium uppercase tracking-wide text-text-tertiary">
+          Бэки
+        </span>
+        <span className="text-[13px] text-text-secondary">Бэков: {count}</span>
+      </div>
+    </div>
+  );
+}
+
 /**
- * Сворачиваемая секция «Бэки» detail-view сервера/ИИ-ключа (08-design-system.md, ADR-040):
- * свёрнута по умолчанию, заголовок-триггер показывает «Бэков: {N}» (`backend_count`). При
- * раскрытии родитель включает ленивый reverse-lookup → список Код/Название/Домен; состояния
- * loading / empty «Бэков нет» / error с «Повторить» — внутри секции. Строки — только просмотр.
+ * Сворачиваемая секция «Бэки» (08-design-system.md «Сворачиваемая секция «Бэки»», ADR-040;
+ * МЕСТО — ADR-049 §2): свёрнута по умолчанию, заголовок-триггер показывает «Бэков: {N}»
+ * (`backend_count` — уже в list-ответе, без запроса). При раскрытии родитель включает ленивый
+ * reverse-lookup → список Код/Название/Домен; состояния loading / empty «Бэков нет» / error с
+ * «Повторить» — внутри секции. Строки — только просмотр.
+ *
+ * **Где живёт:** у ИИ-ключа — в `AiKeyDetailModal` (внутри «Информации», без изменений); у
+ * сервера — **на карточке `ServerCard`** (ADR-049 §2), в `ServerDetailModal` её больше НЕТ.
+ * Преднагрузка списков при рендере сетки ЗАПРЕЩЕНА: свёрнутая карточка = 0 запросов.
  */
 export function BackendsDetailSection({
   count,
@@ -48,8 +75,13 @@ export function BackendsDetailSection({
   open,
   onToggle,
   query,
+  collapsible = true,
 }: BackendsDetailSectionProps) {
   const backends = query.data?.backends ?? [];
+
+  if (!collapsible) {
+    return <BackendsCountRow count={count} />;
+  }
 
   return (
     <div className="rounded-sub border border-border-subtle">

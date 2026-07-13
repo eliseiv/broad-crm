@@ -1,7 +1,9 @@
-import { ArrowLeft } from 'lucide-react';
+import { ArrowLeft, Mail as MailIcon } from 'lucide-react';
 import { MailReplyForm } from '@/components/MailReplyForm';
 import { MailTags } from '@/components/MailTags';
+import { Button } from '@/components/ui/Button';
 import { buildMailBodySrcDoc } from '@/features/mail/mailBody';
+import { cn } from '@/lib/cn';
 import { formatRelativeTime } from '@/lib/format';
 import { useThemeValue } from '@/lib/theme';
 import type { MailMessage } from '@/types/api';
@@ -62,24 +64,61 @@ interface MailDetailProps {
   message: MailMessage;
   /** Кнопка «Назад» к списку — только на узких вьюпортах (передаётся из MailPage). */
   onBack: () => void;
+  /**
+   * Возврат письма в «непрочитано» (`DELETE …/read`, ADR-050 §2.7). Кнопка «Отметить
+   * непрочитанным» рендерится ТОЛЬКО когда письмо уже прочитано (`is_unread === false`) и
+   * обработчик передан (у супер-админа из `.env` личного состояния нет — MailPage его не
+   * передаёт). Клик не закрывает деталь: письмо остаётся открытым, индикатор в ленте
+   * загорается, авто-пометка повторно не срабатывает (её триггер — смена письма).
+   */
+  onMarkUnread?: (id: number) => void;
+  /** Идёт запрос `DELETE …/read` (disabled-состояние кнопки). */
+  markUnreadPending?: boolean;
 }
 
 /** Правая панель master-detail: шапка + тело + inline-reply (08-design-system.md). */
-export function MailDetail({ message, onBack }: MailDetailProps) {
+export function MailDetail({
+  message,
+  onBack,
+  onMarkUnread,
+  markUnreadPending = false,
+}: MailDetailProps) {
   const { email, display_name: displayName } = message.mail_account;
   const subject = message.subject ?? '(без темы)';
+  const canMarkUnread = Boolean(onMarkUnread) && !message.is_unread;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="shrink-0 border-b border-border-subtle px-4 py-4">
-        <button
-          type="button"
-          onClick={onBack}
-          className="mb-3 inline-flex items-center gap-1 rounded-md text-[13px] font-medium text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent md:hidden"
+        {/* Строка действий шапки: «Назад» (только узкие вьюпорты) + «Отметить непрочитанным».
+            Когда кнопки отката нет, на desktop строка пуста (Назад скрыт) и не занимает места. */}
+        <div
+          className={cn(
+            'flex flex-wrap items-center justify-between gap-2 md:justify-end',
+            canMarkUnread ? 'mb-3' : 'mb-3 md:mb-0',
+          )}
         >
-          <ArrowLeft className="h-4 w-4" />
-          Назад
-        </button>
+          <button
+            type="button"
+            onClick={onBack}
+            className="inline-flex items-center gap-1 rounded-md text-[13px] font-medium text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent md:hidden"
+          >
+            <ArrowLeft className="h-4 w-4" />
+            Назад
+          </button>
+
+          {canMarkUnread && (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={markUnreadPending}
+              onClick={() => onMarkUnread?.(message.id)}
+            >
+              <MailIcon className="h-4 w-4" aria-hidden="true" />
+              Отметить непрочитанным
+            </Button>
+          )}
+        </div>
 
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
           <span className="text-sm font-semibold text-text-primary">

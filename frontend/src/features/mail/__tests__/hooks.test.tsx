@@ -2,7 +2,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { useMailFeed, useMailMailboxes } from '@/features/mail/hooks';
+import {
+  useMailFeed,
+  useMailMailboxes,
+  useMarkMailRead,
+  useUnmarkMailRead,
+} from '@/features/mail/hooks';
 import { ApiError } from '@/lib/api';
 import type { MailListResponse, MailMessage } from '@/types/api';
 
@@ -10,6 +15,8 @@ const api = vi.hoisted(() => ({
   listMail: vi.fn(),
   replyMail: vi.fn(),
   listMailboxes: vi.fn(),
+  markMailRead: vi.fn(),
+  unmarkMailRead: vi.fn(),
   MAIL_PAGE_LIMIT: 20,
 }));
 
@@ -22,7 +29,11 @@ vi.mock('@/lib/env', () => ({
 }));
 
 /** Письмо с управляемой датой (internal_date НЕ уникален — проверяем склейку по курсору). */
-function makeMessage(id: number, internalDate = '2026-07-02T09:15:00Z'): MailMessage {
+function makeMessage(
+  id: number,
+  internalDate = '2026-07-02T09:15:00Z',
+  isUnread = true,
+): MailMessage {
   return {
     id,
     subject: `Письмо ${id}`,
@@ -36,6 +47,8 @@ function makeMessage(id: number, internalDate = '2026-07-02T09:15:00Z'): MailMes
     body_html: null,
     body_present: true,
     body_truncated: false,
+    // Персональная непрочитанность (ADR-050 §2.2) — обязательное поле схемы ленты.
+    is_unread: isUnread,
     tags: [],
   };
 }
@@ -187,6 +200,119 @@ describe('useMailFeed (ADR-044 infinite compound-keyset feed)', () => {
       mailAccountId: undefined,
       before: undefined,
     });
+  });
+});
+
+// --- Личная прочитанность писем (ADR-050 §2) --------------------------------
+describe('useMailFeed — серверный фильтр «Непрочитанные» (ADR-050 §2.8)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('unread=true уходит в listMail (фильтрация серверная, курсор не ломается)', async () => {
+    api.listMail.mockResolvedValueOnce(page([makeMessage(2)], null));
+    const { result } = renderHook(() => useMailFeed({ unread: true }), { wrapper: makeWrapper() });
+
+    await waitFor(() => expect(result.current.phase).toBe('ready'));
+    expect(api.listMail.mock.calls[0][0]).toMatchObject({ unread: true, before: undefined });
+  });
+
+  it('включение фильтра — новый queryKey → ре-запрос ленты БЕЗ before (сброс пагинации)', async () => {
+    api.listMail.mockResolvedValue(page([makeMessage(2)], 'cur-x'));
+    const { result, rerender } = renderHook(
+      ({ unread }: { unread: boolean }) => useMailFeed({ unread }),
+      { wrapper: makeWrapper(), initialProps: { unread: false } },
+    );
+    await waitFor(() => expect(result.current.phase).toBe('ready'));
+    expect(api.listMail).toHaveBeenCalledTimes(1);
+
+    rerender({ unread: true });
+
+    await waitFor(() => expect(api.listMail).toHaveBeenCalledTimes(2));
+    expect(api.listMail.mock.calls[1][0]).toMatchObject({ unread: true, before: undefined });
+  });
+});
+
+describe('useMarkMailRead / useUnmarkMailRead — кэш правится ТОЛЬКО по успешному 204 (ADR-050 §2.6)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Лента + обе мутации на ОДНОМ QueryClient — так виден эффект правки кэша ленты. */
+  function renderFeedWithMutations() {
+    return renderHook(
+      () => ({
+        feed: useMailFeed(),
+        mark: useMarkMailRead(),
+        unmark: useUnmarkMailRead(),
+      }),
+      { wrapper: makeWrapper() },
+    );
+  }
+
+  it('успешный POST → is_unread=false точечно у ОДНОГО письма, БЕЗ ре-запроса ленты', async () => {
+    api.listMail.mockResolvedValueOnce(page([makeMessage(2), makeMessage(1)], null));
+    api.markMailRead.mockResolvedValueOnce(undefined);
+    const { result } = renderFeedWithMutations();
+    await waitFor(() => expect(result.current.feed.phase).toBe('ready'));
+    expect(result.current.feed.messages.map((m) => m.is_unread)).toEqual([true, true]);
+
+    await act(async () => {
+      result.current.mark.mutate(2);
+    });
+
+    await waitFor(() =>
+      expect(result.current.feed.messages.map((m) => m.is_unread)).toEqual([false, true]),
+    );
+    expect(api.markMailRead).toHaveBeenCalledWith(2);
+    // Полный инвалидэйт ленты ЗАПРЕЩЁН (§2.6): страницы бесконечного скролла не перезапрашиваются.
+    expect(api.listMail).toHaveBeenCalledTimes(1);
+  });
+
+  it('ошибка POST → кэш НЕ трогается: индикатор продолжает гореть (оптимистика запрещена)', async () => {
+    api.listMail.mockResolvedValueOnce(page([makeMessage(2)], null));
+    api.markMailRead.mockRejectedValueOnce(new ApiError(500, 'internal_error', 'boom'));
+    const { result } = renderFeedWithMutations();
+    await waitFor(() => expect(result.current.feed.phase).toBe('ready'));
+
+    await act(async () => {
+      result.current.mark.mutate(2);
+    });
+
+    await waitFor(() => expect(result.current.mark.isError).toBe(true));
+    // Best-effort: письмо осталось непрочитанным на сервере ⇒ и в UI индикатор горит.
+    expect(result.current.feed.messages[0].is_unread).toBe(true);
+    expect(api.listMail).toHaveBeenCalledTimes(1);
+  });
+
+  it('успешный DELETE → is_unread=true (откат), лента не перезапрашивается', async () => {
+    api.listMail.mockResolvedValueOnce(page([makeMessage(2, '2026-07-02T09:15:00Z', false)], null));
+    api.unmarkMailRead.mockResolvedValueOnce(undefined);
+    const { result } = renderFeedWithMutations();
+    await waitFor(() => expect(result.current.feed.phase).toBe('ready'));
+    expect(result.current.feed.messages[0].is_unread).toBe(false);
+
+    await act(async () => {
+      result.current.unmark.mutate(2);
+    });
+
+    await waitFor(() => expect(result.current.feed.messages[0].is_unread).toBe(true));
+    expect(api.unmarkMailRead).toHaveBeenCalledWith(2);
+    expect(api.listMail).toHaveBeenCalledTimes(1);
+  });
+
+  it('ошибка DELETE → кэш не трогается (письмо остаётся прочитанным)', async () => {
+    api.listMail.mockResolvedValueOnce(page([makeMessage(2, '2026-07-02T09:15:00Z', false)], null));
+    api.unmarkMailRead.mockRejectedValueOnce(new ApiError(502, 'mail_unavailable', 'x'));
+    const { result } = renderFeedWithMutations();
+    await waitFor(() => expect(result.current.feed.phase).toBe('ready'));
+
+    await act(async () => {
+      result.current.unmark.mutate(2);
+    });
+
+    await waitFor(() => expect(result.current.unmark.isError).toBe(true));
+    expect(result.current.feed.messages[0].is_unread).toBe(false);
   });
 });
 

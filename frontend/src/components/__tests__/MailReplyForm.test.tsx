@@ -28,6 +28,8 @@ function makeMessage(overrides: Partial<MailMessage> = {}): MailMessage {
     body_html: null,
     body_present: true,
     body_truncated: false,
+    // Персональная непрочитанность (ADR-050 §2.2) — обязательное поле схемы `MailMessage`.
+    is_unread: false,
     tags: [],
     ...overrides,
   };

@@ -14,16 +14,32 @@ interface MailListItemProps {
   message: MailMessage;
   isActive: boolean;
   onSelect: (id: number) => void;
+  /**
+   * Показывать ли индикатор непрочитанного (ADR-050 §2.5): у супер-админа из `.env` личного
+   * состояния прочитанности НЕТ — индикатор ему не рендерится. По умолчанию — показывать.
+   */
+  showUnread?: boolean;
 }
 
 /**
  * Строка ленты писем (левая панель master-detail, 08-design-system.md «Список писем»).
  * Тема усечена (`truncate`) — усечение задизайнено; в детали видна целиком. Значимые
  * значения (адрес, аккаунт) не обрезаются.
+ *
+ * **Непрочитанное письмо** (08-design-system.md «Непрочитанные письма», ADR-050 §2.8):
+ * тема — полужирным + точка-индикатор `--accent` в начале строки. Не полагаемся только на
+ * цвет/вес (a11y, NFR-8): у элемента есть sr-only-текст «Непрочитано». Новый примитив ДС не
+ * вводится (`Badge dot` НЕ переиспользуется — его тон-палитра статусная).
  */
-export function MailListItem({ message, isActive, onSelect }: MailListItemProps) {
+export function MailListItem({
+  message,
+  isActive,
+  onSelect,
+  showUnread = true,
+}: MailListItemProps) {
   const accountLabel = message.mail_account.display_name || message.mail_account.email;
   const subject = message.subject ?? '(без темы)';
+  const unread = showUnread && message.is_unread;
 
   return (
     <button
@@ -37,6 +53,13 @@ export function MailListItem({ message, isActive, onSelect }: MailListItemProps)
       )}
     >
       <div className="flex items-start justify-between gap-3">
+        {unread && (
+          <>
+            {/* Точка-индикатор непрочитанного (заливка `--accent`); текст — для скринридера. */}
+            <span aria-hidden="true" className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-accent" />
+            <span className="sr-only">Непрочитано</span>
+          </>
+        )}
         <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text-primary">
           {message.from_name || message.from_addr}
         </span>
@@ -59,6 +82,7 @@ export function MailListItem({ message, isActive, onSelect }: MailListItemProps)
         className={cn(
           'truncate text-[13px]',
           message.subject === null ? 'text-text-secondary' : 'text-text-primary',
+          unread && 'font-semibold',
         )}
       >
         {subject}

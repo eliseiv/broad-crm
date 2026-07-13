@@ -12,6 +12,13 @@ const hooks = vi.hoisted(() => ({
   createMutate: vi.fn(),
 }));
 
+// Reveal-функции секретов бэка — на уровне feature-api: раскрытие блока «Информация» НЕ
+// должно к ним обращаться (ADR-049 §4), значение идёт только по клику на глаз.
+const backendsApi = vi.hoisted(() => ({
+  revealBackendApiKey: vi.fn(),
+  revealBackendAdminApiKey: vi.fn(),
+}));
+
 vi.mock('@/features/backends/hooks', () => ({
   backendsKey: ['backends'],
   useBackendStatus: () => ({ data: undefined }),
@@ -19,6 +26,7 @@ vi.mock('@/features/backends/hooks', () => ({
   useUpdateBackend: () => ({ mutate: hooks.updateMutate, isPending: false }),
   useCreateBackend: () => ({ mutate: hooks.createMutate, isPending: false }),
 }));
+vi.mock('@/features/backends/api', () => backendsApi);
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -93,30 +101,86 @@ describe('BackendCard — status badges', () => {
   });
 });
 
-describe('BackendCard — detail → edit (ADR-035)', () => {
+// ADR-049 §3: `/backends` — CARD-FIRST. `BackendDetailModal` упразднена, клик по телу карточки
+// не открывает ничего, а с тела сняты все интерактивные семантики (role="button"/tabIndex/
+// focus-ring): кликабельная по ARIA карточка без действия — a11y-дефект. Карандаш переехал в
+// блок действий карточки; вся «Информация» — в свёрнутом блоке внизу карточки.
+describe('BackendCard — card-first: «Информация» на карточке, detail-модалка упразднена (ADR-049 §3)', () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it('клик по карточке открывает detail-модалку (Просмотр), НЕ edit', async () => {
+  it('тело карточки НЕ интерактивно: нет «Просмотр бэка …», клик по карточке ничего не открывает', async () => {
     const user = userEvent.setup();
-    render(<BackendCard backend={makeBackend()} />, { wrapper });
+    render(<BackendCard backend={makeBackend({ note: 'важное' })} />, { wrapper });
 
-    await user.click(screen.getByRole('button', { name: 'Просмотр бэка API EU' }));
+    // Семантика паттерна ADR-035 снята с тела карточки.
+    expect(screen.queryByRole('button', { name: 'Просмотр бэка API EU' })).not.toBeInTheDocument();
+    expect(document.querySelector('[aria-label^="Просмотр бэка"]')).toBeNull();
 
-    const dialog = within(await screen.findByRole('dialog'));
-    expect(dialog.getByText('Просмотр')).toBeInTheDocument();
-    // Detail-поля read-only: Код / Название / Домен (у бэка секрета нет).
-    expect(dialog.getByText('Код')).toBeInTheDocument();
-    expect(dialog.getByText('Домен')).toBeInTheDocument();
+    await user.click(screen.getByText('API EU'));
+
+    // Ни detail-модалки, ни edit-формы — клик по телу карточки не открывает ничего.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(screen.queryByText('Изменить бэк')).not.toBeInTheDocument();
     expect(hooks.updateMutate).not.toHaveBeenCalled();
   });
 
-  it('карандаш в detail-модалке открывает edit prefilled', async () => {
+  it('блок «Информация» свёрнут по умолчанию; раскрытие показывает состав в нормативном порядке', async () => {
+    const user = userEvent.setup();
+    render(
+      <BackendCard
+        backend={makeBackend({
+          server_name: 'Server 01',
+          ai_key_name: 'OpenAI Prod',
+          has_api_key: true,
+          has_admin_api_key: true,
+          git: 'https://github.com/acme/api-eu',
+          note: 'важное',
+        })}
+      />,
+      { wrapper },
+    );
+
+    const trigger = screen.getByRole('button', { name: 'Информация' });
+    expect(trigger).toHaveAttribute('aria-expanded', 'false');
+    // Пока блок свёрнут — его содержимого в DOM нет.
+    expect(screen.queryByText('Server 01')).not.toBeInTheDocument();
+
+    await user.click(trigger);
+
+    expect(screen.getByRole('button', { name: 'Информация' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    // Состав и порядок (ADR-049 §3): Сервер → ИИ-ключ → API KEY → ADMIN API KEY → Git → Примечания.
+    const labels = Array.from(document.querySelectorAll('dt, span, p'))
+      .map((el) => el.textContent?.trim())
+      .filter((t): t is string =>
+        ['Сервер', 'ИИ-ключ', 'API KEY', 'ADMIN API KEY', 'Git', 'Примечания'].includes(t ?? ''),
+      );
+    expect(labels).toEqual(['Сервер', 'ИИ-ключ', 'API KEY', 'ADMIN API KEY', 'Git', 'Примечания']);
+    expect(screen.getByText('Server 01')).toBeInTheDocument();
+    expect(screen.getByText('OpenAI Prod')).toBeInTheDocument();
+    expect(screen.getByText('важное')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'https://github.com/acme/api-eu' })).toHaveAttribute(
+      'href',
+      'https://github.com/acme/api-eu',
+    );
+  });
+
+  it('пустая «Информация» (нет связей/секретов/git/note) → блок не рендерится вовсе', () => {
+    render(<BackendCard backend={makeBackend()} />, { wrapper });
+
+    expect(screen.queryByRole('button', { name: 'Информация' })).not.toBeInTheDocument();
+    // Идентификаторы карточки при этом на месте.
+    expect(screen.getByText('api-eu')).toBeInTheDocument();
+    expect(screen.getByText('API EU')).toBeInTheDocument();
+  });
+
+  it('карандаш в блоке действий карточки открывает edit prefilled (гейт backends:edit)', async () => {
     const user = userEvent.setup();
     render(<BackendCard backend={makeBackend()} />, { wrapper });
 
-    await user.click(screen.getByRole('button', { name: 'Просмотр бэка API EU' }));
-    await user.click(await screen.findByRole('button', { name: 'Редактировать' }));
+    await user.click(screen.getByRole('button', { name: 'Редактировать бэк API EU' }));
 
     expect(await screen.findByText('Изменить бэк')).toBeInTheDocument();
     const dialog = within(screen.getByRole('dialog'));
@@ -124,17 +188,23 @@ describe('BackendCard — detail → edit (ADR-035)', () => {
     expect((dialog.getByLabelText('Домен') as HTMLInputElement).value).toBe('api.example.com');
   });
 
-  it('без права backends:edit (canEdit=false) карандаш в detail-модалке скрыт', async () => {
+  it('без права backends:edit карандаша нет, а секрет — статичная маска без глаза', async () => {
     const user = userEvent.setup();
-    render(<BackendCard backend={makeBackend()} canEdit={false} />, { wrapper });
+    render(<BackendCard backend={makeBackend({ has_api_key: true })} canEdit={false} />, {
+      wrapper,
+    });
 
-    await user.click(screen.getByRole('button', { name: 'Просмотр бэка API EU' }));
-    await screen.findByText('Просмотр');
+    expect(
+      screen.queryByRole('button', { name: 'Редактировать бэк API EU' }),
+    ).not.toBeInTheDocument();
 
-    expect(screen.queryByRole('button', { name: 'Редактировать' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Информация' }));
+
+    expect(screen.queryByRole('button', { name: 'Показать API KEY' })).not.toBeInTheDocument();
+    expect(screen.getByText('••••••••')).toBeInTheDocument();
   });
 
-  it('delete button opens confirm dialog without opening detail/edit (stopPropagation)', async () => {
+  it('delete button opens confirm dialog without opening edit', async () => {
     const user = userEvent.setup();
     render(<BackendCard backend={makeBackend()} />, { wrapper });
 
@@ -143,5 +213,66 @@ describe('BackendCard — detail → edit (ADR-035)', () => {
     expect(screen.getByText('Удалить бэк?')).toBeInTheDocument();
     expect(screen.queryByText('Изменить бэк')).not.toBeInTheDocument();
     expect(hooks.updateMutate).not.toHaveBeenCalled();
+  });
+});
+
+// ADR-049 §4 (нормативно): раскрытие «Информации» НЕ приводит к преднагрузке секретов.
+// «Раскрыть Информацию у N бэков подряд» обязано давать НОЛЬ обращений к reveal-эндпоинтам.
+describe('BackendCard — секреты не преднагружаются при раскрытии «Информации» (ADR-049 §4)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('раскрытие «Информации» на 3 карточках подряд → НОЛЬ вызовов reveal-эндпоинтов', async () => {
+    const user = userEvent.setup();
+    const backends = [1, 2, 3].map((n) =>
+      makeBackend({
+        id: `backend-${n}`,
+        code: `api-${n}`,
+        name: `API ${n}`,
+        has_api_key: true,
+        has_admin_api_key: true,
+      }),
+    );
+    render(
+      <>
+        {backends.map((b) => (
+          <BackendCard key={b.id} backend={b} />
+        ))}
+      </>,
+      { wrapper },
+    );
+
+    const triggers = screen.getAllByRole('button', { name: 'Информация' });
+    expect(triggers).toHaveLength(3);
+    for (const trigger of triggers) {
+      await user.click(trigger);
+    }
+
+    // Все три блока раскрыты — но ни одного запроса за секретом (рендерится маска по has_*).
+    expect(screen.getAllByText('••••••••')).toHaveLength(6);
+    expect(backendsApi.revealBackendApiKey).not.toHaveBeenCalled();
+    expect(backendsApi.revealBackendAdminApiKey).not.toHaveBeenCalled();
+  });
+
+  it('значение секрета приходит ТОЛЬКО по клику на глаз — один клик = один ресурс', async () => {
+    const user = userEvent.setup();
+    backendsApi.revealBackendApiKey.mockResolvedValue({ value: 'sk-backend-PLAIN' });
+    backendsApi.revealBackendAdminApiKey.mockResolvedValue({ value: 'sk-admin-PLAIN' });
+    render(<BackendCard backend={makeBackend({ has_api_key: true, has_admin_api_key: true })} />, {
+      wrapper,
+    });
+
+    await user.click(screen.getByRole('button', { name: 'Информация' }));
+    expect(backendsApi.revealBackendApiKey).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Показать API KEY' }));
+    expect(backendsApi.revealBackendApiKey).toHaveBeenCalledTimes(1);
+    expect(backendsApi.revealBackendApiKey.mock.calls[0][0]).toBe('backend-1');
+    expect(await screen.findByText('sk-backend-PLAIN')).toBeInTheDocument();
+    // Второй секрет по-прежнему не запрошен (по одному ресурсу за раз).
+    expect(backendsApi.revealBackendAdminApiKey).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Показать ADMIN API KEY' }));
+    expect(backendsApi.revealBackendAdminApiKey).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('sk-admin-PLAIN')).toBeInTheDocument();
   });
 });

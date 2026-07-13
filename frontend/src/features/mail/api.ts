@@ -36,6 +36,13 @@ export interface ListMailParams {
   mailAccountId?: number;
   /** Серверный фильтр по команде (UUID CRM-команды). Комбинируем с `mailAccountId` (AND). */
   teamId?: string;
+  /**
+   * Серверный фильтр «только непрочитанные текущим принципалом» (ADR-050 §2.4, 04-api.md).
+   * `true` → `unread=true` в запросе; `false`/не задан → параметр НЕ отправляется (фильтр не
+   * применяется; `false` ≠ «только прочитанные» — такого режима в контракте нет).
+   * Клиентская фильтрация непрочитанных ЗАПРЕЩЕНА — лента курсорная (сломала бы догрузку).
+   */
+  unread?: boolean;
 }
 
 /**
@@ -52,17 +59,46 @@ export function listMail(
   authToken?: string,
   skipAuthReset?: boolean,
 ): Promise<MailListResponse> {
-  const { before, limit = MAIL_PAGE_LIMIT, mailAccountId, teamId } = params;
+  const { before, limit = MAIL_PAGE_LIMIT, mailAccountId, teamId, unread } = params;
   const qs = new URLSearchParams();
   qs.set('limit', String(limit));
   if (before !== undefined) qs.set('before', before);
   if (mailAccountId !== undefined) qs.set('mail_account_id', String(mailAccountId));
   if (teamId !== undefined) qs.set('team_id', teamId);
+  if (unread) qs.set('unread', 'true');
   return apiRequest<MailListResponse>(`/mail/messages?${qs.toString()}`, {
     signal,
     authToken,
     skipAuthReset,
   });
+}
+
+/**
+ * POST /api/mail/messages/{id}/read → 204 (ADR-050 §2.2, 04-api.md). Помечает письмо
+ * прочитанным ТЕКУЩИМ пользователем (личная прочитанность). Идемпотентен. Гейт — `mail:view`;
+ * супер-админ из `.env` → 403 (у него нет строки в `users`) — UI его контролы не рендерит.
+ * `authToken`/`skipAuthReset` — для Mini App `/tg/mail` (тот же эндпоинт под изолированным
+ * SSO-JWT: спец-эндпоинта нет и не нужно, ADR-050 §2.6).
+ */
+export function markMailRead(
+  id: number,
+  authToken?: string,
+  skipAuthReset?: boolean,
+): Promise<void> {
+  return apiRequest<void>(`/mail/messages/${id}/read`, {
+    method: 'POST',
+    authToken,
+    skipAuthReset,
+  });
+}
+
+/**
+ * DELETE /api/mail/messages/{id}/read → 204 (ADR-050 §2.7). Возвращает письмо в
+ * «непрочитано» для текущего пользователя. Идемпотентен. Вызывается кнопкой «Отметить
+ * непрочитанным» в шапке детали письма (веб `/mail`); в Mini App этой кнопки НЕТ.
+ */
+export function unmarkMailRead(id: number): Promise<void> {
+  return apiRequest<void>(`/mail/messages/${id}/read`, { method: 'DELETE' });
 }
 
 export interface ListMailboxesParams {

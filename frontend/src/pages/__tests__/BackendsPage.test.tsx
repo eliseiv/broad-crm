@@ -201,11 +201,13 @@ describe('BackendsPage — плоская сетка, сортировка и п
     };
   });
 
-  /** Имена карточек бэков в порядке их появления в DOM (карточка — div[role=button]). */
+  /**
+   * Имена карточек бэков в порядке их появления в DOM. С тела карточки сняты `role="button"`
+   * и `aria-label="Просмотр бэка …"` (ADR-049 §3: detail-модалка упразднена, карточка —
+   * неинтерактивный контейнер), поэтому выбираем карточки по их заголовку `h3`.
+   */
   function renderedNames(): string[] {
-    return Array.from(
-      document.querySelectorAll('[role="button"][aria-label^="Просмотр бэка"]'),
-    ).map((el) => el.getAttribute('aria-label')?.replace('Просмотр бэка ', '') ?? '');
+    return screen.getAllByRole('heading', { level: 3 }).map((el) => el.textContent?.trim() ?? '');
   }
 
   it('кластеры «Имя · N» упразднены — одна плоская сетка карточек', () => {

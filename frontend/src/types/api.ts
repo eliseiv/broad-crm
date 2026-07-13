@@ -278,6 +278,13 @@ export interface MailMessage {
   body_present: boolean;
   body_truncated: boolean;
   tags: MailTag[];
+  /**
+   * ЛИЧНОЕ производное (ADR-050, 04-api.md «Схема MailMessage»): `true` ⇔ для текущего
+   * принципала нет строки `mail_message_reads(user_id, message_id)`. Не nullable. Один и тот
+   * же `id` письма у разных пользователей даёт разные значения. Для супер-админа из `.env` —
+   * всегда `false`. Меняется вызовами `POST`/`DELETE /api/mail/messages/{id}/read`.
+   */
+  is_unread: boolean;
 }
 
 /**

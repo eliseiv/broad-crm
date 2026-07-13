@@ -1,5 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { listMail, MAIL_PAGE_LIMIT, replyMail } from '@/features/mail/api';
+import {
+  listMail,
+  MAIL_PAGE_LIMIT,
+  markMailRead,
+  replyMail,
+  unmarkMailRead,
+} from '@/features/mail/api';
 
 const apiMock = vi.hoisted(() => ({ apiRequest: vi.fn() }));
 
@@ -93,5 +99,49 @@ describe('mail api client (ADR-044 compound keyset cursor)', () => {
     const [path, options] = apiMock.apiRequest.mock.calls[0];
     expect(path).toBe('/mail/messages/42/reply');
     expect(options).toMatchObject({ method: 'POST', body: { body: 'ответ' } });
+  });
+
+  // --- Личная прочитанность (ADR-050 §2.2/§2.7) -----------------------------
+
+  it('`unread=true` уходит в query ленты; `false`/не задан — параметр НЕ отправляется', async () => {
+    await listMail({ unread: true });
+    expect(firstCallQuery().get('unread')).toBe('true');
+
+    apiMock.apiRequest.mockClear();
+    await listMail({ unread: false });
+    // `false` ≠ «только прочитанные» — такого режима в контракте нет: параметр не шлём.
+    expect(firstCallQuery().has('unread')).toBe(false);
+
+    apiMock.apiRequest.mockClear();
+    await listMail();
+    expect(firstCallQuery().has('unread')).toBe(false);
+  });
+
+  it('markMailRead → POST /mail/messages/{id}/read (без тела)', async () => {
+    apiMock.apiRequest.mockResolvedValueOnce(undefined);
+    await markMailRead(42);
+
+    const [path, options] = apiMock.apiRequest.mock.calls[0];
+    expect(path).toBe('/mail/messages/42/read');
+    expect(options).toMatchObject({ method: 'POST' });
+    expect((options as Record<string, unknown>).body).toBeUndefined();
+  });
+
+  it('markMailRead из Mini App шлёт SSO-токен и не роняет админ-стор на 401', async () => {
+    apiMock.apiRequest.mockResolvedValueOnce(undefined);
+    await markMailRead(42, 'sso-jwt', true);
+
+    const options = firstCallOptions();
+    expect(options.authToken).toBe('sso-jwt');
+    expect(options.skipAuthReset).toBe(true);
+  });
+
+  it('unmarkMailRead → DELETE /mail/messages/{id}/read', async () => {
+    apiMock.apiRequest.mockResolvedValueOnce(undefined);
+    await unmarkMailRead(42);
+
+    const [path, options] = apiMock.apiRequest.mock.calls[0];
+    expect(path).toBe('/mail/messages/42/read');
+    expect(options).toMatchObject({ method: 'DELETE' });
   });
 });

@@ -1,5 +1,7 @@
 import { useMemo } from 'react';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { InfiniteData } from '@tanstack/react-query';
+import { toast } from 'sonner';
 import {
   applyTagToExisting,
   createMailbox,
@@ -14,10 +16,12 @@ import {
   listTags,
   listTeamMailboxes,
   mailboxOAuthAuthorize,
+  markMailRead,
   MAIL_PAGE_LIMIT,
   replyMail,
   syncMailbox,
   testMailbox,
+  unmarkMailRead,
   updateMailbox,
   updateMailSettings,
   updateTag,
@@ -25,6 +29,7 @@ import {
 import { env } from '@/lib/env';
 import { ApiError } from '@/lib/api';
 import type {
+  MailListResponse,
   MailMailbox,
   MailMailboxCreateRequest,
   MailMailboxSyncResponse,
@@ -58,6 +63,12 @@ export const teamMailboxesKey = ['teams', 'mailboxes'] as const;
 export interface MailFeedFilter {
   mailAccountId?: number;
   teamId?: string;
+  /**
+   * Тумблер «Непрочитанные» — **СЕРВЕРНЫЙ** (ADR-050 §2.8): входит в queryKey, включение
+   * сбрасывает пагинацию и шлёт первый запрос без `before` с `unread=true`. Клиентская
+   * фильтрация непрочитанных ЗАПРЕЩЕНА (сломала бы курсорную догрузку).
+   */
+  unread?: boolean;
 }
 
 /**
@@ -106,15 +117,22 @@ function flattenPages(pages: { messages: MailMessage[] }[] | undefined): MailMes
  * `before=<next_cursor>`, пока `next_cursor` не `null`.
  */
 export function useMailFeed(filter: MailFeedFilter = {}): MailFeedResult {
-  const { mailAccountId, teamId } = filter;
+  const { mailAccountId, teamId, unread } = filter;
   const query = useInfiniteQuery({
     // Фильтр входит в queryKey → его смена запускает новый запрос ленты (сброс пагинации).
     queryKey: [
       ...mailFeedKey,
-      { mail_account_id: mailAccountId ?? null, team_id: teamId ?? null },
+      {
+        mail_account_id: mailAccountId ?? null,
+        team_id: teamId ?? null,
+        unread: unread ?? false,
+      },
     ] as const,
     queryFn: ({ pageParam, signal }) =>
-      listMail({ before: pageParam, limit: MAIL_PAGE_LIMIT, mailAccountId, teamId }, signal),
+      listMail(
+        { before: pageParam, limit: MAIL_PAGE_LIMIT, mailAccountId, teamId, unread },
+        signal,
+      ),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     // Один заход: 502/503/401 отдаём сразу в UI, без ретрай-задержек.
@@ -146,6 +164,74 @@ export function useMailFeed(filter: MailFeedFilter = {}): MailFeedResult {
       void query.refetch();
     },
   };
+}
+
+// --- Личная прочитанность писем (ADR-050 §2; гейт `mail:view`) ---
+
+/**
+ * Локальная правка `is_unread` в УЖЕ ЗАГРУЖЕННОМ кэше ленты (все queryKey префикса
+ * `['mail','feed']`, т.е. все комбинации серверных фильтров). **Полный инвалидэйт ленты
+ * после отметки ЗАПРЕЩЁН** (ADR-050 §2.6): он перезапрашивал бы все страницы бесконечного
+ * скролла на каждый клик по письму. Открытие письма при активном фильтре «Непрочитанные»
+ * поэтому НЕ удаляет строку из текущего списка (ADR-050 §2.8) — она остаётся на месте до
+ * следующего ре-запроса ленты.
+ */
+function patchFeedUnread(
+  queryClient: ReturnType<typeof useQueryClient>,
+  messageId: number,
+  isUnread: boolean,
+): void {
+  queryClient.setQueriesData<InfiniteData<MailListResponse>>({ queryKey: mailFeedKey }, (data) => {
+    if (!data) return data;
+    return {
+      ...data,
+      pages: data.pages.map((page) => ({
+        ...page,
+        messages: page.messages.map((m) =>
+          m.id === messageId ? { ...m, is_unread: isUnread } : m,
+        ),
+      })),
+    };
+  });
+}
+
+/**
+ * POST /api/mail/messages/{id}/read — пометить письмо прочитанным (личная прочитанность).
+ * Триггер — **смена выбранного письма** (включая авто-выбор самого свежего), НЕ каждый рендер
+ * (ADR-050 §2.6). **Best-effort:** ошибка не блокирует показ письма и не даёт toast-спама —
+ * максимум индикатор останется гореть. Успех → локальная правка кэша ленты (без инвалидэйта).
+ */
+export function useMarkMailRead() {
+  const queryClient = useQueryClient();
+  return useMutation<void, unknown, number>({
+    mutationFn: (messageId) => markMailRead(messageId),
+    onSuccess: (_data, messageId) => patchFeedUnread(queryClient, messageId, false),
+  });
+}
+
+/**
+ * DELETE /api/mail/messages/{id}/read — вернуть письмо в «непрочитано» (кнопка «Отметить
+ * непрочитанным» в шапке детали, ADR-050 §2.7). Письмо остаётся ОТКРЫТЫМ (деталь не
+ * закрывается, авто-пометка повторно не срабатывает — триггер = смена письма).
+ *
+ * **Ошибка → toast (в отличие от `POST …/read`).** Норма «best-effort, без toast-спама»
+ * (ADR-050 §2.6) привязана к АВТОМАТИЧЕСКОЙ пометке при смене письма («письмо открыто и
+ * читается» — молчание там осмысленно). `DELETE` — **явное одиночное действие пользователя**
+ * (§2.7 описывает только успешный путь `204`), и его молчаливый провал оставил бы клик без
+ * всякой обратной связи. Кэш при ошибке НЕ трогаем: письмо на сервере осталось прочитанным,
+ * поэтому погашенный индикатор — корректное состояние.
+ */
+export function useUnmarkMailRead() {
+  const queryClient = useQueryClient();
+  return useMutation<void, unknown, number>({
+    mutationFn: (messageId) => unmarkMailRead(messageId),
+    onSuccess: (_data, messageId) => patchFeedUnread(queryClient, messageId, true),
+    onError: (err) => {
+      toast.error(
+        err instanceof ApiError ? err.message : 'Не удалось отметить письмо непрочитанным',
+      );
+    },
+  });
 }
 
 /**
