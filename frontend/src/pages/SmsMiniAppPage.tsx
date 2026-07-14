@@ -3,12 +3,23 @@ import type { CSSProperties, ReactNode } from 'react';
 import { AlertTriangle, Inbox, ShieldAlert } from 'lucide-react';
 import { Card } from '@/components/ui/Card';
 import { Pill } from '@/components/ui/Pill';
+import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { cn } from '@/lib/cn';
 import { SmsMessageCard } from '@/components/SmsMessageCard';
 import { ApiError } from '@/lib/api';
+import {
+  channelScopeFromMe,
+  shouldRenderTeamFilter,
+  teamFilterOptions,
+  teamFilterParams,
+} from '@/features/auth/channelTeams';
 import { useMiniAppAuthStore } from '@/features/sms/miniAppAuth';
-import { useMiniAppSmsMessages, useMiniAppSmsNumbers } from '@/features/sms/miniAppHooks';
+import {
+  useMiniAppSmsMessages,
+  useMiniAppSmsNumbers,
+  useSmsMiniAppMe,
+} from '@/features/sms/miniAppHooks';
 import { telegramAuth } from '@/features/sms/api';
 import { applyTelegramTheme, loadTelegramSdk } from '@/features/sms/telegramSdk';
 import type { SmsNumber } from '@/types/api';
@@ -251,8 +262,17 @@ type MiniTab = 'messages' | 'numbers';
  */
 function AuthorizedView() {
   const [tab, setTab] = useState<MiniTab>('messages');
+  // Фильтр «Команда» в Mini App (ADR-055 §6 — разворот ADR-037 в этой части): опции ТОЛЬКО из
+  // `GET /api/auth/me` под SSO-токеном (`GET /api/teams` из Mini App ЗАПРЕЩЁН), рендер — по
+  // единому правилу пяти экранов (≥ 2 варианта канала; порог тот же, что в вебе). Выбор →
+  // серверные `team_id`/`no_team` (сброс пагинации). Фильтра «Все номера» в Mini App НЕТ.
+  const [teamFilter, setTeamFilter] = useState('');
+  const meQuery = useSmsMiniAppMe(true);
+  const smsScope = channelScopeFromMe(meQuery.data, 'sms');
+  const showTeamFilter = shouldRenderTeamFilter(smsScope);
+
   const numbersQuery = useMiniAppSmsNumbers(true);
-  const messages = useMiniAppSmsMessages(true);
+  const messages = useMiniAppSmsMessages(true, teamFilterParams(teamFilter));
 
   const numbers = numbersQuery.data?.numbers ?? [];
   const numbersForbidden = numbersQuery.isError && isForbidden(numbersQuery.error);
@@ -321,6 +341,14 @@ function AuthorizedView() {
           aria-labelledby="mini-tab-messages"
           className="flex flex-col gap-2.5"
         >
+          {showTeamFilter && (
+            <Select
+              aria-label="Команда"
+              options={teamFilterOptions(smsScope)}
+              value={teamFilter}
+              onChange={(e) => setTeamFilter(e.target.value)}
+            />
+          )}
           {!messagesForbidden && messages.phase === 'loading' && <SectionLoading />}
           {!messagesForbidden && messages.phase === 'error' && (
             <SectionError onRetry={messages.reload} />

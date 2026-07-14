@@ -12,7 +12,8 @@ import { Spinner } from '@/components/ui/Spinner';
 import { cn } from '@/lib/cn';
 import { env } from '@/lib/env';
 import { ApiError } from '@/lib/api';
-import { useCan, useSeesAllMailTeams } from '@/features/auth/hooks';
+import { useCan, useChannelTeamScope, useSeesAllMailTeams } from '@/features/auth/hooks';
+import type { ChannelTeamScope } from '@/features/auth/channelTeams';
 import { listMailboxes } from '@/features/mail/api';
 import {
   MAIL_CONNECTION_PROGRESS_HINT,
@@ -27,13 +28,11 @@ import {
   useTestMailbox,
   useUpdateMailbox,
 } from '@/features/mail/hooks';
-import { useTeams } from '@/features/teams/hooks';
 import type {
   MailMailbox,
   MailMailboxCreateRequest,
   MailMailboxTestRequest,
   MailMailboxUpdateRequest,
-  TeamListItem,
 } from '@/types/api';
 
 /** Значение опции «Без команды» (team_id = null). */
@@ -70,11 +69,31 @@ export function MailboxFormModal({ open, onOpenChange, mode, mailbox }: MailboxF
   );
 }
 
-function teamOptions(teams: TeamListItem[]): SelectOption[] {
-  return [
-    { value: NO_TEAM, label: 'Без команды' },
-    ...teams.map((t) => ({ value: t.id, label: t.name })),
-  ];
+/**
+ * Опции селектора «Команда» формы ящика (нормативно — ADR-055 §6.3, 08-design-system.md;
+ * закрывает TD-050 и прод-баг 2026-07-14):
+ *  - команды — ТОЛЬКО из `me.mail_teams` (`GET /api/auth/me`), для ЛЮБОГО актора: у
+ *    admin-уровня там все команды системы, у не-админа — его scope канала. `GET /api/teams`
+ *    гейтится `teams:view` (у mail-оператора его НЕТ ⇒ пустой список ⇒ ящик было не создать);
+ *  - опция «Без команды» (`team_id = null`) — ТОЛЬКО admin-уровню (`sees_all_mail_teams`, а
+ *    НЕ `mail_includes_unassigned`): создание/перевод ящика без команды — admin-only
+ *    (ADR-044 §4), т.е. не-админу эта опция = гарантированный `403` по клику.
+ * Принцип: опция, которую пользователь не вправе выбрать, НЕ показывается.
+ *
+ * `showCurrentNoTeam` — в режиме `edit` под не-админом контрол `disabled` (перенос —
+ * admin-only), и если ящик бесхозный (`team_id = null`, виден по `mail_includes_unassigned`),
+ * его текущее состояние надо ОТОБРАЗИТЬ. Выбрать эту опцию нельзя (контрол disabled) ⇒
+ * ловушки `403` не возникает.
+ */
+function buildTeamOptions(
+  scope: ChannelTeamScope,
+  seesAllTeams: boolean,
+  showCurrentNoTeam: boolean,
+): SelectOption[] {
+  const options: SelectOption[] = [];
+  if (seesAllTeams || showCurrentNoTeam) options.push({ value: NO_TEAM, label: 'Без команды' });
+  options.push(...scope.teams.map((t) => ({ value: t.id, label: t.name })));
+  return options;
 }
 
 /** Внешняя ссылка справки — открывается в новой вкладке (08-design-system.md). */
@@ -283,14 +302,26 @@ function MailboxDialog({
   mailbox?: MailMailbox;
 }) {
   const isEdit = mode === 'edit';
+
+  // Перенос ящика между командами (смена team_id в edit) — только admin-уровень (ADR-044 §4).
+  // Он же — гейт опции «Без команды» (создание ящика без команды admin-only, ADR-055 §6.3).
+  const seesAllTeams = useSeesAllMailTeams();
+  // Команды канала — ТОЛЬКО из `me.mail_teams` (ADR-055 §6.3): `GET /api/teams` здесь запрещён.
+  const mailScope = useChannelTeamScope('mail');
+  const teamSelectDisabled = isEdit && !seesAllTeams;
+
   const initialTeam = mailbox?.team_id != null ? mailbox.team_id : NO_TEAM;
+  // Дефолт «Команды» при СОЗДАНИИ для не-админа: `NO_TEAM` ему недоступен (admin-only) ⇒
+  // предвыбираем первую доступную команду канала, иначе поле указывало бы на несуществующую
+  // опцию и submit гарантированно упал бы в 403 (ровно прод-баг TD-050).
+  const defaultTeam = !isEdit && !seesAllTeams ? (mailScope.teams[0]?.id ?? NO_TEAM) : initialTeam;
 
   const [email, setEmail] = useState(mailbox?.email ?? '');
   // Два поля имени вместо «Отображаемого имени» (ADR-047 §3.6): `display_name` —
   // производное, сервер считает его сам и клиентом оно НЕ отправляется.
   const [number, setNumber] = useState(mailbox?.number ?? '');
   const [appName, setAppName] = useState(mailbox?.app_name ?? '');
-  const [teamId, setTeamId] = useState(initialTeam);
+  const [teamId, setTeamId] = useState(defaultTeam);
   const [isActive, setIsActive] = useState(mailbox?.is_active ?? true);
 
   const [imapHost, setImapHost] = useState('');
@@ -322,18 +353,36 @@ function MailboxDialog({
   // Снимок id ящиков на момент старта пуллинга — детект появления нового.
   const baselineIds = useRef<Set<number> | null>(null);
 
-  const teamsQuery = useTeams(open);
-  const teams = teamsQuery.data?.items ?? [];
-
   // «Проверить соединение» бьёт POST /mailboxes/test, закрытый гейтом mail:create
   // (backend/app/api/mail.py: CreateDep). Модалка edit открывается под mail:edit —
   // роль с edit, но без create получила бы 403 по клику; поэтому кнопку рендерим
   // только при mail:create (граница безопасности — на сервере, это UX-гейт).
   const canTest = useCan('mail', 'create');
-  // Перенос ящика между командами (смена team_id в edit) — только admin-уровень (ADR-044 §4).
-  // При создании выбор команды доступен всегда (рядовой участник привязывает к своей).
-  const seesAllTeams = useSeesAllMailTeams();
-  const teamSelectDisabled = isEdit && !seesAllTeams;
+  // Опции команд: `me.mail_teams` + «Без команды» ТОЛЬКО admin-уровню; в disabled-режиме
+  // edit у не-админа бесхозный ящик показывается как есть (выбрать нельзя — контрол disabled).
+  const teamOptions = buildTeamOptions(
+    mailScope,
+    seesAllTeams,
+    teamSelectDisabled && initialTeam === NO_TEAM,
+  );
+  // Не-админ без единой команды канала: выбирать нечего, ящик создать он не сможет (сервер
+  // вернёт 403). Показываем причину вместо молча пустого селекта.
+  const noTeamOptions = teamOptions.length === 0;
+  // Создание под не-админом: «Без команды» (`NO_TEAM`) ему недоступен ⇒ отправить его нельзя.
+  const submitBlockedNoTeam = !isEdit && !seesAllTeams && (noTeamOptions || teamId === NO_TEAM);
+
+  // Показанное = отправляемое. `defaultTeam` вычисляется ОДИН раз при монтировании, а
+  // `me.mail_teams` может доехать ПОЗЖЕ открытия формы (`useMe` ещё в полёте / стор не
+  // гидратирован). Тогда у не-админа в `teamId` остаётся `NO_TEAM`, опции уже появились, и
+  // нативный `<select>` (ui/Select.tsx рендерит ровно переданные options) ПОКАЗЫВАЕТ первую
+  // команду — а submit ушёл бы с `team_id: null` ⇒ гарантированный 403 (тот же прод-баг
+  // TD-050 в другой обёртке). Синхронизируем состояние с фактическим набором опций.
+  const teamIdIsSelectable = teamOptions.some((o) => o.value === teamId);
+  useEffect(() => {
+    if (isEdit || seesAllTeams || teamIdIsSelectable) return;
+    const first = mailScope.teams[0]?.id ?? NO_TEAM;
+    setTeamId((prev) => (prev === first ? prev : first));
+  }, [isEdit, seesAllTeams, teamIdIsSelectable, mailScope.teams]);
 
   const testMutation = useTestMailbox();
   const createMutation = useCreateMailbox();
@@ -563,7 +612,7 @@ function MailboxDialog({
     if (!isEdit) {
       if (!imapHost.trim()) next.imap = 'Укажите IMAP-хост';
       if (!smtpHost.trim()) next.smtp = 'Укажите SMTP-хост';
-      if (!password.trim()) next.password = 'Укажите пароль';
+      if (!password.trim()) next.password = 'Укажите код приложения';
     }
     setErrors(next);
     return Object.keys(next).length === 0;
@@ -639,7 +688,12 @@ function MailboxDialog({
     { value: 'starttls', label: 'STARTTLS' },
   ];
 
-  const passwordHint = isEdit ? 'Оставьте пустым, чтобы не менять пароль.' : undefined;
+  // Подсказка под «Кодом приложения» обязательна в ОБОИХ режимах (ADR-054 §1): в `add` она
+  // называет то, что реально нужно ввести (app password, а не пароль от почты) — лейбл виден
+  // всегда, а аккордеон-инструкция свёрнут.
+  const passwordHint = isEdit
+    ? 'Оставьте пустым, чтобы не менять код приложения.'
+    : 'Не пароль от почты, а пароль приложения (app password) из настроек безопасности почтового сервиса. Как его получить — в блоке «Как добавить почту?» выше.';
   const connectionHint = isEdit
     ? 'Параметры подключения не отображаются из соображений безопасности. Заполните только то, что нужно изменить.'
     : undefined;
@@ -694,7 +748,19 @@ function MailboxDialog({
               <Button variant="ghost" onClick={() => requestClose(false)} disabled={isSubmitting}>
                 Отмена
               </Button>
-              <Button type="submit" form="mailbox-form" loading={isSubmitting} disabled={isTesting}>
+              {/*
+                При нуле доступных команд у не-админа (`noTeamOptions`) submit ушёл бы с
+                `team_id: null` — вариант, который сервер гарантированно отклонит `403`
+                (создание ящика без команды — admin-only, ADR-044 §4). UI не производит
+                заведомо запрещённый вариант: кнопка disabled, причина уже выведена
+                подсказкой под селектором «Команда».
+              */}
+              <Button
+                type="submit"
+                form="mailbox-form"
+                loading={isSubmitting}
+                disabled={isTesting || submitBlockedNoTeam}
+              >
                 {isEdit ? 'Сохранить' : 'Добавить'}
               </Button>
             </div>
@@ -723,6 +789,29 @@ function MailboxDialog({
             clearConnectionError();
           }}
         />
+
+        {/*
+          «Код приложения» (`password` в контракте — имя поля запроса НЕ переименовано, ADR-054
+          §4) стоит ВТОРЫМ полем, сразу под «Адресом почты» (нормативный порядок —
+          08-design-system.md «Поля формы ящика: лейблы и ПОРЯДОК»). Раньше поле было последним
+          и заполнялось «на автомате» паролем от почты, который провайдеры не принимают.
+        */}
+        <div className="flex flex-col gap-1.5">
+          <Input
+            label="Код приложения"
+            type="password"
+            value={password}
+            error={errors.password}
+            autoComplete="new-password"
+            onChange={(e) => {
+              setPassword(e.target.value);
+              if (errors.password) setErrors((p) => ({ ...p, password: undefined }));
+              clearConnectionError();
+            }}
+          />
+          <p className="text-[12px] leading-relaxed text-text-secondary">{passwordHint}</p>
+        </div>
+
         {/* «Номер» + «Приложение» вместо упразднённого «Отображаемого имени» (ADR-047 §3.6);
             оба опциональны. `display_name` — производное, сервер вычисляет его сам. */}
         <div className="flex flex-wrap gap-3">
@@ -746,14 +835,19 @@ function MailboxDialog({
         <div className="flex flex-col gap-1.5">
           <Select
             label="Команда"
-            options={teamOptions(teams)}
+            options={teamOptions}
             value={teamId}
-            disabled={teamSelectDisabled}
+            disabled={teamSelectDisabled || noTeamOptions}
             onChange={(e) => setTeamId(e.target.value)}
           />
           {teamSelectDisabled && (
             <p className="text-[12px] text-text-secondary">
               Перенос между командами доступен только администратору.
+            </p>
+          )}
+          {!teamSelectDisabled && noTeamOptions && (
+            <p className="text-[12px] text-text-secondary">
+              Нет доступных команд — обратитесь к администратору.
             </p>
           )}
         </div>
@@ -968,29 +1062,13 @@ function MailboxDialog({
             type="password"
             value={smtpPassword}
             autoComplete="new-password"
-            placeholder="По умолчанию — основной пароль"
+            placeholder="По умолчанию — Код приложения"
             onChange={(e) => {
               setSmtpPassword(e.target.value);
               clearConnectionError();
             }}
           />
         </fieldset>
-
-        <div className="flex flex-col gap-1.5">
-          <Input
-            label="Пароль (IMAP)"
-            type="password"
-            value={password}
-            error={errors.password}
-            autoComplete="new-password"
-            onChange={(e) => {
-              setPassword(e.target.value);
-              if (errors.password) setErrors((p) => ({ ...p, password: undefined }));
-              clearConnectionError();
-            }}
-          />
-          {passwordHint && <p className="text-[12px] text-text-secondary">{passwordHint}</p>}
-        </div>
 
         {isEdit && (
           <Checkbox

@@ -64,6 +64,11 @@ export interface MailFeedFilter {
   mailAccountId?: number;
   teamId?: string;
   /**
+   * «Без команды» (`no_team=true`, ADR-055 §5.3) — письма ящиков с `team_id IS NULL`.
+   * Взаимоисключающ с `teamId` (контрол шлёт одно из двух: `teamFilterParams`).
+   */
+  noTeam?: boolean;
+  /**
    * Тумблер «Непрочитанные» — **СЕРВЕРНЫЙ** (ADR-050 §2.8): входит в queryKey, включение
    * сбрасывает пагинацию и шлёт первый запрос без `before` с `unread=true`. Клиентская
    * фильтрация непрочитанных ЗАПРЕЩЕНА (сломала бы курсорную догрузку).
@@ -117,7 +122,7 @@ function flattenPages(pages: { messages: MailMessage[] }[] | undefined): MailMes
  * `before=<next_cursor>`, пока `next_cursor` не `null`.
  */
 export function useMailFeed(filter: MailFeedFilter = {}): MailFeedResult {
-  const { mailAccountId, teamId, unread } = filter;
+  const { mailAccountId, teamId, noTeam, unread } = filter;
   const query = useInfiniteQuery({
     // Фильтр входит в queryKey → его смена запускает новый запрос ленты (сброс пагинации).
     queryKey: [
@@ -125,12 +130,13 @@ export function useMailFeed(filter: MailFeedFilter = {}): MailFeedResult {
       {
         mail_account_id: mailAccountId ?? null,
         team_id: teamId ?? null,
+        no_team: noTeam ?? false,
         unread: unread ?? false,
       },
     ] as const,
     queryFn: ({ pageParam, signal }) =>
       listMail(
-        { before: pageParam, limit: MAIL_PAGE_LIMIT, mailAccountId, teamId, unread },
+        { before: pageParam, limit: MAIL_PAGE_LIMIT, mailAccountId, teamId, noTeam, unread },
         signal,
       ),
     initialPageParam: undefined as string | undefined,

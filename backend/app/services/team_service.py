@@ -7,6 +7,12 @@
 следующему по `user_teams.created_at` (или `leader_id → NULL`, если участников не
 осталось). Существование `leader_id`/`member_ids` валидирует `UserRepository` → 422.
 Уникальность `name` → 409 team_name_taken.
+
+**Нормализация per-channel добавок (ADR-055 §2.3, путь 2 — security-инвариант).** Teams
+CRUD — ВТОРОЙ (наряду с users CRUD) путь записи в `user_teams`, поэтому `create`/`update`
+обязаны в ТОЙ ЖЕ транзакции удалять строки `user_channel_teams` этой команды у её
+участников: иначе «доп-команда → добавили участником → исключили» оставляет «висящий»
+доступ к почте/СМС команды после исключения из неё.
 """
 
 from __future__ import annotations
@@ -27,6 +33,7 @@ from app.models.team import Team
 from app.repositories.mail_account_repository import MailAccountRepository
 from app.repositories.sms_number_repository import SmsNumberRepository
 from app.repositories.team_repository import TeamRepository
+from app.repositories.user_channel_team_repository import UserChannelTeamRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.sms import TeamNumbersResponse
 from app.schemas.team import (
@@ -85,11 +92,13 @@ class TeamService:
         users: UserRepository,
         numbers: SmsNumberRepository,
         mailboxes: MailAccountRepository,
+        channels: UserChannelTeamRepository,
     ) -> None:
         self._teams = teams
         self._users = users
         self._numbers = numbers
         self._mailboxes = mailboxes
+        self._channels = channels
 
     async def list_teams(self) -> TeamListResponse:
         """Список команд (created_at DESC, id): лидер, участники, number_count, mailbox_count.
@@ -164,6 +173,9 @@ class TeamService:
                 ordered_member_ids=ordered,
                 mail_group_id=payload.mail_group_id,
             )
+            # Инвариант нормализации (ADR-055 §2.3, путь 2) — В ТОЙ ЖЕ транзакции:
+            # ставший участником не хранит эту команду как per-channel добавку.
+            await self._channels.remove_team_for_users(team.id, ordered)
             await self._teams.session.commit()
         except IntegrityError as exc:
             await self._teams.session.rollback()
@@ -242,6 +254,10 @@ class TeamService:
 
         if ordered_desired is not None:
             await self._teams.replace_members(team.id, ordered_desired)
+            # Инвариант нормализации (ADR-055 §2.3, путь 2) — В ТОЙ ЖЕ транзакции: добавленные
+            # участники теряют эту команду как per-channel добавку (иначе последующее
+            # исключение их из команды оставило бы «висящий» доступ к её почте/СМС).
+            await self._channels.remove_team_for_users(team.id, ordered_desired)
             await self._teams.session.flush()
 
         # Определение лидера после приведения состава.

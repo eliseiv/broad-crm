@@ -31,6 +31,7 @@ def _service(db: RbacFakeDb) -> TeamService:
         users=db.user_repo,
         numbers=db.number_repo,
         mailboxes=db.mailbox_repo,
+        channels=db.channel_repo,
     )
 
 

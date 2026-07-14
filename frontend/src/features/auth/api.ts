@@ -31,7 +31,16 @@ export function setPassword(
   });
 }
 
-/** GET /api/auth/me — профиль + права принципала для UI-гейтинга (04-api.md, ADR-021). */
-export function getMe(signal?: AbortSignal): Promise<MeResponse> {
-  return apiRequest<MeResponse>('/auth/me', { signal });
+/**
+ * GET /api/auth/me — профиль + права принципала + ЭФФЕКТИВНЫЙ scope команд каналов
+ * (`mail_teams`/`sms_teams`, `*_includes_unassigned` — ADR-055 §5.1). Единственный источник
+ * опций команд канала на клиенте (§6.3), включая обе Mini App: там `GET /api/teams` запрещён.
+ * `authToken`/`skipAuthReset` — для Mini App (изолированный SSO-JWT; 401 не роняет админ-стор).
+ */
+export function getMe(
+  signal?: AbortSignal,
+  authToken?: string,
+  skipAuthReset?: boolean,
+): Promise<MeResponse> {
+  return apiRequest<MeResponse>('/auth/me', { signal, authToken, skipAuthReset });
 }

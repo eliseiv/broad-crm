@@ -8,14 +8,26 @@ import { Select } from '@/components/ui/Select';
 import type { SelectOption } from '@/components/ui/Select';
 import { ApiError } from '@/lib/api';
 import { useDeleteSmsNumber, useTransferSmsNumber, useUpdateSmsNumber } from '@/features/sms/hooks';
-import type { SmsNumber, SmsNumberUpdateRequest, TeamListItem } from '@/types/api';
+import type { SmsNumber, SmsNumberUpdateRequest, TeamRef } from '@/types/api';
 
 /** Значение опции «снять команду» (unassigned) в Select переноса. */
 const NO_TEAM = '';
 
 interface SmsNumberRowProps {
   number: SmsNumber;
-  teams: TeamListItem[];
+  /**
+   * Команды КАНАЛА «СМС» — из `GET /api/auth/me` (`me.sms_teams`, ADR-055 §6.3), а НЕ из
+   * `GET /api/teams` (гейт `teams:view` — у sms-оператора его нет ⇒ список приходил пустым и
+   * контрол молча деградировал). Это РОВНО те команды, в которые перенос разрешён: целевая
+   * команда вне scope → `403 forbidden` (ADR-055 §3.2 п.3).
+   */
+  teams: TeamRef[];
+  /**
+   * Показывать ли опцию «Без команды» (снятие команды, `team_id=null`): admin-уровню — всегда,
+   * не-админу — только при `me.sms_includes_unassigned` (иначе снятие даёт `403`, а номер ушёл
+   * бы из его scope). ADR-055 §3.2 п.2 / §6.3.
+   */
+  allowNoTeam: boolean;
   canEdit: boolean;
   canTransfer: boolean;
   canDelete: boolean;
@@ -35,6 +47,7 @@ function errorMessage(err: unknown, fallback: string): string {
 export function SmsNumberRow({
   number,
   teams,
+  allowNoTeam,
   canEdit,
   canTransfer,
   canDelete,
@@ -64,10 +77,18 @@ export function SmsNumberRow({
     );
   };
 
+  // Опции — только то, что актор ВПРАВЕ выбрать (ADR-055 §6.3): команды его scope канала +
+  // «Без команды» под флагом. Текущая команда номера всегда ∈ scope (иначе номер не был бы
+  // виден), но добавляем её оборонительно — иначе нативный `<select>` показал бы чужое
+  // значение первой опции.
   const teamOptions: SelectOption[] = [
-    { value: NO_TEAM, label: 'Без команды' },
+    ...(allowNoTeam ? [{ value: NO_TEAM, label: 'Без команды' }] : []),
     ...teams.map((t) => ({ value: t.id, label: t.name })),
   ];
+  const ownTeam = number.team;
+  if (ownTeam && !teamOptions.some((o) => o.value === ownTeam.id)) {
+    teamOptions.push({ value: ownTeam.id, label: ownTeam.name });
+  }
 
   // Перенос коммитится сразу при выборе значения в Select (без кнопки «Перенести»).
   const handleTransferChange = (nextTeamId: string) => {

@@ -27,12 +27,33 @@ _PORT_MAX = 65535
 # --- Лента писем (чтение из БД CRM) -----------------------------------------
 
 
+class MailTeamRef(BaseModel):
+    """Ссылка на CRM-команду-владельца ящика (ADR-056 §1) — зеркало `SmsTeamRef`.
+
+    Отдельный тип, а не переиспользование `SmsTeamRef`: модули не импортируют схемы
+    друг друга.
+    """
+
+    id: uuid.UUID
+    name: str
+
+
 class MailAccountRef(BaseModel):
-    """Ссылка на ящик-владелец письма (проекция каталога, ADR-044 §2)."""
+    """Ссылка на ящик-владелец письма (проекция каталога, ADR-044 §2, ADR-056 §1).
+
+    Расширена ADR-056 **аддитивно**: `number` («Номер»), `app_name` («Приложение») и
+    `team` (команда-владелец; `null` — ящик без команды). Нужны Mini App почты, где имя
+    команды на клиенте недостижимо (`GET /api/teams` гейтится `teams:view`). `display_name`
+    остаётся (производная склейка, используется десктопом; в Mini App не рендерится).
+    Утечки нет: актор и так видит только письма ящиков своего `MailScope`.
+    """
 
     id: int
     email: str
     display_name: str | None
+    number: str | None
+    app_name: str | None
+    team: MailTeamRef | None
 
 
 class MailTag(BaseModel):

@@ -9,6 +9,7 @@ import { MultiSelect } from '@/components/ui/MultiSelect';
 import type { MultiSelectOption } from '@/components/ui/MultiSelect';
 import { Select } from '@/components/ui/Select';
 import type { SelectOption } from '@/components/ui/Select';
+import { UserChannelTeamsBlock } from '@/components/UserChannelTeamsBlock';
 import { ApiError } from '@/lib/api';
 import { useCreateUser, useDeleteUser, useUpdateUser } from '@/features/users/hooks';
 import type {
@@ -57,6 +58,11 @@ function validatePassword(password: string, required: boolean): string | undefin
   if (password.length < 8) return 'Не менее 8 символов';
   if (password.length > 128) return 'Не более 128 символов';
   return undefined;
+}
+
+/** Сравнение наборов id без учёта порядка (нужно, чтобы не слать неизменённую добавку). */
+function sameIds(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((id) => b.includes(id));
 }
 
 /** Маппинг ошибок API в пофилдовые (04-api.md прецеденция ошибок Users). */
@@ -145,6 +151,12 @@ function AddUserDialog({
   const [password, setPassword] = useState('');
   const [roleId, setRoleId] = useState(roles[0]?.id ?? '');
   const [teamIds, setTeamIds] = useState<string[]>([]);
+  // Блоки каналов (ADR-055 §6.1): хранится и отправляется ТОЛЬКО ДОБАВКА сверх базового
+  // членства (`team_ids`); флаг «Без команды» — отдельным полем на канал.
+  const [smsExtraTeamIds, setSmsExtraTeamIds] = useState<string[]>([]);
+  const [smsUnassigned, setSmsUnassigned] = useState(false);
+  const [mailExtraTeamIds, setMailExtraTeamIds] = useState<string[]>([]);
+  const [mailUnassigned, setMailUnassigned] = useState(false);
   const [errors, setErrors] = useState<Errors>({});
   const [showPassword, setShowPassword] = useState(false);
   const createMutation = useCreateUser();
@@ -173,6 +185,14 @@ function AddUserDialog({
     const trimmedTelegram = telegram.trim();
     if (trimmedTelegram) payload.telegram = trimmedTelegram;
     if (teamIds.length > 0) payload.team_ids = teamIds;
+    // Отправляется ТОЛЬКО добавка: базовые (disabled) чекбоксы блоков в `*_extra_team_ids`
+    // не включаются (ADR-055 §6.1; сервер вычитает пересечение и сам — §2.3).
+    const smsExtra = smsExtraTeamIds.filter((id) => !teamIds.includes(id));
+    const mailExtra = mailExtraTeamIds.filter((id) => !teamIds.includes(id));
+    if (smsExtra.length > 0) payload.sms_extra_team_ids = smsExtra;
+    if (smsUnassigned) payload.sms_extra_includes_unassigned = true;
+    if (mailExtra.length > 0) payload.mail_extra_team_ids = mailExtra;
+    if (mailUnassigned) payload.mail_extra_includes_unassigned = true;
 
     createMutation.mutate(payload, {
       onSuccess: () => {
@@ -274,6 +294,26 @@ function AddUserDialog({
           onChange={setTeamIds}
           emptyHint="Пока нет команд"
         />
+        {/* Блоки каналов — ВНИЗУ формы, после блока «Команды», в порядке «СМС» → «Почты»;
+            оба свёрнуты по умолчанию (ADR-055 §6.1). */}
+        <UserChannelTeamsBlock
+          channel="sms"
+          teams={teams}
+          baseTeamIds={teamIds}
+          extraTeamIds={smsExtraTeamIds}
+          onExtraTeamIdsChange={setSmsExtraTeamIds}
+          includesUnassigned={smsUnassigned}
+          onIncludesUnassignedChange={setSmsUnassigned}
+        />
+        <UserChannelTeamsBlock
+          channel="mail"
+          teams={teams}
+          baseTeamIds={teamIds}
+          extraTeamIds={mailExtraTeamIds}
+          onExtraTeamIdsChange={setMailExtraTeamIds}
+          includesUnassigned={mailUnassigned}
+          onIncludesUnassignedChange={setMailUnassigned}
+        />
       </form>
     </Modal>
   );
@@ -293,11 +333,18 @@ function EditUserDialog({
   user: UserListItem;
 }) {
   const initialTeamIds = user.teams.map((t) => t.id);
+  // ТОЛЬКО ДОБАВКА канала (`*_extra_teams` — строки `user_channel_teams`, без базовых `teams`).
+  const initialSmsExtra = user.sms_extra_teams.map((t) => t.id);
+  const initialMailExtra = user.mail_extra_teams.map((t) => t.id);
   const [telegram, setTelegram] = useState(user.telegram ?? '');
   const [roleId, setRoleId] = useState(user.role_id);
   const [isActive, setIsActive] = useState(user.is_active);
   const [password, setPassword] = useState('');
   const [teamIds, setTeamIds] = useState<string[]>(initialTeamIds);
+  const [smsExtraTeamIds, setSmsExtraTeamIds] = useState<string[]>(initialSmsExtra);
+  const [smsUnassigned, setSmsUnassigned] = useState(user.sms_extra_includes_unassigned);
+  const [mailExtraTeamIds, setMailExtraTeamIds] = useState<string[]>(initialMailExtra);
+  const [mailUnassigned, setMailUnassigned] = useState(user.mail_extra_includes_unassigned);
   const [errors, setErrors] = useState<Errors>({});
   const [showPassword, setShowPassword] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -328,6 +375,17 @@ function EditUserDialog({
       teamIds.length !== initialTeamIds.length ||
       !teamIds.every((id) => initialTeamIds.includes(id));
     if (teamsChanged) payload.team_ids = teamIds;
+
+    // Добавки каналов (ADR-055 §5.2): переданное поле ПОЛНОСТЬЮ заменяет набор добавок
+    // (`[]` → снять все) ⇒ шлём только при изменении. Базовые команды в добавку не входят.
+    const smsExtra = smsExtraTeamIds.filter((id) => !teamIds.includes(id));
+    const mailExtra = mailExtraTeamIds.filter((id) => !teamIds.includes(id));
+    if (!sameIds(smsExtra, initialSmsExtra)) payload.sms_extra_team_ids = smsExtra;
+    if (!sameIds(mailExtra, initialMailExtra)) payload.mail_extra_team_ids = mailExtra;
+    if (smsUnassigned !== user.sms_extra_includes_unassigned)
+      payload.sms_extra_includes_unassigned = smsUnassigned;
+    if (mailUnassigned !== user.mail_extra_includes_unassigned)
+      payload.mail_extra_includes_unassigned = mailUnassigned;
 
     if (Object.keys(payload).length === 0) {
       onOpenChange(false);
@@ -457,6 +515,26 @@ function EditUserDialog({
                 {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             }
+          />
+          {/* Блоки каналов — ВНИЗУ формы, перед кнопками, в порядке «СМС» → «Почты»; оба
+              свёрнуты по умолчанию (ADR-055 §6.1). */}
+          <UserChannelTeamsBlock
+            channel="sms"
+            teams={teams}
+            baseTeamIds={teamIds}
+            extraTeamIds={smsExtraTeamIds}
+            onExtraTeamIdsChange={setSmsExtraTeamIds}
+            includesUnassigned={smsUnassigned}
+            onIncludesUnassignedChange={setSmsUnassigned}
+          />
+          <UserChannelTeamsBlock
+            channel="mail"
+            teams={teams}
+            baseTeamIds={teamIds}
+            extraTeamIds={mailExtraTeamIds}
+            onExtraTeamIdsChange={setMailExtraTeamIds}
+            includesUnassigned={mailUnassigned}
+            onIncludesUnassignedChange={setMailUnassigned}
           />
         </form>
       </Modal>

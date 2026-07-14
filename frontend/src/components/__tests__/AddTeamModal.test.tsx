@@ -45,6 +45,11 @@ function makeUser(id: string, username: string): UserListItem {
     is_active: true,
     status: 'active',
     teams: [],
+    // ADR-055 §5.2: `UserListItem` несёт ТОЛЬКО добавку канала (без базовых `teams`).
+    mail_extra_teams: [],
+    mail_extra_includes_unassigned: false,
+    sms_extra_teams: [],
+    sms_extra_includes_unassigned: false,
     created_at: '2026-07-07T09:00:00Z',
     updated_at: '2026-07-07T09:00:00Z',
   };

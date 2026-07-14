@@ -28,7 +28,12 @@ def db() -> RbacFakeDb:
 
 
 def _service(db: RbacFakeDb) -> UserService:
-    return UserService(users=db.user_repo, roles=db.role_repo, teams=db.team_repo)
+    return UserService(
+        users=db.user_repo,
+        roles=db.role_repo,
+        teams=db.team_repo,
+        channels=db.channel_repo,
+    )
 
 
 @pytest.mark.asyncio

@@ -7,11 +7,14 @@ from fastapi import APIRouter
 from app.api.deps import (
     AuthServiceDep,
     ClientIp,
+    DbSession,
     PrincipalDep,
     SetupPrincipalDep,
     principal_sees_all_mail_teams,
     principal_sees_all_sms_teams,
+    resolve_channel_scope,
 )
+from app.domain.channels import CHANNEL_MAIL, CHANNEL_SMS
 from app.schemas.auth import LoginRequest, LoginResponse, MeResponse, SetPasswordRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -42,8 +45,20 @@ async def set_password(
 
 
 @router.get("/me", response_model=MeResponse)
-async def me(principal: PrincipalDep) -> MeResponse:
-    """Профиль текущей сессии + права принципала для UI-гейтинга (ADR-021)."""
+async def me(principal: PrincipalDep, session: DbSession) -> MeResponse:
+    """Профиль сессии + права + **scope каналов** для UI-гейтинга (ADR-021, ADR-055 §5.1).
+
+    `mail_teams`/`sms_teams` — ЭФФЕКТИВНЫЙ scope канала (не-админ: базовые ∪ добавка;
+    admin-уровень: ВСЕ команды системы), `*_includes_unassigned` — «Без команды» канала
+    (при admin-уровне → `true`). `/me` — ЕДИНСТВЕННЫЙ источник опций команд канала на
+    клиенте (в т.ч. в Mini App, где `GET /api/teams` запрещён; §6.2/§6.3).
+    """
+    mail_teams, mail_includes_unassigned = await resolve_channel_scope(
+        session, principal, CHANNEL_MAIL
+    )
+    sms_teams, sms_includes_unassigned = await resolve_channel_scope(
+        session, principal, CHANNEL_SMS
+    )
     return MeResponse(
         username=principal.username,
         role=principal.role,
@@ -51,4 +66,8 @@ async def me(principal: PrincipalDep) -> MeResponse:
         permissions=principal.permissions,
         sees_all_sms_teams=principal_sees_all_sms_teams(principal),
         sees_all_mail_teams=principal_sees_all_mail_teams(principal),
+        mail_teams=mail_teams,
+        sms_teams=sms_teams,
+        mail_includes_unassigned=mail_includes_unassigned,
+        sms_includes_unassigned=sms_includes_unassigned,
     )

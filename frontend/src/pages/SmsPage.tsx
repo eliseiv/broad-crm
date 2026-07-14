@@ -11,11 +11,16 @@ import { Select } from '@/components/ui/Select';
 import type { SelectOption } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { cn } from '@/lib/cn';
-import { useCan, useCanViewPage, useSeesAllSmsTeams } from '@/features/auth/hooks';
+import { useCan, useCanViewPage, useChannelTeamScope } from '@/features/auth/hooks';
+import type { ChannelTeamScope } from '@/features/auth/channelTeams';
+import {
+  shouldRenderTeamFilter,
+  teamFilterOptions,
+  teamFilterParams,
+} from '@/features/auth/channelTeams';
 import { useSmsMessages, useSmsNumbers, useSyncSmsNumbers } from '@/features/sms/hooks';
-import { useTeams } from '@/features/teams/hooks';
 import { ApiError } from '@/lib/api';
-import type { SmsNumber, TeamListItem } from '@/types/api';
+import type { SmsNumber } from '@/types/api';
 
 type Tab = 'messages' | 'numbers';
 
@@ -64,14 +69,14 @@ export function SmsPage() {
 
 function SmsContent() {
   const [tab, setTab] = useState<Tab>('messages');
-  // Фильтр «Все команды» рендерится только при admin-уровне видимости SMS (ADR-036):
-  // `me.sees_all_sms_teams`. Для прочих ролей SMS-scope и так сужает до своих команд.
-  const seesAllTeams = useSeesAllSmsTeams();
+  // Команды канала «СМС» — ТОЛЬКО из `GET /api/auth/me` (`sms_teams` + `sms_includes_unassigned`,
+  // ADR-055 §6.3), для ЛЮБОГО актора: источник и опций фильтра «Команда», и опций `Select`
+  // переноса номера (гейт `sms:transfer` бывает у не-админа, а `GET /api/teams` под
+  // `teams:view` возвращал ему пустой список — контрол молча деградировал).
+  const smsScope = useChannelTeamScope('sms');
   const numbersQuery = useSmsNumbers();
-  const teamsQuery = useTeams(seesAllTeams);
 
   const numbers = numbersQuery.data?.numbers ?? [];
-  const teams = teamsQuery.data?.items ?? [];
 
   const tabs: { key: Tab; label: string }[] = [
     { key: 'messages', label: 'Сообщения' },
@@ -108,13 +113,13 @@ function SmsContent() {
 
       {tab === 'messages' ? (
         <div role="tabpanel" id="sms-panel-messages" aria-labelledby="sms-tab-messages">
-          <MessagesTab numbers={numbers} teams={teams} showTeamFilter={seesAllTeams} />
+          <MessagesTab numbers={numbers} scope={smsScope} />
         </div>
       ) : (
         <div role="tabpanel" id="sms-panel-numbers" aria-labelledby="sms-tab-numbers">
           <NumbersTab
             numbers={numbers}
-            teams={teams}
+            scope={smsScope}
             isLoading={numbersQuery.isLoading}
             isError={numbersQuery.isError}
             isFetching={numbersQuery.isFetching}
@@ -126,21 +131,16 @@ function SmsContent() {
   );
 }
 
-function MessagesTab({
-  numbers,
-  teams,
-  showTeamFilter,
-}: {
-  numbers: SmsNumber[];
-  teams: TeamListItem[];
-  /** Показывать ли фильтр «Все команды» — только admin-уровню (`sees_all_sms_teams`, ADR-036). */
-  showTeamFilter: boolean;
-}) {
+function MessagesTab({ numbers, scope }: { numbers: SmsNumber[]; scope: ChannelTeamScope }) {
   const [numberId, setNumberId] = useState<number | undefined>(undefined);
-  const [teamId, setTeamId] = useState<string | undefined>(undefined);
+  // '' (все) · UUID команды · '__no_team__' → серверный `no_team=true` (ADR-055 §5.3).
+  const [teamFilter, setTeamFilter] = useState('');
+  // Единое правило пяти экранов (ADR-055 §6.2): фильтр рендерится при ≥ 2 доступных вариантах
+  // канала. Прежний гейт `sees_all_sms_teams` (ADR-036) — ОТМЕНЁН.
+  const showTeamFilter = shouldRenderTeamFilter(scope);
 
   const { messages, phase, isFetchingMore, isReloading, hasMore, loadMore, reload } =
-    useSmsMessages({ numberId, teamId });
+    useSmsMessages({ numberId, ...teamFilterParams(teamFilter) });
 
   const numberOptions: SelectOption[] = useMemo(
     () => [
@@ -152,13 +152,7 @@ function MessagesTab({
     ],
     [numbers],
   );
-  const teamOptions: SelectOption[] = useMemo(
-    () => [
-      { value: '', label: 'Все команды' },
-      ...teams.map((t) => ({ value: t.id, label: t.name })),
-    ],
-    [teams],
-  );
+  const teamOptions: SelectOption[] = useMemo(() => teamFilterOptions(scope), [scope]);
 
   // Фильтры комбинируемы (AND): выбор одного НЕ сбрасывает другой (в отличие от «Почты»).
   const handleNumberChange = (e: ChangeEvent<HTMLSelectElement>) => {
@@ -166,8 +160,7 @@ function MessagesTab({
     setNumberId(v ? Number(v) : undefined);
   };
   const handleTeamChange = (e: ChangeEvent<HTMLSelectElement>) => {
-    const v = e.target.value;
-    setTeamId(v || undefined);
+    setTeamFilter(e.target.value);
   };
 
   // IntersectionObserver-догрузка более старых (без кнопки, дедуп по id в хуке).
@@ -200,7 +193,7 @@ function MessagesTab({
           <Select
             aria-label="Фильтр по команде"
             options={teamOptions}
-            value={teamId ?? ''}
+            value={teamFilter}
             onChange={handleTeamChange}
           />
         </div>
@@ -254,14 +247,15 @@ function MessagesTab({
 
 function NumbersTab({
   numbers,
-  teams,
+  scope,
   isLoading,
   isError,
   isFetching,
   onRetry,
 }: {
   numbers: SmsNumber[];
-  teams: TeamListItem[];
+  /** Команды канала «СМС» из `/me` — опции переноса номера (ADR-055 §3.2/§6.3). */
+  scope: ChannelTeamScope;
   isLoading: boolean;
   isError: boolean;
   isFetching: boolean;
@@ -361,7 +355,11 @@ function NumbersTab({
                 <SmsNumberRow
                   key={n.id}
                   number={n}
-                  teams={teams}
+                  teams={scope.teams}
+                  // Опция «Без команды» (снятие, `team_id=null`) — только тому, кто вправе её
+                  // выбрать: admin-уровню всегда, не-админу — только при
+                  // `me.sms_includes_unassigned` (иначе снятие → 403, ADR-055 §3.2 п.2).
+                  allowNoTeam={scope.includesUnassigned}
                   canEdit={canEdit}
                   canTransfer={canTransfer}
                   canDelete={canDelete}

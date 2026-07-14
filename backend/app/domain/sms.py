@@ -24,18 +24,42 @@ from urllib.parse import parse_qsl
 
 @dataclass(frozen=True)
 class SmsScope:
-    """Ролевая видимость SMS/номеров (ADR-032, ADR-030 §6, 05-security.md).
+    """Ролевая видимость SMS/номеров (ADR-032, ADR-030 §6, в редакции ADR-055 §3).
 
     `sees_all_teams` — «видит все команды» ⇔ `is_superadmin` ИЛИ роль владеет полным
-    каталогом прав (ADR-032). При True → видит всё (`team_ids` не используется).
-    Иначе — видимость по **текущей** принадлежности номера команде (`team_id ∈
-    team_ids`); вне scope: read/list → пусто, мутация → 403 (анти-энумерация).
+    каталогом прав (ADR-032; предикат ADR-055 НЕ менял). При True → видит всё, включая
+    бесхозные номера.
+
+    Иначе (ADR-055 §3) — по **текущей** принадлежности номера команде:
+    - `team_ids` = `user_teams` **∪** доп-команды канала `sms` (`user_channel_teams`);
+    - `includes_unassigned` = `users.sms_includes_unassigned` — «Без команды»: ВЕСЬ ещё
+      не распределённый поток номеров Twilio (и их SMS) с ПОЛНЫМИ правами, включая
+      удаление и перенос (объём риска — 05-security.md, ADR-055 §3.1).
+
+    **Единый предикат (чтение и мутация):** `number.team_id IN team_ids` **OR**
+    (`includes_unassigned` **AND** `number.team_id IS NULL`) — см. `matches`. Вне scope:
+    read/list → пусто (анти-энумерация), мутация → 403.
+
     Вычисляется фабрикой `get_sms_scope` в `api/deps.py`; хранится здесь, чтобы
     разорвать цикл импорта deps ↔ сервисы SMS.
     """
 
     sees_all_teams: bool
     team_ids: frozenset[uuid.UUID]
+    includes_unassigned: bool = False
+
+    def matches(self, team_id: uuid.UUID | None) -> bool:
+        """Единый предикат scope (ADR-055 §3) для номера с командой `team_id`."""
+        if self.sees_all_teams:
+            return True
+        if team_id is None:
+            return self.includes_unassigned
+        return team_id in self.team_ids
+
+    @property
+    def is_empty(self) -> bool:
+        """Не-админ без единой команды И без «Без команды» → пусто БЕЗ выборки (§3)."""
+        return not self.sees_all_teams and not self.team_ids and not self.includes_unassigned
 
 
 # --- Нормализация телефона (E.164) ------------------------------------------

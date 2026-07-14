@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import type { MeResponse, PermissionsMap } from '@/types/api';
+import type { MeResponse, PermissionsMap, TeamRef } from '@/types/api';
 
 const STORAGE_KEY = 'crm.auth.token';
 const USER_KEY = 'crm.auth.username';
@@ -8,6 +8,13 @@ const SUPERADMIN_KEY = 'crm.auth.superadmin';
 const SEES_ALL_SMS_KEY = 'crm.auth.seesAllSmsTeams';
 const SEES_ALL_MAIL_KEY = 'crm.auth.seesAllMailTeams';
 const PERMISSIONS_KEY = 'crm.auth.permissions';
+// Эффективный scope команд каналов из /me (ADR-055 §5.1) — ЕДИНСТВЕННЫЙ источник опций
+// команд канала на клиенте (§6.3). Персистится вместе с прочими признаками принципала,
+// чтобы контролы не «мигали» пустыми до резолва /me в новой вкладке.
+const MAIL_TEAMS_KEY = 'crm.auth.mailTeams';
+const SMS_TEAMS_KEY = 'crm.auth.smsTeams';
+const MAIL_UNASSIGNED_KEY = 'crm.auth.mailIncludesUnassigned';
+const SMS_UNASSIGNED_KEY = 'crm.auth.smsIncludesUnassigned';
 
 /**
  * Токен в памяти (Zustand). Для переживания перезагрузки/закрытия браузера и шаринга
@@ -38,6 +45,25 @@ function readPermissions(): PermissionsMap | null {
   }
 }
 
+/** Список команд канала из localStorage (битое/чужое значение → пустой список). */
+function readTeams(key: string): TeamRef[] {
+  const raw = readString(key);
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (t): t is TeamRef =>
+        typeof t === 'object' &&
+        t !== null &&
+        typeof (t as TeamRef).id === 'string' &&
+        typeof (t as TeamRef).name === 'string',
+    );
+  } catch {
+    return [];
+  }
+}
+
 function persistToken(token: string | null, username: string | null): void {
   try {
     if (token) localStorage.setItem(STORAGE_KEY, token);
@@ -49,20 +75,18 @@ function persistToken(token: string | null, username: string | null): void {
   }
 }
 
-function persistPrincipal(
-  role: string | null,
-  isSuperadmin: boolean,
-  seesAllSmsTeams: boolean,
-  seesAllMailTeams: boolean,
-  permissions: PermissionsMap | null,
-): void {
+function persistPrincipal(me: MeResponse): void {
   try {
-    if (role) localStorage.setItem(ROLE_KEY, role);
+    if (me.role) localStorage.setItem(ROLE_KEY, me.role);
     else localStorage.removeItem(ROLE_KEY);
-    localStorage.setItem(SUPERADMIN_KEY, isSuperadmin ? '1' : '0');
-    localStorage.setItem(SEES_ALL_SMS_KEY, seesAllSmsTeams ? '1' : '0');
-    localStorage.setItem(SEES_ALL_MAIL_KEY, seesAllMailTeams ? '1' : '0');
-    if (permissions) localStorage.setItem(PERMISSIONS_KEY, JSON.stringify(permissions));
+    localStorage.setItem(SUPERADMIN_KEY, me.is_superadmin ? '1' : '0');
+    localStorage.setItem(SEES_ALL_SMS_KEY, me.sees_all_sms_teams ? '1' : '0');
+    localStorage.setItem(SEES_ALL_MAIL_KEY, me.sees_all_mail_teams ? '1' : '0');
+    localStorage.setItem(MAIL_TEAMS_KEY, JSON.stringify(me.mail_teams));
+    localStorage.setItem(SMS_TEAMS_KEY, JSON.stringify(me.sms_teams));
+    localStorage.setItem(MAIL_UNASSIGNED_KEY, me.mail_includes_unassigned ? '1' : '0');
+    localStorage.setItem(SMS_UNASSIGNED_KEY, me.sms_includes_unassigned ? '1' : '0');
+    if (me.permissions) localStorage.setItem(PERMISSIONS_KEY, JSON.stringify(me.permissions));
     else localStorage.removeItem(PERMISSIONS_KEY);
   } catch {
     // localStorage недоступен — работаем только в памяти.
@@ -78,6 +102,10 @@ function clearStorage(): void {
       SUPERADMIN_KEY,
       SEES_ALL_SMS_KEY,
       SEES_ALL_MAIL_KEY,
+      MAIL_TEAMS_KEY,
+      SMS_TEAMS_KEY,
+      MAIL_UNASSIGNED_KEY,
+      SMS_UNASSIGNED_KEY,
       PERMISSIONS_KEY,
     ]) {
       localStorage.removeItem(key);
@@ -104,6 +132,18 @@ interface AuthState {
    * на /mail. Источник — `me.sees_all_mail_teams` (backend); фронт не вычисляет сам.
    */
   seesAllMailTeams: boolean;
+  /**
+   * ЭФФЕКТИВНЫЙ scope команд канала «Почты» (`me.mail_teams`, ADR-055 §5.1) — единственный
+   * источник опций команд канала в UI (§6.3): фильтр «Команда», селектор формы ящика,
+   * резолв имени команды, дропдаун переноса. `GET /api/teams` для этого не используется.
+   */
+  mailTeams: TeamRef[];
+  /** То же для канала «СМС» (`me.sms_teams`). */
+  smsTeams: TeamRef[];
+  /** `me.mail_includes_unassigned` — доступны ли объекты почты без команды. */
+  mailIncludesUnassigned: boolean;
+  /** `me.sms_includes_unassigned` — доступны ли номера/сообщения без команды. */
+  smsIncludesUnassigned: boolean;
   /** Права `{ page: [actions] }` из /api/auth/me; null до загрузки. */
   permissions: PermissionsMap | null;
   isAuthenticated: boolean;
@@ -129,6 +169,10 @@ export const useAuthStore = create<AuthState>((set) => {
     isSuperadmin: initialSuperadmin,
     seesAllSmsTeams: initialSeesAllSms,
     seesAllMailTeams: initialSeesAllMail,
+    mailTeams: readTeams(MAIL_TEAMS_KEY),
+    smsTeams: readTeams(SMS_TEAMS_KEY),
+    mailIncludesUnassigned: readString(MAIL_UNASSIGNED_KEY) === '1',
+    smsIncludesUnassigned: readString(SMS_UNASSIGNED_KEY) === '1',
     permissions: initialPermissions,
     isAuthenticated: Boolean(initialToken),
     setSession: (token, username) => {
@@ -136,19 +180,17 @@ export const useAuthStore = create<AuthState>((set) => {
       set({ token, username, isAuthenticated: true });
     },
     setPrincipal: (me) => {
-      persistPrincipal(
-        me.role,
-        me.is_superadmin,
-        me.sees_all_sms_teams,
-        me.sees_all_mail_teams,
-        me.permissions,
-      );
+      persistPrincipal(me);
       set({
         username: me.username,
         role: me.role,
         isSuperadmin: me.is_superadmin,
         seesAllSmsTeams: me.sees_all_sms_teams,
         seesAllMailTeams: me.sees_all_mail_teams,
+        mailTeams: me.mail_teams,
+        smsTeams: me.sms_teams,
+        mailIncludesUnassigned: me.mail_includes_unassigned,
+        smsIncludesUnassigned: me.sms_includes_unassigned,
         permissions: me.permissions,
       });
     },
@@ -161,6 +203,10 @@ export const useAuthStore = create<AuthState>((set) => {
         isSuperadmin: false,
         seesAllSmsTeams: false,
         seesAllMailTeams: false,
+        mailTeams: [],
+        smsTeams: [],
+        mailIncludesUnassigned: false,
+        smsIncludesUnassigned: false,
         permissions: null,
         isAuthenticated: false,
       });

@@ -21,6 +21,11 @@ const me: MeResponse = {
   is_superadmin: false,
   sees_all_sms_teams: false,
   sees_all_mail_teams: false,
+  // ADR-055 §5.1: `/me` — ЕДИНСТВЕННЫЙ источник команд канала и флагов «Без команды».
+  mail_teams: [{ id: 't1', name: 'Команда Ивана' }],
+  sms_teams: [],
+  mail_includes_unassigned: true,
+  sms_includes_unassigned: false,
   permissions: { servers: ['view', 'edit'] },
 };
 

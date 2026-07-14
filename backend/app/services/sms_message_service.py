@@ -15,7 +15,7 @@ import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.sms import SmsCursorError, SmsScope, decode_cursor, encode_cursor
-from app.errors import invalid_cursor, invalid_limit
+from app.errors import invalid_cursor, invalid_limit, validation_error
 from app.repositories.sms_inbound_repository import SmsInboundRepository
 from app.repositories.sms_number_repository import SmsNumberRepository
 from app.schemas.sms import SmsMessagesResponse
@@ -37,14 +37,25 @@ class SmsMessageService:
         scope: SmsScope,
         number_id: int | None,
         team_id: uuid.UUID | None,
+        no_team: bool | None = None,
         cursor: str | None,
         limit: int,
     ) -> SmsMessagesResponse:
         """Отдаёт страницу SMS по правилам видимости и keyset-пагинации.
 
-        :raises AppError: 400 invalid_limit (limit вне [1,100]) / 400 invalid_cursor
-            (битый курсор).
+        `no_team=true` (ADR-055 §5.3) — только SMS номеров **без команды**; отсутствие /
+        `false` → фильтр не применяется. **Взаимоисключающ с `team_id`** (оба → 400
+        validation_error). У не-админа **без** `includes_unassigned` пересечение со scope
+        пусто → пустая страница (анти-энумерация, не 403).
+
+        :raises AppError: 400 validation_error (`team_id` и `no_team=true` вместе) /
+            400 invalid_limit (limit вне [1,100]) / 400 invalid_cursor (битый курсор).
         """
+        if team_id is not None and no_team:
+            raise validation_error(
+                "Фильтры «Команда» и «Без команды» взаимоисключающи",
+                details=[{"field": "no_team", "message": "Задан одновременно с team_id"}],
+            )
         if limit < _MIN_LIMIT or limit > _MAX_LIMIT:
             raise invalid_limit()
         decoded = None
@@ -55,7 +66,7 @@ class SmsMessageService:
                 raise invalid_cursor() from exc
 
         to_numbers = await self._resolve_visible_phones(
-            scope=scope, number_id=number_id, team_id=team_id
+            scope=scope, number_id=number_id, team_id=team_id, no_team=bool(no_team)
         )
 
         inbound = SmsInboundRepository(self._session)
@@ -83,20 +94,26 @@ class SmsMessageService:
         scope: SmsScope,
         number_id: int | None,
         team_id: uuid.UUID | None,
+        no_team: bool = False,
     ) -> list[str] | None:
         """Множество видимых `to_number` (AND-пересечение scope + фильтров).
 
-        `None` — без ограничения (супер-админ без фильтров → все SMS). `[]` — пустой
-        результат (вне scope / несуществующий фильтр — анти-энумерация).
+        Scope не-админа — **единый предикат** ADR-055 §3 (`team_id ∈ team_ids` OR
+        (`includes_unassigned` AND номер бесхозный)). `None` — без ограничения (admin
+        без фильтров → все SMS). `[]` — пустой результат (вне scope / несуществующий
+        фильтр — анти-энумерация).
         """
         numbers = SmsNumberRepository(self._session)
         constraints: list[set[str]] = []
 
-        # Базовый scope не-админа: номера его команд (по текущей принадлежности).
+        # Базовый scope не-админа: номера его команд + бесхозные при «Без команды»
+        # (по ТЕКУЩЕЙ принадлежности номера).
         if not scope.sees_all_teams:
-            if not scope.team_ids:
+            if scope.is_empty:
                 return []
-            scoped = await numbers.list_by_teams(scope.team_ids)
+            scoped = await numbers.list_in_scope(
+                scope.team_ids, includes_unassigned=scope.includes_unassigned
+            )
             constraints.append({n.phone_number for n in scoped})
 
         # Фильтр по номеру: несуществующий → пустой результат.
@@ -110,6 +127,11 @@ class SmsMessageService:
         if team_id is not None:
             team_numbers = await numbers.list_by_team(team_id)
             constraints.append({n.phone_number for n in team_numbers})
+
+        # Фильтр «Без команды»: номера с `team_id IS NULL` (ADR-055 §5.3).
+        if no_team:
+            unassigned = await numbers.list_unassigned()
+            constraints.append({n.phone_number for n in unassigned})
 
         if not constraints:
             return None

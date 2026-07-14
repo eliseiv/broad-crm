@@ -17,19 +17,43 @@ from datetime import datetime
 
 @dataclass(frozen=True)
 class MailScope:
-    """Ролевая видимость почты по CRM-командам (ADR-044 §7, образец `SmsScope`).
+    """Ролевая видимость почты по CRM-командам (ADR-044 §7 в редакции ADR-055 §3).
 
     `sees_all_teams` — «видит все команды» ⇔ `is_superadmin` ИЛИ роль владеет полным
-    каталогом прав (ADR-032/038). При True → доступ ко всем ящикам/письмам (`team_ids`
-    не используется). Иначе — видимость по CRM-командам пользователя из `user_teams`
-    (per-mailbox `mail_accounts.team_id ∈ team_ids`); вне scope: чтение → пусто
-    (анти-энумерация), мутация → 403. Пустой `team_ids` у не-админа → пустая страница
-    без запроса. Групп больше нет (ADR-044 §7 — `group_ids` удалён). Вычисляется
-    фабрикой `get_mail_scope` в `api/deps.py`.
+    каталогом прав (ADR-032/038; предикат ADR-055 НЕ менял). При True → доступ ко всем
+    ящикам/письмам, включая бесхозные (`team_ids`/`includes_unassigned` не используются).
+
+    Иначе (ADR-055 §3):
+    - `team_ids` = `user_teams` **∪** доп-команды канала `mail` (`user_channel_teams`);
+    - `includes_unassigned` = `users.mail_includes_unassigned` — «Без команды»: доступ к
+      ящикам с `team_id IS NULL` (просмотр **и** правка/синк/удаление наравне со своей
+      командой; создание ящика с `team_id=null` и перенос ящика — по-прежнему admin-only).
+
+    **Единый предикат (применять ВЕЗДЕ — и на чтении, и на мутации):**
+    `account.team_id IN team_ids` **OR** (`includes_unassigned` **AND** `team_id IS NULL`)
+    — см. `matches`. Прямое `account.team_id in scope.team_ids` без ветки
+    `includes_unassigned` в новом коде = **дефект** (ADR-055 «Последствия»).
+
+    Вне scope: чтение → пусто (анти-энумерация), мутация → 403. Пустой `team_ids` **и**
+    `includes_unassigned=false` у не-админа → пустая страница без выборки.
     """
 
     sees_all_teams: bool
     team_ids: frozenset[uuid.UUID]
+    includes_unassigned: bool = False
+
+    def matches(self, team_id: uuid.UUID | None) -> bool:
+        """Единый предикат scope (ADR-055 §3) для объекта с командой `team_id`."""
+        if self.sees_all_teams:
+            return True
+        if team_id is None:
+            return self.includes_unassigned
+        return team_id in self.team_ids
+
+    @property
+    def is_empty(self) -> bool:
+        """Не-админ без единой команды И без «Без команды» → пусто БЕЗ выборки (§3)."""
+        return not self.sees_all_teams and not self.team_ids and not self.includes_unassigned
 
 
 # --- Компаундный keyset-курсор ленты писем (ADR-044 §2, MINOR-2) -------------

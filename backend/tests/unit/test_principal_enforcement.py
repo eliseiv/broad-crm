@@ -71,7 +71,15 @@ def _db_user(*, is_active: bool = True, permissions: dict[str, list[str]] | None
         name="Оператор",
         permissions={"servers": ["view"], "mail": ["view"]} if permissions is None else permissions,
     )
-    return SimpleNamespace(id=uuid.uuid4(), username="Никита", role=role, is_active=is_active)
+    # ADR-055 §2.2: `Principal` несёт флаги «Без команды» каналов — колонки `users.*`.
+    return SimpleNamespace(
+        id=uuid.uuid4(),
+        username="Никита",
+        role=role,
+        is_active=is_active,
+        mail_includes_unassigned=False,
+        sms_includes_unassigned=False,
+    )
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ from typing import Literal
 
 from sqlalchemy.exc import IntegrityError
 
+from app.domain.channels import CHANNEL_MAIL, CHANNEL_SMS, CHANNELS, Channel
 from app.domain.identity import IdentityNameError, validate_identity_name
 from app.domain.telegram import TelegramFormatError, validate_telegram
 from app.errors import (
@@ -23,10 +24,12 @@ from app.errors import (
 )
 from app.infra.passwords import hash_password
 from app.logging import get_logger
+from app.models.team import Team
 from app.models.user import User
 from app.repositories.mail_telegram_link_repository import MailTelegramLinkRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.team_repository import TeamRepository
+from app.repositories.user_channel_team_repository import UserChannelTeamRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.user import (
     TeamRef,
@@ -41,6 +44,10 @@ logger = get_logger(__name__)
 # Политика пароля БД-пользователя (05-security.md): 8–128 символов.
 _PASSWORD_MIN_LEN = 8
 _PASSWORD_MAX_LEN = 128
+
+# Имена полей доп-команд каналов в `details[].field` ошибок 422 (04-api.md#users).
+_MAIL_EXTRA_FIELD = "mail_extra_team_ids"
+_SMS_EXTRA_FIELD = "sms_extra_team_ids"
 
 
 def _validate_username(raw: str) -> str:
@@ -75,7 +82,7 @@ def _validate_password_length(password: str) -> None:
 
 
 class UserService:
-    """CRUD реестра пользователей: username/telegram/role/пароль (опц.), команды."""
+    """CRUD реестра пользователей: username/telegram/role/пароль (опц.), команды, доп-команды."""
 
     def __init__(
         self,
@@ -83,20 +90,30 @@ class UserService:
         users: UserRepository,
         roles: RoleRepository,
         teams: TeamRepository,
+        channels: UserChannelTeamRepository,
     ) -> None:
         self._users = users
         self._roles = roles
         self._teams = teams
+        self._channels = channels
 
     async def list_users(self) -> UserListResponse:
-        """Список пользователей (created_at ASC, id) с ролью и CRM-командами."""
+        """Список пользователей (created_at ASC, id) с ролью, командами и доп-командами.
+
+        Доп-команды обоих каналов — ОДНИМ батч-запросом на весь список (без N+1, ADR-055 §5.2).
+        """
         users = await self._users.list_all()
-        return UserListResponse(items=[self._to_item(user) for user in users])
+        extras = await self._channels.extras_for_users([user.id for user in users])
+        return UserListResponse(items=[self._to_item(user, extras) for user in users])
 
     async def create_user(self, payload: UserCreateRequest) -> UserListItem:
         """Создаёт пользователя. Прецеденция: username/telegram/password-формат (422) →
-        существование role_id/team_ids (422) → уникальность username (409) →
-        уникальность telegram (409). Пароль опционален (беспарольный при отсутствии)."""
+        существование role_id/team_ids/*_extra_team_ids (422) → уникальность username (409) →
+        уникальность telegram (409). Пароль опционален (беспарольный при отсутствии).
+
+        Доп-команды каналов (ADR-055 §5.2) сохраняются **за вычетом базовых** (инвариант
+        §2.3: базовые команды и так входят в scope обоих каналов) — присланная базовая
+        команда в добавке не ошибка, просто не хранится."""
         username = _validate_username(payload.username)
         telegram = self._normalize_optional_telegram(payload.telegram)
         password_hash = self._optional_password_hash(payload.password)
@@ -109,6 +126,14 @@ class UserService:
             )
 
         team_ids = await self._validate_team_ids(payload.team_ids)
+        extras = {
+            CHANNEL_MAIL: await self._validate_extra_team_ids(
+                payload.mail_extra_team_ids, field=_MAIL_EXTRA_FIELD
+            ),
+            CHANNEL_SMS: await self._validate_extra_team_ids(
+                payload.sms_extra_team_ids, field=_SMS_EXTRA_FIELD
+            ),
+        }
 
         if await self._users.exists_by_username(username):
             raise username_taken()
@@ -122,7 +147,12 @@ class UserService:
                 password_hash=password_hash,
                 role_id=payload.role_id,
             )
+            user.mail_includes_unassigned = payload.mail_extra_includes_unassigned
+            user.sms_includes_unassigned = payload.sms_extra_includes_unassigned
             await self._users.set_membership(user.id, team_ids)
+            for channel, extra_ids in extras.items():
+                # Инвариант §2.3: в добавке не хранятся базовые команды.
+                await self._channels.replace_extras(user.id, channel, extra_ids - team_ids)
             if telegram is not None:
                 # Ленивый резолв orphan-линков почты (ADR-044 §6, синхронный хук):
                 # связать привязки с этим username, ожидавшие появления пользователя.
@@ -141,12 +171,19 @@ class UserService:
         reloaded = await self._users.get_with_teams(user.id)
         assert reloaded is not None  # только что создан в этой сессии
         logger.info("user_created", user_id=str(user.id))
-        return self._to_item(reloaded)
+        return await self._to_item_reloaded(reloaded)
 
     async def update_user(self, user_id: uuid.UUID, payload: UserUpdateRequest) -> UserListItem:
-        """Редактирует telegram/роль/статус/пароль/команды. 404 → 422 → 409 (telegram).
-        username не редактируется. При исключении из ведомой команды — авто-передача
-        лидерства (ADR-026). Деактивация аннулирует JWT на следующем запросе."""
+        """Редактирует telegram/роль/статус/пароль/команды/доп-команды каналов.
+        404 → 422 → 409 (telegram). username не редактируется. При исключении из ведомой
+        команды — авто-передача лидерства (ADR-026). Деактивация аннулирует JWT на
+        следующем запросе.
+
+        Доп-команды каналов (ADR-055 §5.2/§2.3): поле не передано → набор канала не менять;
+        передано → полностью заменить. Из сохраняемого набора **вычитается** эффективный
+        базовый набор (`team_ids` этого запроса, иначе — текущее членство) ⇒ команда,
+        добавленная в основной блок, не остаётся дублем в добавке, а исключение из команды
+        не оставляет «висящего» доступа к каналу."""
         user = await self._users.get_by_id(user_id)
         if user is None:
             raise user_not_found()
@@ -179,6 +216,16 @@ class UserService:
         if "team_ids" in fields_set and payload.team_ids is not None:
             requested_teams = await self._validate_team_ids(payload.team_ids)
 
+        requested_extras: dict[Channel, set[uuid.UUID]] = {}
+        if "mail_extra_team_ids" in fields_set and payload.mail_extra_team_ids is not None:
+            requested_extras[CHANNEL_MAIL] = await self._validate_extra_team_ids(
+                payload.mail_extra_team_ids, field=_MAIL_EXTRA_FIELD
+            )
+        if "sms_extra_team_ids" in fields_set and payload.sms_extra_team_ids is not None:
+            requested_extras[CHANNEL_SMS] = await self._validate_extra_team_ids(
+                payload.sms_extra_team_ids, field=_SMS_EXTRA_FIELD
+            )
+
         # Уникальность telegram (409) — после всех 422-валидаций.
         if new_telegram is not None and await self._users.exists_by_telegram(
             new_telegram, exclude_id=user_id
@@ -196,8 +243,25 @@ class UserService:
         if "is_active" in fields_set and payload.is_active is not None:
             user.is_active = payload.is_active
 
+        if (
+            "mail_extra_includes_unassigned" in fields_set
+            and payload.mail_extra_includes_unassigned is not None
+        ):
+            user.mail_includes_unassigned = payload.mail_extra_includes_unassigned
+        if (
+            "sms_extra_includes_unassigned" in fields_set
+            and payload.sms_extra_includes_unassigned is not None
+        ):
+            user.sms_includes_unassigned = payload.sms_extra_includes_unassigned
+
         if requested_teams is not None:
             await self._replace_membership_with_transfer(user_id, requested_teams)
+
+        await self._normalize_extras(
+            user_id,
+            requested_teams=requested_teams,
+            requested_extras=requested_extras,
+        )
 
         if new_telegram is not None:
             # Ленивый резолв orphan-линков почты (ADR-044 §6): смена users.telegram
@@ -216,7 +280,7 @@ class UserService:
         reloaded = await self._users.get_with_teams(user_id)
         assert reloaded is not None  # существует (только что обновлён)
         logger.info("user_updated", user_id=str(user_id))
-        return self._to_item(reloaded)
+        return await self._to_item_reloaded(reloaded)
 
     async def delete_user(self, user_id: uuid.UUID) -> None:
         """Hard-delete; повтор → 404. Лидерство ведомых команд авто-передаётся
@@ -245,6 +309,38 @@ class UserService:
             for team_id in led & removed:
                 await self._teams.promote_next_leader(team_id, exclude_user_id=user_id)
 
+    async def _normalize_extras(
+        self,
+        user_id: uuid.UUID,
+        *,
+        requested_teams: set[uuid.UUID] | None,
+        requested_extras: dict[Channel, set[uuid.UUID]],
+    ) -> None:
+        """Приводит добавки каналов к инварианту §2.3 (путь 1 — users CRUD).
+
+        Эффективный базовый набор = присланный `team_ids` (если поле было в теле), иначе
+        текущее членство. Для канала берётся присланная добавка (если поле было), иначе —
+        уже хранимая; из неё **вычитается** базовый набор, и результат сохраняется.
+        Ничего не передано (ни `team_ids`, ни добавки) → запись не выполняется.
+        """
+        if requested_teams is None and not requested_extras:
+            return
+        base = (
+            requested_teams
+            if requested_teams is not None
+            else await self._users.team_ids_of_user(user_id)
+        )
+        for channel in CHANNELS:
+            if channel in requested_extras:
+                target = requested_extras[channel]
+            elif requested_teams is not None:
+                # Базовый набор изменился, добавка — нет: снять из неё ставшие базовыми
+                # команды (иначе инвариант §2.3 нарушился бы дублем).
+                target = await self._channels.extra_team_ids(user_id, channel)
+            else:
+                continue
+            await self._channels.replace_extras(user_id, channel, target - base)
+
     def _optional_password_hash(self, raw: str | None) -> str | None:
         """Опциональный пароль: None/`""` → None (беспарольный); иначе валидирует+хэширует."""
         if raw is None or raw == "":
@@ -272,6 +368,25 @@ class UserService:
             )
         return requested
 
+    async def _validate_extra_team_ids(
+        self, team_ids: list[uuid.UUID], *, field: str
+    ) -> set[uuid.UUID]:
+        """Существование всех доп-команд канала; несуществующие → 422 с именем поля (§5.2).
+
+        Пересечение с базовыми `team_ids` **не** проверяется и ошибкой НЕ является — его
+        вычитает `_normalize_extras` (инвариант §2.3).
+        """
+        requested = set(team_ids)
+        if not requested:
+            return set()
+        existing = await self._teams.get_existing_ids(requested)
+        if existing != requested:
+            raise unprocessable(
+                "Команда не найдена",
+                details=[{"field": field, "message": "Команда не существует"}],
+            )
+        return requested
+
     @staticmethod
     def _derive_status(user: User) -> Literal["pending", "active", "inactive"]:
         """Производный тристатус (ADR-028, нормативно, приоритет `is_active`):
@@ -285,9 +400,18 @@ class UserService:
             return "pending"
         return "active"
 
+    async def _to_item_reloaded(self, user: User) -> UserListItem:
+        """Элемент ответа 201/200 (одиночный пользователь): добавки читаются точечно."""
+        extras = await self._channels.extras_for_users([user.id])
+        return self._to_item(user, extras)
+
     @staticmethod
-    def _to_item(user: User) -> UserListItem:
-        """Собирает элемент ответа (пароль никогда не включается; teams — CRM-команды)."""
+    def _to_item(user: User, extras: dict[tuple[uuid.UUID, str], list[Team]]) -> UserListItem:
+        """Собирает элемент ответа (пароль никогда не включается; teams — CRM-команды).
+
+        `*_extra_teams` — ТОЛЬКО хранимая добавка канала (без базовых команд, ADR-055 §5.2);
+        `*_extra_includes_unassigned` — колонки `users.<channel>_includes_unassigned`.
+        """
         return UserListItem(
             id=user.id,
             username=user.username,
@@ -298,6 +422,17 @@ class UserService:
             is_active=user.is_active,
             status=UserService._derive_status(user),
             teams=[TeamRef(id=team.id, name=team.name) for team in user.teams],
+            mail_extra_teams=UserService._team_refs(extras.get((user.id, CHANNEL_MAIL), [])),
+            mail_extra_includes_unassigned=user.mail_includes_unassigned,
+            sms_extra_teams=UserService._team_refs(extras.get((user.id, CHANNEL_SMS), [])),
+            sms_extra_includes_unassigned=user.sms_includes_unassigned,
             created_at=user.created_at,
             updated_at=user.updated_at,
         )
+
+    @staticmethod
+    def _team_refs(teams: list[Team]) -> list[TeamRef]:
+        """`TeamRef[]` доп-команд, отсортированный по `name` (ru, ci — `casefold`)."""
+        refs = [TeamRef(id=team.id, name=team.name) for team in teams]
+        refs.sort(key=lambda ref: ref.name.casefold())
+        return refs

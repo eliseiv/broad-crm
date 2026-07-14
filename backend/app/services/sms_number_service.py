@@ -36,13 +36,20 @@ class SmsNumberService:
         self._teams = teams
 
     async def list_numbers(self, scope: SmsScope) -> SmsNumbersResponse:
-        """Список видимых номеров: admin-уровень — все; иначе — номера своих команд."""
+        """Список видимых номеров (единый предикат scope, ADR-055 §3).
+
+        Admin-уровень — все (включая бесхозные). Иначе — номера команд scope (базовые ∪
+        доп-команды) **плюс бесхозные при `sms_includes_unassigned=true`**. Пустой scope →
+        пустой список без запроса (анти-энумерация).
+        """
         if scope.sees_all_teams:
             rows = await self._numbers.list_all()
-        elif not scope.team_ids:
+        elif scope.is_empty:
             rows = []
         else:
-            rows = await self._numbers.list_by_teams(scope.team_ids)
+            rows = await self._numbers.list_in_scope(
+                scope.team_ids, includes_unassigned=scope.includes_unassigned
+            )
         return SmsNumbersResponse(numbers=[to_number_item(n) for n in rows])
 
     async def update_number(
@@ -81,19 +88,31 @@ class SmsNumberService:
         number_id: int,
         payload: SmsNumberTransferRequest,
     ) -> SmsNumberItem:
-        """Назначить/переназначить/снять команду. Вне scope → 403; чужой team → 404.
+        """Назначить/переназначить/снять команду (ADR-055 §3.2 — три проверки, ПОРЯДОК нормативен).
 
-        `team_id=null` → снять команду (unassigned); иначе — привязать к существующей
-        команде (несуществующая → 404 sms_team_not_found).
+        1. **Сам номер** обязан пройти предикат scope (`_require_mutation_scope`) → иначе
+           403 forbidden (бесхозный номер доступен носителю `sms_includes_unassigned`).
+        2. **`team_id=null` (снять команду):** admin-уровень — всегда; не-админ — **только
+           при `includes_unassigned=true`**, иначе 403 (иначе актор безвозвратно выбросил бы
+           номер из собственного scope — прежний TD-060).
+        3. **`team_id=<uuid>`:** не-админ — целевая команда обязана ∈ `scope.team_ids`
+           (базовые ∪ доп-команды), иначе 403. **Проверка scope идёт ПЕРВОЙ** ⇒
+           несуществующая команда не-админу тоже даёт 403 (анти-энумерация: «команды нет»
+           неотличимо от «команда чужая»). Admin-уровень — существование команды → иначе
+           404 sms_team_not_found (код остаётся ответом admin-уровня).
         """
         number = await self._numbers.get_by_id(number_id)
         if number is None:
             raise sms_number_not_found()
         self._require_mutation_scope(scope, number)
 
-        if payload.team_id is not None and not await self._teams.get_existing_ids(
-            {payload.team_id}
-        ):
+        if payload.team_id is None:
+            if not scope.sees_all_teams and not scope.includes_unassigned:
+                raise forbidden()
+        elif not scope.sees_all_teams:
+            if payload.team_id not in scope.team_ids:
+                raise forbidden()
+        elif not await self._teams.get_existing_ids({payload.team_id}):
             raise sms_team_not_found()
 
         await self._numbers.set_team(number_id, payload.team_id)
@@ -120,8 +139,11 @@ class SmsNumberService:
 
     @staticmethod
     def _require_mutation_scope(scope: SmsScope, number: SmsPhoneNumber) -> None:
-        """Мутация вне scope → 403 forbidden (unassigned-номер не-админу недоступен)."""
-        if scope.sees_all_teams:
-            return
-        if number.team_id is None or number.team_id not in scope.team_ids:
+        """Мутация вне scope → 403 forbidden (единый предикат scope, ADR-055 §3).
+
+        ⚠️ Прежнее «unassigned-номер не-админу недоступен ВСЕГДА» **ОТМЕНЕНО**: бесхозный
+        номер доступен носителю `sms_includes_unassigned` — правка, перенос и **удаление**
+        наравне со своей командой (объём риска — 05-security.md, ADR-055 §3.1).
+        """
+        if not scope.matches(number.team_id):
             raise forbidden()

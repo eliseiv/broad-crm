@@ -13,15 +13,20 @@ import { ApiError } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 import { MAIL_CONNECTION_PROGRESS_HINT } from '@/features/mail/errorMessages';
 import { useDeleteMailbox, useSyncMailbox, useUpdateMailbox } from '@/features/mail/hooks';
-import type { MailMailbox, TeamListItem } from '@/types/api';
+import type { MailMailbox, TeamRef } from '@/types/api';
 
 /** team_id = null (без команды). */
 const NO_TEAM = '';
 
 interface MailboxRowProps {
   mailbox: MailMailbox;
-  /** CRM-команды для привязки ящика (GET /api/teams). */
-  teams: TeamListItem[];
+  /**
+   * Команды КАНАЛА «Почты» — из `GET /api/auth/me` (`me.mail_teams`, ADR-055 §6.3), а НЕ из
+   * `GET /api/teams` (гейт `teams:view`). Источник и опций дропдауна переноса (он рендерится
+   * только admin-уровню, у которого `mail_teams` = все команды системы), и резолва имени
+   * команды в статичном режиме (все видимые ящики ∈ scope ⇒ имя резолвится).
+   */
+  teams: TeamRef[];
   /** Может ли актор менять команду ящика (перенос — только admin-уровень, ADR-044 §4). */
   canTransfer: boolean;
   canEdit: boolean;

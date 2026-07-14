@@ -1,11 +1,11 @@
-import { render, screen, act } from '@testing-library/react';
+import { render, screen, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SmsPage } from '@/pages/SmsPage';
 import { INSUFFICIENT_PERMISSIONS_TITLE } from '@/components/InsufficientPermissions';
 import { ApiError } from '@/lib/api';
 import type { SmsFeedResult } from '@/features/sms/hooks';
-import type { SmsMessage, SmsNumber, TeamListItem } from '@/types/api';
+import type { SmsMessage, SmsNumber } from '@/types/api';
 
 // Гейтинг: page-level view-guard `sms:view` + действия sms:edit/transfer/delete/sync
 // + admin-уровень видимости SMS `sees_all_sms_teams` (ADR-036, фильтр «Все команды»).
@@ -19,7 +19,15 @@ const auth = vi.hoisted(() => ({
 const useSmsMessagesSpy = vi.hoisted(() => vi.fn());
 const feed = vi.hoisted(() => ({ value: null as unknown }));
 const numbersQuery = vi.hoisted(() => ({ value: null as unknown }));
-const teamsQuery = vi.hoisted(() => ({ value: null as unknown }));
+const teamsSpy = vi.hoisted(() => vi.fn(() => ({ data: { items: [] } })));
+// Scope канала «СМС»: у admin-уровня `includesUnassigned = true` ⇒ 1 команда + «Без команды»
+// = 2 варианта ⇒ порог рендера фильтра (ADR-055 §6.2) выполнен.
+const smsScope = vi.hoisted(() => ({
+  value: {
+    teams: [{ id: 'team-3', name: 'Продажи' }] as { id: string; name: string }[],
+    includesUnassigned: true,
+  },
+}));
 const mutations = vi.hoisted(() => ({
   sync: vi.fn(),
   update: vi.fn(),
@@ -31,6 +39,9 @@ vi.mock('@/features/auth/hooks', () => ({
   useCanViewPage: () => auth.canView,
   useCan: (_page: string, action: string) => auth.can[action] ?? false,
   useSeesAllSmsTeams: () => auth.seesAllTeams,
+  // Scope команд канала «СМС» из `/api/auth/me` (ADR-055 §5.1/§6.3) — ЕДИНСТВЕННЫЙ источник
+  // опций фильтра «Команда» и `Select` переноса номера (`GET /api/teams` здесь запрещён).
+  useChannelTeamScope: () => smsScope.value,
 }));
 
 vi.mock('@/features/sms/hooks', () => ({
@@ -45,9 +56,8 @@ vi.mock('@/features/sms/hooks', () => ({
   useDeleteSmsNumber: () => ({ mutate: mutations.del, isPending: false }),
 }));
 
-vi.mock('@/features/teams/hooks', () => ({
-  useTeams: () => teamsQuery.value,
-}));
+// `GET /api/teams` на /sms БОЛЬШЕ НЕ ИСПОЛЬЗУЕТСЯ (ADR-055 §6.3) — спай обязан остаться нулевым.
+vi.mock('@/features/teams/hooks', () => ({ useTeams: teamsSpy }));
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -107,21 +117,6 @@ function makeMessage(id: number, over: Partial<SmsMessage> = {}): SmsMessage {
   };
 }
 
-function makeTeam(id: string, name: string): TeamListItem {
-  return {
-    id,
-    name,
-    leader_id: null,
-    leader_username: null,
-    member_count: 0,
-    number_count: 0,
-    mailbox_count: 0,
-    members: [],
-    created_at: '2026-07-08T09:00:00Z',
-    updated_at: '2026-07-08T09:00:00Z',
-  };
-}
-
 function baseFeed(over: Partial<SmsFeedResult> = {}): SmsFeedResult {
   return {
     messages: [],
@@ -156,7 +151,8 @@ describe('SmsPage', () => {
     auth.seesAllTeams = true;
     feed.value = baseFeed();
     numbersQuery.value = numbersData([]);
-    teamsQuery.value = { data: { items: [] } };
+    // По умолчанию — 1 команда + «Без команды» = 2 варианта ⇒ порог §6.2 выполнен.
+    smsScope.value = { teams: [{ id: 't1', name: 'Продажи' }], includesUnassigned: true };
   });
 
   afterEach(() => {
@@ -180,7 +176,7 @@ describe('SmsPage', () => {
   it('фильтры number+team комбинируемы (AND): выбор одного не сбрасывает другой', async () => {
     const user = userEvent.setup();
     numbersQuery.value = numbersData([makeNumber(5, { phone_number: '+15551234567' })]);
-    teamsQuery.value = { data: { items: [makeTeam('t1', 'Продажи')] } };
+    smsScope.value = { teams: [{ id: 't1', name: 'Продажи' }], includesUnassigned: true };
     feed.value = baseFeed({ messages: [makeMessage(1)] });
     render(<SmsPage />);
 
@@ -241,22 +237,83 @@ describe('SmsPage', () => {
     expect(screen.queryByRole('tab')).not.toBeInTheDocument();
   });
 
-  it('ADR-036: sees_all_sms_teams=true → фильтр «Все команды» присутствует', () => {
+  // --- Порог рендера фильтра «Команда»: ≥ 2 варианта (ADR-055 §6.2) ---------------
+  //
+  // ⚠️ Прежний гейт ADR-036 («фильтр рендерится ТОЛЬКО при `sees_all_sms_teams`») ОТМЕНЁН
+  // (ADR-055 шапка). Правило теперь ЕДИНОЕ для любого актора, БЕЗ ветвления «admin ↔ не-админ»:
+  //   options_count = me.sms_teams.length + (me.sms_includes_unassigned ? 1 : 0)  // «Все команды» не в счёт
+  //   render_filter = options_count >= 2
+
+  it('ADR-055 §6.2: 0 вариантов канала → контрол «Команда» НЕ рендерится вовсе', () => {
+    auth.seesAllTeams = false;
+    smsScope.value = { teams: [], includesUnassigned: false };
+    render(<SmsPage />);
+
+    // Не пустой и не disabled — ОТСУТСТВУЕТ (мусорный контрол упразднён).
+    expect(screen.queryByLabelText('Фильтр по команде')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Фильтр по номеру')).toBeInTheDocument();
+  });
+
+  it('ADR-055 §6.2: 1 вариант канала (одна команда, без «Без команды») → контрола НЕТ', () => {
+    auth.seesAllTeams = false;
+    smsScope.value = { teams: [{ id: 't1', name: 'Продажи' }], includesUnassigned: false };
+    render(<SmsPage />);
+
+    expect(screen.queryByLabelText('Фильтр по команде')).not.toBeInTheDocument();
+  });
+
+  it('ADR-055 §6.2: 2 команды у НЕ-АДМИНА → контрол есть (гейт `sees_all` ОТМЕНЁН)', () => {
+    auth.seesAllTeams = false; // прежний ADR-036 скрыл бы фильтр — это отменённая норма
+    smsScope.value = {
+      teams: [
+        { id: 't1', name: 'Продажи' },
+        { id: 't2', name: 'Поддержка' },
+      ],
+      includesUnassigned: false,
+    };
+    render(<SmsPage />);
+
+    const select = screen.getByLabelText('Фильтр по команде');
+    expect(select).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Продажи' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Поддержка' })).toBeInTheDocument();
+    // «Без команды» — только под флагом (§3.2 п.2: иначе снятие команды → 403).
+    expect(within(select).queryByRole('option', { name: 'Без команды' })).not.toBeInTheDocument();
+  });
+
+  it('ADR-055 §6.2: 1 команда + «Без команды» = 2 варианта → контрол есть', () => {
+    auth.seesAllTeams = false;
+    smsScope.value = { teams: [{ id: 't1', name: 'Продажи' }], includesUnassigned: true };
+    render(<SmsPage />);
+
+    const select = screen.getByLabelText('Фильтр по команде');
+    expect(within(select).getByRole('option', { name: 'Без команды' })).toBeInTheDocument();
+  });
+
+  it('ADR-055 §6.2: НЕТ ветки «админу показывать всегда» — 1 вариант у admin-уровня → контрола НЕТ', () => {
+    // Регрессия отменённой нормы: при НУЛЕ команд в системе форсированный рендер дал бы
+    // контрол с единственной опцией «Без команды» — снова мусорный контрол (§6.2).
     auth.seesAllTeams = true;
-    teamsQuery.value = { data: { items: [makeTeam('t1', 'Продажи')] } };
+    smsScope.value = { teams: [], includesUnassigned: true }; // options_count === 1
+    render(<SmsPage />);
+
+    expect(screen.queryByLabelText('Фильтр по команде')).not.toBeInTheDocument();
+  });
+
+  it('ADR-055 §6.3: опции фильтра берутся из `/api/auth/me`, `GET /api/teams` НЕ вызывается', () => {
+    auth.seesAllTeams = true;
+    smsScope.value = {
+      teams: [
+        { id: 't1', name: 'Продажи' },
+        { id: 't2', name: 'Поддержка' },
+      ],
+      includesUnassigned: true,
+    };
     render(<SmsPage />);
 
     expect(screen.getByLabelText('Фильтр по команде')).toBeInTheDocument();
-  });
-
-  it('ADR-036: sees_all_sms_teams=false → фильтр «Все команды» скрыт (гейт админ-уровня)', () => {
-    auth.seesAllTeams = false;
-    teamsQuery.value = { data: { items: [makeTeam('t1', 'Продажи')] } };
-    render(<SmsPage />);
-
-    // Ограниченной роли селект «Все команды» недоступен; фильтр по номеру остаётся.
-    expect(screen.queryByLabelText('Фильтр по команде')).not.toBeInTheDocument();
-    expect(screen.getByLabelText('Фильтр по номеру')).toBeInTheDocument();
+    // Под admin-уровнем ТОЖЕ: источник один на всех, ветвления в клиенте нет (§6.3).
+    expect(teamsSpy).not.toHaveBeenCalled();
   });
 
   it('вкладка «Номера»: рендерит строку номера из списка', async () => {

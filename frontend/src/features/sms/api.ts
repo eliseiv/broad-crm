@@ -18,6 +18,11 @@ export interface ListSmsMessagesParams {
   numberId?: number;
   /** Фильтр по команде (uuid) — по текущей принадлежности номера. Комбинируем с `numberId`. */
   teamId?: string;
+  /**
+   * Серверный фильтр «только сообщения номеров БЕЗ команды» (`no_team=true`, ADR-055 §5.3).
+   * **Взаимоисключающ с `teamId`** (оба → `400 validation_error`). `false`/не задан → не шлём.
+   */
+  noTeam?: boolean;
   /** Opaque keyset-курсор следующей (более старой) страницы. */
   cursor?: string;
   limit?: number;
@@ -33,10 +38,12 @@ export function listSmsMessages(
   signal?: AbortSignal,
   authToken?: string,
 ): Promise<SmsMessagesResponse> {
-  const { numberId, teamId, cursor, limit = SMS_PAGE_LIMIT } = params;
+  const { numberId, teamId, noTeam, cursor, limit = SMS_PAGE_LIMIT } = params;
   const qs = new URLSearchParams();
   if (numberId !== undefined) qs.set('number_id', String(numberId));
-  if (teamId !== undefined) qs.set('team_id', teamId);
+  // `team_id` и `no_team` взаимоисключающи (04-api.md; оба → 400 validation_error).
+  if (noTeam) qs.set('no_team', 'true');
+  else if (teamId !== undefined) qs.set('team_id', teamId);
   if (cursor !== undefined) qs.set('cursor', cursor);
   qs.set('limit', String(limit));
   return apiRequest<SmsMessagesResponse>(`/sms/messages?${qs.toString()}`, { signal, authToken });

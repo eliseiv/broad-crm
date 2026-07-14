@@ -7,6 +7,14 @@ import type { MailMailbox } from '@/types/api';
 
 // --- Управляемое окружение хуков (vi.hoisted — доступно внутри vi.mock фабрик) ---
 const perms = vi.hoisted(() => ({ canCreate: false, seesAll: true }));
+// Scope команд канала «Почты» — ЕДИНСТВЕННЫЙ источник опций селектора «Команда»
+// (ADR-055 §6.3: `me.mail_teams` из `/api/auth/me`, а НЕ `GET /api/teams`).
+const mailScope = vi.hoisted(() => ({
+  value: {
+    teams: [{ id: 'team-3', name: 'Продажи' }] as { id: string; name: string }[],
+    includesUnassigned: false,
+  },
+}));
 // Управляемая мутация authorize: mutate(teamId, { onSuccess, onError }) —
 // тест диктует, какой колбэк дёрнуть (успех 200 → panel; 503/404/502 → onError).
 const authorize = vi.hoisted(() => ({
@@ -18,16 +26,21 @@ const authorize = vi.hoisted(() => ({
 const watch = vi.hoisted(() => ({ value: { data: undefined } as unknown }));
 // Спаи мутаций записи ящика — чтобы проверить ИСХОДЯЩИЙ payload формы (ADR-047 §3.2).
 const mutations = vi.hoisted(() => ({ create: vi.fn(), update: vi.fn() }));
+// Спай на `useTeams` — ассертим, что форма ящика за `GET /api/teams` НЕ ходит (§6.3).
+const teamsSpy = vi.hoisted(() => vi.fn(() => ({ data: { items: [] } })));
 
 vi.mock('@/features/auth/hooks', () => ({
   useCan: (page: string, action: string) =>
     page === 'mail' && action === 'create' ? perms.canCreate : false,
   useSeesAllMailTeams: () => perms.seesAll,
+  useChannelTeamScope: () => mailScope.value,
 }));
 
-vi.mock('@/features/teams/hooks', () => ({
-  useTeams: () => ({ data: { items: [{ id: 'team-3', name: 'Продажи' }] } }),
-}));
+// `GET /api/teams` в форме ящика БОЛЬШЕ НЕ ИСПОЛЬЗУЕТСЯ (ADR-055 §6.3 закрывает TD-050 и
+// прод-баг 2026-07-14: эндпоинт гейтится `teams:view`, у mail-оператора его нет ⇒ список
+// приходил пустым и оставалась одна admin-only опция «Без команды» ⇒ ящик было не создать).
+// Спай ловит любой вызов — он обязан остаться нулевым.
+vi.mock('@/features/teams/hooks', () => ({ useTeams: teamsSpy }));
 
 // watchQuery опирается на useQuery напрямую из @tanstack/react-query — мокаем его
 // контролируемым значением (даёт детерминированный пуллинг без реального QueryClient).
@@ -222,7 +235,7 @@ describe('MailboxFormModal «Номер»/«Приложение» (ADR-047 §3.
     await userEvent.type(screen.getByLabelText('Приложение'), 'Klyro Forge (Codex)');
     await userEvent.type(screen.getByLabelText('IMAP-хост'), 'imap.example.com');
     await userEvent.type(screen.getByLabelText('SMTP-хост'), 'smtp.example.com');
-    await userEvent.type(screen.getByLabelText('Пароль (IMAP)'), 's3cr3t');
+    await userEvent.type(screen.getByLabelText('Код приложения'), 's3cr3t');
     await userEvent.click(screen.getByRole('button', { name: 'Добавить' }));
 
     expect(mutations.create).toHaveBeenCalledTimes(1);
@@ -274,5 +287,117 @@ describe('MailboxFormModal «Номер»/«Приложение» (ADR-047 §3.
     };
     expect(payload.app_name).toBeNull();
     expect(payload).not.toHaveProperty('display_name');
+  });
+});
+
+// --- ADR-054: лейбл «Код приложения» + порядок полей формы (нормативно) --------
+
+describe('MailboxFormModal — поле секрета «Код приложения» (ADR-054)', () => {
+  beforeEach(() => {
+    perms.canCreate = true;
+    perms.seesAll = true;
+    mailScope.value = { teams: [{ id: 'team-3', name: 'Продажи' }], includesUnassigned: false };
+  });
+
+  it('поле доступно по лейблу «Код приложения»; старого «Пароль (IMAP)» в DOM НЕТ', () => {
+    render(<MailboxFormModal open onOpenChange={vi.fn()} mode="add" />);
+
+    expect(screen.getByLabelText('Код приложения')).toBeInTheDocument();
+    // Прежний лейбл провоцировал ввести пароль ОТ ПОЧТЫ (частое поражение → 422
+    // mail_imap_failed). ADR-054 §1: строку «Пароль (IMAP)» не использовать.
+    expect(screen.queryByLabelText('Пароль (IMAP)')).not.toBeInTheDocument();
+  });
+
+  it('«Код приложения» — ВТОРОЕ поле формы, сразу после «Адрес почты» (ADR-054 §3)', () => {
+    render(<MailboxFormModal open onOpenChange={vi.fn()} mode="add" />);
+
+    const form = document.getElementById('mailbox-form') as HTMLElement;
+    const fields = Array.from(form.querySelectorAll('input, select')) as HTMLElement[];
+    const labels = fields
+      .map((el) => {
+        const id = el.getAttribute('id');
+        return id ? (form.querySelector(`label[for="${id}"]`)?.textContent ?? '') : '';
+      })
+      .filter(Boolean);
+
+    // Порядок нормативен: «Адрес почты» → «Код приложения» → «Номер» → «Приложение» → «Команда».
+    expect(labels.slice(0, 5)).toEqual([
+      'Адрес почты',
+      'Код приложения',
+      'Номер',
+      'Приложение',
+      'Команда',
+    ]);
+  });
+
+  it('подсказка режима `add` — про app password (ADR-054 §1)', () => {
+    render(<MailboxFormModal open onOpenChange={vi.fn()} mode="add" />);
+
+    expect(
+      screen.getByText(
+        'Не пароль от почты, а пароль приложения (app password) из настроек безопасности почтового сервиса. Как его получить — в блоке «Как добавить почту?» выше.',
+      ),
+    ).toBeVisible();
+  });
+
+  it('подсказка режима `edit` — «Оставьте пустым, чтобы не менять код приложения.»', () => {
+    render(
+      <MailboxFormModal
+        open
+        onOpenChange={vi.fn()}
+        mode="edit"
+        mailbox={{
+          id: 1,
+          email: 'inbox@postapp.store',
+          number: '5108',
+          app_name: 'Klyro Forge',
+          display_name: '5108 Klyro Forge',
+          team_id: 'team-3',
+          is_active: true,
+          last_synced_at: null,
+          last_sync_error: null,
+          consecutive_failures: 0,
+        }}
+      />,
+    );
+
+    expect(screen.getByText('Оставьте пустым, чтобы не менять код приложения.')).toBeVisible();
+  });
+
+  it('пустое поле при создании → инлайн-ошибка «Укажите код приложения» (ADR-054 §1)', async () => {
+    render(<MailboxFormModal open onOpenChange={vi.fn()} mode="add" />);
+
+    await userEvent.type(screen.getByLabelText('Адрес почты'), 'new@example.com');
+    await userEvent.type(screen.getByLabelText('IMAP-хост'), 'imap.example.com');
+    await userEvent.type(screen.getByLabelText('SMTP-хост'), 'smtp.example.com');
+    await userEvent.click(screen.getByRole('button', { name: 'Добавить' }));
+
+    expect(screen.getByText('Укажите код приложения')).toBeVisible();
+    expect(mutations.create).not.toHaveBeenCalled();
+  });
+
+  it('«SMTP-пароль (опц.)» НА МЕСТЕ и не переименован (ADR-054 §2: другое понятие)', () => {
+    render(<MailboxFormModal open onOpenChange={vi.fn()} mode="add" />);
+
+    expect(screen.getByLabelText('SMTP-пароль (опц.)')).toBeInTheDocument();
+    // Склейка двух разных секретов в один лейбл запрещена (§2).
+    expect(screen.queryByLabelText('Код приложения (SMTP)')).not.toBeInTheDocument();
+    // Плейсхолдер приведён к новому словарю (§2).
+    expect(screen.getByPlaceholderText('По умолчанию — Код приложения')).toBeInTheDocument();
+  });
+
+  it('в payload уходит поле `password` — КОНТРАКТ НЕ МЕНЯЛСЯ (ADR-054 §4)', async () => {
+    render(<MailboxFormModal open onOpenChange={vi.fn()} mode="add" />);
+
+    await userEvent.type(screen.getByLabelText('Адрес почты'), 'new@example.com');
+    await userEvent.type(screen.getByLabelText('Код приложения'), 'app-code');
+    await userEvent.type(screen.getByLabelText('IMAP-хост'), 'imap.example.com');
+    await userEvent.type(screen.getByLabelText('SMTP-хост'), 'smtp.example.com');
+    await userEvent.click(screen.getByRole('button', { name: 'Добавить' }));
+
+    const payload = mutations.create.mock.calls[0][0] as Record<string, unknown>;
+    // Переименование UI-лейбла НЕ переименовывает поле DTO (§4).
+    expect(payload.password).toBe('app-code');
+    expect(payload).not.toHaveProperty('app_password');
   });
 });

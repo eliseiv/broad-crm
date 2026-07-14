@@ -557,6 +557,9 @@ erDiagram
         uuid role_id FK
         boolean is_active
         timestamptz first_login_at
+        boolean is_system
+        boolean mail_includes_unassigned
+        boolean sms_includes_unassigned
         timestamptz created_at
         timestamptz updated_at
     }
@@ -572,10 +575,17 @@ erDiagram
         uuid team_id PK_FK
         timestamptz created_at
     }
+    USER_CHANNEL_TEAMS {
+        uuid user_id PK_FK
+        text channel PK "mail|sms (CHECK)"
+        uuid team_id PK_FK
+    }
     ROLES ||--o{ USERS : "1:N (ON DELETE RESTRICT)"
     USERS ||--o| TEAMS : "leader 0..1:N (ON DELETE SET NULL)"
     USERS ||--o{ USER_TEAMS : "1:N (ON DELETE CASCADE)"
     TEAMS ||--o{ USER_TEAMS : "1:N (ON DELETE CASCADE)"
+    USERS ||--o{ USER_CHANNEL_TEAMS : "1:N (ON DELETE CASCADE)"
+    TEAMS ||--o{ USER_CHANNEL_TEAMS : "1:N (ON DELETE CASCADE)"
 ```
 
 `users.role_id → roles.id` с **`ON DELETE RESTRICT`**: роль, назначенную хотя бы одному пользователю, удалить нельзя (→ `409 role_in_use`, [04-api.md](04-api.md#delete-apirolesid)). `teams.leader_id → users.id` — **nullable, `ON DELETE SET NULL`** ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)): команда может быть **без лидера**; удаление пользователя-лидера не блокируется (лидерство авто-передаётся сервисом, остаток — `SET NULL`; код `409 user_is_team_leader` **упразднён**). `user_teams` — M2M между `users` и `teams`, обе стороны **`ON DELETE CASCADE`**, с колонкой `created_at` (дата добавления участника — для авто-передачи лидерства; см. [«Таблицы `teams` и `user_teams`»](#таблицы-teams-и-user_teams-crm-команды)).
@@ -590,7 +600,7 @@ erDiagram
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
 
-> **`permissions` (jsonb) — формат и валидация.** Объект «страница → массив действий». Допустимые страницы/действия — только из каталога ([ADR-021](adr/ADR-021-rbac-users-roles.md#1-каталог-прав-канон-на-сервере)): `dashboard:[view]`; `servers`/`ai-keys`/`proxies`/`backends:[view,create,edit,delete]`; `mail:[view]`. Ключ `users` **запрещён** (страница вне матрицы). Валидация — на уровне схемы/сервиса (`app/domain/permissions.py::CATALOG`), не в БД: неизвестная страница/действие, дубликат → `422 unprocessable`. DB хранит любой валидный jsonb; каноничность обеспечивает приложение (по образцу «свободного» инварианта `backends.domain`).
+> **`permissions` (jsonb) — формат и валидация.** Объект «страница → массив действий». Допустимые страницы/действия — только из каталога (**канон — `backend/app/domain/permissions.py::CATALOG`**, [ADR-021](adr/ADR-021-rbac-users-roles.md#1-каталог-прав-канон-на-сервере)): `dashboard:[view]`; `servers`/`ai-keys`/`proxies`/`backends:[view,create,edit,delete]`; **`mail:[view,create,edit,delete,sync,tags]`** (`backend/app/domain/permissions.py:21` — прежняя запись «`mail:[view]`» описывала read-through-модель [ADR-012](adr/ADR-012-mail-read-through-proxy.md) и устарела с [ADR-038](adr/ADR-038-mail-headless-integration.md)/[ADR-044](adr/ADR-044-mail-full-merge-into-crm.md)); `sms:[view,edit,transfer,sync,delete]`; `roles`/`teams`. Полный маппинг действие→эндпоинты — [05-security.md](05-security.md#каталог-прав-канон-на-сервере). Ключ `users` **запрещён** (страница вне матрицы). Валидация — на уровне схемы/сервиса (`app/domain/permissions.py::CATALOG`), не в БД: неизвестная страница/действие, дубликат → `422 unprocessable`. DB хранит любой валидный jsonb; каноничность обеспечивает приложение (по образцу «свободного» инварианта `backends.domain`).
 >
 > **Роль `admin` — зарезервированное имя.** Наличие у пользователя роли с `name == 'admin'` даёт доступ к странице «Пользователи»/Roles API (`require_admin`, [ADR-021](adr/ADR-021-rbac-users-roles.md#5-enforcement-сервер--единственная-граница-безопасности)). Роль `admin` сидится миграцией с полными правами по каталогу. Ресурсные страницы для admin-пользователей гейтятся её `permissions` как обычно; страница «Пользователи» — по имени роли.
 
@@ -606,6 +616,8 @@ erDiagram
 | `is_active` | `boolean` | `NOT NULL`, `DEFAULT true` | Активен ли пользователь. `false` → вход запрещён, а действующий JWT аннулируется на следующем запросе (`401`, свежая загрузка из БД). Приоритетен для статуса: `false` → `status="inactive"` независимо от `first_login_at`. |
 | `is_system` | `boolean` | `NOT NULL`, `DEFAULT false`, частичный `UNIQUE` — `uq_users_system_singleton ON users (is_system) WHERE is_system` (**объявляется в МОДЕЛИ `User.__table_args__`**, миграция `0026` его зеркалит — иначе схема тестов (`metadata.create_all`) разошлась бы с продом) | **Системная строка-якорь супер-админа** ([ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md); миграция `0026`). `true` — ровно **одна** техническая строка (FK-цель личного состояния консольного супер-админа); `false` — обычный пользователь. **Наружу не отдаётся ни в одном контракте.** Строки с `is_system = true` **невидимы** для `GET /api/users`, состава/лидерства команд, резолва логина и Telegram-SSO (правило — [«Системная строка-якорь»](#системная-строка-якорь-супер-админа-adr-051)). |
 | `first_login_at` | `timestamptz` | `NULL` | **Момент первого успешного входа** ([ADR-028](adr/ADR-028-user-status-first-login.md); миграция `0015`). `NULL` = ещё ни разу не входил. Проставляется приложением при **первом** успешном входе — идемпотентно (`if first_login_at is None`): в парольной ветке `POST /api/auth/login` (после bcrypt-проверки) и в `POST /api/auth/set-password` (беспарольный после установки сразу залогинен). Наружу **не отдаётся** — источник производного `UserListItem.status` ([04-api.md](04-api.md#схема-userlistitem)). |
+| `mail_includes_unassigned` | `boolean` | `NOT NULL`, `DEFAULT false` | **«Без команды» в блоке «Почты»** ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §2.2; миграция `0027`). `true` → пользователь видит и обрабатывает **ящики/письма без команды** (`mail_accounts.team_id IS NULL`). Флаг-колонка, а не строка в [`user_channel_teams`](#таблица-user_channel_teams-per-channel-добавки-adr-055): `NULL` в составе PK PostgreSQL не допускает. Наружу — `mail_extra_includes_unassigned` (Users CRUD) и `mail_includes_unassigned` (`GET /api/auth/me`). |
+| `sms_includes_unassigned` | `boolean` | `NOT NULL`, `DEFAULT false` | То же для канала **«СМС»**: доступ к **номерам/сообщениям без команды** (`sms_phone_numbers.team_id IS NULL`). |
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
 
@@ -804,6 +816,67 @@ CREATE INDEX ix_user_teams_team_id ON user_teams (team_id);
 - **Команда** — **hard delete** (`DELETE FROM teams WHERE id = ...`); строки `user_teams` снимаются `ON DELETE CASCADE`.
 - **Пользователь** — hard delete; членства снимаются `ON DELETE CASCADE`. Если пользователь — лидер хотя бы одной команды, удаление **не блокируется** ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)): сервис **авто-передаёт лидерство** следующему участнику по `user_teams.created_at` (или `leader_id → NULL`, если участников не осталось; `ON DELETE SET NULL` — предохранитель), затем удаляет пользователя. Код `409 user_is_team_leader` **упразднён**.
 
+## Таблица `user_channel_teams` (per-channel добавки, [ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md))
+
+**Дополнительные** команды пользователя **по каналу** — «Пользователь из «Команда Ивана» смотрит почты по нескольким командам и СМС по нескольким командам» (требование владельца, [ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md)). Модуль — [modules/auth](modules/auth/README.md), правила видимости — [05-security.md](05-security.md#per-channel-scope-команд-нормативно-adr-055), API — [04-api.md](04-api.md#users).
+
+**Union-семантика (нормативно):**
+
+```
+effective_channel_teams(user, channel) = user_teams(user) ∪ user_channel_teams(user, channel)
+effective_includes_unassigned(user, channel) = users.<channel>_includes_unassigned
+```
+
+- Базовое членство (`user_teams`) входит в scope **обоих** каналов **всегда** — блок канала в UI задаёт **добавку**, а не замену.
+- **Инвариант нормализации (обеспечивает сервис — на ОБОИХ путях записи в `user_teams`, [ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §2.3):** в `user_channel_teams` **не хранятся** команды, входящие в `user_teams` того же пользователя.
+  - **Путь 1 — Users CRUD** (`POST`/`PATCH /api/users`, `team_ids`; `UserRepository.set_membership`): сервис **вычитает** базовый набор из присланного (`extra := <channel>_extra_team_ids − team_ids`; «лишняя» базовая команда в запросе — **не ошибка**, просто не сохраняется).
+  - **Путь 2 — Teams CRUD** (`POST /api/teams`, `PATCH /api/teams/{id}`, `member_ids`; `TeamRepository.create`/`replace_members` — пишут `user_teams` напрямую): после приведения состава команды `T` сервис **удаляет** строки `user_channel_teams (user_id ∈ member_ids, channel ∈ {mail,sms}, team_id = T)` — в той же транзакции.
+  - Без вычитания/удаления снятие команды оставило бы её копию в добавке ⇒ тихая эскалация («исключён из команды, но почту команды видит»). Инвариант обязан быть **path-independent**: он не может зависеть от того, на какой странице админ правил членство ([modules/teams §Инварианты 8](modules/teams/README.md), [05-security.md](05-security.md#per-channel-scope-команд-нормативно-adr-055)).
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `user_id` | `uuid` | PK-часть, FK → `users(id)` **`ON DELETE CASCADE`** | Пользователь. |
+| `channel` | `text` | PK-часть, **CHECK** `ck_user_channel_teams_channel`: `channel IN ('mail','sms')` | Канал. `text` + CHECK, а не PG-enum: каналов два, третий не планируется, а enum требовал бы `ALTER TYPE` (образец — `ck_mail_tag_rules_type`, `ck_notifier_alert_log_kind`). |
+| `team_id` | `uuid` | PK-часть, FK → `teams(id)` **`ON DELETE CASCADE`** | **Дополнительная** команда канала. |
+
+Составной `PRIMARY KEY (user_id, channel, team_id)` — добавка не дублируется; префикс `(user_id, channel)` покрывает основную выборку «доп-команды пользователя по каналу».
+
+### DDL (концепт миграции)
+
+```sql
+CREATE TABLE user_channel_teams (
+    user_id  uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    channel  text NOT NULL,
+    team_id  uuid NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+    PRIMARY KEY (user_id, channel, team_id),
+    CONSTRAINT ck_user_channel_teams_channel CHECK (channel IN ('mail', 'sms'))
+);
+
+CREATE INDEX ix_user_channel_teams_team_id ON user_channel_teams (team_id);
+
+ALTER TABLE users ADD COLUMN mail_includes_unassigned boolean NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN sms_includes_unassigned  boolean NOT NULL DEFAULT false;
+```
+
+### Индексы и обоснование
+- `PK (user_id, channel, team_id)` — уникальность добавки + выборка по префиксу `(user_id, channel)` (сборка scope на каждый запрос).
+- **`ix_user_channel_teams_team_id` — обязателен:** под `ON DELETE CASCADE` при удалении команды (иначе seq-scan на каждый `DELETE /api/teams/{id}`) и под обратную выборку «кому канал даёт эту команду».
+
+### Политика удаления
+- **Пользователь** — hard delete; добавки снимаются `ON DELETE CASCADE`.
+- **Команда** — hard delete; строки добавок снимаются `ON DELETE CASCADE` (симметрично `user_teams`) ⇒ удалённая команда исчезает из scope обоих каналов автоматически.
+- Флаги `users.*_includes_unassigned` живут с пользователем (отдельной очистки не требуют).
+
+## Миграция `0027_user_channel_teams` (концепт, [ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §2.4)
+
+> `revision = "0027_user_channel_teams"` — **23 символа** ≤ 32 ([правило id](#1-revision-id--не-длиннее-32-символов)). `down_revision = "0026_users_is_system"` (текущая голова цепочки — [`0026`](#миграция-0026_users_is_system-концепт-adr-051-11)).
+
+**`upgrade()`** — `CREATE TABLE user_channel_teams` (+ CHECK + `ix_user_channel_teams_team_id`); `ALTER TABLE users ADD COLUMN mail_includes_unassigned boolean NOT NULL DEFAULT false` и то же для `sms_includes_unassigned`.
+
+**`downgrade()`** (рабочий, обязателен) — `DROP TABLE user_channel_teams;` затем `ALTER TABLE users DROP COLUMN mail_includes_unassigned; ALTER TABLE users DROP COLUMN sms_includes_unassigned;`.
+
+**Backfill НЕ выполняется и НЕ нужен (нормативно).** При пустых добавках и `false`-флагах эффективный scope канала **тождественно равен** `user_teams` — ровно то, что действует сегодня ⇒ **регрессии видимости у существующих пользователей ноль**, переносить нечего. Наполняет наборы администратор через форму пользователя ([08-design-system.md](08-design-system.md#блоки-смс-и-почты-в-форме-пользователя-нормативно-adr-055)).
+
 ## Миграция `0009_create_teams` (концепт)
 
 > Реализуется через Alembic. `down_revision = "0008_create_users_roles"` (текущая голова цепочки). **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат на одну ревизию — см. [07-deployment.md](07-deployment.md#откат-миграций-бд).
@@ -996,12 +1069,12 @@ WHERE t.leader_id IS NULL
 
 ### Таблица `sms_phone_numbers`
 
-Реестр номеров (Twilio-номера, привязанные к CRM-командам). Номера появляются автоматически (входящие SMS + `POST /api/sms/numbers/sync`); вручную не создаются.
+Реестр номеров (Twilio-номера, привязанные к CRM-командам). **Единственный источник строк — `POST /api/sms/numbers/sync`** (`SmsNumberRepository.bulk_upsert_unassigned` — `backend/app/repositories/sms_number_repository.py:138-163`, вызов `sms_sync_service.py:57`): все номера Twilio-аккаунта вставляются как unassigned (`team_id=NULL`), команда назначается позже через `transfer`. Вручную номер не создаётся (действия `sms:create` в каталоге прав нет). ⚠️ **Входящее SMS строку номера НЕ создаёт** (`backend/app/services/sms_ingest_service.py:120-130`: `find_by_phone` → нет строки ⇒ пишется только `sms_inbound` с `team_id=None`) — прежняя формулировка «номера появляются из входящих SMS» была неверна; от неё зависит объём флага `sms_includes_unassigned` ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §3.1).
 
 | Поле | Тип | Ограничения | Описание |
 |------|-----|-------------|----------|
 | `id` | `bigint` | PK, `IDENTITY` | Идентификатор номера. |
-| `phone_number` | `text` | `NOT NULL`, `UNIQUE` | Номер в E.164. Уникальность гарантирует БД; публичный API дубликат не возвращает как ошибку — номера появляются только через upsert `ON CONFLICT (phone_number) DO NOTHING` (`sync`) и приём SMS. |
+| `phone_number` | `text` | `NOT NULL`, `UNIQUE` | Номер в E.164. Уникальность гарантирует БД; публичный API дубликат не возвращает как ошибку — строки появляются **только** через upsert `ON CONFLICT (phone_number) DO NOTHING` в `sync` (приём SMS строку номера **не** создаёт). |
 | `team_id` | `uuid` | **`NULL`**, FK → `teams(id)` **`ON DELETE SET NULL`** | Команда-владелец. **`NULL` — unassigned-пул.** Удаление команды → номер возвращается в пул. |
 | `added_by_user_id` | `uuid` | `NULL`, FK → `users(id)` **`ON DELETE SET NULL`** | Кто добавил (для `sync` — `NULL`). |
 | `label` | `text` | `NULL` | **Системный** никнейм — зеркало Twilio `friendly_name` (обновляется `sync`). Через UI **не** редактируется ([ADR-030](adr/ADR-030-sms-module-full-merge.md) §5). |

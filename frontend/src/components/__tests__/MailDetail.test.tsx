@@ -31,7 +31,15 @@ function makeMessage(overrides: Partial<MailMessage> = {}): MailMessage {
     from_name: 'Иван Петров',
     to_addrs: 'inbox@postapp.store',
     cc_addrs: null,
-    mail_account: { id: 3, email: 'inbox@postapp.store', display_name: 'Входящие' },
+    // ADR-056 §1: `MailAccountRef` расширен — number/app_name/team обязательны.
+    mail_account: {
+      id: 3,
+      email: 'inbox@postapp.store',
+      display_name: 'Входящие',
+      number: '5108',
+      app_name: 'Klyro Forge',
+      team: { id: 'team-1', name: 'Команда Ивана' },
+    },
     body_text: 'Текст письма',
     body_html: null,
     body_present: true,
@@ -199,7 +207,14 @@ describe('MailDetail body isolation & notices', () => {
     render(
       <MailDetail
         message={makeMessage({
-          mail_account: { id: 3, email: 'inbox@postapp.store', display_name: null },
+          mail_account: {
+            id: 3,
+            email: 'inbox@postapp.store',
+            display_name: null,
+            number: null,
+            app_name: null,
+            team: null,
+          },
         })}
         onBack={vi.fn()}
       />,

@@ -42,6 +42,15 @@ class TeamRepository:
         result = await self._session.execute(stmt)
         return list(result.unique().scalars().all())
 
+    async def list_refs(self) -> list[Team]:
+        """Все команды БЕЗ агрегатов (лидер/участники не грузятся) — источник `TeamRef[]`.
+
+        Нужен `GET /api/auth/me` при admin-уровне канала (ADR-055 §5.1: ему отдаются ВСЕ
+        команды системы). Отдельный лёгкий метод, чтобы не тянуть `selectinload`
+        лидера/участников ради пары `{id, name}`. Сортировка — на вызывающей стороне.
+        """
+        return list((await self._session.execute(select(Team))).scalars().all())
+
     async def get_with_members(self, team_id: uuid.UUID) -> Team | None:
         """Команда с лидером и участниками (для тела ответа / prefill) или None.
 

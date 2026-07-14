@@ -31,6 +31,11 @@ class UserCreateRequest(BaseModel):
     `password` **опционален** (беспарольный пользователь, ADR-025); длина 8–128 при
     наличии валидируется сервисом (422). `username`/`telegram`/`role_id`/`team_ids` —
     существование/формат валидируются сервисом (422).
+
+    `*_extra_team_ids` (ADR-055 §5.2) — **дополнительные** команды канала сверх базового
+    членства; существование — сервис (422, `details[].field` = имя поля). Пересечение с
+    `team_ids` того же запроса сервис **вычитает** (инвариант §2.3) — это НЕ ошибка.
+    `*_extra_includes_unassigned` — «Без команды» канала (default `false`).
     """
 
     username: str
@@ -38,6 +43,10 @@ class UserCreateRequest(BaseModel):
     password: str | None = None
     role_id: uuid.UUID
     team_ids: list[uuid.UUID] = Field(default_factory=list)
+    mail_extra_team_ids: list[uuid.UUID] = Field(default_factory=list)
+    mail_extra_includes_unassigned: bool = False
+    sms_extra_team_ids: list[uuid.UUID] = Field(default_factory=list)
+    sms_extra_includes_unassigned: bool = False
 
 
 class UserUpdateRequest(BaseModel):
@@ -50,6 +59,13 @@ class UserUpdateRequest(BaseModel):
     (`""` — не «очистка»). `team_ids`: передано → полностью заменяет набор CRM-команд;
     при исключении из команды, которую пользователь ведёт, лидерство авто-передаётся
     (ADR-026).
+
+    `*_extra_team_ids` (ADR-055 §5.2): не передано → добавку канала не менять; передано →
+    **полностью заменяет** её (`[]` → снять все). Пересечение с эффективным базовым
+    набором (`team_ids` этого запроса, иначе — текущее членство) **вычитается** (§2.3).
+    Следствие: добавление команды в `team_ids` снимает её копию из добавки, а исключение
+    из команды не оставляет «висящего» доступа. `*_extra_includes_unassigned`: не
+    передано → не менять.
     """
 
     telegram: str | None = None
@@ -57,6 +73,10 @@ class UserUpdateRequest(BaseModel):
     is_active: bool | None = None
     password: str | None = None
     team_ids: list[uuid.UUID] | None = None
+    mail_extra_team_ids: list[uuid.UUID] | None = None
+    mail_extra_includes_unassigned: bool | None = None
+    sms_extra_team_ids: list[uuid.UUID] | None = None
+    sms_extra_includes_unassigned: bool | None = None
 
 
 class UserListItem(BaseModel):
@@ -67,6 +87,11 @@ class UserListItem(BaseModel):
     приоритетен (`false` → `"inactive"`), затем факт первого входа (`first_login_at`);
     сама метка `first_login_at` наружу не отдаётся. `teams` — CRM-команды пользователя
     (ADR-022), не mail-«команды».
+
+    `mail_extra_teams`/`sms_extra_teams` (ADR-055 §5.2) — **ТОЛЬКО ДОБАВКА** канала
+    (строки `user_channel_teams`), **без** базовых `teams`: то, что реально хранится.
+    Эффективный scope канала = `teams ∪ <channel>_extra_teams` (его в готовом виде отдаёт
+    `GET /api/auth/me` — имена полей разведены намеренно).
     """
 
     id: uuid.UUID
@@ -78,6 +103,10 @@ class UserListItem(BaseModel):
     is_active: bool
     status: Literal["pending", "active", "inactive"]
     teams: list[TeamRef]
+    mail_extra_teams: list[TeamRef]
+    mail_extra_includes_unassigned: bool
+    sms_extra_teams: list[TeamRef]
+    sms_extra_includes_unassigned: bool
     created_at: datetime
     updated_at: datetime
 

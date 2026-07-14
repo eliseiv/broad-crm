@@ -37,6 +37,13 @@ export interface ListMailParams {
   /** Серверный фильтр по команде (UUID CRM-команды). Комбинируем с `mailAccountId` (AND). */
   teamId?: string;
   /**
+   * Серверный фильтр «только письма ящиков БЕЗ команды» (`no_team=true`, ADR-055 §5.3):
+   * «Без команды» — легитимное значение фильтра, а `team_id` (UUID) его выразить не может.
+   * **Взаимоисключающ с `teamId`** (оба → `400 validation_error`) — контролы шлют одно из двух
+   * (см. `teamFilterParams`). `false`/не задан → параметр НЕ отправляется.
+   */
+  noTeam?: boolean;
+  /**
    * Серверный фильтр «только непрочитанные текущим принципалом» (ADR-050 §2.4, 04-api.md).
    * `true` → `unread=true` в запросе; `false`/не задан → параметр НЕ отправляется (фильтр не
    * применяется; `false` ≠ «только прочитанные» — такого режима в контракте нет).
@@ -59,12 +66,15 @@ export function listMail(
   authToken?: string,
   skipAuthReset?: boolean,
 ): Promise<MailListResponse> {
-  const { before, limit = MAIL_PAGE_LIMIT, mailAccountId, teamId, unread } = params;
+  const { before, limit = MAIL_PAGE_LIMIT, mailAccountId, teamId, noTeam, unread } = params;
   const qs = new URLSearchParams();
   qs.set('limit', String(limit));
   if (before !== undefined) qs.set('before', before);
   if (mailAccountId !== undefined) qs.set('mail_account_id', String(mailAccountId));
-  if (teamId !== undefined) qs.set('team_id', teamId);
+  // `team_id` и `no_team` взаимоисключающи (04-api.md; оба → 400): «Без команды» побеждает,
+  // а `team_id` в этом случае не отправляется вовсе.
+  if (noTeam) qs.set('no_team', 'true');
+  else if (teamId !== undefined) qs.set('team_id', teamId);
   if (unread) qs.set('unread', 'true');
   return apiRequest<MailListResponse>(`/mail/messages?${qs.toString()}`, {
     signal,

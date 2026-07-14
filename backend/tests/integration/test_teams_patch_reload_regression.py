@@ -35,6 +35,7 @@ from app.models.user import User
 from app.repositories.mail_account_repository import MailAccountRepository
 from app.repositories.sms_number_repository import SmsNumberRepository
 from app.repositories.team_repository import TeamRepository
+from app.repositories.user_channel_team_repository import UserChannelTeamRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.team import TeamCreateRequest, TeamListItem, TeamUpdateRequest
 from app.services.team_service import TeamService
@@ -77,6 +78,7 @@ def _service(session: AsyncSession) -> TeamService:
         users=UserRepository(session),
         numbers=SmsNumberRepository(session),
         mailboxes=MailAccountRepository(session),
+        channels=UserChannelTeamRepository(session),
     )
 
 

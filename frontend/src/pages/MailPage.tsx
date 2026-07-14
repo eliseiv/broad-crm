@@ -13,7 +13,12 @@ import { MailNotificationsToggle } from '@/components/MailNotificationsToggle';
 import { TagsTab } from '@/components/TagsTab';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { useCanViewPage, useSeesAllMailTeams } from '@/features/auth/hooks';
+import { useCanViewPage, useChannelTeamScope } from '@/features/auth/hooks';
+import {
+  shouldRenderTeamFilter,
+  teamFilterOptions,
+  teamFilterParams,
+} from '@/features/auth/channelTeams';
 import {
   useMailFeed,
   useMailMailboxes,
@@ -21,7 +26,6 @@ import {
   useUnmarkMailRead,
 } from '@/features/mail/hooks';
 import { mailboxSearchKeywords } from '@/features/mail/mailboxSearch';
-import { useTeams } from '@/features/teams/hooks';
 
 type Tab = 'messages' | 'mailboxes' | 'tags';
 
@@ -93,7 +97,6 @@ export function MailPage() {
  */
 function MailTabs() {
   const [tab, setTab] = useState<Tab>('messages');
-  const seesAllMailTeams = useSeesAllMailTeams();
 
   const tabs: { key: Tab; label: string }[] = [
     { key: 'messages', label: 'Сообщения' },
@@ -140,7 +143,7 @@ function MailTabs() {
           aria-labelledby="mail-tab-messages"
           className="min-h-0 flex-1 p-3"
         >
-          <MailInbox seesAllMailTeams={seesAllMailTeams} />
+          <MailInbox />
         </div>
       )}
       {tab === 'mailboxes' && (
@@ -167,12 +170,14 @@ function MailTabs() {
   );
 }
 
-function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
+function MailInbox() {
   // Серверные фильтры ленты — комбинируемы (AND, ADR-044 §7): выбор одного НЕ сбрасывает
   // другой. Входят в queryKey ленты: смена фильтра ре-запрашивает ленту, сбрасывает
-  // пагинацию и авто-выбор — ADR-017. `teamId` — UUID CRM-команды (групп агрегатора нет).
+  // пагинацию и авто-выбор — ADR-017.
   const [mailAccountId, setMailAccountId] = useState<number | undefined>(undefined);
-  const [teamId, setTeamId] = useState<string | undefined>(undefined);
+  // Значение фильтра «Команда»: '' (все) · UUID команды · '__no_team__' → серверный
+  // `no_team=true` (ADR-055 §5.3; `team_id` при этом не отправляется — они взаимоисключающи).
+  const [teamFilter, setTeamFilter] = useState('');
   // Тумблер «Непрочитанные» — СЕРВЕРНЫЙ (ADR-050 §2.8): `unread=true` уходит в запрос ленты
   // и сбрасывает пагинацию. Клиентская фильтрация непрочитанных ЗАПРЕЩЕНА (сломала бы
   // курсорную догрузку — известный дефект тумблера «С тегами»).
@@ -184,13 +189,16 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
   // POST/DELETE …/read под ним возвращают 204.
 
   const { messages, phase, error, hasMore, isFetchingMore, isReloading, loadMore, reload } =
-    useMailFeed({ mailAccountId, teamId, unread: unreadOnly });
+    useMailFeed({ mailAccountId, ...teamFilterParams(teamFilter), unread: unreadOnly });
   const mailboxesQuery = useMailMailboxes();
   const { mutate: markRead } = useMarkMailRead();
   const unmarkMutation = useUnmarkMailRead();
-  // Справочник CRM-команд — только admin-уровню (фильтр «Команда» рендерится по
-  // `sees_all_mail_teams`); прочим ролям не грузим (анти-энумерация, ADR-044 §7).
-  const teamsQuery = useTeams(seesAllMailTeams);
+  // Опции фильтра «Команда» — ТОЛЬКО из `GET /api/auth/me` (`mail_teams` +
+  // `mail_includes_unassigned`), для ЛЮБОГО актора (ADR-055 §6.3): `GET /api/teams` гейтится
+  // `teams:view`, которого у mail-оператора нет. Рендер — по единому правилу пяти экранов
+  // (≥ 2 варианта канала); отдельной ветки «sees_all_mail_teams → всегда» НЕТ (§6.2).
+  const mailScope = useChannelTeamScope('mail');
+  const showTeamFilter = shouldRenderTeamFilter(mailScope);
 
   const [selectedId, setSelectedId] = useState<number | null>(null);
   // Узкие вьюпорты: показываем деталь письма поверх списка (одна колонка).
@@ -218,13 +226,7 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
     ];
   }, [mailboxesQuery.data]);
 
-  const teamOptions = useMemo(() => {
-    const teams = teamsQuery.data?.items ?? [];
-    return [
-      { value: '', label: 'Все команды' },
-      ...teams.map((t) => ({ value: t.id, label: t.name })),
-    ];
-  }, [teamsQuery.data]);
+  const teamOptions = useMemo(() => teamFilterOptions(mailScope), [mailScope]);
 
   // Комбинируемы (AND): выбор одного не сбрасывает другой (ADR-044 §7). Семантика выбора
   // почты НЕ изменилась (ADR-052 §2): `mail_account_id` → серверный фильтр ленты (входит в
@@ -235,8 +237,7 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
     setMailAccountId(next ? Number(next) : undefined);
   };
   const handleTeamChange = (e: ChangeEvent<HTMLSelectElement>) => {
-    const v = e.target.value;
-    setTeamId(v || undefined);
+    setTeamFilter(e.target.value);
   };
 
   const visibleMessages = useMemo(
@@ -395,12 +396,16 @@ function MailInbox({ seesAllMailTeams }: { seesAllMailTeams: boolean }) {
               loading={mailboxesQuery.isLoading}
             />
           </div>
-          {seesAllMailTeams && (
+          {/* Фильтр «Команда» — единое правило пяти экранов (ADR-055 §6.2): рендерится при
+              ≥ 2 доступных вариантах канала (команды + «Без команды»). При одном варианте
+              контрол ОТСУТСТВУЕТ (не пустой, не disabled). Прежний гейт по
+              `sees_all_mail_teams` (ADR-036) — ОТМЕНЁН. */}
+          {showTeamFilter && (
             <div className="w-40">
               <Select
                 aria-label="Команда"
                 options={teamOptions}
-                value={teamId ?? ''}
+                value={teamFilter}
                 onChange={handleTeamChange}
               />
             </div>

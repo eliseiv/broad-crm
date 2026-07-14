@@ -28,6 +28,7 @@ def _build_app(db: RbacFakeDb, principal: Any) -> Any:
         users=db.user_repo,
         numbers=db.number_repo,
         mailboxes=db.mailbox_repo,
+        channels=db.channel_repo,
     )
     return app
 

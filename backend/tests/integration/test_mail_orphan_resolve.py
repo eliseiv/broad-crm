@@ -15,6 +15,7 @@ import pytest
 from app.repositories.mail_telegram_link_repository import MailTelegramLinkRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.team_repository import TeamRepository
+from app.repositories.user_channel_team_repository import UserChannelTeamRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.user import UserCreateRequest, UserUpdateRequest
 from app.services.user_service import UserService
@@ -32,6 +33,7 @@ def _user_service(session: object) -> UserService:
         users=UserRepository(session),  # type: ignore[arg-type]
         roles=RoleRepository(session),  # type: ignore[arg-type]
         teams=TeamRepository(session),  # type: ignore[arg-type]
+        channels=UserChannelTeamRepository(session),  # type: ignore[arg-type]
     )
 
 

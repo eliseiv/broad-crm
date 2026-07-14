@@ -30,6 +30,11 @@ export const teamNumbersKey = ['sms', 'team-numbers'] as const;
 export interface SmsFeedFilter {
   numberId?: number;
   teamId?: string;
+  /**
+   * «Без команды» (`no_team=true`, ADR-055 §5.3) — сообщения номеров с `team_id IS NULL`.
+   * Взаимоисключающ с `teamId` (контрол шлёт одно из двух: `teamFilterParams`).
+   */
+  noTeam?: boolean;
 }
 
 /** Фаза ленты для UI: loading — начальная загрузка; ready — получена; error — прочее. */
@@ -54,14 +59,17 @@ export interface SmsFeedResult {
  * `cursor=<next_cursor>`, пока `next_cursor != null`. Дедуп по `id`, сортировка `id` DESC.
  */
 export function useSmsMessages(filter: SmsFeedFilter = {}): SmsFeedResult {
-  const { numberId, teamId } = filter;
+  const { numberId, teamId, noTeam } = filter;
   const query = useInfiniteQuery({
     queryKey: [
       ...smsMessagesKey,
-      { number_id: numberId ?? null, team_id: teamId ?? null },
+      { number_id: numberId ?? null, team_id: teamId ?? null, no_team: noTeam ?? false },
     ] as const,
     queryFn: ({ pageParam, signal }) =>
-      listSmsMessages({ numberId, teamId, cursor: pageParam, limit: SMS_PAGE_LIMIT }, signal),
+      listSmsMessages(
+        { numberId, teamId, noTeam, cursor: pageParam, limit: SMS_PAGE_LIMIT },
+        signal,
+      ),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
     retry: false,

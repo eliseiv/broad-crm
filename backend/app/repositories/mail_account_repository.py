@@ -11,13 +11,14 @@ import uuid
 from collections.abc import Iterable
 from datetime import datetime
 
+from sqlalchemy import ColumnElement, func, or_, select
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.mail import build_display_name, parse_display_name
 from app.models.mail_account import MailAccount
+from app.models.team import Team
 
 
 class MailAccountRepository:
@@ -30,31 +31,51 @@ class MailAccountRepository:
         """Ящик по id (= id в агрегаторе) или None."""
         return await self._session.get(MailAccount, account_id)
 
-    async def get_many(self, account_ids: Iterable[int]) -> dict[int, MailAccount]:
-        """Ящики по набору id, ключ — id (для проекции ящика в ленте, ADR-044 §2)."""
+    async def get_many_with_team(
+        self, account_ids: Iterable[int]
+    ) -> dict[int, tuple[MailAccount, str | None]]:
+        """Ящики + **имя команды-владельца** одним `LEFT JOIN teams` (ADR-056 §1).
+
+        Возвращает `{id: (account, team_name)}`; `team_name is None` — ящик без команды
+        (`team_id IS NULL`) ⇒ именно **LEFT** JOIN: INNER молча потерял бы письма
+        бесхозных ящиков. **N+1 запрещён:** это ТОТ ЖЕ батч-запрос по странице ленты, что
+        и прежний `get_many` (плюс соединение по PK `teams`), а не запрос на письмо.
+        Заменил `get_many`: ящик в ленте теперь всегда несёт контекст (`number`/`app_name`/
+        `team`), поэтому отдельная выборка «без команды» не нужна.
+        """
         ids = list(account_ids)
         if not ids:
             return {}
-        stmt = select(MailAccount).where(MailAccount.id.in_(ids))
-        return {a.id: a for a in (await self._session.execute(stmt)).scalars().all()}
+        stmt = (
+            select(MailAccount, Team.name)
+            .outerjoin(Team, Team.id == MailAccount.team_id)
+            .where(MailAccount.id.in_(ids))
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return {account.id: (account, team_name) for account, team_name in rows}
 
     async def list_scoped(
         self,
         *,
         team_ids: frozenset[uuid.UUID] | None,
+        includes_unassigned: bool,
         is_active: bool | None,
     ) -> list[MailAccount]:
-        """Каталог ящиков с ролевой видимостью (GET /mailboxes, ADR-044 §4).
+        """Каталог ящиков по **единому предикату scope** (GET /mailboxes, ADR-055 §3).
 
-        `team_ids=None` — без сужения (admin-scope, все ящики). Иначе — только ящики
-        команд из набора; пустой набор → пустой список (без запроса, анти-энумерация).
-        `is_active` (опц.) — доп. фильтр активности.
+        `team_ids=None` — без сужения (admin-уровень: все ящики, включая бесхозные).
+        Иначе предикат: `team_id IN team_ids` **OR** (`includes_unassigned` **AND**
+        `team_id IS NULL`) — прямое `team_id IN team_ids` без ветки флага = дефект
+        (иначе носитель «Без команды» не увидел бы ящики, которые вправе править).
+        Пустой набор И `includes_unassigned=false` → пустой список без запроса
+        (анти-энумерация). `is_active` (опц.) — доп. фильтр активности.
         """
         stmt = select(MailAccount)
         if team_ids is not None:
-            if not team_ids:
+            predicate = self._scope_predicate(team_ids, includes_unassigned)
+            if predicate is None:
                 return []
-            stmt = stmt.where(MailAccount.team_id.in_(team_ids))
+            stmt = stmt.where(predicate)
         if is_active is not None:
             stmt = stmt.where(MailAccount.is_active.is_(is_active))
         stmt = stmt.order_by(MailAccount.email.asc(), MailAccount.id.asc())
@@ -92,18 +113,46 @@ class MailAccountRepository:
         stmt = select(func.count()).select_from(MailAccount).where(MailAccount.team_id == team_id)
         return int((await self._session.execute(stmt)).scalar_one())
 
-    async def ids_by_teams(self, team_ids: Iterable[uuid.UUID]) -> set[int]:
-        """Множество id ящиков команд из набора (scope-фильтр ленты, ADR-044 §7)."""
-        ids = list(team_ids)
-        if not ids:
+    async def ids_in_scope(
+        self, team_ids: Iterable[uuid.UUID], *, includes_unassigned: bool
+    ) -> set[int]:
+        """id ящиков, проходящих **единый предикат scope** (фильтр ленты, ADR-055 §3).
+
+        `team_id IN team_ids` **OR** (`includes_unassigned` **AND** `team_id IS NULL`).
+        Пустой набор команд И `includes_unassigned=false` → пустое множество (вызывающий
+        отдаёт пустую страницу без выборки писем).
+        """
+        predicate = self._scope_predicate(frozenset(team_ids), includes_unassigned)
+        if predicate is None:
             return set()
-        stmt = select(MailAccount.id).where(MailAccount.team_id.in_(ids))
+        stmt = select(MailAccount.id).where(predicate)
         return set((await self._session.execute(stmt)).scalars().all())
 
     async def ids_by_team(self, team_id: uuid.UUID) -> set[int]:
         """Множество id ящиков одной команды (фильтр ленты по команде, ADR-044 §7)."""
         stmt = select(MailAccount.id).where(MailAccount.team_id == team_id)
         return set((await self._session.execute(stmt)).scalars().all())
+
+    async def ids_unassigned(self) -> set[int]:
+        """id ящиков **без команды** (`team_id IS NULL`) — фильтр ленты `no_team=true`
+        (ADR-055 §5.3). Пересечение со scope выполняет вызывающий: у не-админа без
+        `includes_unassigned` результат пересечения пуст → пустая страница, не 403."""
+        stmt = select(MailAccount.id).where(MailAccount.team_id.is_(None))
+        return set((await self._session.execute(stmt)).scalars().all())
+
+    @staticmethod
+    def _scope_predicate(
+        team_ids: frozenset[uuid.UUID], includes_unassigned: bool
+    ) -> ColumnElement[bool] | None:
+        """SQL-выражение единого предиката scope (ADR-055 §3) или `None`, если scope пуст."""
+        clauses: list[ColumnElement[bool]] = []
+        if team_ids:
+            clauses.append(MailAccount.team_id.in_(team_ids))
+        if includes_unassigned:
+            clauses.append(MailAccount.team_id.is_(None))
+        if not clauses:
+            return None
+        return or_(*clauses)
 
     async def create(
         self,

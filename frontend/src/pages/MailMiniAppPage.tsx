@@ -2,17 +2,29 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, KeyboardEvent, ReactNode } from 'react';
 import { AlertTriangle, ArrowLeft, Inbox, ShieldAlert } from 'lucide-react';
 import { MailTags } from '@/components/MailTags';
+import { Pill } from '@/components/ui/Pill';
+import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { ApiError } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
 import { cn } from '@/lib/cn';
+import {
+  channelScopeFromMe,
+  shouldRenderTeamFilter,
+  teamFilterOptions,
+  teamFilterParams,
+} from '@/features/auth/channelTeams';
 import { mailTelegramAuth } from '@/features/mail/api';
 import { buildMailBodySrcDoc } from '@/features/mail/mailBody';
 import { useMailMiniAppAuthStore } from '@/features/mail/miniAppAuth';
-import { useMailMiniAppFeed, useMarkMailMiniAppRead } from '@/features/mail/miniAppHooks';
+import {
+  useMailMiniAppFeed,
+  useMailMiniAppMe,
+  useMarkMailMiniAppRead,
+} from '@/features/mail/miniAppHooks';
 import { applyTelegramTheme, loadTelegramSdk } from '@/features/sms/telegramSdk';
 import type { Theme } from '@/lib/theme';
-import type { MailMessage } from '@/types/api';
+import type { MailAccount, MailMessage } from '@/types/api';
 
 /**
  * Строки Mini App почты (нормативный словарь — 08-design-system.md «Telegram Mini App почты»,
@@ -38,7 +50,56 @@ const T = {
   bodyTruncated: 'Письмо показано не полностью',
   /** sr-only-текст индикатора непрочитанного (ADR-050 §2.8; не полагаться только на цвет/вес). */
   unread: 'Непрочитано',
+  /** Контекст ящика в карточке/детали (ADR-056 §3; образец — `SmsMessageCard`). */
+  teamNone: 'Команды нет',
+  receivedOn: 'Получено на:',
+  teamFilterLabel: 'Команда',
 } as const;
+
+/** `'-'` для пустого значения пилюли (как `orDash` в SMS — строка не «прыгает», ADR-056 §3). */
+function orDash(value: string | null | undefined): string {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : '-';
+}
+
+/**
+ * Контекст ящика письма (ADR-056 §3, 08-design-system.md «Telegram Mini App почты»):
+ * ряд пилюль **«Номер: {number}»** (`ui/Pill tone="accent"`) и **«Приложение: {app_name}»**
+ * (`tone="yellow"`). Пустое значение → `'-'` (пилюля рендерится ВСЕГДА). Ряд переносится
+ * (`flex-wrap`), значения НЕ обрезаются. Новый примитив не вводится.
+ */
+function MailboxPills({ account }: { account: MailAccount }) {
+  const number = orDash(account.number);
+  const appName = orDash(account.app_name);
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <Pill tone="accent" label={`Номер: ${number}`} title={number} wrap />
+      <Pill tone="yellow" label={`Приложение: ${appName}`} title={appName} wrap />
+    </div>
+  );
+}
+
+/**
+ * Пилюля команды-владельца ящика (ADR-056 §3): команда есть → `ui/Pill tone="green"` с
+ * `team.name`; `team === null` → `tone="neutral"` «Команды нет» (та же строка, что в SMS).
+ */
+function MailTeamPill({ account }: { account: MailAccount }) {
+  const team = account.team;
+  return team ? (
+    <Pill tone="green" label={team.name} title={team.name} />
+  ) : (
+    <Pill tone="neutral" label={T.teamNone} />
+  );
+}
+
+/** Строка «Получено на: {email}» (ADR-056: `display_name` ОТМЕНЁН — он дублировал бы пилюли). */
+function ReceivedOn({ email }: { email: string }) {
+  return (
+    <p className="break-words text-[12px] text-text-secondary">
+      {T.receivedOn} <span className="break-all font-mono text-text-primary">{email}</span>
+    </p>
+  );
+}
 
 /**
  * Фазы экрана Mini App: loading (SSO) · success · not_provisioned (403) ·
@@ -256,7 +317,16 @@ function TgButton({ children, onClick }: { children: ReactNode; onClick: () => v
  * `useState`, НЕ роутинг). Курсорная догрузка через IntersectionObserver (без кнопки).
  */
 function AuthorizedView({ bodyTheme }: { bodyTheme: Theme }) {
-  const messages = useMailMiniAppFeed(true);
+  // Фильтр «Команда» (ADR-055 §6, единое правило пяти экранов): опции ТОЛЬКО из
+  // `GET /api/auth/me` под SSO-токеном Mini App (`GET /api/teams` оттуда ЗАПРЕЩЁН), рендер —
+  // при ≥ 2 доступных вариантах канала (порог тот же, что в вебе). Выбор → серверные
+  // `team_id`/`no_team` (сброс пагинации). Фильтров по почте и «Непрочитанные» в Mini App нет.
+  const [teamFilter, setTeamFilter] = useState('');
+  const meQuery = useMailMiniAppMe(true);
+  const mailScope = channelScopeFromMe(meQuery.data, 'mail');
+  const showTeamFilter = shouldRenderTeamFilter(mailScope);
+
+  const messages = useMailMiniAppFeed(true, teamFilterParams(teamFilter));
   const [selected, setSelected] = useState<MailMessage | null>(null);
   const { mutate: markRead } = useMarkMailMiniAppRead();
 
@@ -293,6 +363,14 @@ function AuthorizedView({ bodyTheme }: { bodyTheme: Theme }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2.5">
+        {showTeamFilter && (
+          <Select
+            aria-label={T.teamFilterLabel}
+            options={teamFilterOptions(mailScope)}
+            value={teamFilter}
+            onChange={(e) => setTeamFilter(e.target.value)}
+          />
+        )}
         {!messagesForbidden && messages.phase === 'loading' && <SectionLoading />}
         {!messagesForbidden && messages.phase === 'error' && (
           <SectionError onRetry={messages.reload} />
@@ -340,7 +418,6 @@ function MailMiniAppCard({
   message: MailMessage;
   onOpen: (message: MailMessage) => void;
 }) {
-  const accountLabel = message.mail_account.display_name || message.mail_account.email;
   const subject = message.subject ?? T.subjectEmpty;
   const open = () => onOpen(message);
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -357,6 +434,7 @@ function MailMiniAppCard({
       onKeyDown={onKeyDown}
       className="flex cursor-pointer flex-col gap-1.5 rounded-card border border-border-subtle bg-surface-1 p-4 text-left transition-colors hover:border-border-strong focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
     >
+      {/* Строка 1 (ADR-056 §3): отправитель + пилюля команды ящика + относительное время. */}
       <div className="flex items-start justify-between gap-3">
         {message.is_unread && (
           <>
@@ -366,8 +444,11 @@ function MailMiniAppCard({
             <span className="sr-only">{T.unread}</span>
           </>
         )}
-        <span className="min-w-0 flex-1 break-words text-sm font-semibold text-text-primary">
-          {message.from_name || message.from_addr}
+        <span className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+          <span className="min-w-0 break-words text-sm font-semibold text-text-primary">
+            {message.from_name || message.from_addr}
+          </span>
+          <MailTeamPill account={message.mail_account} />
         </span>
         <time dateTime={message.internal_date} className="shrink-0 text-[12px] text-text-tertiary">
           {formatRelativeTime(message.internal_date)}
@@ -388,9 +469,9 @@ function MailMiniAppCard({
         {subject}
       </p>
       <MailTags tags={message.tags} max={4} />
-      <p className="break-words text-[12px] text-text-secondary">
-        Получено на: <span className="text-text-primary">{accountLabel}</span>
-      </p>
+      {/* Ряд пилюль ящика «Номер»/«Приложение» (ADR-056 §3) + «Получено на: {email}». */}
+      <MailboxPills account={message.mail_account} />
+      <ReceivedOn email={message.mail_account.email} />
     </div>
   );
 }
@@ -459,7 +540,6 @@ function MailMiniAppDetail({
   onBack: () => void;
 }) {
   const backRef = useRef<HTMLButtonElement>(null);
-  const { email, display_name: displayName } = message.mail_account;
   const subject = message.subject ?? T.subjectEmpty;
 
   // Фокус на «Назад» при открытии detail — доступность с клавиатуры.
@@ -486,8 +566,12 @@ function MailMiniAppDetail({
         </button>
 
         <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-          <span className="text-sm font-semibold text-text-primary">
-            {message.from_name || message.from_addr}
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="text-sm font-semibold text-text-primary">
+              {message.from_name || message.from_addr}
+            </span>
+            {/* Те же пилюли команды/«Номер»/«Приложение», что в карточке (ADR-056 §3). */}
+            <MailTeamPill account={message.mail_account} />
           </span>
           <time dateTime={message.internal_date} className="text-[12px] text-text-tertiary">
             {absoluteDate(message.internal_date)}
@@ -514,17 +598,18 @@ function MailMiniAppDetail({
           <MailTags tags={message.tags} />
         </div>
 
+        <div className="mt-2">
+          <MailboxPills account={message.mail_account} />
+        </div>
+
         {/*
-          «Получено на: {display_name} <{email}>» — значения видны полностью (значимый контент
-          не обрезаем, CLAUDE.md); длинный адрес переносится (break-words), НЕ truncate. При
-          пустом display_name — только email.
+          «Получено на: {email}» (ADR-056): прежняя строка с `display_name` ОТМЕНЕНА —
+          `display_name` = склейка `number`+`app_name`, и рядом с теми же пилюлями это было бы
+          дублирование. Адрес виден полностью: длинный переносится (break-all), НЕ truncate.
         */}
-        <p className="mt-2 break-words text-[12px] text-text-secondary">
-          Получено на: {displayName && <span className="text-text-primary">{displayName} </span>}
-          <span className="font-mono text-text-secondary">
-            {displayName ? `<${email}>` : email}
-          </span>
-        </p>
+        <div className="mt-2">
+          <ReceivedOn email={message.mail_account.email} />
+        </div>
       </header>
 
       <MailMiniAppBody message={message} bodyTheme={bodyTheme} />

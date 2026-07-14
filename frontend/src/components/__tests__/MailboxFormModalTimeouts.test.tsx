@@ -30,11 +30,14 @@ const spies = vi.hoisted(() => ({ test: vi.fn(), create: vi.fn(), update: vi.fn(
 vi.mock('@/features/auth/hooks', () => ({
   useCan: (page: string, action: string) => page === 'mail' && action === 'create',
   useSeesAllMailTeams: () => true,
+  // Команды канала — из `/api/auth/me` (ADR-055 §6.3), не из `GET /api/teams`.
+  useChannelTeamScope: () => ({
+    teams: [{ id: 'team-3', name: 'Продажи' }],
+    includesUnassigned: false,
+  }),
 }));
 
-vi.mock('@/features/teams/hooks', () => ({
-  useTeams: () => ({ data: { items: [{ id: 'team-3', name: 'Продажи' }] } }),
-}));
+vi.mock('@/features/teams/hooks', () => ({ useTeams: () => ({ data: { items: [] } }) }));
 
 vi.mock('@tanstack/react-query', () => ({ useQuery: () => ({ data: undefined }) }));
 
@@ -111,7 +114,7 @@ async function fillConnection(user: ReturnType<typeof userEvent.setup>) {
   await user.type(screen.getByLabelText('Адрес почты'), 'box@example.com');
   await user.type(screen.getByLabelText('IMAP-хост'), 'imap.example.com');
   await user.type(screen.getByLabelText('SMTP-хост'), 'smtp.example.com');
-  await user.type(screen.getByLabelText('Пароль (IMAP)'), 'app-password');
+  await user.type(screen.getByLabelText('Код приложения'), 'app-password');
 }
 
 describe('MailboxFormModal — прогресс-состояние долгого вызова (ADR-053 §4)', () => {
@@ -213,7 +216,7 @@ describe('MailboxFormModal — причина отказа в форме, а н�
     state.updateError = new ApiError(422, 'mail_imap_failed', 'x');
     render(<MailboxFormModal open onOpenChange={vi.fn()} mode="edit" mailbox={mailbox()} />);
 
-    await user.type(screen.getByLabelText('Пароль (IMAP)'), 'new-app-password');
+    await user.type(screen.getByLabelText('Код приложения'), 'new-app-password');
     await user.click(screen.getByRole('button', { name: 'Сохранить' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(

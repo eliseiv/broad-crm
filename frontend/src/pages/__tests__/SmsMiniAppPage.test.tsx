@@ -1,11 +1,11 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SmsMiniAppPage } from '@/pages/SmsMiniAppPage';
 import { ApiError } from '@/lib/api';
 import { useMiniAppAuthStore } from '@/features/sms/miniAppAuth';
 import { useAuthStore } from '@/store/auth';
-import type { TelegramAuthResponse } from '@/types/api';
+import type { TelegramAuthResponse, MeResponse } from '@/types/api';
 
 /**
  * Интеграционные тесты операторской Mini App (`/tg/sms`, ADR-031, беспарольный
@@ -44,10 +44,24 @@ const hooks = vi.hoisted(() => ({
   messages: null as unknown,
 }));
 
+/**
+ * Ответ `/api/auth/me` под SSO-токеном Mini App — ЕДИНСТВЕННЫЙ источник опций фильтра
+ * «Команда» (ADR-055 §5.1/§6.2: `GET /api/teams` из Mini App ЗАПРЕЩЁН). Управляемый:
+ * тест диктует состав `mail_teams`/`includes_unassigned` и проверяет порог рендера (≥ 2).
+ */
+const me = vi.hoisted(() => ({
+  value: { data: undefined as unknown },
+}));
+
 vi.mock('@/features/sms/miniAppHooks', () => ({
   useMiniAppSmsNumbers: () => hooks.numbers,
   useMiniAppSmsMessages: () => hooks.messages,
+  useSmsMiniAppMe: () => me.value,
 }));
+
+// `GET /api/teams` из Mini App ЗАПРЕЩЁН (ADR-055 §6.2) — спай обязан остаться нулевым.
+const teamsSpy = vi.hoisted(() => vi.fn(() => ({ data: { items: [] } })));
+vi.mock('@/features/teams/hooks', () => ({ useTeams: teamsSpy }));
 
 // Управляемый IntersectionObserver (sentinel-эффект AuthorizedView).
 class MockIntersectionObserver {
@@ -359,5 +373,122 @@ describe('SmsMiniAppPage (ADR-031 беспарольный Telegram-SSO)', () =>
       await screen.findByText('Откройте это приложение по кнопке бота в Telegram'),
     ).toBeInTheDocument();
     expect(authMock.fn).not.toHaveBeenCalled();
+  });
+});
+
+// ============================================================================
+// Mini App `/tg/sms`: фильтр «Команда» — порог 2 (ADR-055 §6.2, экран 5 из пяти)
+// ============================================================================
+
+/** Ответ `/me` под SSO-токеном Mini App — ЕДИНСТВЕННЫЙ источник опций (ADR-055 §5.1/§6.2). */
+function meResponse(over: Partial<MeResponse> = {}): MeResponse {
+  return {
+    username: 'ivan',
+    role: 'Оператор',
+    is_superadmin: false,
+    sees_all_sms_teams: false,
+    sees_all_mail_teams: false,
+    mail_teams: [],
+    sms_teams: [],
+    mail_includes_unassigned: false,
+    sms_includes_unassigned: false,
+    permissions: { sms: ['view'] },
+    ...over,
+  };
+}
+
+const T_SALES = { id: 't1', name: 'Продажи' };
+const T_SUPPORT = { id: 't2', name: 'Поддержка' };
+
+describe('SmsMiniAppPage — фильтр «Команда»: порог 2 (ADR-055 §6.2, экран 5 из пяти)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authMock.fn.mockReset();
+    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
+    tg.webApp = makeWebApp();
+    tg.loadShouldReject = false;
+    hooks.numbers = readyNumbers([]);
+    hooks.messages = readyMessages([]);
+    me.value = { data: undefined };
+    useMiniAppAuthStore.getState().clear();
+    useAuthStore.getState().clearSession();
+    sessionStorage.clear();
+    authMock.fn.mockResolvedValue(makeAuthResponse());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    me.value = { data: undefined };
+  });
+
+  async function renderApp() {
+    render(<SmsMiniAppPage />);
+    await screen.findByRole('tab', { name: 'Сообщения' });
+  }
+
+  it('0 вариантов канала → контрола «Команда» НЕТ вовсе', async () => {
+    me.value = { data: meResponse() };
+    await renderApp();
+
+    expect(screen.queryByLabelText('Команда')).not.toBeInTheDocument();
+  });
+
+  it('1 вариант (одна команда) → контрола НЕТ (фильтровать нечего)', async () => {
+    me.value = { data: meResponse({ sms_teams: [T_SALES] }) };
+    await renderApp();
+
+    expect(screen.queryByLabelText('Команда')).not.toBeInTheDocument();
+  });
+
+  it('2 команды → контрол ЕСТЬ и содержит их', async () => {
+    me.value = { data: meResponse({ sms_teams: [T_SALES, T_SUPPORT] }) };
+    await renderApp();
+
+    const select = screen.getByLabelText('Команда');
+    expect(within(select).getByRole('option', { name: 'Продажи' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Поддержка' })).toBeInTheDocument();
+    expect(within(select).queryByRole('option', { name: 'Без команды' })).not.toBeInTheDocument();
+  });
+
+  it('1 команда + «Без команды» = 2 варианта → контрол ЕСТЬ', async () => {
+    me.value = { data: meResponse({ sms_teams: [T_SALES], sms_includes_unassigned: true }) };
+    await renderApp();
+
+    expect(
+      within(screen.getByLabelText('Команда')).getByRole('option', { name: 'Без команды' }),
+    ).toBeInTheDocument();
+  });
+
+  it('ОБЯЗАТЕЛЬНЫЙ КЕЙС: актор admin-уровня → фильтр рендерится И СОДЕРЖИТ команды', async () => {
+    // Регрессия дефекта редакции 1 ADR-055 (§5.1): при `sees_all → []` фильтр в Mini App был бы
+    // ПУСТЫМ (`GET /api/teams` оттуда запрещён). Пустой контрол (0 команд) = ДЕФЕКТ.
+    me.value = {
+      data: meResponse({
+        sees_all_sms_teams: true,
+        sms_teams: [T_SALES, T_SUPPORT],
+        sms_includes_unassigned: true,
+      }),
+    };
+    await renderApp();
+
+    const select = screen.getByLabelText('Команда');
+    expect(within(select).getByRole('option', { name: 'Продажи' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Поддержка' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Без команды' })).toBeInTheDocument();
+    // `GET /api/teams` из Mini App ЗАПРЕЩЁН — и под admin-уровнем тоже (§6.2/§6.3).
+    expect(teamsSpy).not.toHaveBeenCalled();
+  });
+
+  it('НЕТ ветки «админу показывать всегда»: admin-уровень с 1 вариантом → контрола НЕТ', async () => {
+    me.value = {
+      data: meResponse({
+        sees_all_sms_teams: true,
+        sms_teams: [],
+        sms_includes_unassigned: true,
+      }),
+    };
+    await renderApp();
+
+    expect(screen.queryByLabelText('Команда')).not.toBeInTheDocument();
   });
 });

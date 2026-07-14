@@ -109,6 +109,25 @@ export interface MeResponse {
    * /mail (backend — единственный источник, фронт не дублирует predicate).
    */
   sees_all_mail_teams: boolean;
+  /**
+   * ЭФФЕКТИВНЫЙ scope команд канала «Почты» (04-api.md `MeResponse`, ADR-055 §5.1):
+   * у не-админа — `user_teams ∪ доп-команды` (объединение, НЕ только добавка); у
+   * admin-уровня (`sees_all_mail_teams === true`) — ВСЕ команды системы (`[]` не отдаётся).
+   * ЕДИНСТВЕННЫЙ источник опций команд канала на клиенте (ADR-055 §6.3): фильтр «Команда»
+   * (5 экранов), селектор формы ящика, резолв имени команды, дропдаун переноса.
+   * `GET /api/teams` для этого использовать ЗАПРЕЩЕНО (гейт `teams:view`, у mail-оператора
+   * его нет ⇒ пустой список; в Mini App эндпоинт не берётся вовсе).
+   */
+  mail_teams: TeamRef[];
+  /** То же для канала «СМС» (ADR-055 §5.1). */
+  sms_teams: TeamRef[];
+  /**
+   * Видит ли актор объекты канала БЕЗ команды (`team_id IS NULL`) — ящики/письма
+   * (ADR-055 §3). При `sees_all_mail_teams === true` backend отдаёт `true`.
+   */
+  mail_includes_unassigned: boolean;
+  /** То же для канала «СМС» (номера/сообщения без команды, ADR-055 §3). */
+  sms_includes_unassigned: boolean;
   permissions: PermissionsMap;
 }
 
@@ -245,11 +264,28 @@ export interface AiKeyStatusResponse {
 
 // --- Mail (ADR-044; CRM — система-запись писем/тегов/каталога ящиков) ---
 
-/** Ящик-владелец письма (ADR-044 §2, MailAccountRef). */
+/**
+ * Команда-владелец почтового ящика (04-api.md, схема `MailTeamRef`; ADR-056 §1) —
+ * зеркало `SmsTeamRef`. `null` в `MailAccount.team` — ящик без команды.
+ */
+export interface MailTeamRef {
+  id: string;
+  name: string;
+}
+
+/**
+ * Ящик-владелец письма (ADR-044 §2, `MailAccountRef`; расширен ADR-056 §1 аддитивно).
+ * `number` («Номер»), `app_name` («Приложение») и `team` нужны Mini App почты: имя команды
+ * на клиенте иначе недостижимо (`GET /api/teams` гейтится `teams:view`). `display_name` —
+ * производная склейка `number`+`app_name`, используется десктопом; в Mini App НЕ рендерится.
+ */
 export interface MailAccount {
   id: number;
   email: string;
   display_name: string | null;
+  number: string | null;
+  app_name: string | null;
+  team: MailTeamRef | null;
 }
 
 /** Тег письма (ADR-044 §5, MailTag). `id` — UUID; `color` — HEX для бейджа. */
@@ -820,6 +856,18 @@ export interface UserListItem {
   status: 'pending' | 'active' | 'inactive';
   /** CRM-команды пользователя (может быть пустым) — для группировки списка. */
   teams: TeamRef[];
+  /**
+   * ТОЛЬКО ДОБАВКА канала «Почты» (строки `user_channel_teams`, ADR-055 §5.2) — БЕЗ базовых
+   * `teams`: то, что реально хранится. Эффективный scope канала = `teams ∪ mail_extra_teams`
+   * (его в готовом виде отдаёт `GET /api/auth/me` — имена полей разведены намеренно).
+   */
+  mail_extra_teams: TeamRef[];
+  /** Флаг «Без команды» канала «Почты» (доступ к ящикам с `team_id = null`). */
+  mail_extra_includes_unassigned: boolean;
+  /** ТОЛЬКО ДОБАВКА канала «СМС» (ADR-055 §5.2). */
+  sms_extra_teams: TeamRef[];
+  /** Флаг «Без команды» канала «СМС» (доступ к номерам с `team_id = null`). */
+  sms_extra_includes_unassigned: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -842,6 +890,17 @@ export interface UserCreateRequest {
   password?: string;
   role_id: string;
   team_ids?: string[];
+  /**
+   * ДОПОЛНИТЕЛЬНЫЕ команды канала сверх базового членства (ADR-055 §5.2; default `[]`).
+   * Базовые (`team_ids`) сюда НЕ включаются — пересечение сервис вычитает (это не ошибка).
+   */
+  mail_extra_team_ids?: string[];
+  /** «Без команды» канала «Почты» (default `false`). */
+  mail_extra_includes_unassigned?: boolean;
+  /** ДОПОЛНИТЕЛЬНЫЕ команды канала «СМС» (ADR-055 §5.2; default `[]`). */
+  sms_extra_team_ids?: string[];
+  /** «Без команды» канала «СМС» (default `false`). */
+  sms_extra_includes_unassigned?: boolean;
 }
 
 /**
@@ -857,6 +916,15 @@ export interface UserUpdateRequest {
   is_active?: boolean;
   password?: string;
   team_ids?: string[];
+  /**
+   * Добавка канала «Почты» (ADR-055 §5.2): не передано → не менять; передано → ПОЛНОСТЬЮ
+   * заменяет набор добавок (`[]` → снять все). Пересечение с базовым набором вычитает сервис.
+   */
+  mail_extra_team_ids?: string[];
+  mail_extra_includes_unassigned?: boolean;
+  /** Добавка канала «СМС» (ADR-055 §5.2; те же правила). */
+  sms_extra_team_ids?: string[];
+  sms_extra_includes_unassigned?: boolean;
 }
 
 /**

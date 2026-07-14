@@ -1,5 +1,5 @@
 import { useAuthStore } from '@/store/auth';
-import type { PermissionsMap } from '@/types/api';
+import type { PermissionsMap, TeamRef } from '@/types/api';
 
 /**
  * Тест-хелперы для установки принципала в auth-стор (ADR-021). После ввода RBAC
@@ -23,6 +23,22 @@ export function loginAs(options?: {
    * супер-админ видит все почтовые команды, ограниченная роль — нет.
    */
   seesAllMailTeams?: boolean;
+  /**
+   * ЭФФЕКТИВНЫЙ scope команд канала «Почты» (`MeResponse.mail_teams`, ADR-055 §5.1) —
+   * ЕДИНСТВЕННЫЙ источник опций команд канала на клиенте (§6.3). У admin-уровня backend
+   * кладёт сюда ВСЕ команды системы (`[]` не отдаётся), у не-админа — `user_teams ∪
+   * добавка`. Умолчание `[]` — «команд нет» (порог фильтра §6.2 не выполнен).
+   */
+  mailTeams?: TeamRef[];
+  /** То же для канала «СМС» (`MeResponse.sms_teams`, ADR-055 §5.1). */
+  smsTeams?: TeamRef[];
+  /**
+   * «Без команды» канала «Почты» (`MeResponse.mail_includes_unassigned`, ADR-055 §3).
+   * По умолчанию — `seesAllMailTeams` (backend отдаёт `true` актору admin-уровня).
+   */
+  mailIncludesUnassigned?: boolean;
+  /** «Без команды» канала «СМС» (`MeResponse.sms_includes_unassigned`, ADR-055 §3). */
+  smsIncludesUnassigned?: boolean;
   permissions?: PermissionsMap;
 }): void {
   const {
@@ -31,6 +47,10 @@ export function loginAs(options?: {
     isSuperadmin = true,
     seesAllSmsTeams = isSuperadmin,
     seesAllMailTeams = isSuperadmin,
+    mailTeams = [],
+    smsTeams = [],
+    mailIncludesUnassigned = seesAllMailTeams,
+    smsIncludesUnassigned = seesAllSmsTeams,
     permissions = {},
   } = options ?? {};
   const store = useAuthStore.getState();
@@ -41,6 +61,10 @@ export function loginAs(options?: {
     is_superadmin: isSuperadmin,
     sees_all_sms_teams: seesAllSmsTeams,
     sees_all_mail_teams: seesAllMailTeams,
+    mail_teams: mailTeams,
+    sms_teams: smsTeams,
+    mail_includes_unassigned: mailIncludesUnassigned,
+    sms_includes_unassigned: smsIncludesUnassigned,
     permissions,
   });
 }

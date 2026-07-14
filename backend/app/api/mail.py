@@ -55,6 +55,9 @@ MailAccountIds = Annotated[list[int] | None, Query(alias="mail_account_id")]
 TeamId = Annotated[uuid.UUID | None, Query()]
 IsActive = Annotated[bool | None, Query()]
 Unread = Annotated[bool | None, Query()]
+# Фильтр «Без команды» ленты (ADR-055 §5.3): true → только письма ящиков с
+# `team_id IS NULL`. Взаимоисключающ с `team_id` (оба → 400 validation_error).
+NoTeam = Annotated[bool | None, Query()]
 
 
 # --- Чтение (из БД CRM) -----------------------------------------------------
@@ -69,14 +72,19 @@ async def list_messages(
     limit: Limit = 50,
     mail_account_id: MailAccountIds = None,
     team_id: TeamId = None,
+    no_team: NoTeam = None,
     unread: Unread = None,
 ) -> MailListResponse:
-    """Лента писем из `mail_messages` (компаундный keyset, ADR-044 §2/§7).
+    """Лента писем из `mail_messages` (компаундный keyset, ADR-044 §2/§7, ADR-055 §5.3).
 
     Порядок `internal_date DESC, id DESC`. Фильтры `mail_account_id` (повторяемый),
-    `team_id` и `unread` AND-комбинируемы; для не-админа пересекаются со
-    `MailScope.team_ids` (вне scope → пустая страница, анти-энумерация). `before` —
+    `team_id`/`no_team` и `unread` AND-комбинируемы; для не-админа пересекаются со scope
+    канала — единым предикатом (`team_id ∈ team_ids` OR (`includes_unassigned` AND ящик
+    без команды)); вне scope → пустая страница (анти-энумерация). `before` —
     opaque-курсор пары `(internal_date, id)`; `limit` в диапазоне 1..200.
+
+    `no_team=true` — только письма ящиков **без команды**; отсутствие / `false` → фильтр
+    не применяется. **Взаимоисключающ с `team_id`** (оба → 400 validation_error).
 
     `unread=true` (ADR-050 §2.2) — только непрочитанные текущим принципалом (анти-джойн
     внутри keyset-запроса); отсутствие / `false` → фильтр не применяется. Поле `is_unread`
@@ -89,6 +97,7 @@ async def list_messages(
         limit=limit,
         mail_account_ids=mail_account_id,
         team_id=team_id,
+        no_team=no_team,
         unread=unread,
     )
 
@@ -102,8 +111,9 @@ async def list_mailboxes(
 ) -> MailMailboxesResponse:
     """Список ящиков из каталога CRM `mail_accounts` (ADR-044 §4/§7).
 
-    Не-admin — только ящики своих команд (`team_id ∈ scope.team_ids`, анти-энумерация).
-    `is_active` — доп. фильтр активности.
+    Единый предикат scope (ADR-055 §3): не-admin — ящики своих команд (базовые ∪
+    доп-команды канала) **плюс бесхозные при `mail_includes_unassigned=true`**; вне scope —
+    пусто (анти-энумерация). Admin-уровень — все. `is_active` — доп. фильтр активности.
     """
     return await service.list_mailboxes(scope=scope, is_active=is_active)
 

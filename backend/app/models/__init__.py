@@ -21,6 +21,7 @@ from app.models.sms_phone_number import SmsPhoneNumber
 from app.models.sms_telegram_link import SmsTelegramLink
 from app.models.team import Team, user_teams
 from app.models.user import User
+from app.models.user_channel_team import user_channel_teams
 
 __all__ = [
     "AiKey",
@@ -53,5 +54,6 @@ __all__ = [
     "SmsTelegramLink",
     "Team",
     "User",
+    "user_channel_teams",
     "user_teams",
 ]

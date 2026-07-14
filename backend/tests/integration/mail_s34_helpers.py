@@ -29,6 +29,7 @@ from app.models.mail_user_settings import MailUserSettings
 from app.models.role import Role
 from app.models.team import Team, user_teams
 from app.models.user import User
+from app.models.user_channel_team import user_channel_teams
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import insert
 from sqlalchemy import text as sa_text
@@ -162,6 +163,8 @@ def build_principal(
     is_superadmin: bool = True,
     role: str = "admin",
     permissions: dict[str, list[str]] | None = None,
+    mail_includes_unassigned: bool = False,
+    sms_includes_unassigned: bool = False,
 ) -> Any:
     """Строит `Principal` с идентичностью (`user_id` не-опционален — ADR-051 §1.2).
 
@@ -183,6 +186,8 @@ def build_principal(
         permissions=full_catalog_permissions() if permissions is None else permissions,
         is_superadmin=is_superadmin,
         user_id=user_id,
+        mail_includes_unassigned=mail_includes_unassigned,
+        sms_includes_unassigned=sms_includes_unassigned,
     )
 
 
@@ -303,6 +308,20 @@ async def seed_team(session: AsyncSession, *, name: str | None = None) -> Team:
 
 async def add_membership(session: AsyncSession, user_id: uuid.UUID, team_id: uuid.UUID) -> None:
     await session.execute(insert(user_teams).values(user_id=user_id, team_id=team_id))
+
+
+async def add_extra_team(
+    session: AsyncSession, user_id: uuid.UUID, channel: str, team_id: uuid.UUID
+) -> None:
+    """Строка `user_channel_teams` — ДОП-команда канала (ADR-055 §2.1).
+
+    Хранится только добавка: базовые команды (`user_teams`) сюда не пишутся — инвариант
+    нормализации §2.3 обеспечивают сервисы users/teams. Прямая вставка позволяет тесту
+    воспроизвести и «висящую» добавку, которую этот инвариант обязан снять.
+    """
+    await session.execute(
+        insert(user_channel_teams).values(user_id=user_id, channel=channel, team_id=team_id)
+    )
 
 
 async def seed_account(

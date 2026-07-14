@@ -9,11 +9,11 @@ from typing import Annotated
 
 from fastapi import Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings, get_settings
 from app.db import get_session, get_sessionmaker
+from app.domain.channels import CHANNEL_MAIL, CHANNEL_SMS, Channel
 from app.domain.mail import MailScope
 from app.domain.permissions import full_catalog_permissions, permissions_subset
 from app.domain.sms import SmsScope
@@ -25,7 +25,6 @@ from app.infra.prometheus import get_prometheus_client
 from app.infra.rate_limit import get_login_rate_limiter
 from app.infra.sms_telegram import SmsBotClient
 from app.infra.telegram import TelegramClient
-from app.models.team import user_teams
 from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.backend_repository import BackendRepository
 from app.repositories.mail_account_repository import MailAccountRepository
@@ -34,7 +33,9 @@ from app.repositories.role_repository import RoleRepository
 from app.repositories.server_repository import ServerRepository
 from app.repositories.sms_number_repository import SmsNumberRepository
 from app.repositories.team_repository import TeamRepository
+from app.repositories.user_channel_team_repository import UserChannelTeamRepository
 from app.repositories.user_repository import UserRepository
+from app.schemas.user import TeamRef
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.ai_key_service import AiKeyService
 from app.services.auth_service import AuthService
@@ -89,6 +90,11 @@ class Principal:
     # Нужен для scope видимости SMS/почты, привязки Telegram и личного состояния
     # (05-security.md#расширение-principal, ADR-030 §6, ADR-050/051).
     user_id: uuid.UUID
+    # Флаги «Без команды» по каналам (ADR-055 §2.2/§3) — `users.<channel>_includes_unassigned`.
+    # Загружаются той же строкой пользователя, что и права (лишнего round-trip'а нет);
+    # у супер-админа не используются (`sees_all_teams=True` перекрывает их — §3).
+    mail_includes_unassigned: bool = False
+    sms_includes_unassigned: bool = False
 
 
 async def get_current_principal(
@@ -136,6 +142,8 @@ async def get_current_principal(
         permissions=dict(user.role.permissions),
         is_superadmin=False,
         user_id=user.id,
+        mail_includes_unassigned=user.mail_includes_unassigned,
+        sms_includes_unassigned=user.sms_includes_unassigned,
     )
 
 
@@ -196,11 +204,12 @@ def get_auth_service(session: DbSession, settings: SettingsDep) -> AuthService:
 
 
 def get_user_service(session: DbSession) -> UserService:
-    """Сервис реестра пользователей (require_admin, ADR-021/022)."""
+    """Сервис реестра пользователей (require_admin, ADR-021/022; доп-команды — ADR-055 §5.2)."""
     return UserService(
         users=UserRepository(session),
         roles=RoleRepository(session),
         teams=TeamRepository(session),
+        channels=UserChannelTeamRepository(session),
     )
 
 
@@ -211,12 +220,17 @@ def get_role_service(session: DbSession) -> RoleService:
 
 def get_team_service(session: DbSession) -> TeamService:
     """Сервис реестра CRM-команд (матрица teams:*, ADR-022; number_count/numbers ADR-030;
-    mailbox_count — ADR-048 §1, гейт тот же `teams:view`, MailScope не применяется §4)."""
+    mailbox_count — ADR-048 §1, гейт тот же `teams:view`, MailScope не применяется §4).
+
+    `channels` — нормализация per-channel добавок при правке состава команды (ADR-055
+    §2.3, путь 2): ставший участником теряет эту команду как добавку канала.
+    """
     return TeamService(
         teams=TeamRepository(session),
         users=UserRepository(session),
         numbers=SmsNumberRepository(session),
         mailboxes=MailAccountRepository(session),
+        channels=UserChannelTeamRepository(session),
     )
 
 
@@ -235,18 +249,25 @@ def principal_sees_all_sms_teams(principal: Principal) -> bool:
 async def get_sms_scope(principal: PrincipalDep, session: DbSession) -> SmsScope:
     """Фабрика scope: «видит все команды» ⇔ супер-админ ИЛИ полный каталог прав (ADR-032).
 
-    Предикат — `principal_sees_all_sms_teams` (общий с `GET /api/auth/me`). При полном
-    каталоге прав роль считается admin-уровнем и видит SMS всех команд. Иначе —
-    видимость по командам из `user_teams` (нет команд → пустой набор). Ветка «принципал
-    без `user_id`» снята: её больше не существует (ADR-051 §1.2), а у супер-админа
-    `sees_all_teams=True` — до выборки команд дело не доходит.
+    Предикат — `principal_sees_all_sms_teams` (общий с `GET /api/auth/me`, ADR-055 §3 его
+    НЕ менял). При полном каталоге прав роль считается admin-уровнем и видит SMS всех
+    команд, включая бесхозные ⇒ `includes_unassigned=True` (остальные поля не используются).
+
+    Иначе (ADR-055 §3): `team_ids` = `user_teams` ∪ доп-команды канала `sms` (одним
+    UNION-запросом), `includes_unassigned` = `users.sms_includes_unassigned` (уже загружен
+    в принципал). Нет команд и нет флага → пустой scope (анти-энумерация).
     """
     sees_all_teams = principal_sees_all_sms_teams(principal)
     if sees_all_teams:
-        return SmsScope(sees_all_teams=True, team_ids=frozenset())
-    stmt = select(user_teams.c.team_id).where(user_teams.c.user_id == principal.user_id)
-    result = await session.execute(stmt)
-    return SmsScope(sees_all_teams=False, team_ids=frozenset(result.scalars().all()))
+        return SmsScope(sees_all_teams=True, team_ids=frozenset(), includes_unassigned=True)
+    team_ids = await UserChannelTeamRepository(session).scope_team_ids(
+        principal.user_id, CHANNEL_SMS
+    )
+    return SmsScope(
+        sees_all_teams=False,
+        team_ids=team_ids,
+        includes_unassigned=principal.sms_includes_unassigned,
+    )
 
 
 def principal_sees_all_mail_teams(principal: Principal) -> bool:
@@ -262,19 +283,63 @@ def principal_sees_all_mail_teams(principal: Principal) -> bool:
 
 
 async def get_mail_scope(principal: PrincipalDep, session: DbSession) -> MailScope:
-    """Фабрика scope почты (ADR-044 §7, образец `get_sms_scope`).
+    """Фабрика scope почты (ADR-044 §7 в редакции ADR-055 §3, образец `get_sms_scope`).
 
-    «Видит все команды» ⇔ супер-админ ИЛИ полный каталог прав. Иначе `team_ids` =
-    команды пользователя из `user_teams` (per-mailbox `mail_accounts.team_id`; групп
-    больше нет — ADR-044 §7). Нет команд → пустой набор → пустая видимость
-    (анти-энумерация). Ветка «принципал без `user_id`» снята (ADR-051 §1.2).
+    «Видит все команды» ⇔ супер-админ ИЛИ полный каталог прав (предикат не изменён); такой
+    актор видит и бесхозные ящики ⇒ `includes_unassigned=True`.
+
+    Иначе (ADR-055 §3): `team_ids` = `user_teams` ∪ доп-команды канала `mail` (одним
+    UNION-запросом), `includes_unassigned` = `users.mail_includes_unassigned`. Нет команд и
+    нет флага → пустая видимость (анти-энумерация, выборка не выполняется).
     """
     sees_all_teams = principal_sees_all_mail_teams(principal)
     if sees_all_teams:
-        return MailScope(sees_all_teams=True, team_ids=frozenset())
-    stmt = select(user_teams.c.team_id).where(user_teams.c.user_id == principal.user_id)
-    result = await session.execute(stmt)
-    return MailScope(sees_all_teams=False, team_ids=frozenset(result.scalars().all()))
+        return MailScope(sees_all_teams=True, team_ids=frozenset(), includes_unassigned=True)
+    team_ids = await UserChannelTeamRepository(session).scope_team_ids(
+        principal.user_id, CHANNEL_MAIL
+    )
+    return MailScope(
+        sees_all_teams=False,
+        team_ids=team_ids,
+        includes_unassigned=principal.mail_includes_unassigned,
+    )
+
+
+async def resolve_channel_scope(
+    session: AsyncSession, principal: Principal, channel: Channel
+) -> tuple[list[TeamRef], bool]:
+    """Команды канала + флаг «Без команды» для `GET /api/auth/me` (ADR-055 §5.1).
+
+    Возвращает `(mail_teams|sms_teams, <channel>_includes_unassigned)`:
+
+    - **admin-уровень** (`sees_all_<channel>_teams=true`): **ВСЕ команды системы** (его
+      scope не сужен) и флаг **`true`** (admin видит и бесхозные). `[]` НЕ отдаётся —
+      иначе фильтр «Команда» в Mini App у admin-уровня остался бы без опций (`GET
+      /api/teams` там запрещён, §6.2);
+    - **не-админ:** ЭФФЕКТИВНЫЙ scope канала (`user_teams` ∪ добавка), НЕ только добавка;
+      флаг — из `users.<channel>_includes_unassigned`.
+
+    Сортировка — по `name` (ru, ci): `casefold()` — регистро- и регистр-нечувствительное
+    сравнение, корректное для кириллицы.
+    """
+    sees_all = (
+        principal_sees_all_mail_teams(principal)
+        if channel == CHANNEL_MAIL
+        else principal_sees_all_sms_teams(principal)
+    )
+    includes_unassigned = (
+        principal.mail_includes_unassigned
+        if channel == CHANNEL_MAIL
+        else principal.sms_includes_unassigned
+    )
+    if sees_all:
+        teams = await TeamRepository(session).list_refs()
+        includes_unassigned = True
+    else:
+        teams = await UserChannelTeamRepository(session).effective_teams(principal.user_id, channel)
+    refs = [TeamRef(id=team.id, name=team.name) for team in teams]
+    refs.sort(key=lambda ref: ref.name.casefold())
+    return refs, includes_unassigned
 
 
 def get_sms_message_service(session: DbSession) -> SmsMessageService:

@@ -1,6 +1,7 @@
-import { useEffect } from 'react';
+import { useEffect, useMemo } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { getMe, login, setPassword } from '@/features/auth/api';
+import type { Channel, ChannelTeamScope } from '@/features/auth/channelTeams';
 import { useAuthStore } from '@/store/auth';
 import type { LoginRequest, LoginSuccessResponse, SetPasswordRequest } from '@/types/api';
 
@@ -107,6 +108,29 @@ export function useSeesAllSmsTeams(): boolean {
  */
 export function useSeesAllMailTeams(): boolean {
   return useAuthStore((s) => s.seesAllMailTeams);
+}
+
+/**
+ * Эффективный scope команд КАНАЛА текущего актора (`me.mail_teams`/`me.sms_teams` +
+ * `me.<channel>_includes_unassigned`, ADR-055 §5.1) — ЕДИНСТВЕННЫЙ источник опций команд
+ * канала в UI (§6.3): фильтр «Команда» (5 экранов), селектор «Команда» формы ящика, резолв
+ * имени команды на вкладке «Почты», дропдаун переноса ящика, `Select` переноса номера.
+ * `GET /api/teams` для этих контролов НЕ используется (гейт `teams:view` — у mail/sms-оператора
+ * его нет ⇒ пустой список; в Mini App эндпоинт запрещён). Правило рендера/опции — хелперы
+ * `features/auth/channelTeams`.
+ */
+export function useChannelTeamScope(channel: Channel): ChannelTeamScope {
+  const mailTeams = useAuthStore((s) => s.mailTeams);
+  const smsTeams = useAuthStore((s) => s.smsTeams);
+  const mailIncludesUnassigned = useAuthStore((s) => s.mailIncludesUnassigned);
+  const smsIncludesUnassigned = useAuthStore((s) => s.smsIncludesUnassigned);
+  return useMemo(
+    () =>
+      channel === 'mail'
+        ? { teams: mailTeams, includesUnassigned: mailIncludesUnassigned }
+        : { teams: smsTeams, includesUnassigned: smsIncludesUnassigned },
+    [channel, mailTeams, smsTeams, mailIncludesUnassigned, smsIncludesUnassigned],
+  );
 }
 
 /**

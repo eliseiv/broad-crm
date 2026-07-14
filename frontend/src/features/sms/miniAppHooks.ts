@@ -1,5 +1,6 @@
 import { useMemo } from 'react';
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
+import { getMe } from '@/features/auth/api';
 import { listSmsMessages, listSmsNumbers, SMS_PAGE_LIMIT } from '@/features/sms/api';
 import { getMiniAppToken } from '@/features/sms/miniAppAuth';
 import type { SmsMessage } from '@/types/api';
@@ -11,6 +12,21 @@ import type { SmsMessage } from '@/types/api';
  * (`getMiniAppToken()`), не задевая админский auth-стор. Отдельные queryKey
  * (`sms-miniapp`) — чтобы кэш не пересекался с админской страницей «СМС».
  */
+
+/**
+ * `GET /api/auth/me` под SSO-токеном Mini App — ЕДИНСТВЕННЫЙ источник опций фильтра
+ * «Команда» в `/tg/sms` (ADR-055 §6.2/§6.3): `sms_teams` + `sms_includes_unassigned`.
+ * `GET /api/teams` из Mini App ЗАПРЕЩЁН. Ошибка `/me` ленту не ломает — фильтр не рендерится.
+ */
+export function useSmsMiniAppMe(enabled: boolean) {
+  return useQuery({
+    queryKey: ['sms-miniapp', 'me'] as const,
+    queryFn: ({ signal }) => getMe(signal, getMiniAppToken() ?? undefined, true),
+    enabled,
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+}
 
 /** GET /api/sms/numbers под SSO-токеном Mini App. Без `sms:view` сервер вернёт 403. */
 export function useMiniAppSmsNumbers(enabled: boolean) {
@@ -26,6 +42,12 @@ export function useMiniAppSmsNumbers(enabled: boolean) {
 /** Фаза ленты Mini App: loading — начальная загрузка; ready — получена; error — прочее. */
 export type MiniAppFeedPhase = 'loading' | 'ready' | 'error';
 
+/** Серверный фильтр «Команда» ленты Mini App (ADR-055 §6): `teamId`/`noTeam` взаимоисключающи. */
+export interface MiniAppSmsFeedFilter {
+  teamId?: string;
+  noTeam?: boolean;
+}
+
 export interface MiniAppMessagesResult {
   messages: SmsMessage[];
   phase: MiniAppFeedPhase;
@@ -40,12 +62,22 @@ export interface MiniAppMessagesResult {
  * Бесконечная лента SMS оператора (newest-first, keyset-курсор) под SSO-токеном
  * Mini App. Аналог `useSmsMessages`, но с изолированным токеном и своим queryKey.
  */
-export function useMiniAppSmsMessages(enabled: boolean): MiniAppMessagesResult {
+export function useMiniAppSmsMessages(
+  enabled: boolean,
+  filter: MiniAppSmsFeedFilter = {},
+): MiniAppMessagesResult {
+  const { teamId, noTeam } = filter;
   const query = useInfiniteQuery({
-    queryKey: ['sms-miniapp', 'messages'] as const,
+    // Фильтр «Команда» — СЕРВЕРНЫЙ (ADR-055 §6): входит в queryKey ⇒ смена значения
+    // ре-запрашивает ленту и сбрасывает пагинацию.
+    queryKey: [
+      'sms-miniapp',
+      'messages',
+      { team_id: teamId ?? null, no_team: noTeam ?? false },
+    ] as const,
     queryFn: ({ pageParam, signal }) =>
       listSmsMessages(
-        { cursor: pageParam, limit: SMS_PAGE_LIMIT },
+        { teamId, noTeam, cursor: pageParam, limit: SMS_PAGE_LIMIT },
         signal,
         getMiniAppToken() ?? undefined,
       ),

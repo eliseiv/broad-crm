@@ -44,6 +44,9 @@ DeleteDep = Annotated[Principal, Depends(require("sms", "delete"))]
 
 NumberIdFilter = Annotated[int | None, Query()]
 TeamIdFilter = Annotated[uuid.UUID | None, Query()]
+# Фильтр «Без команды» ленты (ADR-055 §5.3): true → только SMS номеров с
+# `team_id IS NULL`. Взаимоисключающ с `team_id` (оба → 400 validation_error).
+NoTeamFilter = Annotated[bool | None, Query()]
 Cursor = Annotated[str | None, Query()]
 Limit = Annotated[int, Query()]
 
@@ -55,18 +58,21 @@ async def list_messages(
     _p: ViewDep,
     number_id: NumberIdFilter = None,
     team_id: TeamIdFilter = None,
+    no_team: NoTeamFilter = None,
     cursor: Cursor = None,
     limit: Limit = 50,
 ) -> SmsMessagesResponse:
     """Лента входящих SMS (newest-first, keyset-курсор). Фильтры комбинируемы (AND).
 
-    `number_id`/`team_id` вне scope → пустая страница (анти-энумерация). Битый
-    `cursor` → 400 invalid_cursor; `limit` вне [1,100] → 400 invalid_limit.
+    `number_id`/`team_id`/`no_team` вне scope → пустая страница (анти-энумерация).
+    `team_id` и `no_team=true` одновременно → 400 validation_error. Битый `cursor` →
+    400 invalid_cursor; `limit` вне [1,100] → 400 invalid_limit.
     """
     return await service.list_messages(
         scope=scope,
         number_id=number_id,
         team_id=team_id,
+        no_team=no_team,
         cursor=cursor,
         limit=limit,
     )
@@ -78,7 +84,11 @@ async def list_numbers(
     scope: SmsScopeDep,
     _p: ViewDep,
 ) -> SmsNumbersResponse:
-    """Список номеров (супер-админ — все, включая unassigned; не-админ — своих команд)."""
+    """Список номеров по единому предикату scope (ADR-055 §3).
+
+    Admin-уровень — все, включая бесхозные. Не-админ — номера команд SMS-scope (базовые ∪
+    доп-команды) **плюс бесхозные при `sms_includes_unassigned=true`**.
+    """
     return await service.list_numbers(scope)
 
 
@@ -108,7 +118,18 @@ async def transfer_number(
     scope: SmsScopeDep,
     _p: TransferDep,
 ) -> SmsNumberItem:
-    """Назначить/снять команду у номера. Вне scope → 403; чужой team_id → 404."""
+    """Назначить/переназначить/снять команду (ADR-055 §3.2 — три проверки, порядок нормативен).
+
+    1. Сам номер вне предиката scope → 403 forbidden (бесхозный номер доступен носителю
+       `sms_includes_unassigned`).
+    2. `team_id=null` (снять команду): admin-уровень — всегда; не-админ — только при
+       `sms_includes_unassigned=true`, иначе 403 forbidden.
+    3. `team_id=<uuid>`: не-админ — целевая команда вне scope, **в т.ч. несуществующая**,
+       → 403 forbidden (проверка scope идёт первой — анти-энумерация); admin-уровень —
+       несуществующая команда → 404 sms_team_not_found.
+
+    Также: номера нет → 404 sms_number_not_found.
+    """
     return await service.transfer_number(scope, number_id, payload)
 
 

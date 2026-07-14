@@ -1,9 +1,9 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MailMiniAppPage } from '@/pages/MailMiniAppPage';
 import { ApiError } from '@/lib/api';
 import { useMailMiniAppAuthStore } from '@/features/mail/miniAppAuth';
-import type { MailMessage } from '@/types/api';
+import type { MailMessage, MeResponse } from '@/types/api';
 
 // Telegram SDK и SSO-эндпоинт управляются из теста — эмулируем вход/ошибки без сети/Telegram.
 const tg = vi.hoisted(() => ({ loadTelegramSdk: vi.fn(), applyTelegramTheme: vi.fn() }));
@@ -27,10 +27,25 @@ const feed = vi.hoisted(() => ({
 // Пометка «прочитано ПРИ ОТКРЫТИИ» в Mini App (ADR-050 §2.6) — тот же `POST …/read`, что и в
 // вебе (Mini App несёт обычный CRM-JWT с `uid`, спец-эндпоинта нет). Спаим факт и аргумент.
 const markReadSpy = vi.hoisted(() => vi.fn());
+
+/**
+ * Ответ `/api/auth/me` под SSO-токеном Mini App — ЕДИНСТВЕННЫЙ источник опций фильтра
+ * «Команда» (ADR-055 §5.1/§6.2: `GET /api/teams` из Mini App ЗАПРЕЩЁН). Управляемый:
+ * тест диктует состав `mail_teams`/`includes_unassigned` и проверяет порог рендера (≥ 2).
+ */
+const me = vi.hoisted(() => ({
+  value: { data: undefined as unknown },
+}));
+
 vi.mock('@/features/mail/miniAppHooks', () => ({
   useMailMiniAppFeed: () => feed.value,
+  useMailMiniAppMe: () => me.value,
   useMarkMailMiniAppRead: () => ({ mutate: markReadSpy, isPending: false }),
 }));
+
+// `GET /api/teams` из Mini App ЗАПРЕЩЁН (ADR-055 §6.2) — спай обязан остаться нулевым.
+const teamsSpy = vi.hoisted(() => vi.fn(() => ({ data: { items: [] } })));
+vi.mock('@/features/teams/hooks', () => ({ useTeams: teamsSpy }));
 
 /** Минимальный Telegram WebApp с непустым initData (успешный контекст запуска из бота). */
 function webApp(initData = 'tg-init-data') {
@@ -63,7 +78,15 @@ function mailMessage(overrides: Partial<MailMessage> = {}): MailMessage {
     from_name: 'Alice Sender',
     to_addrs: 'ops@team.com',
     cc_addrs: null,
-    mail_account: { id: 7, email: 'ops@team.com', display_name: 'Операторы' },
+    // ADR-056 §1/§3: Mini App рендерит «Номер»/«Приложение»/команду из этих полей.
+    mail_account: {
+      id: 7,
+      email: 'ops@team.com',
+      display_name: 'Операторы',
+      number: '5108',
+      app_name: 'Klyro Forge',
+      team: { id: 'team-1', name: 'Команда Ивана' },
+    },
     body_text: 'Тело письма в виде простого текста.',
     body_html: '<p>Тело письма в <b>HTML</b>.</p>',
     body_present: true,
@@ -230,13 +253,16 @@ describe('MailMiniAppPage detail (read-only, ADR-044 поправка 2026-07-10
 
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByRole('button', { name: 'Назад' })).toBeInTheDocument();
-    // Шапка: отправитель, тема, «Получено на: {display_name} <{email}>», дата ru-RU.
+    // Шапка: отправитель, тема, «Получено на: {email}», дата ru-RU.
     expect(dialog).toHaveTextContent('Alice Sender');
     expect(dialog).toHaveTextContent('alice@example.com');
     expect(dialog).toHaveTextContent('Квартальный отчёт');
     expect(dialog).toHaveTextContent('Получено на:');
-    expect(dialog).toHaveTextContent('Операторы');
-    expect(dialog).toHaveTextContent('<ops@team.com>');
+    expect(dialog).toHaveTextContent('ops@team.com');
+    // ADR-056 (ADR-reversal): строка «Получено на: {display_name} <{email}>» ОТМЕНЕНА —
+    // `display_name` дублировал бы пилюли «Номер»/«Приложение», а угловые скобки ушли.
+    expect(dialog).not.toHaveTextContent('<ops@team.com>');
+    expect(dialog).not.toHaveTextContent('Получено на: Операторы');
     // Дата рендерится в <time> с точным dateTime = internal_date письма.
     const time = within(dialog).getByText((_t, el) => el?.tagName === 'TIME');
     expect(time).toHaveAttribute('datetime', message.internal_date);
@@ -347,7 +373,14 @@ describe('MailMiniAppPage detail (read-only, ADR-044 поправка 2026-07-10
 
   it('empty display_name renders «Получено на:» with the bare email (no angle brackets)', async () => {
     const { card } = await renderWithMessage({
-      mail_account: { id: 9, email: 'raw@team.com', display_name: null },
+      mail_account: {
+        id: 9,
+        email: 'raw@team.com',
+        display_name: null,
+        number: null,
+        app_name: null,
+        team: null,
+      },
     });
 
     fireEvent.click(card);
@@ -429,3 +462,178 @@ describe('MailMiniAppPage — прочитанность (ADR-050 §2.6/§2.8)',
     ).not.toBeInTheDocument();
   });
 });
+
+// ============================================================================
+// Mini App `/tg/mail`: фильтр «Команда» (экран 4 из пяти) + контекст ящика (ADR-056)
+// ============================================================================
+
+/** Ответ `/me` для Mini App — ЕДИНСТВЕННЫЙ источник опций фильтра (ADR-055 §5.1/§6.2). */
+function meResponse(over: Partial<MeResponse> = {}): MeResponse {
+  return {
+    username: 'ivan',
+    role: 'Оператор',
+    is_superadmin: false,
+    sees_all_sms_teams: false,
+    sees_all_mail_teams: false,
+    mail_teams: [],
+    sms_teams: [],
+    mail_includes_unassigned: false,
+    sms_includes_unassigned: false,
+    permissions: { mail: ['view'] },
+    ...over,
+  };
+}
+
+const SALES = { id: 't1', name: 'Продажи' };
+const SUPPORT = { id: 't2', name: 'Поддержка' };
+
+describe('MailMiniAppPage — фильтр «Команда»: порог 2 (ADR-055 §6.2, экран 4 из пяти)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    me.value = { data: undefined };
+    setSuccessWithMessages([]);
+  });
+
+  afterEach(() => {
+    me.value = { data: undefined };
+  });
+
+  async function renderApp() {
+    render(<MailMiniAppPage />);
+    await screen.findByText('Писем пока нет');
+  }
+
+  it('0 вариантов канала → контрола «Команда» НЕТ вовсе', async () => {
+    me.value = { data: meResponse() };
+    await renderApp();
+
+    expect(screen.queryByLabelText('Команда')).not.toBeInTheDocument();
+  });
+
+  it('1 вариант (одна команда, без «Без команды») → контрола НЕТ', async () => {
+    me.value = { data: meResponse({ mail_teams: [SALES] }) };
+    await renderApp();
+
+    expect(screen.queryByLabelText('Команда')).not.toBeInTheDocument();
+  });
+
+  it('2 команды → контрол ЕСТЬ и содержит их (порог §6.2 выполнен)', async () => {
+    me.value = { data: meResponse({ mail_teams: [SALES, SUPPORT] }) };
+    await renderApp();
+
+    const select = screen.getByLabelText('Команда');
+    expect(within(select).getByRole('option', { name: 'Продажи' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Поддержка' })).toBeInTheDocument();
+    // «Без команды» — только под флагом (вариант, который нельзя выбрать, не предлагается).
+    expect(within(select).queryByRole('option', { name: 'Без команды' })).not.toBeInTheDocument();
+  });
+
+  it('1 команда + «Без команды» = 2 варианта → контрол ЕСТЬ', async () => {
+    me.value = { data: meResponse({ mail_teams: [SALES], mail_includes_unassigned: true }) };
+    await renderApp();
+
+    const select = screen.getByLabelText('Команда');
+    expect(within(select).getByRole('option', { name: 'Без команды' })).toBeInTheDocument();
+  });
+
+  it('ОБЯЗАТЕЛЬНЫЙ КЕЙС: актор admin-уровня → фильтр рендерится И СОДЕРЖИТ команды', async () => {
+    // Регрессия дефекта редакции 1 ADR-055 (§5.1): при `sees_all → []` фильтр в Mini App
+    // рендерился бы ПУСТЫМ (`GET /api/teams` оттуда запрещён) — «мусорный контрол».
+    // Backend обязан класть в `mail_teams` ВСЕ команды системы. Пустой контрол = ДЕФЕКТ.
+    me.value = {
+      data: meResponse({
+        sees_all_mail_teams: true,
+        mail_teams: [SALES, SUPPORT],
+        mail_includes_unassigned: true,
+      }),
+    };
+    await renderApp();
+
+    const select = screen.getByLabelText('Команда');
+    expect(select).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Продажи' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Поддержка' })).toBeInTheDocument();
+    expect(within(select).getByRole('option', { name: 'Без команды' })).toBeInTheDocument();
+    // `GET /api/teams` из Mini App ЗАПРЕЩЁН — и под admin-уровнем тоже (§6.2/§6.3).
+    expect(teamsSpy).not.toHaveBeenCalled();
+  });
+
+  it('НЕТ ветки «админу показывать всегда»: admin-уровень с 1 вариантом → контрола НЕТ', async () => {
+    // При НУЛЕ команд в системе форсированный рендер дал бы контрол с единственной опцией
+    // «Без команды» — снова мусорный контрол (§6.2, правка редакции 2).
+    me.value = {
+      data: meResponse({
+        sees_all_mail_teams: true,
+        mail_teams: [],
+        mail_includes_unassigned: true,
+      }),
+    };
+    await renderApp();
+
+    expect(screen.queryByLabelText('Команда')).not.toBeInTheDocument();
+  });
+});
+
+describe('MailMiniAppPage — контекст ящика в письме (ADR-056 §3)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    me.value = { data: meResponse() };
+  });
+
+  afterEach(() => {
+    me.value = { data: undefined };
+  });
+
+  it('карточка ленты несёт пилюли «Номер»/«Приложение» и пилюлю команды', async () => {
+    setSuccessWithMessages([mailMessage()]);
+    render(<MailMiniAppPage />);
+
+    const card = await screen.findByRole('button', { name: /Alice Sender/ });
+    expect(within(card).getByText('Номер: 5108')).toBeInTheDocument();
+    expect(within(card).getByText('Приложение: Klyro Forge')).toBeInTheDocument();
+    expect(within(card).getByText('Команда Ивана')).toBeInTheDocument();
+  });
+
+  it('ящик БЕЗ команды → пилюля «Команды нет» (строка та же, что в SMS)', async () => {
+    setSuccessWithMessages([mailMessage({ mail_account: ORPHAN_ACCOUNT })]);
+    render(<MailMiniAppPage />);
+
+    const card = await screen.findByRole('button', { name: /Alice Sender/ });
+    expect(within(card).getByText('Команды нет')).toBeInTheDocument();
+  });
+
+  it('пустые `number`/`app_name` → `-`, но ПИЛЮЛЯ ВСЁ РАВНО ЕСТЬ (строка не «прыгает»)', async () => {
+    setSuccessWithMessages([mailMessage({ mail_account: ORPHAN_ACCOUNT })]);
+    render(<MailMiniAppPage />);
+
+    const card = await screen.findByRole('button', { name: /Alice Sender/ });
+    expect(within(card).getByText('Номер: -')).toBeInTheDocument();
+    expect(within(card).getByText('Приложение: -')).toBeInTheDocument();
+  });
+
+  it('деталь письма несёт ТЕ ЖЕ пилюли + «Получено на: {email}» (без display_name)', async () => {
+    setSuccessWithMessages([mailMessage()]);
+    render(<MailMiniAppPage />);
+    const card = await screen.findByRole('button', { name: /Alice Sender/ });
+
+    fireEvent.click(card);
+    const dialog = await screen.findByRole('dialog');
+
+    expect(within(dialog).getByText('Номер: 5108')).toBeInTheDocument();
+    expect(within(dialog).getByText('Приложение: Klyro Forge')).toBeInTheDocument();
+    expect(within(dialog).getByText('Команда Ивана')).toBeInTheDocument();
+    expect(dialog).toHaveTextContent('Получено на:');
+    // ADR-056 (ADR-reversal): `display_name` в этой строке ОТМЕНЁН — дублировал бы пилюли.
+    expect(dialog).not.toHaveTextContent('Получено на: Операторы');
+  });
+});
+
+/** Ящик без команды и без «Номера»/«Приложения» — граничный случай пилюль (ADR-056 §3). */
+const ORPHAN_ACCOUNT = {
+  id: 9,
+  email: 'raw@team.com',
+  display_name: null,
+  number: null,
+  app_name: null,
+  team: null,
+};

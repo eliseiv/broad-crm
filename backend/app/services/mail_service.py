@@ -101,6 +101,7 @@ from app.schemas.mail import (
     MailTagRuleType,
     MailTagsResponse,
     MailTagUpdateRequest,
+    MailTeamRef,
     TeamMailboxesResponse,
     TeamMailboxItem,
 )
@@ -222,15 +223,21 @@ class MailService:
         limit: int,
         mail_account_ids: list[int] | None,
         team_id: uuid.UUID | None,
+        no_team: bool | None = None,
         unread: bool | None = None,
     ) -> MailListResponse:
-        """Лента писем из `mail_messages` (компаундный keyset, ADR-044 §2/§7).
+        """Лента писем из `mail_messages` (компаундный keyset, ADR-044 §2/§7, ADR-055 §3).
 
         Порядок `internal_date DESC, id DESC`. Фильтры `mail_account_id` (повторяемый),
-        `team_id` и `unread` AND-комбинируемы, пересекаются со scope команд пользователя.
-        Вне scope (не-admin с пустым `team_ids` / несуществующий фильтр) → пустая страница
+        `team_id`/`no_team` и `unread` AND-комбинируемы, пересекаются со scope канала.
+        Вне scope (не-admin с пустым scope / несуществующий фильтр) → пустая страница
         без выборки писем (анти-энумерация). `before` — opaque-курсор пары `(internal_date,
         id)`; битый → 400 invalid_cursor. `limit` вне [1..200] → 400 invalid_limit.
+
+        `no_team=true` (ADR-055 §5.3) — только письма ящиков **без команды**; отсутствие /
+        `false` → фильтр НЕ применяется. **Взаимоисключающ с `team_id`**: оба заданы →
+        400 validation_error. У не-админа **без** `includes_unassigned` пересечение со
+        scope пусто → пустая страница (анти-энумерация, не 403).
 
         `unread=true` (ADR-050 §2.2) — только непрочитанные ТЕКУЩИМ принципалом; фильтр
         уходит анти-джойном ВНУТРЬ keyset-запроса. Отсутствие / `false` → фильтр не
@@ -239,6 +246,11 @@ class MailService:
         (строка-якорь), поэтому `unread=true` отдаёт обычную страницу непрочитанных, а не
         пустую.
         """
+        if team_id is not None and no_team:
+            raise validation_error(
+                "Фильтры «Команда» и «Без команды» взаимоисключающи",
+                details=[{"field": "no_team", "message": "Задан одновременно с team_id"}],
+            )
         if limit < _LIMIT_MIN or limit > _LIMIT_MAX:
             raise invalid_limit()
         cursor: tuple[datetime, int] | None = None
@@ -249,7 +261,10 @@ class MailService:
                 raise invalid_cursor() from exc
 
         visible = await self._resolve_visible_accounts(
-            scope=scope, mail_account_ids=mail_account_ids, team_id=team_id
+            scope=scope,
+            mail_account_ids=mail_account_ids,
+            team_id=team_id,
+            no_team=bool(no_team),
         )
         if visible is not None and not visible:
             return MailListResponse(messages=[], next_cursor=None)
@@ -327,24 +342,34 @@ class MailService:
         scope: MailScope,
         mail_account_ids: list[int] | None,
         team_id: uuid.UUID | None,
+        no_team: bool = False,
     ) -> list[int] | None:
         """Множество видимых `mail_account_id` (AND-пересечение scope + фильтров).
 
-        `None` — без ограничения (admin без фильтров → все письма). `[]` — пустой
-        результат (вне scope / несуществующий фильтр — анти-энумерация).
+        Scope не-админа — **единый предикат** ADR-055 §3 (`team_id ∈ team_ids` OR
+        (`includes_unassigned` AND `team_id IS NULL`)). `None` — без ограничения (admin
+        без фильтров → все письма). `[]` — пустой результат (вне scope / несуществующий
+        фильтр — анти-энумерация).
         """
         constraints: list[set[int]] = []
 
         if not scope.sees_all_teams:
-            if not scope.team_ids:
+            if scope.is_empty:
                 return []
-            constraints.append(await self._accounts.ids_by_teams(scope.team_ids))
+            constraints.append(
+                await self._accounts.ids_in_scope(
+                    scope.team_ids, includes_unassigned=scope.includes_unassigned
+                )
+            )
 
         if mail_account_ids is not None:
             constraints.append(set(mail_account_ids))
 
         if team_id is not None:
             constraints.append(await self._accounts.ids_by_team(team_id))
+
+        if no_team:
+            constraints.append(await self._accounts.ids_unassigned())
 
         if not constraints:
             return None
@@ -362,22 +387,35 @@ class MailService:
         (`message_id = ANY(:page_ids)`), а НЕ JOIN в keyset-запрос ленты и не N+1.
         Значение ЛИЧНОЕ для любого принципала, включая супер-админа (ADR-051 §2, отменяет
         ADR-050 §2.5: прежнее «всегда false» снято).
+
+        Контекст ящика (ADR-056 §1): `number`/`app_name`/`team` приходят ТЕМ ЖЕ батчем
+        (`get_many_with_team` — LEFT JOIN `teams`), **N+1 запрещён**: ни одного запроса
+        на письмо. `team=null` — ящик без команды (LEFT, не INNER: иначе письма бесхозных
+        ящиков молча пропали бы из ленты).
         """
         if not rows:
             return []
         account_ids = {row.mail_account_id for row in rows}
         message_ids = [row.id for row in rows]
-        accounts = await self._accounts.get_many(account_ids)
+        accounts = await self._accounts.get_many_with_team(account_ids)
         tags_by_message = await self._tags.tags_for_messages(message_ids)
         read_ids = await self._reads.read_ids(user_id=user_id, message_ids=message_ids)
 
         messages: list[MailMessage] = []
         for row in rows:
-            account = accounts.get(row.mail_account_id)
+            entry = accounts.get(row.mail_account_id)
+            account = entry[0] if entry is not None else None
+            team_name = entry[1] if entry is not None else None
+            team_ref: MailTeamRef | None = None
+            if account is not None and account.team_id is not None and team_name is not None:
+                team_ref = MailTeamRef(id=account.team_id, name=team_name)
             account_ref = MailAccountRef(
                 id=row.mail_account_id,
                 email=account.email if account is not None else "",
                 display_name=account.display_name if account is not None else None,
+                number=account.number if account is not None else None,
+                app_name=account.app_name if account is not None else None,
+                team=team_ref,
             )
             tags = [
                 MailTag(id=tag.id, name=tag.name, color=tag.color)
@@ -408,13 +446,21 @@ class MailService:
     async def list_mailboxes(
         self, *, scope: MailScope, is_active: bool | None
     ) -> MailMailboxesResponse:
-        """Список ящиков из каталога CRM `mail_accounts` (ADR-044 §4/§7).
+        """Список ящиков из каталога CRM `mail_accounts` (ADR-044 §4/§7, ADR-055 §3/§5.3).
 
-        Не-admin — только ящики своих команд (`team_id ∈ scope.team_ids`; пустой набор →
-        пустой список, анти-энумерация). Admin — все ящики. `is_active` — доп. фильтр.
+        Контракт эндпоинта не меняется (единственный query-параметр — `is_active`), но
+        **результат** обязан следовать единому предикату scope: ящики команд scope
+        (базовые ∪ доп-команды) **плюс бесхозные при `includes_unassigned=true`** — иначе
+        клиентский фильтр «Без команды» вкладки «Почты» показал бы пустоту у пользователя,
+        который эти ящики вправе править/синкать/удалять. Пустой scope → пустой список
+        (анти-энумерация). Admin-уровень — все ящики.
         """
         team_ids = None if scope.sees_all_teams else scope.team_ids
-        accounts = await self._accounts.list_scoped(team_ids=team_ids, is_active=is_active)
+        accounts = await self._accounts.list_scoped(
+            team_ids=team_ids,
+            includes_unassigned=scope.includes_unassigned,
+            is_active=is_active,
+        )
         return MailMailboxesResponse(mailboxes=[self._to_mailbox(a) for a in accounts])
 
     async def list_team_mailboxes(self, team_id: uuid.UUID) -> TeamMailboxesResponse:
@@ -869,11 +915,14 @@ class MailService:
     # --- Scope / общие хелперы ---------------------------------------------
 
     async def _ensure_team_writable(self, scope: MailScope, team_id: uuid.UUID | None) -> None:
-        """Авторизация привязки создаваемого ящика к команде (ADR-044 §4).
+        """Авторизация привязки создаваемого ящика к команде (ADR-044 §4, ADR-055 §3).
 
-        `team_id=null` (unassigned) — только admin-уровень. Не-admin обязан указать
-        `team_id ∈ scope.team_ids` (иначе 403). Admin с конкретным `team_id` —
-        существование команды валидируется (404 team_not_found).
+        `team_id=null` (unassigned) — **ТОЛЬКО admin-уровень**: ADR-044 §4 здесь НЕ
+        разворачивается, и `mail_includes_unassigned` этого права НЕ даёт (флаг — работа с
+        **существующими** бесхозными ящиками, а не право создавать новые вне командной
+        модели). Не-admin обязан указать `team_id ∈ scope.team_ids` — набор теперь включает
+        **доп-команды канала** (§4), иначе 403. Admin с конкретным `team_id` — существование
+        команды валидируется (404 team_not_found).
         """
         if team_id is None:
             if not scope.sees_all_teams:
@@ -891,11 +940,12 @@ class MailService:
             raise team_not_found()
 
     async def _load_message_in_scope(self, scope: MailScope, message_id: int) -> MailMessageModel:
-        """Письмо из БД CRM с проверкой `MailScope` (ADR-044 §7, ADR-050 §2.3).
+        """Письмо из БД CRM с проверкой `MailScope` (ADR-044 §7, ADR-050 §2.3, ADR-055 §3).
 
         Нет письма, нет ящика-владельца или ящик вне scope → 404 mail_message_not_found:
         анти-энумерация — чужое письмо неотличимо от несуществующего. Общий путь reply и
-        отметок прочитанности.
+        отметок прочитанности. Scope — **единый предикат** (`MailScope.matches`): письмо
+        бесхозного ящика доступно носителю `mail_includes_unassigned`.
         """
         message = await self._messages.get(message_id)
         if message is None:
@@ -903,16 +953,23 @@ class MailService:
         account = await self._accounts.get(message.mail_account_id)
         if account is None:
             raise mail_message_not_found()
-        if not scope.sees_all_teams and account.team_id not in scope.team_ids:
+        if not scope.matches(account.team_id):
             raise mail_message_not_found()
         return message
 
     async def _load_account_in_scope(self, scope: MailScope, mailbox_id: int) -> MailAccount:
-        """Ящик из каталога с проверкой scope (ADR-044 §7): нет → 404, вне scope → 403."""
+        """Ящик из каталога с проверкой scope (ADR-044 §7, ADR-055 §3): нет → 404, вне → 403.
+
+        Единый предикат (`MailScope.matches`): бесхозный ящик (`team_id IS NULL`) доступен
+        не-админу **при `includes_unassigned=true`** — правка/синк/удаление наравне со своей
+        командой (прежнее «бесхозный → 403 всегда» ОТМЕНЕНО). Перенос ящика и создание с
+        `team_id=null` остаются admin-only — это проверяют `update_mailbox`/
+        `_ensure_team_writable`, а не этот метод.
+        """
         account = await self._accounts.get(mailbox_id)
         if account is None:
             raise mail_mailbox_not_found()
-        if not scope.sees_all_teams and account.team_id not in scope.team_ids:
+        if not scope.matches(account.team_id):
             raise forbidden()
         return account
 

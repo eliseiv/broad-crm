@@ -71,6 +71,8 @@ def make_principal(
     permissions: dict[str, list[str]] | None = None,
     is_superadmin: bool = True,
     user_id: _uuid.UUID | None = None,
+    mail_includes_unassigned: bool = False,
+    sms_includes_unassigned: bool = False,
 ) -> Any:
     """Строит `Principal` (супер-админ по умолчанию — полный каталог прав).
 
@@ -78,6 +80,10 @@ def make_principal(
     не существует. Умолчание: супер-админ → константа `SUPERADMIN_USER_ID` (строка-якорь,
     ADR-051 §1.1); БД-пользователь → случайный UUID (тестам обычно важен лишь факт
     наличия идентичности, а не конкретное значение — иначе `user_id` передаётся явно).
+
+    `mail_includes_unassigned`/`sms_includes_unassigned` (ADR-055 §2.2/§3) — флаги «Без
+    команды» канала (`users.<channel>_includes_unassigned`), уже загруженные в принципал.
+    У актора admin-уровня не используются (`sees_all_teams=True` перекрывает их).
     """
     from app.api.deps import Principal
     from app.domain.permissions import full_catalog_permissions
@@ -92,6 +98,8 @@ def make_principal(
         permissions=full_catalog_permissions() if permissions is None else permissions,
         is_superadmin=is_superadmin,
         user_id=user_id,
+        mail_includes_unassigned=mail_includes_unassigned,
+        sms_includes_unassigned=sms_includes_unassigned,
     )
 
 
@@ -135,6 +143,8 @@ class _FakeUser:
         db: RbacFakeDb,
         telegram: str | None = None,
         first_login_at: datetime | None = None,
+        mail_includes_unassigned: bool = False,
+        sms_includes_unassigned: bool = False,
     ) -> None:
         self.id = id
         self.username = username
@@ -143,6 +153,10 @@ class _FakeUser:
         self._role = role
         self.role_id = role.id if role is not None else None
         self.is_active = is_active
+        # Флаги «Без команды» по каналам (ADR-055 §2.2) — колонки
+        # `users.mail_includes_unassigned` / `users.sms_includes_unassigned`.
+        self.mail_includes_unassigned = mail_includes_unassigned
+        self.sms_includes_unassigned = sms_includes_unassigned
         # ADR-028: метка первого успешного входа (NULL = ещё не входил). Источник
         # производного `UserListItem.status`; иначе `_to_item`/`_derive_status` падает.
         self.first_login_at = first_login_at
@@ -227,8 +241,16 @@ class _FakeSession:
 
         In-memory фейки не держат `mail_telegram_links`, orphan'ов нет → возвращаем
         результат с `rowcount=0` (хук ничего не связывает). Orphan-связывание покрыто
-        отдельно на РЕАЛЬНОМ Postgres (`tests/integration/test_mail_orphan_resolve.py`)."""
-        return SimpleNamespace(rowcount=0)
+        отдельно на РЕАЛЬНОМ Postgres (`tests/integration/test_mail_orphan_resolve.py`).
+
+        `scalars().all()` → `[]`: `GET /api/auth/me` под актором admin-уровня зовёт
+        `TeamRepository.list_refs()` (ADR-055 §5.1 — ему отдаются ВСЕ команды системы)
+        прямо на сессии; в тестах без Postgres это «команд в системе нет» → `[]`."""
+        return SimpleNamespace(
+            rowcount=0,
+            scalars=lambda: SimpleNamespace(all=lambda: []),
+            all=lambda: [],
+        )
 
     async def commit(self) -> None:
         if self.raise_integrity:
@@ -329,6 +351,9 @@ class _FakeUserRepo:
         # Каскад user_teams: снять членства удаляемого пользователя.
         for team in self._db.teams.values():
             team._members.pop(user_id, None)
+        # Каскад user_channel_teams (FK ON DELETE CASCADE, ADR-055 §2.1).
+        for key in [k for k in self._db.channel_extras if k[0] == user_id]:
+            del self._db.channel_extras[key]
         return self._db.users.pop(user_id, None) is not None
 
 
@@ -470,6 +495,11 @@ class _FakeTeamRepo:
         return next_leader
 
     async def delete_by_id(self, team_id: _uuid.UUID) -> bool:
+        # Каскад user_channel_teams (FK ON DELETE CASCADE, ADR-055 §2.1).
+        for key, ids in list(self._db.channel_extras.items()):
+            ids.discard(team_id)
+            if not ids:
+                del self._db.channel_extras[key]
         return self._db.teams.pop(team_id, None) is not None
 
 
@@ -594,6 +624,66 @@ class _FakeMailAccountRepo:
         return sorted(rows, key=lambda mb: (mb.email, mb.id))
 
 
+class _FakeUserChannelTeamRepo:
+    """In-memory замена `UserChannelTeamRepository` (ADR-055 §2/§3/§5.2).
+
+    Хранилище — `RbacFakeDb.channel_extras: {(user_id, channel): {team_id, ...}}`, то есть
+    **только добавка** (базовые команды `user_teams` сюда не пишутся — инвариант §2.3
+    обеспечивают сервисы users/teams, ровно как в реальном репозитории). `scope_team_ids` /
+    `effective_teams` возвращают ЭФФЕКТИВНЫЙ набор (базовые ∪ добавка) — как UNION-запрос.
+    """
+
+    def __init__(self, db: RbacFakeDb) -> None:
+        self._db = db
+
+    @property
+    def session(self) -> _FakeSession:
+        return self._db.session
+
+    def _base_team_ids(self, user_id: _uuid.UUID) -> set[_uuid.UUID]:
+        return {t.id for t in self._db.teams.values() if user_id in t._members}
+
+    async def scope_team_ids(self, user_id: _uuid.UUID, channel: str) -> frozenset[_uuid.UUID]:
+        extra = self._db.channel_extras.get((user_id, channel), set())
+        return frozenset(self._base_team_ids(user_id) | extra)
+
+    async def effective_teams(self, user_id: _uuid.UUID, channel: str) -> list[Any]:
+        ids = await self.scope_team_ids(user_id, channel)
+        return [t for t in self._db.teams.values() if t.id in ids]
+
+    async def extra_team_ids(self, user_id: _uuid.UUID, channel: str) -> set[_uuid.UUID]:
+        return set(self._db.channel_extras.get((user_id, channel), set()))
+
+    async def extras_for_users(self, user_ids: Any) -> dict[tuple[_uuid.UUID, str], list[Any]]:
+        ids = set(user_ids)
+        extras: dict[tuple[_uuid.UUID, str], list[Any]] = {}
+        for (user_id, channel), team_ids in self._db.channel_extras.items():
+            if user_id not in ids:
+                continue
+            teams = [self._db.teams[tid] for tid in team_ids if tid in self._db.teams]
+            if teams:
+                extras[(user_id, channel)] = teams
+        return extras
+
+    async def replace_extras(
+        self, user_id: _uuid.UUID, channel: str, team_ids: set[_uuid.UUID]
+    ) -> None:
+        if team_ids:
+            self._db.channel_extras[(user_id, channel)] = set(team_ids)
+        else:
+            self._db.channel_extras.pop((user_id, channel), None)
+
+    async def remove_team_for_users(self, team_id: _uuid.UUID, user_ids: Any) -> None:
+        for user_id in set(user_ids):
+            for channel in ("mail", "sms"):
+                current = self._db.channel_extras.get((user_id, channel))
+                if current is None:
+                    continue
+                current.discard(team_id)
+                if not current:
+                    del self._db.channel_extras[(user_id, channel)]
+
+
 class RbacFakeDb:
     """In-memory «БД» для user/role/team репозиториев (общее состояние + сессия).
 
@@ -607,11 +697,15 @@ class RbacFakeDb:
         self.teams: dict[_uuid.UUID, Any] = {}
         self.numbers: dict[int, Any] = {}
         self.mailboxes: dict[int, Any] = {}
+        # `user_channel_teams` (ADR-055 §2.1): ТОЛЬКО добавка канала, базовые команды
+        # (`user_teams`) сюда не пишутся — инвариант нормализации §2.3.
+        self.channel_extras: dict[tuple[_uuid.UUID, str], set[_uuid.UUID]] = {}
         self.user_repo = _FakeUserRepo(self)
         self.role_repo = _FakeRoleRepo(self)
         self.team_repo = _FakeTeamRepo(self)
         self.number_repo = _FakeSmsNumberRepo(self)
         self.mailbox_repo = _FakeMailAccountRepo(self)
+        self.channel_repo = _FakeUserChannelTeamRepo(self)
         # Монотонный источник `user_teams.created_at` (детерминированный порядок
         # авто-передачи лидерства без зависимости от разрешения системного таймера).
         self._member_seq = 0
@@ -640,6 +734,8 @@ class RbacFakeDb:
         password_hash: str | None = "x",
         telegram: str | None = None,
         first_login_at: datetime | None = None,
+        mail_includes_unassigned: bool = False,
+        sms_includes_unassigned: bool = False,
     ) -> Any:
         now = datetime.now(UTC)
         user = _FakeUser(
@@ -653,9 +749,19 @@ class RbacFakeDb:
             updated_at=now,
             db=self,
             first_login_at=first_login_at,
+            mail_includes_unassigned=mail_includes_unassigned,
+            sms_includes_unassigned=sms_includes_unassigned,
         )
         self.users[user.id] = user
         return user
+
+    def add_extra_team(self, user: Any, channel: str, team: Any) -> None:
+        """Строка `user_channel_teams (user, channel, team)` — доп-команда канала (§2.1).
+
+        Прямая запись в хранилище (минуя сервис) — так тест воспроизводит состояние БД,
+        в т.ч. «висящую» добавку, которую обязан снять инвариант нормализации §2.3.
+        """
+        self.channel_extras.setdefault((user.id, channel), set()).add(team.id)
 
     def add_team(
         self,

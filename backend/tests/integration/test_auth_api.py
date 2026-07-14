@@ -14,12 +14,16 @@ async def test_login_me_and_auth_error_contracts() -> None:
     from app.main import create_app
 
     app = create_app(get_settings())
+    db = RbacFakeDb()
     auth_service = AuthService(
         settings=get_settings(),
         rate_limiter=InMemoryRateLimiter(max_attempts=10, window_sec=300),
-        user_repository=RbacFakeDb().user_repo,
+        user_repository=db.user_repo,
     )
     app.dependency_overrides[deps.get_auth_service] = lambda: auth_service
+    # ADR-055 §5.1: `/me` под актором admin-уровня отдаёт ВСЕ команды системы ⇒ ходит в БД
+    # (`TeamRepository.list_refs`). Postgres здесь не нужен — сессия фейковая, команд нет.
+    app.dependency_overrides[deps.get_session] = lambda: db.session
 
     async with AsyncClient(
         transport=ASGITransport(app=app),

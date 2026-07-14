@@ -89,6 +89,18 @@ class User(Base):
     # входил. Проставляется идемпотентно (`if None`) в парольной ветке login и в
     # set-password. Наружу не отдаётся — источник производного UserListItem.status.
     first_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Флаги «Без команды» по каналам (ADR-055 §2.2, миграция 0027). `true` — пользователь
+    # видит И правит объекты канала с `team_id IS NULL` (ящики/номера без команды) наравне
+    # со своей командой. НЕ команда, а отдельное измерение scope ⇒ булева колонка, а не
+    # строка в `user_channel_teams` (NULL в PK PostgreSQL недопустим — §2.2).
+    # ⚠️ Флаг НЕ даёт права СОЗДАВАТЬ ящик с `team_id=null` и переносить ящик между
+    # командами — это по-прежнему admin-уровень (ADR-044 §4 не разворачивается).
+    mail_includes_unassigned: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
+    sms_includes_unassigned: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=text("false")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

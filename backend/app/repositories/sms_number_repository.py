@@ -12,7 +12,7 @@ import uuid
 from collections.abc import Iterable
 from datetime import UTC, datetime
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import ColumnElement, delete, func, or_, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -84,15 +84,42 @@ class SmsNumberRepository:
         )
         return list((await self._session.execute(stmt)).scalars().all())
 
-    async def list_by_teams(self, team_ids: Iterable[uuid.UUID]) -> list[SmsPhoneNumber]:
-        """Номера набора команд (scope не-админа), `created_at DESC, id DESC`."""
+    async def list_in_scope(
+        self, team_ids: Iterable[uuid.UUID], *, includes_unassigned: bool
+    ) -> list[SmsPhoneNumber]:
+        """Номера по **единому предикату scope** (ADR-055 §3), `created_at DESC, id DESC`.
+
+        `team_id IN team_ids` **OR** (`includes_unassigned` **AND** `team_id IS NULL`).
+        Пустой набор команд И `includes_unassigned=false` → пустой список без запроса
+        (анти-энумерация). Прямое `team_id IN team_ids` без ветки флага = дефект: носитель
+        «Без команды» не увидел бы номера, которые вправе править/переносить/удалять.
+        """
+        clauses: list[ColumnElement[bool]] = []
         ids = list(team_ids)
-        if not ids:
+        if ids:
+            clauses.append(SmsPhoneNumber.team_id.in_(ids))
+        if includes_unassigned:
+            clauses.append(SmsPhoneNumber.team_id.is_(None))
+        if not clauses:
             return []
         stmt = (
             select(SmsPhoneNumber)
             .options(selectinload(SmsPhoneNumber.team))
-            .where(SmsPhoneNumber.team_id.in_(ids))
+            .where(or_(*clauses))
+            .order_by(SmsPhoneNumber.created_at.desc(), SmsPhoneNumber.id.desc())
+        )
+        return list((await self._session.execute(stmt)).scalars().all())
+
+    async def list_unassigned(self) -> list[SmsPhoneNumber]:
+        """Номера **без команды** (`team_id IS NULL`) — фильтр ленты `no_team=true` (§5.3).
+
+        Пересечение со scope выполняет вызывающий: у не-админа без `includes_unassigned`
+        пересечение пусто → пустая страница (анти-энумерация, не 403).
+        """
+        stmt = (
+            select(SmsPhoneNumber)
+            .options(selectinload(SmsPhoneNumber.team))
+            .where(SmsPhoneNumber.team_id.is_(None))
             .order_by(SmsPhoneNumber.created_at.desc(), SmsPhoneNumber.id.desc())
         )
         return list((await self._session.execute(stmt)).scalars().all())

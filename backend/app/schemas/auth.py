@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field
 
+from app.schemas.user import TeamRef
+
 
 class LoginRequest(BaseModel):
     """Тело POST /api/auth/login.
@@ -55,13 +57,21 @@ class TokenResponse(BaseModel):
 
 
 class MeResponse(BaseModel):
-    """Ответ 200 GET /api/auth/me (профиль + права принципала, ADR-021).
+    """Ответ 200 GET /api/auth/me (профиль + права + scope каналов, ADR-021, ADR-055 §5.1).
 
     `permissions` — производное для UI-гейтинга (для супер-админа — полный каталог).
     Безопасность обеспечивается сервером (403), UI-гейтинг — только UX.
     `sees_all_sms_teams` — производный admin-уровень видимости SMS (ADR-032/036):
     `is_superadmin OR permissions_subset(full_catalog_permissions(), permissions)`;
     backend — единственный источник (фронт не дублирует `permissions_subset`).
+
+    `mail_teams`/`sms_teams` (ADR-055 §5.1) — **ЭФФЕКТИВНЫЙ** scope канала: у не-админа
+    `user_teams` ∪ доп-команды канала (объединение, НЕ только добавка), у **admin-уровня —
+    ВСЕ команды системы** (`[]` не отдаётся: иначе фильтр «Команда» в Mini App у него
+    остался бы пустым — `GET /api/teams` оттуда запрещён). Это делает `/me` ЕДИНСТВЕННЫМ
+    источником опций команд канала на клиенте (закрытый TD-058/TD-050).
+    Не путать с `mail_extra_teams`/`sms_extra_teams` users CRUD — там ТОЛЬКО хранимая
+    добавка (§5.2, имена разведены намеренно).
     """
 
     username: str
@@ -70,5 +80,11 @@ class MeResponse(BaseModel):
     permissions: dict[str, list[str]]
     sees_all_sms_teams: bool
     # Производный admin-уровень видимости почты (ADR-038 §3): тот же предикат, что
-    # backend `get_mail_scope`. Фронт решает, показывать ли фильтр «Все команды» на /mail.
+    # backend `get_mail_scope`. Фильтр «Команда» по нему НЕ гейтится (ADR-055 §6.2).
     sees_all_mail_teams: bool
+    mail_teams: list[TeamRef]
+    sms_teams: list[TeamRef]
+    # Видит ли актор объекты без команды этого канала (`team_id IS NULL`), ADR-055 §3.
+    # Значение = `users.<channel>_includes_unassigned`; при `sees_all_<channel>_teams` → true.
+    mail_includes_unassigned: bool
+    sms_includes_unassigned: bool

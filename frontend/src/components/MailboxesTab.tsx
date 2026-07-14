@@ -9,13 +9,14 @@ import { MailboxFormModal } from '@/components/MailboxFormModal';
 import { MailboxRow } from '@/components/MailboxRow';
 import { cn } from '@/lib/cn';
 import { ApiError } from '@/lib/api';
-import { useCan, useSeesAllMailTeams } from '@/features/auth/hooks';
+import { useCan, useChannelTeamScope, useSeesAllMailTeams } from '@/features/auth/hooks';
+import {
+  NO_TEAM_VALUE,
+  shouldRenderTeamFilter,
+  teamFilterOptions,
+} from '@/features/auth/channelTeams';
 import { useMailboxesManage } from '@/features/mail/hooks';
 import { mailboxSearchKeywords, matchesMailboxQuery } from '@/features/mail/mailboxSearch';
-import { useTeams } from '@/features/teams/hooks';
-
-/** Значение опции «Без команды» в клиентском фильтре по команде (ящики с `team_id = null`). */
-const NO_TEAM = '__no_team__';
 
 /** Значение сегмента активности → query `is_active` (не задан / true / false). */
 type ActivityFilter = 'all' | 'active' | 'inactive';
@@ -90,16 +91,20 @@ export function MailboxesTab() {
   const canEdit = useCan('mail', 'edit');
   const canSync = useCan('mail', 'sync');
   const canDelete = useCan('mail', 'delete');
-  // Admin-уровень видимости почты (`me.sees_all_mail_teams`): гейт переноса ящика между
-  // командами (ADR-044 §4) И гейт рендера фильтра по команде (ADR-050 §1.2 — та же норма,
-  // что у фильтра «Команда» вкладки «Сообщения», ADR-036).
+  // Перенос ящика между командами — ТОЛЬКО admin-уровень (ADR-044 §4, не разворачивается).
+  // Рендер фильтра «Команда» по этому признаку БОЛЬШЕ НЕ гейтится (ADR-055 §6.2 отменил
+  // норму ADR-050 §1.2/ADR-036) — см. `showTeamFilter` ниже.
   const seesAllMailTeams = useSeesAllMailTeams();
   const canTransfer = seesAllMailTeams;
 
   const query = useMailboxesManage(toIsActive(filter));
-  // CRM-команды (GET /api/teams) — источник дропдауна переноса и резолва имени команды.
-  const teamsQuery = useTeams();
-  const teams = useMemo(() => teamsQuery.data?.items ?? [], [teamsQuery.data]);
+  // Команды канала — ТОЛЬКО из `GET /api/auth/me` (`mail_teams`, ADR-055 §6.3): источник опций
+  // фильтра, дропдауна переноса и резолва имени команды в строке. `GET /api/teams` гейтится
+  // `teams:view` (у mail-оператора его нет ⇒ пустой список — прод-баг TD-050) и здесь НЕ
+  // используется. Все видимые ящики ∈ scope актора ⇒ имя команды резолвится.
+  const mailScope = useChannelTeamScope('mail');
+  const teams = mailScope.teams;
+  const showTeamFilter = shouldRenderTeamFilter(mailScope);
   const mailboxes = useMemo(() => query.data?.mailboxes ?? [], [query.data]);
 
   const isNotConfigured = query.error instanceof ApiError && query.error.status === 503;
@@ -123,7 +128,7 @@ export function MailboxesTab() {
     }
     if (teamFilter) {
       rows = rows.filter((mb) =>
-        teamFilter === NO_TEAM ? mb.team_id === null : mb.team_id === teamFilter,
+        teamFilter === NO_TEAM_VALUE ? mb.team_id === null : mb.team_id === teamFilter,
       );
     }
     return rows;
@@ -142,16 +147,10 @@ export function MailboxesTab() {
     [mailboxes],
   );
 
-  // Опции фильтра по команде: «Все команды» (сброс) → команды из GET /api/teams → «Без команды»
-  // (ящики с `team_id = null` — иначе были бы нефильтруемы). ADR-050 §1.2.
-  const teamFilterOptions = useMemo(
-    () => [
-      { value: '', label: 'Все команды' },
-      ...teams.map((t) => ({ value: t.id, label: t.name })),
-      { value: NO_TEAM, label: 'Без команды' },
-    ],
-    [teams],
-  );
+  // Опции фильтра: «Все команды» (сброс) → команды канала из `me.mail_teams` → «Без команды»
+  // (ТОЛЬКО при `me.mail_includes_unassigned` — иначе бесхозных ящиков актор не видит и
+  // опция дала бы гарантированно пустой результат). ADR-055 §6.2/§6.3.
+  const teamOptions = useMemo(() => teamFilterOptions(mailScope), [mailScope]);
 
   const handleTeamFilterChange = (e: ChangeEvent<HTMLSelectElement>) => {
     setTeamFilter(e.target.value);
@@ -209,15 +208,15 @@ export function MailboxesTab() {
             loading={query.isLoading}
           />
         </div>
-        {/* Фильтр по команде — та же норма, что у фильтра «Команда» вкладки «Сообщения»
-            (ADR-036): рендерится ТОЛЬКО при `sees_all_mail_teams === true`; для прочих
-            ролей отсутствует (не пустой, не disabled) — опции берутся из `GET /api/teams`
-            под чужим гейтом `teams:view`. */}
-        {seesAllMailTeams && (
+        {/* Фильтр по команде — КЛИЕНТСКИЙ (каталог ящиков загружен целиком), но правило
+            рендера и источник опций — ЕДИНЫЕ на пяти экранах (ADR-055 §6.2): контрол
+            рендерится при ≥ 2 доступных вариантах канала (команды + «Без команды»); при
+            одном варианте отсутствует. Прежний гейт `sees_all_mail_teams` — ОТМЕНЁН. */}
+        {showTeamFilter && (
           <div className="w-48">
             <Select
               aria-label="Команда"
-              options={teamFilterOptions}
+              options={teamOptions}
               value={teamFilter}
               onChange={handleTeamFilterChange}
             />
