@@ -1,5 +1,8 @@
 import { useId } from 'react';
+import type { ReactNode } from 'react';
 import { Checkbox } from '@/components/ui/Checkbox';
+import { FieldHint } from '@/components/ui/FieldHint';
+import { composeDescribedBy } from '@/lib/a11y';
 import { cn } from '@/lib/cn';
 
 export interface MultiSelectOption {
@@ -19,8 +22,13 @@ interface MultiSelectProps {
    */
   lockedValues?: string[];
   error?: string | null;
-  /** Подсказка при пустом списке опций. */
+  /** Подсказка при пустом списке опций (текст ВНУТРИ списка, не help-text). */
   emptyHint?: string;
+  /**
+   * Подсказка (help-text) под полем. Рендерится примитивом и связывается с группой через
+   * `aria-describedby` (08-design-system.md, TD-061) — соседним `<p>` не рендерить.
+   */
+  hint?: ReactNode;
   disabled?: boolean;
 }
 
@@ -39,11 +47,14 @@ export function MultiSelect({
   lockedValues = [],
   error,
   emptyHint = 'Нет доступных вариантов',
+  hint,
   disabled = false,
 }: MultiSelectProps) {
   const autoId = useId();
   const errorId = `${autoId}-error`;
+  const hintId = `${autoId}-hint`;
   const hasError = Boolean(error);
+  const hasHint = Boolean(hint);
   const locked = new Set(lockedValues);
   const selected = new Set(value);
 
@@ -62,7 +73,7 @@ export function MultiSelect({
         role="group"
         aria-label={label}
         aria-invalid={hasError}
-        aria-describedby={hasError ? errorId : undefined}
+        aria-describedby={composeDescribedBy(hasHint && hintId, hasError && errorId)}
         className={cn(
           'scrollbar-none flex max-h-44 flex-col gap-2 overflow-y-auto rounded-[10px] border bg-surface-2 p-3',
           hasError ? 'border-status-red' : 'border-border-strong',
@@ -86,6 +97,7 @@ export function MultiSelect({
           })
         )}
       </div>
+      {hasHint && <FieldHint id={hintId}>{hint}</FieldHint>}
       {hasError && (
         <p id={errorId} role="alert" className="text-[12px] text-status-red">
           {error}

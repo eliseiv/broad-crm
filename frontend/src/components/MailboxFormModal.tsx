@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { AlertTriangle, Check, ChevronDown, Copy, ExternalLink, PlugZap } from 'lucide-react';
 import { toast } from 'sonner';
@@ -697,6 +697,23 @@ function MailboxDialog({
   const connectionHint = isEdit
     ? 'Параметры подключения не отображаются из соображений безопасности. Заполните только то, что нужно изменить.'
     : undefined;
+  // Подсказка селектора «Команда» — причина, по которой он недоступен. Состояния
+  // взаимоисключающи: `teamSelectDisabled` (не-админ в режиме `edit`) проверяется первым.
+  const teamHint = teamSelectDisabled
+    ? 'Перенос между командами доступен только администратору.'
+    : noTeamOptions
+      ? 'Нет доступных команд — обратитесь к администратору.'
+      : undefined;
+
+  // Подсказки, относящиеся НЕ к одному полю, а к группе контролов, связываются с этой группой
+  // напрямую (a11y, 08-design-system.md «Подсказка под полем формы»; проп `hint` примитива тут
+  // неприменим — привязывать текст о ДВУХ fieldset'ах/кнопке к произвольному полю нельзя):
+  //   • `connectionHint` — описывает оба fieldset'а параметров подключения (IMAP и SMTP);
+  //   • `outlookLinkHint` — описывает кнопку «Открыть» ссылки авторизации.
+  // Оба id выводятся ТОЛЬКО когда соответствующий текст отрисован (висячий IDREF запрещён).
+  const uid = useId();
+  const connectionHintId = `${uid}-connection-hint`;
+  const outlookLinkHintId = `${uid}-outlook-link-hint`;
 
   return (
     <Modal
@@ -796,21 +813,22 @@ function MailboxDialog({
           08-design-system.md «Поля формы ящика: лейблы и ПОРЯДОК»). Раньше поле было последним
           и заполнялось «на автомате» паролем от почты, который провайдеры не принимают.
         */}
-        <div className="flex flex-col gap-1.5">
-          <Input
-            label="Код приложения"
-            type="password"
-            value={password}
-            error={errors.password}
-            autoComplete="new-password"
-            onChange={(e) => {
-              setPassword(e.target.value);
-              if (errors.password) setErrors((p) => ({ ...p, password: undefined }));
-              clearConnectionError();
-            }}
-          />
-          <p className="text-[12px] leading-relaxed text-text-secondary">{passwordHint}</p>
-        </div>
+        <Input
+          label="Код приложения"
+          type="password"
+          value={password}
+          error={errors.password}
+          autoComplete="new-password"
+          // Подсказка — В САМОМ примитиве (`hint`), а не соседним `<p>`: иначе скринридер её не
+          // озвучит, а именно она несёт смысл ADR-054 (нужен app password, а не пароль от почты).
+          // `aria-describedby` композируется из id подсказки И id ошибки (TD-061).
+          hint={passwordHint}
+          onChange={(e) => {
+            setPassword(e.target.value);
+            if (errors.password) setErrors((p) => ({ ...p, password: undefined }));
+            clearConnectionError();
+          }}
+        />
 
         {/* «Номер» + «Приложение» вместо упразднённого «Отображаемого имени» (ADR-047 §3.6);
             оба опциональны. `display_name` — производное, сервер вычисляет его сам. */}
@@ -832,25 +850,16 @@ function MailboxDialog({
             />
           </div>
         </div>
-        <div className="flex flex-col gap-1.5">
-          <Select
-            label="Команда"
-            options={teamOptions}
-            value={teamId}
-            disabled={teamSelectDisabled || noTeamOptions}
-            onChange={(e) => setTeamId(e.target.value)}
-          />
-          {teamSelectDisabled && (
-            <p className="text-[12px] text-text-secondary">
-              Перенос между командами доступен только администратору.
-            </p>
-          )}
-          {!teamSelectDisabled && noTeamOptions && (
-            <p className="text-[12px] text-text-secondary">
-              Нет доступных команд — обратитесь к администратору.
-            </p>
-          )}
-        </div>
+        <Select
+          label="Команда"
+          options={teamOptions}
+          value={teamId}
+          disabled={teamSelectDisabled || noTeamOptions}
+          // Подсказка (причина недоступности селектора) — в примитиве, связана `aria-describedby`
+          // (TD-061). Оба состояния взаимоисключающи ⇒ одна строка.
+          hint={teamHint}
+          onChange={(e) => setTeamId(e.target.value)}
+        />
 
         {!isEdit && (
           <section className="flex flex-col gap-2 rounded-sub border border-border-subtle bg-surface-1 p-3">
@@ -902,6 +911,7 @@ function MailboxDialog({
                     href={authorizeUrl}
                     target="_blank"
                     rel="noopener noreferrer"
+                    aria-describedby={outlookLinkHintId}
                     className={cn(
                       'inline-flex h-8 shrink-0 select-none items-center justify-center gap-1.5 rounded-md px-3 text-[13px] font-medium',
                       'border border-border-strong bg-surface-2 text-text-primary transition-colors duration-150',
@@ -913,7 +923,7 @@ function MailboxDialog({
                     Открыть
                   </a>
                 </div>
-                <p className="text-[12px] text-text-tertiary">
+                <p id={outlookLinkHintId} className="text-[12px] text-text-tertiary">
                   Кнопка «Открыть» откроет ссылку в текущем браузере — используйте только если вы
                   уже в нужном профиле; для OctoBrowser скопируйте ссылку.
                 </p>
@@ -934,7 +944,11 @@ function MailboxDialog({
           </section>
         )}
 
-        {connectionHint && <p className="text-[12px] text-text-secondary">{connectionHint}</p>}
+        {connectionHint && (
+          <p id={connectionHintId} className="text-[12px] text-text-secondary">
+            {connectionHint}
+          </p>
+        )}
 
         {!isEdit && (
           <div className="flex items-center gap-3 py-1">
@@ -963,7 +977,10 @@ function MailboxDialog({
           </p>
         )}
 
-        <fieldset className="flex flex-col gap-3 rounded-sub border border-border-subtle p-3">
+        <fieldset
+          aria-describedby={connectionHint ? connectionHintId : undefined}
+          className="flex flex-col gap-3 rounded-sub border border-border-subtle p-3"
+        >
           <legend className="px-1 text-[12px] font-medium uppercase tracking-wide text-text-tertiary">
             IMAP
           </legend>
@@ -1006,7 +1023,10 @@ function MailboxDialog({
           </div>
         </fieldset>
 
-        <fieldset className="flex flex-col gap-3 rounded-sub border border-border-subtle p-3">
+        <fieldset
+          aria-describedby={connectionHint ? connectionHintId : undefined}
+          className="flex flex-col gap-3 rounded-sub border border-border-subtle p-3"
+        >
           <legend className="px-1 text-[12px] font-medium uppercase tracking-wide text-text-tertiary">
             SMTP
           </legend>

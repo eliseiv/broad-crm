@@ -452,33 +452,29 @@ function EditProxyDialog({
           autoComplete="off"
           onChange={(e) => update('username', e.target.value)}
         />
-        <div className="flex flex-col gap-1.5">
-          <Input
-            label="Пароль"
-            type={showPassword ? 'text' : 'password'}
-            placeholder="Оставьте пустым, чтобы не менять"
-            value={values.password}
-            error={errors.password}
-            maxLength={512}
-            autoComplete="new-password"
-            onChange={(e) => update('password', e.target.value)}
-            trailing={
-              <button
-                type="button"
-                onClick={() => setShowPassword((v) => !v)}
-                aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
-                className="flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-              >
-                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            }
-          />
-          {!errors.password && (
-            <p className="text-[12px] text-text-secondary">
-              Оставьте пустым, чтобы не менять пароль
-            </p>
-          )}
-        </div>
+        {/* Подсказка — в примитиве (`hint`), связана с полем через `aria-describedby` (TD-061);
+            при ошибке НЕ исчезает (описание = подсказка + ошибка, 08-design-system.md). */}
+        <Input
+          label="Пароль"
+          type={showPassword ? 'text' : 'password'}
+          placeholder="Оставьте пустым, чтобы не менять"
+          value={values.password}
+          error={errors.password}
+          maxLength={512}
+          autoComplete="new-password"
+          hint="Оставьте пустым, чтобы не менять пароль"
+          onChange={(e) => update('password', e.target.value)}
+          trailing={
+            <button
+              type="button"
+              onClick={() => setShowPassword((v) => !v)}
+              aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          }
+        />
       </form>
     </Modal>
   );

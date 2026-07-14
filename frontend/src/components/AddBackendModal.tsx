@@ -238,38 +238,32 @@ function BackendInfoSection({
             error={errors.ai_key_id}
             onChange={(e) => update('aiKeyId', e.target.value)}
           />
-          <div className="flex flex-col gap-1.5">
-            <Input
-              label="API KEY"
-              type={showApiKey ? 'text' : 'password'}
-              placeholder={editHints ? 'Оставьте пустым, чтобы не менять' : 'sk-backend-…'}
-              mono
-              value={values.apiKey}
-              maxLength={512}
-              autoComplete="off"
-              onChange={(e) => update('apiKey', e.target.value)}
-              trailing={eyeButton(showApiKey, () => setShowApiKey((v) => !v))}
-            />
-            {editHints && (
-              <p className="text-[12px] text-text-secondary">Оставьте пустым, чтобы не менять</p>
-            )}
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Input
-              label="ADMIN API KEY"
-              type={showAdminApiKey ? 'text' : 'password'}
-              placeholder={editHints ? 'Оставьте пустым, чтобы не менять' : 'sk-admin-…'}
-              mono
-              value={values.adminApiKey}
-              maxLength={512}
-              autoComplete="off"
-              onChange={(e) => update('adminApiKey', e.target.value)}
-              trailing={eyeButton(showAdminApiKey, () => setShowAdminApiKey((v) => !v))}
-            />
-            {editHints && (
-              <p className="text-[12px] text-text-secondary">Оставьте пустым, чтобы не менять</p>
-            )}
-          </div>
+          {/* Подсказка секрета — в примитиве (`hint`), связана с полем через `aria-describedby`
+              (TD-061); соседним `<p>` её рендерить нельзя — скринридер не озвучит. */}
+          <Input
+            label="API KEY"
+            type={showApiKey ? 'text' : 'password'}
+            placeholder={editHints ? 'Оставьте пустым, чтобы не менять' : 'sk-backend-…'}
+            mono
+            value={values.apiKey}
+            maxLength={512}
+            autoComplete="off"
+            hint={editHints ? 'Оставьте пустым, чтобы не менять' : undefined}
+            onChange={(e) => update('apiKey', e.target.value)}
+            trailing={eyeButton(showApiKey, () => setShowApiKey((v) => !v))}
+          />
+          <Input
+            label="ADMIN API KEY"
+            type={showAdminApiKey ? 'text' : 'password'}
+            placeholder={editHints ? 'Оставьте пустым, чтобы не менять' : 'sk-admin-…'}
+            mono
+            value={values.adminApiKey}
+            maxLength={512}
+            autoComplete="off"
+            hint={editHints ? 'Оставьте пустым, чтобы не менять' : undefined}
+            onChange={(e) => update('adminApiKey', e.target.value)}
+            trailing={eyeButton(showAdminApiKey, () => setShowAdminApiKey((v) => !v))}
+          />
           <Input
             label="Git"
             placeholder="https://github.com/acme/api-eu"

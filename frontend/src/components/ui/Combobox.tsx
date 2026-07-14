@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { KeyboardEvent, MouseEvent } from 'react';
+import type { KeyboardEvent, MouseEvent, ReactNode } from 'react';
 import { ChevronDown, X } from 'lucide-react';
+import { FieldHint } from '@/components/ui/FieldHint';
+import { composeDescribedBy } from '@/lib/a11y';
 import { cn } from '@/lib/cn';
 
 export interface ComboboxOption {
@@ -27,6 +29,13 @@ interface ComboboxProps {
   mode?: 'select' | 'search';
   label?: string;
   'aria-label'?: string;
+  /**
+   * Подсказка (help-text) под полем. Рендерится примитивом и связывается с контролом через
+   * `aria-describedby` (08-design-system.md «Подсказка под полем формы», TD-061) — соседним
+   * `<p>` не рендерить. Слота ошибки у примитива нет ⇒ список описания состоит из одного id;
+   * подсказки нет → атрибут не выводится (висячий IDREF запрещён — как `aria-controls`).
+   */
+  hint?: ReactNode;
   placeholder?: string;
   disabled?: boolean;
   /** Опции ещё грузятся → в панели «Загрузка…». Поле остаётся активным. */
@@ -57,6 +66,7 @@ export function Combobox({
   mode = 'select',
   label,
   'aria-label': ariaLabel,
+  hint,
   placeholder,
   disabled = false,
   loading = false,
@@ -68,6 +78,8 @@ export function Combobox({
   const autoId = useId();
   const inputId = id ?? autoId;
   const listboxId = `${inputId}-listbox`;
+  const hintId = `${inputId}-hint`;
+  const hasHint = Boolean(hint);
 
   const [open, setOpen] = useState(false);
   // Активная (клавиатурная) опция — индекс в ВИДИМОМ списке. `null` — активной опции НЕТ:
@@ -321,6 +333,7 @@ export function Combobox({
           aria-haspopup="listbox"
           aria-autocomplete="list"
           aria-activedescendant={activeOptionId}
+          aria-describedby={composeDescribedBy(hasHint && hintId)}
           aria-label={ariaLabel}
           autoComplete="off"
           placeholder={placeholder}
@@ -419,6 +432,7 @@ export function Combobox({
           </div>
         )}
       </div>
+      {hasHint && <FieldHint id={hintId}>{hint}</FieldHint>}
     </div>
   );
 }

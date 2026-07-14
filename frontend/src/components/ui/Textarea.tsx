@@ -1,10 +1,17 @@
 import { forwardRef, useId } from 'react';
-import type { TextareaHTMLAttributes } from 'react';
+import type { ReactNode, TextareaHTMLAttributes } from 'react';
+import { FieldHint } from '@/components/ui/FieldHint';
+import { composeDescribedBy } from '@/lib/a11y';
 import { cn } from '@/lib/cn';
 
 interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
   label?: string;
   error?: string | null;
+  /**
+   * Подсказка (help-text) под полем. Рендерится примитивом и связывается с контролом через
+   * `aria-describedby` (08-design-system.md, TD-061) — соседним `<p>` не рендерить.
+   */
+  hint?: ReactNode;
 }
 
 /**
@@ -13,13 +20,15 @@ interface TextareaProps extends TextareaHTMLAttributes<HTMLTextAreaElement> {
  * та же поверхность/граница/focus-ring; вертикальный ресайз разрешён (`resize-y`).
  */
 export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function Textarea(
-  { label, error, className, id, rows = 6, ...props },
+  { label, error, hint, className, id, rows = 6, ...props },
   ref,
 ) {
   const autoId = useId();
   const areaId = id ?? autoId;
   const errorId = `${areaId}-error`;
+  const hintId = `${areaId}-hint`;
   const hasError = Boolean(error);
+  const hasHint = Boolean(hint);
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -33,7 +42,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
         id={areaId}
         rows={rows}
         aria-invalid={hasError}
-        aria-describedby={hasError ? errorId : undefined}
+        aria-describedby={composeDescribedBy(hasHint && hintId, hasError && errorId)}
         className={cn(
           'w-full resize-y rounded-[10px] border bg-surface-2 px-3 py-2 text-sm text-text-primary',
           'placeholder:text-text-tertiary transition-colors duration-150',
@@ -44,6 +53,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
         )}
         {...props}
       />
+      {hasHint && <FieldHint id={hintId}>{hint}</FieldHint>}
       {hasError && (
         <p id={errorId} role="alert" className="text-[12px] text-status-red">
           {error}

@@ -366,35 +366,34 @@ function EditAiKeyDialog({
             revalidate({ provider: nextProvider });
           }}
         />
-        <div className="flex flex-col gap-1.5">
-          <Input
-            label="Ключ"
-            type={showKey ? 'text' : 'password'}
-            placeholder="Оставьте пустым, чтобы не менять"
-            mono
-            value={key}
-            error={errors.key}
-            maxLength={512}
-            autoComplete="off"
-            onChange={(e) => {
-              setKey(e.target.value);
-              revalidate({ key: e.target.value });
-            }}
-            trailing={
-              <button
-                type="button"
-                onClick={() => setShowKey((v) => !v)}
-                aria-label={showKey ? 'Скрыть ключ' : 'Показать ключ'}
-                className="flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-              >
-                {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
-            }
-          />
-          {!errors.key && (
-            <p className="text-[12px] text-text-secondary">Оставьте пустым, чтобы не менять ключ</p>
-          )}
-        </div>
+        {/* Подсказка — в примитиве (`hint`), связана с полем через `aria-describedby` (TD-061).
+            Она НЕ исчезает при появлении ошибки: `aria-describedby` композируется из ОБОИХ id
+            (подсказка, затем ошибка) — ошибка не вытесняет подсказку (08-design-system.md). */}
+        <Input
+          label="Ключ"
+          type={showKey ? 'text' : 'password'}
+          placeholder="Оставьте пустым, чтобы не менять"
+          mono
+          value={key}
+          error={errors.key}
+          maxLength={512}
+          autoComplete="off"
+          hint="Оставьте пустым, чтобы не менять ключ"
+          onChange={(e) => {
+            setKey(e.target.value);
+            revalidate({ key: e.target.value });
+          }}
+          trailing={
+            <button
+              type="button"
+              onClick={() => setShowKey((v) => !v)}
+              aria-label={showKey ? 'Скрыть ключ' : 'Показать ключ'}
+              className="flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          }
+        />
       </form>
     </Modal>
   );

@@ -1,6 +1,8 @@
 import { forwardRef, useId } from 'react';
-import type { SelectHTMLAttributes } from 'react';
+import type { ReactNode, SelectHTMLAttributes } from 'react';
 import { ChevronDown } from 'lucide-react';
+import { FieldHint } from '@/components/ui/FieldHint';
+import { composeDescribedBy } from '@/lib/a11y';
 import { cn } from '@/lib/cn';
 
 export interface SelectOption {
@@ -12,6 +14,11 @@ interface SelectProps extends Omit<SelectHTMLAttributes<HTMLSelectElement>, 'chi
   label?: string;
   error?: string | null;
   options: SelectOption[];
+  /**
+   * Подсказка (help-text) под полем. Рендерится примитивом и связывается с контролом через
+   * `aria-describedby` (08-design-system.md, TD-061) — соседним `<p>` не рендерить.
+   */
+  hint?: ReactNode;
 }
 
 /**
@@ -20,13 +27,15 @@ interface SelectProps extends Omit<SelectHTMLAttributes<HTMLSelectElement>, 'chi
  * Согласован по высоте/фокусу/палитре с Input.
  */
 export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select(
-  { label, error, options, className, id, ...props },
+  { label, error, options, hint, className, id, ...props },
   ref,
 ) {
   const autoId = useId();
   const selectId = id ?? autoId;
   const errorId = `${selectId}-error`;
+  const hintId = `${selectId}-hint`;
   const hasError = Boolean(error);
+  const hasHint = Boolean(hint);
 
   return (
     <div className="flex flex-col gap-1.5">
@@ -40,7 +49,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
           ref={ref}
           id={selectId}
           aria-invalid={hasError}
-          aria-describedby={hasError ? errorId : undefined}
+          aria-describedby={composeDescribedBy(hasHint && hintId, hasError && errorId)}
           className={cn(
             'h-10 w-full appearance-none rounded-[10px] border bg-surface-2 pl-3 pr-9 text-sm text-text-primary',
             'transition-colors duration-150',
@@ -64,6 +73,7 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
           aria-hidden="true"
         />
       </div>
+      {hasHint && <FieldHint id={hintId}>{hint}</FieldHint>}
       {hasError && (
         <p id={errorId} role="alert" className="text-[12px] text-status-red">
           {error}
