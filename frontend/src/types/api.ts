@@ -345,10 +345,19 @@ export interface MailReplyRequest {
   body: string;
 }
 
-/** Ответ POST /api/mail/messages/{id}/reply (04-api.md, MailReplyResponse). */
+/**
+ * Ответ POST /api/mail/messages/{id}/reply (04-api.md, MailReplyResponse).
+ *
+ * `sent_id` — uuid строки `mail_sent_messages` самой CRM (ADR-057 §1); прежний `number`
+ * приходил от агрегатора, который идентификатор отправки больше не выдаёт.
+ *
+ * `smtp_message_id` — `string | null` (ADR-057 §5.3): `null` = письмо ОТПРАВЛЕНО и
+ * записано в историю, но Message-ID агрегатор не прислал. Это по-прежнему `200` —
+ * успешная отправка, а не ошибка; значение поля SPA не читает.
+ */
 export interface MailReplyResponse {
-  sent_id: number;
-  smtp_message_id: string;
+  sent_id: string;
+  smtp_message_id: string | null;
 }
 
 /**

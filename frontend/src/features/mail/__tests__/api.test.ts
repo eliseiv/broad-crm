@@ -11,6 +11,9 @@ const apiMock = vi.hoisted(() => ({ apiRequest: vi.fn() }));
 
 vi.mock('@/lib/api', () => apiMock);
 
+/** `MailReplyResponse.sent_id` — uuid строки `mail_sent_messages` CRM (ADR-057 §1). */
+const SENT_ID = '9f1c2e40-6a1b-4f3e-9d2a-7b8c0d1e2f34';
+
 /** Разбирает query-строку первого вызова apiRequest в объект пар. */
 function firstCallQuery(): URLSearchParams {
   const path = apiMock.apiRequest.mock.calls[0][0] as string;
@@ -92,13 +95,29 @@ describe('mail api client (ADR-044 compound keyset cursor)', () => {
     expect(firstCallOptions().skipAuthReset).toBeUndefined();
   });
 
-  it('POSTs the reply payload to the message reply endpoint', async () => {
-    apiMock.apiRequest.mockResolvedValueOnce({ sent_id: 1, smtp_message_id: '<x@postapp.store>' });
-    await replyMail(42, { body: 'ответ' });
+  it('POSTs the reply payload to the message reply endpoint and returns the CRM `sent_id` (uuid)', async () => {
+    // ADR-057 §1: `sent_id` — `uuid` строки `mail_sent_messages` САМОЙ CRM. Прежний `int`
+    // приходил от агрегатора, который идентификатор отправки больше не выдаёт вовсе.
+    apiMock.apiRequest.mockResolvedValueOnce({
+      sent_id: SENT_ID,
+      smtp_message_id: '<x@postapp.store>',
+    });
+    const result = await replyMail(42, { body: 'ответ' });
 
     const [path, options] = apiMock.apiRequest.mock.calls[0];
     expect(path).toBe('/mail/messages/42/reply');
     expect(options).toMatchObject({ method: 'POST', body: { body: 'ответ' } });
+    expect(result.sent_id).toBe(SENT_ID);
+  });
+
+  it('принимает `smtp_message_id: null` — письмо отправлено, Message-ID не пришёл (ADR-057 §5.3)', async () => {
+    // `null` — штатный `200` (отправка состоялась, идентификатора у CRM нет), а не ошибка:
+    // тип публичного поля — `string | null`, значение SPA не читает.
+    apiMock.apiRequest.mockResolvedValueOnce({ sent_id: SENT_ID, smtp_message_id: null });
+    const result = await replyMail(42, { body: 'ответ' });
+
+    expect(result.sent_id).toBe(SENT_ID);
+    expect(result.smtp_message_id).toBeNull();
   });
 
   // --- Личная прочитанность (ADR-050 §2.2/§2.7) -----------------------------

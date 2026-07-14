@@ -91,6 +91,7 @@ from app.schemas.mail import (
     MailOauthAuthorizeResponse,
     MailReplyRequest,
     MailReplyResponse,
+    MailServerSendResult,
     MailTag,
     MailTagApplyResponse,
     MailTagCreateRequest,
@@ -778,10 +779,20 @@ class MailService:
         except MailUnavailable as exc:
             raise self._map_reply_unavailable(exc) from exc
         except MailRejected as exc:
-            raise self._map_reply_rejected(exc) from exc
+            raise self._map_reply_rejected(
+                exc,
+                mail_account_id=message.mail_account_id,
+                message_id=message_id,
+            ) from exc
 
-        result = self._parse(MailReplyResponse, raw)
-        await self._sent.create(
+        # Ответ агрегатора парсится ВНУТРЕННЕЙ схемой `{smtp_message_id?}` (ADR-057 §2/§5):
+        # `sent_id` он не выдаёт (его `sent_messages` дропается). Публичный `sent_id` —
+        # id строки `mail_sent_messages` самой CRM, поэтому запись создаётся ПОСЛЕ
+        # подтверждённой отправки и её id уходит клиенту. Отсутствующий `smtp_message_id`
+        # НЕ отменяет запись факта уже совершённой (необратимой) отправки — иначе письмо
+        # ушло бы «в никуда» и пользователь отправил бы дубль (ADR-057 §5).
+        result = self._parse(MailServerSendResult, raw)
+        sent = await self._sent.create(
             mail_account_id=message.mail_account_id,
             user_id=user_id,
             to_addrs=", ".join(to_addrs),
@@ -792,7 +803,16 @@ class MailService:
             refs_header=refs,
             smtp_message_id=result.smtp_message_id,
         )
-        return result
+        if result.smtp_message_id is None:
+            # Нарушение контракта агрегатором (их ADR-0048 §1) — наблюдаемое событие, а не
+            # тишина. Поля — нормативный набор ADR-057 §6; тел писем/адресов в логах нет.
+            logger.warning(
+                "mail_send_missing_smtp_message_id",
+                mail_account_id=message.mail_account_id,
+                message_id=message_id,
+                sent_id=str(sent.id),
+            )
+        return MailReplyResponse(sent_id=sent.id, smtp_message_id=result.smtp_message_id)
 
     @staticmethod
     def _prepare_reply(
@@ -1111,17 +1131,33 @@ class MailService:
         return mail_unavailable()
 
     @classmethod
-    def _map_reply_rejected(cls, exc: MailRejected) -> AppError:
+    def _map_reply_rejected(
+        cls, exc: MailRejected, *, mail_account_id: int, message_id: int
+    ) -> AppError:
         """Постатусный маппинг отклонения reply (ADR-044 §8): 400/404/409/422/иное.
+
+        `404` от `POST /api/external/mailboxes/{id}/send` = **ящика нет в почтовом
+        сервисе** (send адресуется ЯЩИКОМ, письма в его контракте нет) → `404
+        mail_mailbox_not_found`, рассинхрон каталога (ADR-057 §3). Код
+        `mail_message_not_found` остаётся за СОБСТВЕННОЙ проверкой CRM (письма нет или
+        оно вне `MailScope` — анти-энумерация), см. `_load_message_in_scope`.
 
         `422` — с распознаванием `error.code` агрегатора (ADR-053 §2: reply — тоже
         mail-server-путь), иначе fallback unprocessable.
+
+        `mail_account_id`/`message_id` — обязательный контекст лога рассинхрона каталога
+        (ADR-057 §6): без него по логу невозможно понять, КАКОЙ ящик сломан.
         """
         code = exc.status_code
         if code == status.HTTP_400_BAD_REQUEST:
             return validation_error("Агрегатор отклонил ответ")
         if code == status.HTTP_404_NOT_FOUND:
-            return mail_message_not_found()
+            logger.warning(
+                "mail_reply_mailbox_missing_in_aggregator",
+                mail_account_id=mail_account_id,
+                message_id=message_id,
+            )
+            return mail_mailbox_not_found()
         if code == status.HTTP_409_CONFLICT:
             return mail_conflict()
         if code == status.HTTP_422_UNPROCESSABLE_ENTITY:

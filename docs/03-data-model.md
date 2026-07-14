@@ -1471,7 +1471,7 @@ ALTER TABLE servers DROP COLUMN position;
 
 ### Таблица `mail_sent_messages` (миграция `0022`)
 
-Журнал отправленных reply (CRM — инициатор): `id uuid PK DEFAULT gen_random_uuid()`, `mail_account_id integer NOT NULL REFERENCES mail_accounts(id) ON DELETE CASCADE`, `user_id uuid NULL REFERENCES users(id) ON DELETE SET NULL` (автор), `to_addrs text NOT NULL`, `cc_addrs text NULL`, `subject text NULL`, `body_text text NOT NULL`, `in_reply_to text NULL`, `refs_header text NULL`, `smtp_message_id text NULL`, `sent_at timestamptz NOT NULL DEFAULT now()`.
+Журнал отправленных reply (CRM — инициатор). **`id` этой строки CRM возвращает клиенту как `MailReplyResponse.sent_id`** (тип `uuid`, [ADR-057](adr/ADR-057-mail-send-contract-fix.md) §1) — агрегатор идентификатор отправки не выдаёт (его `sent_messages` дропается; ответ агрегатора — `{smtp_message_id}`). Схема: `id uuid PK DEFAULT gen_random_uuid()`, `mail_account_id integer NOT NULL REFERENCES mail_accounts(id) ON DELETE CASCADE`, `user_id uuid NULL REFERENCES users(id) ON DELETE SET NULL` (автор), `to_addrs text NOT NULL`, `cc_addrs text NULL`, `subject text NULL`, `body_text text NOT NULL`, `in_reply_to text NULL`, `refs_header text NULL`, `smtp_message_id text NULL`, `sent_at timestamptz NOT NULL DEFAULT now()`. **`smtp_message_id` может быть `NULL` штатно:** если агрегатор ответил `200`, но идентификатор не прислал, строка всё равно создаётся — факт отправки не теряется ([ADR-057](adr/ADR-057-mail-send-contract-fix.md) §5), а неполнота ответа уходит в лог.
 
 ### Таблица `mail_message_reads` (миграция `0025`, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md))
 

@@ -216,11 +216,13 @@ class MailClient:
         )
 
     async def send_message(self, mailbox_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        """Отправка reply: POST /api/external/mailboxes/{id}/send (ADR-044 §8).
+        """Отправка reply: POST /api/external/mailboxes/{id}/send (ADR-044 §8, ADR-057 §2).
 
         Mail-server-путь: агрегатор идёт на удалённый SMTP (+ IMAP APPEND) и законно
         тратит до ~55 с (ADR-053 §1.1). Тело `{to, cc, subject, body_text, in_reply_to?,
-        refs?}` → `{sent_id, smtp_message_id}`. Не идемпотентно (SMTP-отправка).
+        refs?}` → **`{smtp_message_id}`** (`sent_id` агрегатор НЕ возвращает — ADR-057 §2;
+        публичный `sent_id` CRM берёт из своей `mail_sent_messages`). Не идемпотентно
+        (SMTP-отправка). Внешний `404` = ящика `{id}` нет в агрегаторе (не «письма нет»).
         """
         path = f"{_EXTERNAL_MAILBOXES_PATH}/{mailbox_id}/send"
         return await self._request("POST", path, json_body=payload)

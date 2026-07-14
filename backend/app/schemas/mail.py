@@ -123,10 +123,43 @@ class MailReplyRequest(BaseModel):
 
 
 class MailReplyResponse(BaseModel):
-    """Ответ 200 POST /api/mail/messages/{id}/reply (ADR-044 §8)."""
+    """Ответ 200 POST /api/mail/messages/{id}/reply (ADR-044 §8, ADR-057 §1).
 
-    sent_id: int
-    smtp_message_id: str
+    `sent_id` — `mail_sent_messages.id` САМОЙ CRM (`uuid`, 03-data-model.md), а не
+    идентификатор агрегатора: его таблицы `sent_messages` больше нет и `sent_id` он не
+    возвращает (ADR-057 §2). Публичной схемой ответ агрегатора НЕ парсится — для этого
+    заведена внутренняя `MailServerSendResult` (сцепка «публичный контракт = внешний»
+    разорвана, ADR-057 §2.1).
+
+    `smtp_message_id` — `string | null` (ADR-057 §5.3, 04-api.md): `null` = агрегатор
+    ответил `200`, но идентификатор не прислал. Письмо ОТПРАВЛЕНО и записано в
+    `mail_sent_messages` (колонка nullable), `sent_id` присутствует всегда; неполнота
+    ответа агрегатора уходит в лог (`mail_send_missing_smtp_message_id`), а не в `502`.
+    """
+
+    sent_id: uuid.UUID
+    smtp_message_id: str | None
+
+
+class MailServerSendResult(BaseModel):
+    """ВНУТРЕННЯЯ схема ответа агрегатора на `POST /api/external/mailboxes/{id}/send`.
+
+    Нормативно (ADR-057 §2): ответ 200 = `{ smtp_message_id: string }` — идентификатора
+    отправки агрегатор не выдаёт. Схема НЕ является публичным контрактом CRM и в ответах
+    API не участвует. Лишние поля старого агрегатора (напр. `sent_id`) игнорируются
+    (pydantic по умолчанию), что делает правку совместимой с порядком деплоя
+    «агрегатор → CRM».
+
+    `smtp_message_id` — ОПЦИОНАЛЬНОЕ (ADR-057 §5.1): этой схемой парсится ответ,
+    приходящий ПОСЛЕ необратимой SMTP-отправки, поэтому она не имеет права быть строже
+    модели данных (`mail_sent_messages.smtp_message_id` nullable). Тело `200` без поля /
+    с `null` — НЕ несовместимый ответ и НЕ `502`: факт отправки пишется всегда, иначе
+    письмо ушло бы, а записи о нём не осталось (и пользователь отправил бы дубль).
+    Обязанность агрегатора возвращать поле НЕ снята (их ADR-0048 §1) — нарушение
+    фиксируется логом (§5.4/§6), а не потерей данных.
+    """
+
+    smtp_message_id: str | None = None
 
 
 # --- Каталог ящиков (чтение из БД CRM; write — транзит в агрегатор) ----------
@@ -364,6 +397,7 @@ __all__ = [
     "MailMessage",
     "MailReplyRequest",
     "MailReplyResponse",
+    "MailServerSendResult",
     "MailTag",
     "MailTagApplyResponse",
     "MailTagCreateRequest",
