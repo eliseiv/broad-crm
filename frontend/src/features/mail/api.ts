@@ -130,11 +130,19 @@ export function replyMail(id: number, payload: MailReplyRequest): Promise<MailRe
 
 // --- Запись: почтовые ящики (гейты mail:create/edit/delete/sync, ADR-044 §4) ---
 
-/** POST /api/mail/mailboxes/test — проверка IMAP/SMTP-соединения без сохранения. */
-export function testMailbox(payload: MailMailboxTestRequest): Promise<MailMailboxTestResponse> {
+/**
+ * POST /api/mail/mailboxes/test — проверка IMAP/SMTP-соединения без сохранения.
+ * `signal` — ПОЛЬЗОВАТЕЛЬСКИЙ abort (закрытие формы во время долгой проверки, ADR-053 §4).
+ * Клиентского ТАЙМАУТА нет и вводить нельзя: проверка легально идёт десятки секунд.
+ */
+export function testMailbox(
+  payload: MailMailboxTestRequest,
+  signal?: AbortSignal,
+): Promise<MailMailboxTestResponse> {
   return apiRequest<MailMailboxTestResponse>('/mail/mailboxes/test', {
     method: 'POST',
     body: payload,
+    signal,
   });
 }
 

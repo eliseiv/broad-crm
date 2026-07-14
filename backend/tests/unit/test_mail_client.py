@@ -8,6 +8,10 @@
 двойной записи); постатусный маппинг (429/5xx → MailUnavailable; прочий 4xx →
 MailRejected со `status_code` + `error_code`); 204/пустое тело → {}; не-объектное тело →
 MailUnavailable.
+
+Бюджеты клиента приходят КОНСТРУКТОРОМ (`read_timeout_sec`/`deadline_sec`, ADR-053 §1.3 п.6),
+а собственный таймаут CRM даёт `MailTimeout(status_code=None)`, а не `MailUnavailable`
+(ADR-053 §1.3 п.1/§3). Бюджеты и различение источника таймаута — `test_mail_client_timeouts.py`.
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from collections.abc import Callable, Iterator
 
 import httpx
 import pytest
-from app.infra.mail_client import MailClient, MailRejected, MailUnavailable
+from app.infra.mail_client import MailClient, MailRejected, MailTimeout, MailUnavailable
 
 _BASE = "https://postapp.example"
 _KEY = "secret-api-key-value"
@@ -37,7 +41,7 @@ def _client_with(handler: Callable[[httpx.Request], httpx.Response]) -> MailClie
         return orig(transport=transport, base_url="")
 
     mod.httpx.AsyncClient = _factory  # type: ignore[assignment]
-    return MailClient(base_url=_BASE, api_key=_KEY, timeout_sec=1.0)
+    return MailClient(base_url=_BASE, api_key=_KEY, read_timeout_sec=1.0, deadline_sec=5.0)
 
 
 @pytest.fixture(autouse=True)
@@ -115,8 +119,11 @@ async def test_read_timeout_on_write_not_retried() -> None:
         raise httpx.ReadTimeout("read timeout", request=request)
 
     client = _client_with(handler)
-    with pytest.raises(MailUnavailable):
+    # ADR-053 §1.3 п.1/§3: собственный таймаут CRM — это MailTimeout, а НЕ MailUnavailable
+    # («сервис недоступен» на работающем агрегаторе — дезинформация, прод-баг).
+    with pytest.raises(MailTimeout) as exc:
         await client.create_mailbox({"email": "a@b.c"})
+    assert exc.value.status_code is None  # источник таймаута — сама CRM (§1.3 п.2)
     assert calls["n"] == 1  # ровно одна попытка — write не ретраит read-timeout
 
 

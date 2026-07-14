@@ -54,7 +54,12 @@
 | 429 | `rate_limited` | Превышен лимит попыток входа |
 | 500 | `internal_error` | Непредвиденная ошибка |
 | 502 | `prometheus_unavailable` | Prometheus недоступен/таймаут при запросе метрик |
-| 502 | `mail_unavailable` | Внешний почтовый сервис недоступен/таймаут/`5xx` ([Mail](#mail)) |
+| 502 | `mail_unavailable` | Внешний почтовый сервис (агрегатор) **недоступен**: `ConnectError`/`ConnectTimeout` после ретраев, `429`, `5xx` (кроме `504` и кроме `502 smtp_failed` на reply), несовместимое тело; **а также собственный таймаут CRM на БЫСТРЫХ путях** (`delete`/`sync`/`oauth-authorize` — 10 с на чтение из БД агрегатора не хватило = он реально не в порядке). **Исчерпание таймаута CRM на mail-server-путях — это `504 mail_timeout`, НЕ `502`** ([Mail](#mail), [ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §2.1/§3) |
+| 502 | `mail_send_failed` | `POST /api/mail/messages/{id}/reply`: **удалённый SMTP** отклонил отправку/не ответил (проброс `502 smtp_failed` агрегатора). Агрегатор при этом **работал** ([Mail](#mail), [ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §2) |
+| 504 | `mail_timeout` | Почта не завершила операцию вовремя. Два источника: (а) **`504` ОТ агрегатора** (его прокси не дождался) — **на любой** категории путей, включая быстрые; (б) **собственный таймаут CRM** (read-бюджет `MAIL_API_MAILSERVER_TIMEOUT_SEC` **или** overall-deadline `MAIL_API_MAILSERVER_DEADLINE_SEC`) — **только на mail-server-путях**; на быстрых собственный таймаут CRM → `502 mail_unavailable`. **Не** «сервис недоступен»: агрегатор доступен, но не успел. **Не ретраится автоматически** — состояние операции неопределённо ([Mail](#mail), [ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §2.1/§3) |
+| 422 | `mail_imap_failed` | Проверка ящика: не удалось подключиться/войти по **IMAP** (проброс `422 imap_login_failed` агрегатора) ([Mail](#mail)) |
+| 422 | `mail_smtp_failed` | Проверка ящика: не удалось подключиться/войти по **SMTP** (проброс `422 smtp_login_failed` агрегатора) ([Mail](#mail)) |
+| 422 | `mail_invalid_host` | Проверка ящика: SSRF-guard агрегатора отклонил хост IMAP/SMTP (приватный/локальный) — проброс `422 invalid_host` ([Mail](#mail)) |
 | 503 | `provisioning_unavailable` | Невозможно запустить фоновую задачу провижининга |
 | 503 | `mail_not_configured` | Почта не настроена (`MAIL_API_KEY` пуст) ([Mail](#mail)) |
 | 400 | `invalid_cursor` | Битый/недекодируемый keyset-курсор ленты SMS ([SMS](#sms)) |
@@ -837,14 +842,36 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 | `404` | `team_not_found` | Переданная `team_id` не существует в CRM |
 | `409` | `mail_conflict` | Имя тега занято (`POST`/`PATCH /api/mail/tags`) **или** email ящика уже заведён (проброс `409` агрегатора). **Удаление тега `409` больше НЕ отдаёт** — признак «встроенный» упразднён ([ADR-047](adr/ADR-047-mail-fix-pack.md) §1) |
 | `410` | `oauth_state_expired` | `POST /api/mail/oauth/ingest`: `crm_state.exp` в прошлом ([TD-047](100-known-tech-debt.md)) |
-| `422` | `unprocessable` | Нарушены нормы reply (пустой/`>1 MiB` `body`, нет получателей, невалидный адрес, `>100` адресов, `subject > 998`); сбой IMAP/SMTP-логина/коннекта при `test`/create/`PATCH` кредов (проброс `422` агрегатора) |
-| `502` | `mail_unavailable` | Агрегатор недоступен/таймаут/`429`/`5xx`/исчерпаны ретраи; несовместимое тело ответа агрегатора. **Сбой проверки IMAP/SMTP — это `422`, не `502`** |
+| `422` | `unprocessable` | Нарушены нормы reply (пустой/`>1 MiB` `body`, нет получателей, невалидный адрес, `>100` адресов, `subject > 998`); **прочие** `422` агрегатора без распознанного `error.code` (fallback) |
+| `422` | `mail_imap_failed` | `test`/create/`PATCH` кредов: не удалось подключиться/войти по **IMAP** (проброс `422 imap_login_failed` агрегатора) — [ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §2 |
+| `422` | `mail_smtp_failed` | `test`/create/`PATCH` кредов: не удалось подключиться/войти по **SMTP** (проброс `422 smtp_login_failed`) — [ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §2 |
+| `422` | `mail_invalid_host` | `test`/create/`PATCH` кредов: SSRF-guard агрегатора отклонил хост IMAP/SMTP (приватный/локальный) — проброс `422 invalid_host` |
+| `502` | `mail_unavailable` | Агрегатор **недоступен**: `ConnectError`/`ConnectTimeout` после ретраев, `429`, `5xx` (кроме `504` и кроме `502 smtp_failed` на reply), несовместимое тело ответа; **плюс собственный таймаут CRM на быстрых путях** (`delete`/`sync`/`oauth-authorize`). **Сбой проверки IMAP/SMTP — это `422`, не `502`. Исчерпание таймаута CRM на mail-server-путях — это `504 mail_timeout`, не `502`** ([ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §2.1/§3) |
+| `502` | `mail_send_failed` | `POST /api/mail/messages/{id}/reply`: **удалённый SMTP** отклонил отправку/не ответил (проброс `502 smtp_failed` агрегатора). Агрегатор работал — это **не** «сервис недоступен» |
+| `504` | `mail_timeout` | (а) **`504` ОТ агрегатора** (его прокси не дождался) — на **любом** пути, включая быстрые; (б) **собственный таймаут CRM на mail-server-пути**: исчерпан read-бюджет `MAIL_API_MAILSERVER_TIMEOUT_SEC` **или** overall-deadline `MAIL_API_MAILSERVER_DEADLINE_SEC`. Агрегатор доступен, но **не успел**. **Автоматически НЕ ретраится** (анти-двойная-запись/отправка); для create/`PATCH`/reply состояние операции — **неопределённо** ([ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §2.1/§3) |
 | `503` | `mail_not_configured` | `MAIL_API_KEY` пуст (`mail_enabled=false`) — на операциях, требующих агрегатора. **Также — единый код «Outlook-OAuth недоступен»** ([ADR-045](adr/ADR-045-mail-outlook-oauth-headless-reonboarding.md) §3). **Чтение ленты/ящиков/тегов из БД CRM этим кодом НЕ гейтится** |
 | `503` | `mail_ingest_not_configured` | `MAIL_PUSH_SECRET` пуст → машинные приёмники выключены |
 
 Фабрики — в `app/errors.py`. Тело ошибки агрегатора в ответ CRM дословно не пробрасывается (только нормативный `code` + рус. `message`).
 
-**Ретраи вызовов CRM → агрегатор (нормативно, `infra/mail_client.py`).** Все вызовы к агрегатору — **write** (create/update/delete/sync/test/send/oauth-authorize), не идемпотентны: ретрай (backoff `(0.2, 0.5)`, 3 попытки) выполняется **только** на ошибках установки соединения (`ConnectError`/`ConnectTimeout` — запрос заведомо не ушёл). Read-timeout / `5xx` / `429` на write → сразу `502 mail_unavailable` (защита от двойной записи/двойной отправки письма).
+**Ретраи вызовов CRM → агрегатор (нормативно, `infra/mail_client.py`).** Все вызовы к агрегатору — **write** (create/update/delete/sync/test/send/oauth-authorize), не идемпотентны: ретрай (backoff `(0.2, 0.5)`, 3 попытки) выполняется **только** на ошибках установки соединения (`ConnectError`/`ConnectTimeout` — запрос заведомо не ушёл). Read-timeout / исчерпание overall-deadline / `5xx` / `429` на write → **сразу ошибка, без повтора** (защита от двойной записи/двойной отправки письма): `5xx`/`429` → `502 mail_unavailable`; таймаут CRM на mail-server-пути → **`504 mail_timeout`** ([ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §3 — прежняя норма «read-timeout → `502 mail_unavailable`» **отменена**: она выдавала доступный агрегатор за упавший).
+
+**Транспортный контракт `infra/mail_client.py` (нормативно, [ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §1.3).** Различение причин обязано **сохраняться до сервиса**: отдельное исключение таймаута (`MailTimeout` — read-timeout, исчерпание overall-deadline, `504` от агрегатора) и перенос `status_code`/`error_code` во **ВСЕ** не-2xx ветки, **включая `5xx`** (иначе `502 smtp_failed` неотличим от «агрегатор упал», а `504` его прокси — от реальной недоступности). Клиентов **два**: быстрый (`get_mail_client`) и mail-server (`get_mail_server_client`); категорию пути выбирает сервис.
+
+**Таймауты вызовов CRM → агрегатор — ЧЕТЫРЕ параметра (нормативно, [ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §1; единый 10-секундный бюджет на все пути ОТМЕНЁН).**
+
+| Категория | Read-бюджет (env) | Overall-deadline (env) | Пути |
+|---|---|---|---|
+| **Быстрые** (ответ из БД/Redis агрегатора) | `MAIL_API_TIMEOUT_SEC` = `10` с | `MAIL_API_DEADLINE_SEC` = `30` с | `DELETE /mailboxes/{id}`, `POST /mailboxes/{id}/sync`, `POST /mailboxes/oauth/authorize` |
+| **Mail-server** (агрегатор идёт на **удалённый** IMAP/SMTP) | `MAIL_API_MAILSERVER_TIMEOUT_SEC` = `75` с | `MAIL_API_MAILSERVER_DEADLINE_SEC` = `85` с | `POST /mailboxes/test`, `POST /mailboxes`, `PATCH /mailboxes/{id}` (любой сетевой вызов), reply/`send` |
+
+Read-бюджет применяется **явным `httpx.Timeout` по фазам** (`connect` = 5 с, `write` = 10 с, `pool` = 5 с — фиксированные константы кода; `read` = бюджет категории), **не** одиночным float. Overall-deadline — `asyncio.wait_for` вокруг **всего** вызова (все попытки ретрая + backoff + все фазы): per-phase лимиты сами по себе суммарной границы **не дают** (`connect+write+read` × 3 попытки уходит за `proxy_read_timeout` nginx → HTML-`504` nginx вместо JSON CRM = возврат бага). Обе половины — паттерн [ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md).
+
+Цепочка бюджетов **одного вызова** обязана строго возрастать наружу: `45` (hard-deadline проверки у агрегатора) `< 60` (nginx агрегатора) `< 75` (read CRM) `< 85` (overall-deadline CRM).
+
+**Бюджет НА ЗАПРОС (нормативно, [ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §1.2.1).** Один HTTP-запрос CRM может содержать **несколько** вызовов к агрегатору: `POST /api/mail/mailboxes` при провале вставки в каталог CRM делает **второй** вызов — компенсирующее удаление сироты (короткий deadline **15 с**, константа кода). Поэтому нормирована сумма: `Σ overall-deadline всех вызовов запроса + внепробная работа CRM (≤ 5 с) < proxy_read_timeout nginx CRM (120 с — [07-deployment.md](07-deployment.md#reverse-proxy-nginx--требования))`. Худший путь — `create` с компенсацией: `85 + 15 + 5 = 105 < 120`. **Новый вызов к агрегатору обязан быть отнесён к одной из двух категорий И учтён в сумме**: путь с удалённым IMAP/SMTP под 10-секундным бюджетом воспроизводит прод-баг (ложный `502` вместо реального `422`), а второй вызов в том же запросе без пересчёта суммы возвращает баг на уровне прокси (HTML-`504`).
+
+**Источник таймаута различим по `MailTimeout.status_code`** ([ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §1.3 п.2, §2.1): `504` = таймаут пришёл **ОТ агрегатора** (→ `504 mail_timeout` на **любой** категории путей); `None` = **собственный** таймаут/deadline CRM (→ `504 mail_timeout` на mail-server-путях, `502 mail_unavailable` на быстрых).
 
 **Кэш ответов записи.** Эндпоинты, в телах которых транзитом идут IMAP/SMTP-креды (`POST /mailboxes`, `POST /mailboxes/test`, `PATCH /mailboxes/{id}`, `POST /mailboxes/oauth/authorize`), отвечают **`Cache-Control: no-store`** ([05-security.md](05-security.md#транзит-imapsmtp-кредов-mail-нормативно)).
 
@@ -949,7 +976,7 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 
 **Response 200** — `MailReplyResponse`: `{ "sent_id": 5099, "smtp_message_id": "<abc123@example.com>" }`.
 
-**Ошибки:** `401`, `403 forbidden`, `404 mail_message_not_found` (нет письма **или** вне scope), `400 validation_error`, `422 unprocessable`, `409 mail_conflict`, `502 mail_unavailable`, `503 mail_not_configured`.
+**Ошибки:** `401`, `403 forbidden`, `404 mail_message_not_found` (нет письма **или** вне scope), `400 validation_error`, `422 unprocessable`, `409 mail_conflict`, **`502 mail_send_failed`** (удалённый SMTP не принял письмо — [ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §2), **`504 mail_timeout`** (бюджет `MAIL_API_MAILSERVER_TIMEOUT_SEC` = 75 с > 55 с бюджета отправки у агрегатора; отправка **не подтверждена** — письмо могло уйти, автоповтора нет), `502 mail_unavailable`, `503 mail_not_configured`.
 
 > **Rate-limit.** Прежний per-IP лимит анонимного external-reply не применяется: reply — **JWT/RBAC-эндпоинт CRM** (`mail:view`), abuse-поверхность закрыта аутентификацией пользователя ([ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) §8).
 
@@ -1040,7 +1067,9 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 
 **Response 200** — `MailMailboxTestResponse`: `{ "imap_ok": true, "smtp_ok": true }`.
 
-**Ошибки:** `401`, `403 forbidden`, `400 validation_error`, `422 unprocessable` (логин/коннект не удался), `502 mail_unavailable`, `503 mail_not_configured`.
+**Ошибки:** `401`, `403 forbidden`, `400 validation_error`, **`422 mail_imap_failed` / `422 mail_smtp_failed` / `422 mail_invalid_host`** (истинная причина отказа проверки — [ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §2), `422 unprocessable` (прочие `422` агрегатора), **`504 mail_timeout`** (проверка не уложилась в `MAIL_API_MAILSERVER_TIMEOUT_SEC`: агрегатор доступен, но не успел; автоповтора нет), `502 mail_unavailable` (агрегатор **недоступен**), `503 mail_not_configured`.
+
+> **Бюджет вызова — `MAIL_API_MAILSERVER_TIMEOUT_SEC` (read 75 с) + `MAIL_API_MAILSERVER_DEADLINE_SEC` (overall 85 с), НЕ `MAIL_API_TIMEOUT_SEC`** ([ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md) §1): агрегатор открывает IMAP- и SMTP-сессии к **удалённому** серверу и законно отвечает десятки секунд. Худший бюджет **запроса** (`POST /api/mail/mailboxes` с компенсирующей уборкой) — **105 с** (§1.2.1). UI обязан показывать прогресс-состояние ожидания ([08-design-system.md](08-design-system.md#состояния-ui-страницы-почты)); клиентского таймаута короче **105 с** быть не должно.
 
 ### POST `/api/mail/mailboxes`
 
@@ -1062,7 +1091,9 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 
 **Response 201** — `MailMailbox`.
 
-**Ошибки:** `401`, `403 forbidden` (нет `mail:create` / `team_id` вне scope / `null` у не-admin), `400 validation_error`, `404 team_not_found`, `409 mail_conflict` (email занят), `422 unprocessable` (IMAP/SMTP), `502 mail_unavailable`, `503 mail_not_configured`.
+**Ошибки:** `401`, `403 forbidden` (нет `mail:create` / `team_id` вне scope / `null` у не-admin), `400 validation_error`, `404 team_not_found`, `409 mail_conflict` (email занят), **`422 mail_imap_failed` / `422 mail_smtp_failed` / `422 mail_invalid_host`** (агрегатор прогоняет connection-test **до** создания), `422 unprocessable` (прочие), **`504 mail_timeout`** (бюджет `MAIL_API_MAILSERVER_TIMEOUT_SEC`; состояние **неопределённо** — ящик мог быть создан в агрегаторе; автоповтора нет, UI предлагает обновить список), `502 mail_unavailable`, `503 mail_not_configured`.
+
+> **Два вызова к агрегатору в одном запросе (бюджет — §1.2.1 [ADR-053](adr/ADR-053-mail-timeouts-error-passthrough.md)).** При провале вставки в каталог CRM после успешного создания ящика в агрегаторе выполняется **компенсирующее удаление сироты** (best-effort, короткий deadline **15 с**, не ретраится; его провал — включая таймаут — логируется и **не подменяет** исходную ошибку). Худший бюджет запроса: `85 (create) + 15 (compensate) + 5 (overhead) = 105 с < 120 с` (`proxy_read_timeout` nginx CRM).
 
 ### PATCH `/api/mail/mailboxes/{id}`
 
@@ -1088,7 +1119,7 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 
 **Response 200** — `MailMailbox`.
 
-**Ошибки:** `401`, `403 forbidden`, `400 validation_error`, `404 mail_mailbox_not_found` / `404 team_not_found`, `409 mail_conflict`, `422 unprocessable`, `502 mail_unavailable`, `503 mail_not_configured`.
+**Ошибки:** `401`, `403 forbidden`, `400 validation_error`, `404 mail_mailbox_not_found` / `404 team_not_found`, `409 mail_conflict`, **`422 mail_imap_failed` / `422 mail_smtp_failed` / `422 mail_invalid_host`** (агрегатор ре-проверяет соединение при смене кредов), `422 unprocessable` (прочие), **`504 mail_timeout`** (бюджет `MAIL_API_MAILSERVER_TIMEOUT_SEC`; состояние неопределённо — правка могла примениться), `502 mail_unavailable`, `503 mail_not_configured`.
 
 ### DELETE `/api/mail/mailboxes/{id}`
 

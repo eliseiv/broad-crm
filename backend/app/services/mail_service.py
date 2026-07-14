@@ -27,7 +27,7 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.config import Settings
+from app.config import MAIL_CLEANUP_DEADLINE_SEC, Settings
 from app.domain.mail import (
     MAX_REPLY_BODY_BYTES,
     MAX_REPLY_RECIPIENTS,
@@ -41,21 +41,29 @@ from app.domain.mail import (
     validate_reply_addresses,
 )
 from app.errors import (
+    MAIL_TIMEOUT_MAILBOX_MESSAGE,
+    MAIL_TIMEOUT_REPLY_MESSAGE,
+    MAIL_TIMEOUT_TEST_MESSAGE,
     AppError,
     forbidden,
     invalid_cursor,
     invalid_limit,
     mail_conflict,
+    mail_imap_failed,
+    mail_invalid_host,
     mail_mailbox_not_found,
     mail_message_not_found,
     mail_not_configured,
+    mail_send_failed,
+    mail_smtp_failed,
     mail_tag_not_found,
+    mail_timeout,
     mail_unavailable,
     team_not_found,
     unprocessable,
     validation_error,
 )
-from app.infra.mail_client import MailClient, MailRejected, MailUnavailable
+from app.infra.mail_client import MailClient, MailRejected, MailTimeout, MailUnavailable
 from app.infra.mail_oauth_state import encode_crm_state
 from app.logging import get_logger
 from app.models.mail_account import MailAccount
@@ -155,12 +163,46 @@ _MAILBOX_CREATE_AGGREGATOR_FIELDS = frozenset(
 )
 
 
-class MailService:
-    """Чтение почты из БД CRM + транзит операций ящика/reply в агрегатор (ADR-044)."""
+# Машиночитаемые `error.code` агрегатора на `422` → конкретные коды CRM (ADR-053 §2).
+# Различающая информация есть у агрегатора и обязана дойти до пользователя: «неверный
+# хост / сервер не отвечает / отказ авторизации» — разные действия. Нераспознанный код /
+# его отсутствие → прежний fallback `422 unprocessable`.
+_AGGREGATOR_422_CODE_MAP: dict[str, Callable[[], AppError]] = {
+    "imap_login_failed": mail_imap_failed,
+    "smtp_login_failed": mail_smtp_failed,
+    "invalid_host": mail_invalid_host,
+}
 
-    def __init__(self, session: AsyncSession, client: MailClient, settings: Settings) -> None:
+# `error.code` агрегатора на `502` при отправке reply: удалённый SMTP отклонил письмо —
+# сам агрегатор РАБОТАЛ (ADR-053 §2) → `502 mail_send_failed`, а не «сервис недоступен».
+_AGGREGATOR_SMTP_FAILED_CODE = "smtp_failed"
+
+
+class MailService:
+    """Чтение почты из БД CRM + транзит операций ящика/reply в агрегатор (ADR-044).
+
+    Два клиента агрегатора по КАТЕГОРИИ пути (ADR-053 §1.1/§1.3 п.6): `client` — быстрые
+    пути (`delete`/`sync`/`oauth-authorize`, агрегатор отвечает из своей БД/Redis),
+    `mail_server_client` — mail-server-пути (`test`/`create`/`patch`/`reply`, агрегатор
+    идёт на удалённый IMAP/SMTP и законно тратит десятки секунд). Категорию выбирает
+    сервис — транспорт о путях не знает.
+
+    **Добавляя новый вызов к агрегатору**, обязательно (а) отнеси его к категории (§1.1)
+    и (б) пересчитай бюджет ЗАПРОСА (§1.2.1): `Σ overall-deadline всех вызовов запроса +
+    внепробная работа CRM (≤5 с) < proxy_read_timeout nginx CRM`. Второй вызов в том же
+    запросе без пересчёта возвращает прод-баг на уровень прокси (HTML-`504`).
+    """
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        client: MailClient,
+        settings: Settings,
+        mail_server_client: MailClient,
+    ) -> None:
         self._session = session
         self._client = client
+        self._mail_server_client = mail_server_client
         self._settings = settings
         self._accounts = MailAccountRepository(session)
         self._messages = MailMessageRepository(session)
@@ -401,11 +443,16 @@ class MailService:
     async def test_mailbox(self, payload: MailMailboxTestRequest) -> MailMailboxTestResponse:
         """Проверка IMAP/SMTP-соединения без сохранения (ADR-044 §4). Гейт mail:create.
 
-        Путь `test` агрегатора отдаёт 422/400 и НИКОГДА не 502. Пароли — транзитом.
+        **Mail-server-путь** (ADR-053 §1.1): агрегатор идёт на удалённый IMAP/SMTP —
+        долгий бюджет. Истинная причина отказа (`imap_login_failed`/`smtp_login_failed`/
+        `invalid_host`) доходит до пользователя отдельным кодом (§2), таймаут — `504
+        mail_timeout`, а не `502 mail_unavailable` (§3). Пароли — транзитом.
         """
         self._ensure_configured()
         try:
-            raw = await self._client.test_mailbox(payload.model_dump())
+            raw = await self._mail_server_client.test_mailbox(payload.model_dump())
+        except MailTimeout as exc:
+            raise self._mailserver_timeout(exc, MAIL_TIMEOUT_TEST_MESSAGE) from exc
         except MailUnavailable as exc:
             raise mail_unavailable() from exc
         except MailRejected as exc:
@@ -435,7 +482,10 @@ class MailService:
         }
         creds["display_name"] = display_name
         try:
-            raw = await self._client.create_mailbox(creds)
+            # Mail-server-путь: агрегатор прогоняет connection-test до вставки (§1.1).
+            raw = await self._mail_server_client.create_mailbox(creds)
+        except MailTimeout as exc:
+            raise self._mailserver_timeout(exc, MAIL_TIMEOUT_MAILBOX_MESSAGE) from exc
         except MailUnavailable as exc:
             raise mail_unavailable() from exc
         except MailRejected as exc:
@@ -516,9 +566,13 @@ class MailService:
             aggregator_payload["display_name"] = new_display_name
         if aggregator_payload:
             # Сетевой вызов к агрегатору только при изменении кредов/статуса/email/имени.
+            # Mail-server-путь: ЛЮБОЙ сетевой вызов PATCH идёт по долгому бюджету — CRM не
+            # знает, ре-тестит ли агрегатор креды на этом теле (ADR-053 §1.1).
             self._ensure_configured()
             try:
-                await self._client.update_mailbox(mailbox_id, aggregator_payload)
+                await self._mail_server_client.update_mailbox(mailbox_id, aggregator_payload)
+            except MailTimeout as exc:
+                raise self._mailserver_timeout(exc, MAIL_TIMEOUT_MAILBOX_MESSAGE) from exc
             except MailUnavailable as exc:
                 raise mail_unavailable() from exc
             except MailRejected as exc:
@@ -549,7 +603,10 @@ class MailService:
         self._ensure_configured()
         await self._load_account_in_scope(scope, mailbox_id)
         try:
+            # Быстрый путь (ADR-053 §1.1): агрегатор удаляет строку в своей БД.
             await self._client.delete_mailbox(mailbox_id)
+        except MailTimeout as exc:
+            raise self._map_fast_timeout(exc) from exc
         except MailUnavailable as exc:
             raise mail_unavailable() from exc
         except MailRejected as exc:
@@ -563,7 +620,10 @@ class MailService:
         self._ensure_configured()
         await self._load_account_in_scope(scope, mailbox_id)
         try:
+            # Быстрый путь (ADR-053 §1.1): агрегатор лишь ставит синк в очередь.
             raw = await self._client.sync_mailbox(mailbox_id)
+        except MailTimeout as exc:
+            raise self._map_fast_timeout(exc) from exc
         except MailUnavailable as exc:
             raise mail_unavailable() from exc
         except MailRejected as exc:
@@ -601,7 +661,10 @@ class MailService:
             exp=exp,
         )
         try:
+            # Быстрый путь (ADR-053 §1.1): агрегатор минтит state в Redis.
             raw = await self._client.authorize_oauth(crm_state)
+        except MailTimeout as exc:
+            raise self._map_fast_timeout(exc) from exc
         except MailUnavailable as exc:
             raise mail_unavailable() from exc
         except MailRejected as exc:
@@ -662,9 +725,12 @@ class MailService:
             send_payload["refs"] = refs
 
         try:
-            raw = await self._client.send_message(message.mail_account_id, send_payload)
+            # Mail-server-путь (ADR-053 §1.1): агрегатор идёт на удалённый SMTP.
+            raw = await self._mail_server_client.send_message(message.mail_account_id, send_payload)
+        except MailTimeout as exc:
+            raise self._mailserver_timeout(exc, MAIL_TIMEOUT_REPLY_MESSAGE) from exc
         except MailUnavailable as exc:
-            raise mail_unavailable() from exc
+            raise self._map_reply_unavailable(exc) from exc
         except MailRejected as exc:
             raise self._map_reply_rejected(exc) from exc
 
@@ -892,11 +958,19 @@ class MailService:
         """Best-effort удаление ящика в агрегаторе при провале вставки каталога (§4).
 
         Провал самого DELETE не должен ронять ответ пользователю (исходная ошибка
-        важнее) — логируется и подавляется.
+        важнее) — логируется и подавляется. `MailTimeout` — В КАТЧ-ЛИСТЕ наравне с
+        `MailUnavailable`/`MailRejected` (ADR-053 §1.2.2): иначе таймаут уборки пролетел
+        бы наружу и ПОДМЕНИЛ исходную ошибку.
+
+        Это ВТОРОЙ вызов к агрегатору в пределах ОДНОГО HTTP-запроса (`create`), поэтому
+        у него отдельный КОРОТКИЙ overall-deadline (`MAIL_CLEANUP_DEADLINE_SEC`, ADR-053
+        §1.2.2): уборка — не работа, ради которой пользователь ждёт, и не вправе тратить
+        полный бюджет быстрой категории. Полный бюджет вернул бы сумму запроса за
+        `proxy_read_timeout` nginx (§1.2.1). Read-фаза — быстрого клиента.
         """
         try:
-            await self._client.delete_mailbox(mailbox_id)
-        except (MailUnavailable, MailRejected) as exc:
+            await self._client.delete_mailbox(mailbox_id, deadline_sec=MAIL_CLEANUP_DEADLINE_SEC)
+        except (MailUnavailable, MailRejected, MailTimeout) as exc:
             logger.warning(
                 "mail_create_orphan_cleanup_failed",
                 mailbox_id=mailbox_id,
@@ -913,7 +987,47 @@ class MailService:
         return value
 
     @staticmethod
+    def _mailserver_timeout(exc: MailTimeout, message: str) -> AppError:
+        """Таймаут на MAIL-SERVER-пути → всегда `504 mail_timeout` (ADR-053 §2.1/§3).
+
+        Оба источника (`504` ОТ агрегатора и собственный таймаут/deadline CRM) дают один
+        код — различение на ответ здесь не влияет, но `status_code` ОБЯЗАН логироваться
+        (нормативно, §2.1). Это НЕ «сервис недоступен»: агрегатор доступен, но не успел.
+        """
+        logger.warning("mail_mailserver_timeout", status=exc.status_code)
+        return mail_timeout(message)
+
+    @staticmethod
+    def _map_fast_timeout(exc: MailTimeout) -> AppError:
+        """Таймаут на БЫСТРОМ пути — ветвление по ИСТОЧНИКУ (ADR-053 §2.1).
+
+        `status_code == 504` → таймаут пришёл ОТ агрегатора (его прокси не дождался):
+        агрегатор доступен и сам сообщает «не успел» → `504 mail_timeout` (код одинаков
+        на любой категории путей). `status_code is None` → СОБСТВЕННЫЙ таймаут CRM: на
+        чтение из БД/Redis агрегатора не хватило `MAIL_API_DEADLINE_SEC` = он реально не
+        в порядке → `502 mail_unavailable`.
+        """
+        logger.warning("mail_fast_path_timeout", status=exc.status_code)
+        if exc.status_code == status.HTTP_504_GATEWAY_TIMEOUT:
+            return mail_timeout()
+        return mail_unavailable()
+
+    @staticmethod
+    def _map_aggregator_422(exc: MailRejected, fallback_message: str) -> AppError:
+        """`422` агрегатора → конкретная причина отказа по `error.code` (ADR-053 §2).
+
+        `imap_login_failed` → 422 mail_imap_failed; `smtp_login_failed` → 422
+        mail_smtp_failed; `invalid_host` → 422 mail_invalid_host. Нераспознанный код /
+        его отсутствие → прежний fallback `422 unprocessable`.
+        """
+        factory = _AGGREGATOR_422_CODE_MAP.get(exc.error_code or "")
+        if factory is not None:
+            return factory()
+        return unprocessable(fallback_message)
+
+    @classmethod
     def _map_rejected(
+        cls,
         exc: MailRejected,
         *,
         not_found: Callable[[], AppError] | None = None,
@@ -922,7 +1036,10 @@ class MailService:
         """Постатусный маппинг отклонения write-запроса ящика в код CRM (ADR-044 §4).
 
         400 → validation_error; 404 → `not_found()` (ящик); 409 → mail_conflict (если
-        `conflict`, напр. email занят); 422 → unprocessable (IMAP/SMTP); иное → 502.
+        `conflict`, напр. email занят); 422 → конкретная причина отказа проверки по
+        `error.code` агрегатора (ADR-053 §2), иначе fallback unprocessable; прочие 4xx
+        (401/403/любой неперечисленный) — catch-all: лог + `502 mail_unavailable`
+        (дефект интеграции, напр. протухший `MAIL_API_KEY`; отдельного кода не заводим).
         """
         code = exc.status_code
         if code == status.HTTP_400_BAD_REQUEST:
@@ -932,13 +1049,17 @@ class MailService:
         if code == status.HTTP_409_CONFLICT and conflict:
             return mail_conflict()
         if code == status.HTTP_422_UNPROCESSABLE_ENTITY:
-            return unprocessable("Агрегатор отклонил запрос")
+            return cls._map_aggregator_422(exc, "Агрегатор отклонил запрос")
         logger.warning("mail_write_unexpected_aggregator_status", status=code)
         return mail_unavailable()
 
-    @staticmethod
-    def _map_reply_rejected(exc: MailRejected) -> AppError:
-        """Постатусный маппинг отклонения reply (ADR-044 §8): 400/404/409/422/иное."""
+    @classmethod
+    def _map_reply_rejected(cls, exc: MailRejected) -> AppError:
+        """Постатусный маппинг отклонения reply (ADR-044 §8): 400/404/409/422/иное.
+
+        `422` — с распознаванием `error.code` агрегатора (ADR-053 §2: reply — тоже
+        mail-server-путь), иначе fallback unprocessable.
+        """
         code = exc.status_code
         if code == status.HTTP_400_BAD_REQUEST:
             return validation_error("Агрегатор отклонил ответ")
@@ -947,8 +1068,24 @@ class MailService:
         if code == status.HTTP_409_CONFLICT:
             return mail_conflict()
         if code == status.HTTP_422_UNPROCESSABLE_ENTITY:
-            return unprocessable("Агрегатор отклонил ответ")
+            return cls._map_aggregator_422(exc, "Агрегатор отклонил ответ")
         logger.warning("mail_reply_unexpected_aggregator_status", status=code)
+        return mail_unavailable()
+
+    @staticmethod
+    def _map_reply_unavailable(exc: MailUnavailable) -> AppError:
+        """`5xx`/сеть при отправке reply → `mail_send_failed` vs `mail_unavailable` (§2).
+
+        `502 smtp_failed` от агрегатора = удалённый SMTP отклонил отправку/не ответил,
+        сам агрегатор РАБОТАЛ → `502 mail_send_failed` (не «сервис недоступен»). Прочие
+        `5xx`/`429`/сеть/битое тело → `502 mail_unavailable`.
+        """
+        if (
+            exc.status_code == status.HTTP_502_BAD_GATEWAY
+            and exc.error_code == _AGGREGATOR_SMTP_FAILED_CODE
+        ):
+            logger.warning("mail_reply_smtp_failed")
+            return mail_send_failed()
         return mail_unavailable()
 
     def _ensure_configured(self) -> None:

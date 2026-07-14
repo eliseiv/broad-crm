@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Check, ChevronDown, Copy, ExternalLink, PlugZap } from 'lucide-react';
+import { AlertTriangle, Check, ChevronDown, Copy, ExternalLink, PlugZap } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
 import { Checkbox } from '@/components/ui/Checkbox';
@@ -8,11 +8,18 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { Select } from '@/components/ui/Select';
 import type { SelectOption } from '@/components/ui/Select';
+import { Spinner } from '@/components/ui/Spinner';
 import { cn } from '@/lib/cn';
 import { env } from '@/lib/env';
 import { ApiError } from '@/lib/api';
 import { useCan, useSeesAllMailTeams } from '@/features/auth/hooks';
 import { listMailboxes } from '@/features/mail/api';
+import {
+  MAIL_CONNECTION_PROGRESS_HINT,
+  MAIL_UNAVAILABLE_MESSAGE,
+  mailErrorMessage,
+} from '@/features/mail/errorMessages';
+import type { MailAction } from '@/features/mail/errorMessages';
 import {
   mailMailboxesKey,
   useCreateMailbox,
@@ -39,6 +46,14 @@ interface MailboxFormModalProps {
   mode: 'add' | 'edit';
   /** Обязателен в режиме edit — источник префила и id для PATCH. */
   mailbox?: MailMailbox;
+}
+
+/**
+ * Пользовательский abort (форма закрыта во время долгой проверки соединения, ADR-053 §4):
+ * fetch отклоняется `DOMException: AbortError` — это НЕ отказ операции, тост не показываем.
+ */
+function isAbortError(err: unknown): boolean {
+  return err instanceof DOMException && err.name === 'AbortError';
 }
 
 /** Ремоунт по ключу mode+id+open → чистый сброс формы. */
@@ -289,6 +304,14 @@ function MailboxDialog({
   const [smtpPassword, setSmtpPassword] = useState('');
 
   const [errors, setErrors] = useState<FieldErrors>({});
+  // Отказ проверки/создания/правки с ИСТИННОЙ причиной (ADR-053 §2/§4): 422-семейство
+  // (IMAP/SMTP/хост) и 504 mail_timeout показываются В ФОРМЕ, рядом с полями подключения,
+  // а НЕ тостом «сервис недоступен» (08-design-system.md, «Состояния UI страницы «Почты»»).
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const connectionErrorRef = useRef<HTMLParagraphElement | null>(null);
+  // Пользовательский abort долгой проверки соединения (ADR-053 §4): закрытие формы обрывает
+  // запрос. Это НЕ клиентский таймаут (его вводить нельзя) — обрыв инициирует только человек.
+  const testAbortRef = useRef<AbortController | null>(null);
 
   // --- Outlook (OAuth) состояние (только режим add) ---
   // authorizeUrl !== null → показана панель-ссылка и запущен пуллинг списка ящиков.
@@ -318,6 +341,12 @@ function MailboxDialog({
   const authorizeMutation = useMailboxOAuthAuthorize();
 
   const isSubmitting = createMutation.isPending || updateMutation.isPending;
+  const isTesting = testMutation.isPending;
+  // Прогресс-состояние долгого ожидания (ADR-053 §4): test/create/patch законно идут десятки
+  // секунд (худший бюджет ЗАПРОСА — 105 с). Пока идёт вызов — кнопки disabled + спиннер +
+  // подпись; клиентского таймаута короче серверного бюджета НЕ вводим (lib/api.ts:41 — только
+  // внешний signal), иначе SPA снова оборвёт легальный долгий запрос (исходный прод-баг).
+  const isCheckingConnection = isTesting || isSubmitting;
 
   // Пуллинг списка ящиков, пока открыта Outlook-панель: новый ящик появится, когда
   // агрегатор долетит уведомлением (POST /api/mail/oauth/ingest, ADR-045 §3/§5).
@@ -373,7 +402,41 @@ function MailboxDialog({
     smtp_password: smtpPassword.trim() || null,
   });
 
-  const mapError = (err: unknown): void => {
+  // Истинная причина отказа (ADR-053 §2) видна пользователю сразу — если её показать в
+  // прокручиваемой форме, а он смотрит на кнопку, сообщение может остаться вне вьюпорта.
+  useEffect(() => {
+    if (connectionError !== null) {
+      connectionErrorRef.current?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [connectionError]);
+
+  // Размонтирование формы (закрытие любым способом: Esc / overlay / «Отмена» / крестик —
+  // wrapper ремоунтит диалог по ключу с `open`) обрывает висящий запрос проверки.
+  useEffect(() => {
+    const ref = testAbortRef;
+    return () => ref.current?.abort();
+  }, []);
+
+  /**
+   * Устаревшее сообщение об отказе не должно висеть, пока пользователь правит параметры
+   * подключения (хост/порт/шифрование/логин/пароль) — оно относится к ПРЕЖНИМ значениям.
+   */
+  const clearConnectionError = () => {
+    if (connectionError !== null) setConnectionError(null);
+  };
+
+  /**
+   * `action` определяет текст `504 mail_timeout` (ADR-053 §4): 'test' — проверка, 'save' —
+   * создание/правка. 422-семейство и 504 → сообщение в форме; прочие коды — прежние ветки.
+   */
+  const mapError = (err: unknown, action: MailAction): void => {
+    // Пользовательский abort (форма закрыта во время проверки) — не ошибка, молчим.
+    if (isAbortError(err)) return;
+    const known = mailErrorMessage(err, action);
+    if (known !== null) {
+      setConnectionError(known);
+      return;
+    }
     if (err instanceof ApiError) {
       if (err.status === 409) {
         setErrors((p) => ({ ...p, email: 'Ящик с таким адресом уже заведён' }));
@@ -399,6 +462,14 @@ function MailboxDialog({
         else toast.error('Проверьте корректность полей');
         return;
       }
+      // Агрегатор действительно недоступен — различаем по `error.code`, а НЕ по статусу
+      // (ADR-053 §2): у `502` есть и другие коды (`mail_send_failed` разобран выше в
+      // mailErrorMessage), а любой будущий 502-код не вправе получить ложное
+      // «Почтовый сервис временно недоступен». Прочие 502 → нормативное сообщение backend'а.
+      if (err.status === 502 && err.code === 'mail_unavailable') {
+        toast.error(MAIL_UNAVAILABLE_MESSAGE);
+        return;
+      }
       toast.error(err.message);
       return;
     }
@@ -407,18 +478,38 @@ function MailboxDialog({
 
   const handleTest = () => {
     setErrors({});
-    testMutation.mutate(buildTestPayload(), {
-      onSuccess: (res) => {
-        if (res.imap_ok && res.smtp_ok) toast.success('Соединение проверено: IMAP и SMTP доступны');
-        else
-          toast.error(
-            `Проблема соединения: IMAP ${res.imap_ok ? 'ОК' : 'ошибка'}, SMTP ${
-              res.smtp_ok ? 'ОК' : 'ошибка'
-            }`,
-          );
+    setConnectionError(null);
+    // Новый контроллер на каждую проверку: закрытие формы во время долгого запроса (до 85 с,
+    // ADR-053 §1.1) обрывает его через `signal` (lib/api.ts принимает внешний signal).
+    testAbortRef.current?.abort();
+    const controller = new AbortController();
+    testAbortRef.current = controller;
+    testMutation.mutate(
+      { payload: buildTestPayload(), signal: controller.signal },
+      {
+        onSuccess: (res) => {
+          if (res.imap_ok && res.smtp_ok)
+            toast.success('Соединение проверено: IMAP и SMTP доступны');
+          else
+            toast.error(
+              `Проблема соединения: IMAP ${res.imap_ok ? 'ОК' : 'ошибка'}, SMTP ${
+                res.smtp_ok ? 'ОК' : 'ошибка'
+              }`,
+            );
+        },
+        onError: (err) => mapError(err, 'test'),
       },
-      onError: mapError,
-    });
+    );
+  };
+
+  /**
+   * Закрытие формы. Во время ПРОВЕРКИ соединения форма закрываема (пользователь не заперт
+   * на 85 с) — размонтирование обрывает запрос по `signal`. Во время СОХРАНЕНИЯ
+   * (create/patch) закрытие блокируется: запрос уже пишет состояние на сервере.
+   */
+  const requestClose = (next: boolean) => {
+    if (isSubmitting) return;
+    onOpenChange(next);
   };
 
   // Клик «Подключить Outlook (OAuth)»: отправляет тот же team_id, что и обычное создание
@@ -440,8 +531,10 @@ function MailboxDialog({
             toast.error('Выбранная команда не найдена');
             return;
           }
-          if (err.status === 502) {
-            toast.error('Почтовый сервис временно недоступен. Попробуйте позже.');
+          // Строка — нормативная константа словаря (08-design-system.md); различаем по
+          // `error.code`, а не по статусу (ADR-053 §2). Прочие 502 → сообщение backend'а.
+          if (err.status === 502 && err.code === 'mail_unavailable') {
+            toast.error(MAIL_UNAVAILABLE_MESSAGE);
             return;
           }
           toast.error(err.message);
@@ -488,7 +581,7 @@ function MailboxDialog({
         toast.success('Почта добавлена');
         onOpenChange(false);
       },
-      onError: mapError,
+      onError: (err) => mapError(err, 'save'),
     });
   };
 
@@ -528,13 +621,14 @@ function MailboxDialog({
           toast.success('Почта обновлена');
           onOpenChange(false);
         },
-        onError: mapError,
+        onError: (err) => mapError(err, 'save'),
       },
     );
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setConnectionError(null);
     if (!validate()) return;
     if (isEdit) handleUpdate();
     else handleCreate();
@@ -553,35 +647,57 @@ function MailboxDialog({
   return (
     <Modal
       open={open}
-      onOpenChange={(next) => !isSubmitting && onOpenChange(next)}
+      onOpenChange={requestClose}
       title={isEdit ? 'Изменить почту' : 'Добавить почту'}
       description={
         isEdit ? undefined : 'IMAP/SMTP-доступ. Пароль передаётся защищённо и не хранится в CRM.'
       }
+      // Во время ПРОВЕРКИ форма остаётся закрываемой (ADR-053 §4 требует disabled-кнопок и
+      // спиннера, но НЕ запирает пользователя на 85 с) — закрытие обрывает запрос по signal.
+      // Блокируем закрытие только на СОХРАНЕНИИ (create/patch уже меняют состояние).
       dismissible={!isSubmitting}
       size="lg"
       footer={
-        <div className="flex w-full items-center justify-between gap-2">
-          {canTest ? (
-            <Button
-              variant="outline"
-              onClick={handleTest}
-              loading={testMutation.isPending}
-              disabled={!connectionComplete || isSubmitting}
+        <div className="flex w-full flex-col gap-2">
+          {/*
+            Прогресс-состояние долгого ожидания (ADR-053 §4, 08-design-system.md): спиннер +
+            подпись рядом с кнопками, пока идёт проверка/сохранение. Кнопки при этом disabled
+            (loading в Button) — форма не выглядит «мёртвой», пока сервер легально ждёт ответа
+            почтового сервера (до двух минут).
+          */}
+          {isCheckingConnection && (
+            <p
+              className="flex items-start gap-2 text-[13px] leading-relaxed text-text-secondary"
+              role="status"
             >
-              <PlugZap className="h-4 w-4" />
-              Проверить соединение
-            </Button>
-          ) : (
-            <span />
+              <Spinner className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+              {/* Подпись ПЕРЕНОСИТСЯ на узком вьюпорте (min-w-0 + break-words); truncate /
+                  overflow-hidden на значимом тексте запрещены. */}
+              <span className="min-w-0 break-words">{MAIL_CONNECTION_PROGRESS_HINT}</span>
+            </p>
           )}
-          <div className="flex gap-2">
-            <Button variant="ghost" onClick={() => onOpenChange(false)} disabled={isSubmitting}>
-              Отмена
-            </Button>
-            <Button type="submit" form="mailbox-form" loading={isSubmitting}>
-              {isEdit ? 'Сохранить' : 'Добавить'}
-            </Button>
+          <div className="flex w-full items-center justify-between gap-2">
+            {canTest ? (
+              <Button
+                variant="outline"
+                onClick={handleTest}
+                loading={isTesting}
+                disabled={!connectionComplete || isSubmitting}
+              >
+                <PlugZap className="h-4 w-4" />
+                Проверить соединение
+              </Button>
+            ) : (
+              <span />
+            )}
+            <div className="flex gap-2">
+              <Button variant="ghost" onClick={() => requestClose(false)} disabled={isSubmitting}>
+                Отмена
+              </Button>
+              <Button type="submit" form="mailbox-form" loading={isSubmitting} disabled={isTesting}>
+                {isEdit ? 'Сохранить' : 'Добавить'}
+              </Button>
+            </div>
           </div>
         </div>
       }
@@ -604,6 +720,7 @@ function MailboxDialog({
           onChange={(e) => {
             setEmail(e.target.value);
             if (errors.email) setErrors((p) => ({ ...p, email: undefined }));
+            clearConnectionError();
           }}
         />
         {/* «Номер» + «Приложение» вместо упразднённого «Отображаемого имени» (ADR-047 §3.6);
@@ -735,17 +852,39 @@ function MailboxDialog({
           </div>
         )}
 
+        {/*
+          Истинная причина отказа (ADR-053 §2/§4): 422 mail_imap_failed / mail_smtp_failed /
+          mail_invalid_host и 504 mail_timeout — В ФОРМЕ, рядом с полями подключения, а НЕ
+          тостом «сервис временно недоступен» (агрегатор был доступен). Кнопки «Повторить»
+          нет: пользователь правит поля и жмёт «Проверить соединение» (08-design-system.md).
+        */}
+        {connectionError !== null && (
+          <p
+            ref={connectionErrorRef}
+            role="alert"
+            className="flex items-start gap-2 rounded-sub border border-status-red/40 bg-status-red/10 px-3 py-2 text-[13px] leading-relaxed text-status-red"
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+            <span>{connectionError}</span>
+          </p>
+        )}
+
         <fieldset className="flex flex-col gap-3 rounded-sub border border-border-subtle p-3">
           <legend className="px-1 text-[12px] font-medium uppercase tracking-wide text-text-tertiary">
             IMAP
           </legend>
           {errors.imap && <p className="text-[12px] text-status-red">{errors.imap}</p>}
+          {/* Правка любого параметра подключения гасит устаревшее сообщение об отказе
+              (оно относится к ПРЕЖНИМ значениям) — как чистится errors.password. */}
           <Input
             label="IMAP-хост"
             value={imapHost}
             mono
             autoComplete="off"
-            onChange={(e) => setImapHost(e.target.value)}
+            onChange={(e) => {
+              setImapHost(e.target.value);
+              clearConnectionError();
+            }}
           />
           <div className="flex items-end gap-3">
             <div className="w-32">
@@ -754,14 +893,20 @@ function MailboxDialog({
                 type="number"
                 value={imapPort}
                 mono
-                onChange={(e) => setImapPort(e.target.value)}
+                onChange={(e) => {
+                  setImapPort(e.target.value);
+                  clearConnectionError();
+                }}
               />
             </div>
             <div className="pb-2.5">
               <Checkbox
                 label="SSL/TLS"
                 checked={imapSsl}
-                onChange={(e) => setImapSsl(e.target.checked)}
+                onChange={(e) => {
+                  setImapSsl(e.target.checked);
+                  clearConnectionError();
+                }}
               />
             </div>
           </div>
@@ -777,7 +922,10 @@ function MailboxDialog({
             value={smtpHost}
             mono
             autoComplete="off"
-            onChange={(e) => setSmtpHost(e.target.value)}
+            onChange={(e) => {
+              setSmtpHost(e.target.value);
+              clearConnectionError();
+            }}
           />
           <div className="flex flex-wrap items-end gap-3">
             <div className="w-32">
@@ -786,7 +934,10 @@ function MailboxDialog({
                 type="number"
                 value={smtpPort}
                 mono
-                onChange={(e) => setSmtpPort(e.target.value)}
+                onChange={(e) => {
+                  setSmtpPort(e.target.value);
+                  clearConnectionError();
+                }}
               />
             </div>
             <div className="w-40">
@@ -794,7 +945,10 @@ function MailboxDialog({
                 label="Шифрование"
                 options={smtpSecurityOptions}
                 value={smtpSecurity}
-                onChange={(e) => setSmtpSecurity(e.target.value as SmtpSecurity)}
+                onChange={(e) => {
+                  setSmtpSecurity(e.target.value as SmtpSecurity);
+                  clearConnectionError();
+                }}
               />
             </div>
           </div>
@@ -804,7 +958,10 @@ function MailboxDialog({
             mono
             autoComplete="off"
             placeholder="По умолчанию — адрес почты"
-            onChange={(e) => setSmtpUsername(e.target.value)}
+            onChange={(e) => {
+              setSmtpUsername(e.target.value);
+              clearConnectionError();
+            }}
           />
           <Input
             label="SMTP-пароль (опц.)"
@@ -812,7 +969,10 @@ function MailboxDialog({
             value={smtpPassword}
             autoComplete="new-password"
             placeholder="По умолчанию — основной пароль"
-            onChange={(e) => setSmtpPassword(e.target.value)}
+            onChange={(e) => {
+              setSmtpPassword(e.target.value);
+              clearConnectionError();
+            }}
           />
         </fieldset>
 
@@ -826,6 +986,7 @@ function MailboxDialog({
             onChange={(e) => {
               setPassword(e.target.value);
               if (errors.password) setErrors((p) => ({ ...p, password: undefined }));
+              clearConnectionError();
             }}
           />
           {passwordHint && <p className="text-[12px] text-text-secondary">{passwordHint}</p>}

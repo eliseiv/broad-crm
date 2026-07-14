@@ -283,10 +283,18 @@ function invalidateMailboxes(queryClient: ReturnType<typeof useQueryClient>): vo
   void queryClient.invalidateQueries({ queryKey: teamMailboxesKey });
 }
 
-/** POST /api/mail/mailboxes/test — проверка соединения (мутация без инвалидации). */
+/**
+ * POST /api/mail/mailboxes/test — проверка соединения (мутация без инвалидации).
+ * Принимает `signal` пользовательского abort'а: проверка легально идёт до 85 с (ADR-053 §1.1),
+ * и закрытие формы обязано обрывать запрос. Клиентского таймаута НЕТ (ADR-053 §4).
+ */
 export function useTestMailbox() {
-  return useMutation<MailMailboxTestResponse, unknown, MailMailboxTestRequest>({
-    mutationFn: (payload) => testMailbox(payload),
+  return useMutation<
+    MailMailboxTestResponse,
+    unknown,
+    { payload: MailMailboxTestRequest; signal?: AbortSignal }
+  >({
+    mutationFn: ({ payload, signal }) => testMailbox(payload, signal),
   });
 }
 

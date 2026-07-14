@@ -5,6 +5,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
 import { Textarea } from '@/components/ui/Textarea';
 import { ApiError } from '@/lib/api';
+import { MAIL_UNAVAILABLE_MESSAGE, mailErrorMessage } from '@/features/mail/errorMessages';
 import { useReplyMail } from '@/features/mail/hooks';
 import type { MailMessage, MailReplyRequest } from '@/types/api';
 
@@ -25,6 +26,15 @@ export function MailReplyForm({ message }: { message: MailMessage }) {
   const isSubmitting = replyMutation.isPending;
 
   const applyApiError = (err: unknown) => {
+    // ADR-053 §2/§4: `502 mail_send_failed` (удалённый SMTP не принял письмо) и
+    // `504 mail_timeout` (сервис не ответил вовремя; письмо МОГЛО уйти — автоповтора нет)
+    // получают собственные человеческие тексты. Показывать «сервис временно недоступен»
+    // там, где агрегатор БЫЛ доступен, запрещено. Проверка — по `error.code`, не по message.
+    const known = mailErrorMessage(err, 'reply');
+    if (known !== null) {
+      toast.error(known);
+      return;
+    }
     if (err instanceof ApiError) {
       if (err.status === 404) {
         toast.error('Письмо не найдено');
@@ -34,8 +44,11 @@ export function MailReplyForm({ message }: { message: MailMessage }) {
         setBodyError('Введите текст сообщения');
         return;
       }
-      if (err.status === 502) {
-        toast.error('Почтовый сервис временно недоступен');
+      // «Сервис недоступен» — только по `error.code`, а НЕ по статусу (ADR-053 §2):
+      // `502 mail_send_failed` разобран выше, а любой будущий 502-код не вправе получить
+      // ложное «Почтовый сервис временно недоступен» → fallback на сообщение backend'а.
+      if (err.status === 502 && err.code === 'mail_unavailable') {
+        toast.error(MAIL_UNAVAILABLE_MESSAGE);
         return;
       }
       toast.error(err.message);

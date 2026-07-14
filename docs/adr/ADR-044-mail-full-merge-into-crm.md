@@ -1,6 +1,13 @@
 # ADR-044 — Полный перенос модуля «Почты» в CRM: агрегатор как чистый connector с push, письма/теги/Telegram в CRM, ящик закреплён за командой
 
-Статус: `accepted` (**амендирован** [ADR-047](ADR-047-mail-fix-pack.md), 2026-07-11) · Дата: 2026-07-10
+Статус: `accepted` (**амендирован** [ADR-047](ADR-047-mail-fix-pack.md), 2026-07-11; **амендирован** [ADR-053](ADR-053-mail-timeouts-error-passthrough.md), 2026-07-14) · Дата: 2026-07-10
+
+> ⚠️ **АМЕНДМЕНТ [ADR-053](ADR-053-mail-timeouts-error-passthrough.md) (2026-07-14) — норма §4 «единый `MAIL_API_TIMEOUT_SEC` (10 с) на все вызовы к агрегатору» ОТМЕНЕНА** (прод-баг: ложный `502` вместо реального `422`).
+>
+> - **Две категории путей × два параметра:** быстрые — `MAIL_API_TIMEOUT_SEC=10` (read) / `MAIL_API_DEADLINE_SEC=30` (overall); **mail-server-пути** (`POST /mailboxes/test`, `POST /mailboxes`, `PATCH /mailboxes/{id}`, reply — агрегатор идёт на **удалённый** IMAP/SMTP) — **`MAIL_API_MAILSERVER_TIMEOUT_SEC=75`** (read) / **`MAIL_API_MAILSERVER_DEADLINE_SEC=85`** (overall). Read-бюджет — явным `httpx.Timeout` **по фазам**; overall-deadline — `asyncio.wait_for` вокруг всего вызова (per-phase лимиты + ретраи суммарной границы не дают).
+> - **Маппинг ошибок §4 уточнён:** `422` агрегатора больше НЕ сводится к обезличенному `unprocessable` — `imap_login_failed`/`smtp_login_failed`/`invalid_host` → `422 mail_imap_failed`/`mail_smtp_failed`/`mail_invalid_host`; `502 smtp_failed` (reply) → `502 mail_send_failed`. Для этого **транспорт** (`infra/mail_client.py`) обязан нести `status_code`/`error_code` во **всех** не-2xx ветках, включая `5xx`, и иметь отдельное исключение таймаута.
+> - **Таймаут CRM на mail-server-пути больше НЕ `502 mail_unavailable`**, а новый **`504 mail_timeout`** (агрегатор доступен, но не успел); `504` **от** агрегатора → `504 mail_timeout` на **любом** пути; собственный таймаут CRM на **быстром** пути остаётся `502 mail_unavailable`. Ретрай-политика (**только** `Connect*`) — **без изменений**.
+> - Актуальные нормы — [ADR-053](ADR-053-mail-timeouts-error-passthrough.md), [04-api.md#mail](../04-api.md#mail).
 
 > ⚠️ **АМЕНДМЕНТ [ADR-047](ADR-047-mail-fix-pack.md) §1 (2026-07-11) — часть §2/§5 этого ADR ОТМЕНЕНА. Не реализуйте её.**
 >

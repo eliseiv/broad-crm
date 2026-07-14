@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.logging import get_logger
@@ -20,6 +20,21 @@ logger = get_logger(__name__)
 
 # Имена push-ботов почты (ADR-044 §9): bot_name ∈ этого набора.
 MAIL_PUSH_BOT_NAMES: tuple[str, ...] = ("ivan", "alexandra", "andrei", "business2")
+
+# --- Константы-зеркала нормы бюджета ЗАПРОСА (ADR-053 §1.2.2/§1.3 п.7б/§6) ---
+# НЕ env: значения не эксплуатационные, а нормативные звенья цепочки бюджетов.
+#
+# Overall-deadline компенсирующей уборки сироты (`_compensate_orphan_mailbox`,
+# ADR-053 §1.2.2): best-effort `delete` не вправе тратить полный бюджет быстрой
+# категории — пользователь уже получает ошибку.
+MAIL_CLEANUP_DEADLINE_SEC: float = 15.0
+# Нормативный потолок внепробной работы CRM в пределах одного HTTP-запроса
+# (auth + БД + сериализация), ADR-053 §1.2.1.
+CRM_REQUEST_OVERHEAD_SEC: float = 5.0
+# Зеркало `proxy_read_timeout` nginx CRM (`frontend/nginx/default.conf`, ADR-053 §6).
+# Дубль нормативен: без него кросс-полевую проверку бюджета ЗАПРОСА строить не на чем.
+# При изменении одного — пересчитать оба (§6).
+NGINX_PROXY_READ_TIMEOUT_SEC: float = 120.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,7 +147,60 @@ class Settings(BaseSettings):
     # MAIL_API_KEY в заголовок X-API-Key. Ключ — только из env, не в БД/логах/ответах.
     mail_api_base: str = "https://postapp.store"
     mail_api_key: str = ""
-    mail_api_timeout_sec: int = 10
+    # --- Четыре таймаут-параметра вместо единого (ADR-053 §1.1/§1.2/§1.3 п.7а) ---
+    # Единый 10-секундный бюджет на ВСЕ пути отменён: он структурно меньше бюджета
+    # операций, где агрегатор идёт на удалённый IMAP/SMTP (прод-баг — ложный 502
+    # вместо осмысленного 422 агрегатора).
+    #
+    # Read-бюджет ОДНОЙ попытки, быстрые пути (delete/sync/oauth-authorize — агрегатор
+    # отвечает из своей БД/Redis). Быстрый путь не вправе держать соединение долго.
+    mail_api_timeout_sec: int = Field(default=10, ge=1, le=30)
+    # Overall-deadline (asyncio.wait_for вокруг всех попыток и фаз) быстрого вызова.
+    mail_api_deadline_sec: int = Field(default=30, ge=2, le=60)
+    # Read-бюджет ОДНОЙ попытки, mail-server-пути (test/create/patch/reply): обязан
+    # превышать потолок ответа агрегатора (его nginx proxy_read_timeout = 60 с),
+    # иначе законный ответ агрегатора обрывается CRM'ом.
+    mail_api_mailserver_timeout_sec: int = Field(default=75, ge=61, le=80)
+    # Overall-deadline mail-server-вызова: > read-бюджета (запас на connect/write и
+    # до 3 попыток ретрая на ConnectError); ≤ 85 держит бюджет ЗАПРОСА (§1.2.1).
+    mail_api_mailserver_deadline_sec: int = Field(default=85, ge=76, le=85)
+
+    @model_validator(mode="after")
+    def _validate_mail_timeout_chain(self) -> Settings:
+        """Кросс-полевая защита цепочки бюджетов почты (ADR-053 §1.3 п.7б).
+
+        `ge/le` ограничивают ОТДЕЛЬНЫЕ поля и кросс-полевой порядок не выражают:
+        `read=80` + `overall=76` проходят обе границы, но ломают цепочку. Конфиг вне
+        инварианта → приложение НЕ стартует (ValidationError), а не тихо возвращает баг.
+        """
+        if self.mail_api_timeout_sec >= self.mail_api_deadline_sec:
+            raise ValueError(
+                "MAIL_API_TIMEOUT_SEC должен быть строго меньше MAIL_API_DEADLINE_SEC "
+                "(read-бюджет попытки < overall-deadline вызова, ADR-053 §1.3)"
+            )
+        if self.mail_api_mailserver_timeout_sec >= self.mail_api_mailserver_deadline_sec:
+            raise ValueError(
+                "MAIL_API_MAILSERVER_TIMEOUT_SEC должен быть строго меньше "
+                "MAIL_API_MAILSERVER_DEADLINE_SEC (read < overall, ADR-053 §1.3)"
+            )
+        overhead = MAIL_CLEANUP_DEADLINE_SEC + CRM_REQUEST_OVERHEAD_SEC
+        mailserver_request_budget = self.mail_api_mailserver_deadline_sec + overhead
+        if mailserver_request_budget >= NGINX_PROXY_READ_TIMEOUT_SEC:
+            raise ValueError(
+                "Бюджет ЗАПРОСА (MAIL_API_MAILSERVER_DEADLINE_SEC + компенсация "
+                f"{MAIL_CLEANUP_DEADLINE_SEC:g} + overhead {CRM_REQUEST_OVERHEAD_SEC:g}) = "
+                f"{mailserver_request_budget:g} должен быть строго меньше "
+                f"proxy_read_timeout nginx CRM ({NGINX_PROXY_READ_TIMEOUT_SEC:g}, ADR-053 §1.2.1)"
+            )
+        fast_request_budget = self.mail_api_deadline_sec + overhead
+        if fast_request_budget >= NGINX_PROXY_READ_TIMEOUT_SEC:
+            raise ValueError(
+                "Бюджет ЗАПРОСА быстрой категории (MAIL_API_DEADLINE_SEC + компенсация "
+                f"{MAIL_CLEANUP_DEADLINE_SEC:g} + overhead {CRM_REQUEST_OVERHEAD_SEC:g}) = "
+                f"{fast_request_budget:g} должен быть строго меньше "
+                f"proxy_read_timeout nginx CRM ({NGINX_PROXY_READ_TIMEOUT_SEC:g}, ADR-053 §1.2.1)"
+            )
+        return self
 
     @property
     def mail_enabled(self) -> bool:

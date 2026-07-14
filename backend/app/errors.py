@@ -33,6 +33,25 @@ class AppError(Exception):
         self.details = details
 
 
+# --- Сообщения `504 mail_timeout` по контексту пути (ADR-053 §4; словарь строк —
+# 08-design-system.md#локализация-ui-русский-словарь-строк). Код контракта один
+# (`mail_timeout`), различается только текст для пользователя. ---
+MAIL_TIMEOUT_TEST_MESSAGE = (
+    "Проверка не завершилась за отведённое время: почтовый сервер не ответил. "
+    "Проверьте хост и порт."
+)
+MAIL_TIMEOUT_MAILBOX_MESSAGE = (
+    "Операция не завершилась вовремя. Состояние ящика могло измениться — обновите список."
+)
+MAIL_TIMEOUT_REPLY_MESSAGE = (
+    "Отправка не подтверждена: сервис не ответил вовремя. "
+    "Письмо могло быть отправлено — проверьте перед повтором."
+)
+# Дефолт фабрики: формулировка операции над ящиком (delete/sync/authorize — отдельной
+# строки словарь не задаёт).
+MAIL_TIMEOUT_DEFAULT_MESSAGE = MAIL_TIMEOUT_MAILBOX_MESSAGE
+
+
 # --- Фабрики типовых ошибок (коды строго из 04-api.md) ---
 
 
@@ -357,6 +376,74 @@ def mail_unavailable() -> AppError:
         status_code=status.HTTP_502_BAD_GATEWAY,
         code="mail_unavailable",
         message="Почтовый сервис временно недоступен",
+    )
+
+
+def mail_timeout(message: str = MAIL_TIMEOUT_DEFAULT_MESSAGE) -> AppError:
+    """Операция почты не завершилась вовремя (504 `mail_timeout`, ADR-053 §3).
+
+    Два источника (различаются по `MailTimeout.status_code`, ADR-053 §2.1): `504` ОТ
+    агрегатора (его прокси не дождался) — на ЛЮБОЙ категории путей; собственный таймаут
+    CRM (read-бюджет или overall-deadline) — только на mail-server-путях (на быстрых он
+    даёт `502 mail_unavailable`). Это НЕ «сервис недоступен»: агрегатор доступен, но не
+    успел. Автоматически НЕ ретраится — состояние операции неопределённо.
+
+    `message` — по контексту пути (словарь 08-design-system.md, ADR-053 §4); дефолт —
+    формулировка операции над ящиком.
+    """
+    return AppError(
+        status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+        code="mail_timeout",
+        message=message,
+    )
+
+
+def mail_send_failed() -> AppError:
+    """Удалённый SMTP отклонил отправку reply (502 `mail_send_failed`, ADR-053 §2).
+
+    Проброс `502 smtp_failed` агрегатора: сам агрегатор РАБОТАЛ — это не «сервис
+    недоступен».
+    """
+    return AppError(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        code="mail_send_failed",
+        message="Почтовый сервер не принял письмо. Проверьте настройки SMTP ящика.",
+    )
+
+
+def mail_imap_failed() -> AppError:
+    """IMAP-проверка ящика не прошла (422 `mail_imap_failed`, ADR-053 §2).
+
+    Проброс `422 imap_login_failed` агрегатора (`test`/create/`PATCH` кредов).
+    """
+    return AppError(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        code="mail_imap_failed",
+        message="Не удалось подключиться к IMAP. Проверьте хост, порт, SSL и пароль.",
+    )
+
+
+def mail_smtp_failed() -> AppError:
+    """SMTP-проверка ящика не прошла (422 `mail_smtp_failed`, ADR-053 §2).
+
+    Проброс `422 smtp_login_failed` агрегатора (`test`/create/`PATCH` кредов).
+    """
+    return AppError(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        code="mail_smtp_failed",
+        message="Не удалось подключиться к SMTP. Проверьте хост, порт, SSL/STARTTLS и пароль.",
+    )
+
+
+def mail_invalid_host() -> AppError:
+    """SSRF-guard агрегатора отклонил хост IMAP/SMTP (422 `mail_invalid_host`, ADR-053 §2).
+
+    Проброс `422 invalid_host` агрегатора: приватный/локальный хост.
+    """
+    return AppError(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        code="mail_invalid_host",
+        message="Недопустимый адрес сервера: приватные и локальные хосты запрещены.",
     )
 
 

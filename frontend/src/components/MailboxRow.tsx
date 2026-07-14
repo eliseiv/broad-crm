@@ -7,9 +7,11 @@ import { Modal } from '@/components/ui/Modal';
 import { Pill } from '@/components/ui/Pill';
 import { Select } from '@/components/ui/Select';
 import type { SelectOption } from '@/components/ui/Select';
+import { Spinner } from '@/components/ui/Spinner';
 import { MailboxFormModal } from '@/components/MailboxFormModal';
 import { ApiError } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/format';
+import { MAIL_CONNECTION_PROGRESS_HINT } from '@/features/mail/errorMessages';
 import { useDeleteMailbox, useSyncMailbox, useUpdateMailbox } from '@/features/mail/hooks';
 import type { MailMailbox, TeamListItem } from '@/types/api';
 
@@ -155,7 +157,7 @@ export function MailboxRow({
         {canTransfer ? (
           // Контрол не менее w-56 и растёт вместе с колонкой (`w-full`) — значение
           // читается целиком; `title` отдаёт полное имя команды при наведении.
-          <div className="w-full min-w-[14rem]">
+          <div className="flex w-full min-w-[14rem] flex-col gap-1.5">
             <Select
               aria-label={`Команда почты ${mailbox.email}`}
               title={currentTeamName}
@@ -164,6 +166,23 @@ export function MailboxRow({
               disabled={updateMutation.isPending}
               onChange={(e) => handleTeamChange(e.target.value)}
             />
+            {/*
+              Прогресс-состояние долгого ожидания (08-design-system.md «ожидание проверки
+              соединения (long-running)»: PATCH /mailboxes/{id} — один из ТРЁХ нормированных
+              эндпоинтов; ADR-053 §1.1 относит ЛЮБОЙ сетевой PATCH к mail-server-категории →
+              запрос легально идёт до 85 с). Select уже disabled — добавляем спиннер + подпись,
+              чтобы ожидание не читалось как зависание. Подпись ПЕРЕНОСИТСЯ (break-words),
+              truncate/overflow-hidden на значимом тексте запрещены.
+            */}
+            {updateMutation.isPending && (
+              <p
+                className="flex items-start gap-2 text-[12px] leading-relaxed text-text-secondary"
+                role="status"
+              >
+                <Spinner className="mt-0.5 h-3.5 w-3.5 shrink-0 text-accent" />
+                <span className="break-words">{MAIL_CONNECTION_PROGRESS_HINT}</span>
+              </p>
+            )}
           </div>
         ) : (
           <span className="block w-full min-w-[14rem] break-words text-[13px] text-text-secondary">

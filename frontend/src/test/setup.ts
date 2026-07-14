@@ -23,6 +23,16 @@ if (!window.requestAnimationFrame) {
   });
 }
 
+// jsdom не реализует scrollIntoView (в браузере он есть). Нужен компонентам, которые
+// подводят сообщение в видимую область — напр. блок причины отказа проверки соединения
+// в MailboxFormModal (ADR-053 §2/§4).
+if (!Element.prototype.scrollIntoView) {
+  Object.defineProperty(Element.prototype, 'scrollIntoView', {
+    writable: true,
+    value: vi.fn(),
+  });
+}
+
 if (!window.cancelAnimationFrame) {
   Object.defineProperty(window, 'cancelAnimationFrame', {
     writable: true,

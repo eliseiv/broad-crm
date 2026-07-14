@@ -20,7 +20,7 @@ from app.domain.sms import SmsScope
 from app.domain.superadmin import SUPERADMIN_USER_ID
 from app.errors import forbidden, unauthorized
 from app.infra.jwt import SetupTokenClaims, TokenError, decode_access_token, decode_setup_token
-from app.infra.mail_client import get_mail_client
+from app.infra.mail_client import get_mail_client, get_mail_server_client
 from app.infra.prometheus import get_prometheus_client
 from app.infra.rate_limit import get_login_rate_limiter
 from app.infra.sms_telegram import SmsBotClient
@@ -400,8 +400,18 @@ def get_backend_service(
 
 
 def get_mail_service(session: DbSession, settings: SettingsDep) -> MailService:
-    """Сервис почты (ADR-044): чтение из БД CRM + транзит операций ящика/reply в агрегатор."""
-    return MailService(session=session, client=get_mail_client(), settings=settings)
+    """Сервис почты (ADR-044): чтение из БД CRM + транзит операций ящика/reply в агрегатор.
+
+    Два клиента агрегатора по категории пути (ADR-053 §1.1/§1.3 п.6): быстрый
+    (`delete`/`sync`/`oauth-authorize`) и mail-server (`test`/`create`/`patch`/`reply` —
+    агрегатор идёт на удалённый IMAP/SMTP). Категорию выбирает сервис.
+    """
+    return MailService(
+        session=session,
+        client=get_mail_client(),
+        settings=settings,
+        mail_server_client=get_mail_server_client(),
+    )
 
 
 def get_mail_ingest_service(session: DbSession, settings: SettingsDep) -> MailIngestService:

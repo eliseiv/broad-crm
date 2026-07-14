@@ -98,6 +98,10 @@ class FakeMailClient:
 
     def __init__(self, *, new_id: int = 1000) -> None:
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
+        # Пер-вызовные overall-deadline'ы, с которыми звали `delete_mailbox` (ADR-053 §1.2.2):
+        # компенсирующая уборка сироты обязана передавать КОРОТКИЙ deadline, обычное удаление —
+        # None (deadline категории клиента).
+        self.delete_deadlines: list[float | None] = []
         self._new_id = new_id
         self._responses: dict[str, dict[str, Any]] = {}
         self._errors: dict[str, Exception] = {}
@@ -125,7 +129,12 @@ class FakeMailClient:
         self._record("update_mailbox", mailbox_id, payload)
         return self._responses.get("update_mailbox", {})
 
-    async def delete_mailbox(self, mailbox_id: int) -> dict[str, Any]:
+    async def delete_mailbox(
+        self, mailbox_id: int, *, deadline_sec: float | None = None
+    ) -> dict[str, Any]:
+        # Сигнатура повторяет прод (ADR-053 §1.2.2): `deadline_sec` — пер-вызовный override
+        # overall-deadline, которым пользуется ТОЛЬКО компенсирующая уборка сироты.
+        self.delete_deadlines.append(deadline_sec)
         self._record("delete_mailbox", mailbox_id)
         return self._responses.get("delete_mailbox", {})
 
@@ -182,9 +191,23 @@ def build_app(
     principal: Any,
     *,
     mail_client: Any | None = None,
+    mail_server_client: Any | None = None,
     overrides: dict[Any, Callable[[], Any]] | None = None,
 ) -> Any:
-    """Приложение с тест-сессией, инъекцией принципала и фейкового MailClient."""
+    """Приложение с тест-сессией, инъекцией принципала и фейковых клиентов агрегатора.
+
+    `MailService` несёт ДВА клиента (ADR-053 §1.3 п.6): `client` — быстрая категория
+    (`delete`/`sync`/`oauth-authorize`), `mail_server_client` — mail-server-пути
+    (`test`/`create`/`patch`/`reply`). Категорию выбирает сервис.
+
+    Нормативная точка инъекции суб-секундных бюджетов (06-testing-strategy.md
+    §Интеграционные) — override именно `get_mail_service`: фабрики `get_mail_client` /
+    `get_mail_server_client` сервис зовёт ПРЯМЫМ вызовом (`deps.py:411,413`), а не через
+    `Depends`, поэтому их override в `dependency_overrides` был бы no-op.
+
+    Обратная совместимость: если передан только `mail_client`, он используется обеими
+    категориями (прежние тесты записи ящиков не различали их).
+    """
     from app.api import deps
     from app.config import get_settings
     from app.main import create_app
@@ -205,13 +228,20 @@ def build_app(
     app.dependency_overrides[deps.get_session] = _session
     app.dependency_overrides[deps.get_current_principal] = lambda: principal
 
-    if mail_client is not None:
+    if mail_client is not None or mail_server_client is not None:
+        fast_client = mail_client if mail_client is not None else mail_server_client
+        slow_client = mail_server_client if mail_server_client is not None else mail_client
 
         def _mail_service(
             session: AsyncSession = Depends(deps.get_session),  # noqa: B008
             settings: Any = Depends(deps.get_settings_dep),  # noqa: B008
         ) -> MailService:
-            return MailService(session=session, client=mail_client, settings=settings)
+            return MailService(
+                session=session,
+                client=fast_client,
+                settings=settings,
+                mail_server_client=slow_client,
+            )
 
         app.dependency_overrides[deps.get_mail_service] = _mail_service
 
