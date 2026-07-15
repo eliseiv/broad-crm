@@ -17,9 +17,17 @@
 - При укорочении — **причина фиксируется в docstring самой миграции**, чтобы следующий разработчик не «исправил» id обратно на имя файла.
 - **Пример (реальный):** файл `0024_mail_accounts_number_app_name.py` (34 символа — id из такого имени НЕ проходит), `revision = "0024_mail_accounts_num_app_name"` (31 символ), `down_revision = "0023_mail_tags_drop_is_builtin"` (30 символов) — [подробности](#миграция-0024_mail_accounts_number_app_name-концепт-adr-047-3).
 
-### 2. Рабочий `downgrade()` — обязателен
+### 2. Рабочий `downgrade()` — обязателен (карв-аут: необратимые чисто-DML миграции)
 
-Каждая миграция обязана иметь **работающий** `downgrade()` (не `pass`) — нормативное требование политики отката, [07-deployment.md §Откат миграций БД](07-deployment.md#откат-миграций-бд).
+Каждая миграция обязана иметь **работающий** `downgrade()` (не `pass`) — нормативное требование политики отката, [07-deployment.md §Откат миграций БД](07-deployment.md#откат-миграций-бд). **Единственное исключение — карв-аут ниже** (необратимые чисто-DML миграции).
+
+**Карв-аут — необратимые чисто-DML миграции (one-time data-fix / backfill / cleanup).** Для миграции, которая **не меняет схему** (DDL нет) и выполняет необратимую по смыслу корректировку данных (backfill; hard-delete строк), прежнее состояние которых восстанавливать **не нужно** (ошибочное состояние) либо **физически невозможно** (данных для воссоздания нет), `downgrade()` допустимо реализовать как **no-op** (`pass`). Условия допустимости:
+- миграция **не содержит DDL** — тестовая схема `create_all` не затрагивается, откатывать схему нечего;
+- восстановление прежнего состояния данных не требуется/невозможно (см. выше);
+- в теле миграции — **явный комментарий** с причиной необратимости (напр. `# No-op: НЕОБРАТИМО, …`) и **cross-ref на ADR/раздел docs**, санкционирующий необратимость;
+- `downgrade -1` завершается успешно (no-op) и не ломает цепочку ревизий; fallback отката такой миграции — восстановление из pre-deploy бэкапа ([07-deployment.md §Откат миграций БД](07-deployment.md#откат-миграций-бд), уровень 2).
+
+**Прецеденты:** `0016_backfill_team_leaders` (backfill лидеров команд, no-op downgrade — [ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)); `0028_mail_dedup_orphan_cleanup` (hard-delete осиротевших `mail_accounts`, no-op downgrade — [ADR-058](adr/ADR-058-mail-accounts-dedup-orphan-remediation.md) §2). **Вне карв-аута** (любая миграция со схемными изменениями — `create/alter/drop`) `downgrade()` **обязан** быть рабочим (не `pass`).
 
 ### 3. Миграции НЕ импортируют код приложения
 
@@ -1411,6 +1419,8 @@ ALTER TABLE servers DROP COLUMN position;
 | `created_at` / `updated_at` | `timestamptz` | NOT NULL | |
 
 Индекс: `ix_mail_accounts_team_id (team_id)` — обслуживает выборку «ящики команды» (`GET /api/teams/{id}/mailboxes`, `MailScope`) и агрегат `TeamListItem.mailbox_count` (`COUNT(*) … GROUP BY team_id`, [ADR-048](adr/ADR-048-teams-mailbox-count-mail-row.md); отдельной денормализованной колонки-счётчика нет — по образцу `number_count`).
+
+> **Осиротевшие строки после dedup-merge (73/85/140/145) — ремедиация [ADR-058](adr/ADR-058-mail-accounts-dedup-orphan-remediation.md), [TD-063](100-known-tech-debt.md).** CRM зеркалит каталог агрегатора, используя **agg-id как PK** (`autoincrement=False`), и **уникальности по `email` нет**. При демонтаже (фаза C) агрегатор схлопнул 4 легаси-дубля email — удалил проигравшие ящики (id **73/85/140/145**), оставив survivor'ов (**18/126/28/71**). В CRM проигравшие строки остались «призраками»: агрегатор их больше не пушит, авто-реконсиляции `mail_accounts` нет (`_reconcile_orphans` — только telegram-линки). [ADR-058](adr/ADR-058-mail-accounts-dedup-orphan-remediation.md) предписывает их **hard-delete** data-миграцией `0028_mail_dedup_orphan_cleanup` **строго по id** (по `email` нельзя — снесло бы survivor'а с тем же адресом; весь каскад ниже — `ON DELETE CASCADE`). Миграция **пока не применена** — сироты живут в проде до её исполнения. Санкция владельца на hard-delete архива **получена** (2026-07-15) при условии предварительного точечного снапшота удаляемых строк ([ADR-058](adr/ADR-058-mail-accounts-dedup-orphan-remediation.md) §5.1); предпосылки исполнения — снапшот + прогон на копии прод-данных ([TD-063](100-known-tech-debt.md)).
 
 ### Таблица `mail_messages` (system of record писем)
 
