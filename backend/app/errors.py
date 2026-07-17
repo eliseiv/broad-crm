@@ -526,6 +526,73 @@ def team_mail_group_taken() -> AppError:
     )
 
 
+def document_node_not_found() -> AppError:
+    """Узла нет ИЛИ он невидим по роли (анти-энумерация, ADR-059). 404.
+
+    Чтение/правка/удаление вне видимости неотличимы от несуществующего узла — НЕ 403
+    (05-security.md#видимость-документов-по-ролям).
+    """
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="document_node_not_found",
+        message="Документ не найден",
+    )
+
+
+def document_node_conflict() -> AppError:
+    """`PATCH /api/documents/nodes/{id}` с `expected_version` ≠ текущему (TD-064). 409."""
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="document_node_conflict",
+        message="Документ изменён другим пользователем. Обновите и повторите.",
+    )
+
+
+def document_upload_invalid() -> AppError:
+    """`POST /api/documents/upload`: файл не `.md` / превышен лимит / битый UTF-8. 422."""
+    return AppError(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        code="document_upload_invalid",
+        message="Недопустимый файл: только .md в кодировке UTF-8 в пределах лимита размера.",
+    )
+
+
+def document_copy_cycle() -> AppError:
+    """`POST /api/documents/nodes/{id}/copy`: цель копирования — сам узел или потомок. 422."""
+    return AppError(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        code="document_copy_cycle",
+        message="Нельзя скопировать узел внутрь самого себя или своего потомка.",
+    )
+
+
+def documents_external_not_configured() -> AppError:
+    """Внешний read-only контур документов выключен: пуст `DOCUMENTS_API_KEY` (ADR-060 §1). 503."""
+    return AppError(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        code="documents_external_not_configured",
+        message="Внешний доступ к документам не настроен",
+    )
+
+
+def document_node_gone(*, node_id: Any, deleted_at: Any, content_version: int) -> AppError:
+    """Внешний `GET /api/external/documents/{id}` для удалённого узла (tombstone, ADR-060 §3). 410.
+
+    Тело несёт tombstone-детали `{id, deleted_at, content_version}` (04-api.md#external-documents):
+    RAG по ним удаляет узел из индекса. `content_md` не отдаётся.
+    """
+    return AppError(
+        status_code=status.HTTP_410_GONE,
+        code="document_node_gone",
+        message="Документ удалён",
+        details={
+            "id": str(node_id),
+            "deleted_at": deleted_at.isoformat(),
+            "content_version": content_version,
+        },
+    )
+
+
 def _error_body(code: str, message: str, details: Any = None) -> dict[str, Any]:
     return {"error": {"code": code, "message": message, "details": details}}
 

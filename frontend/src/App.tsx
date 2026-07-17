@@ -1,5 +1,7 @@
+import { lazy, Suspense } from 'react';
 import { Route, Routes } from 'react-router-dom';
 import { AppLayout } from '@/components/AppLayout';
+import { Spinner } from '@/components/ui/Spinner';
 import { AiKeysPage } from '@/pages/AiKeysPage';
 import { BackendsPage } from '@/pages/BackendsPage';
 import { DashboardPage } from '@/pages/DashboardPage';
@@ -16,6 +18,24 @@ import { UsersPage } from '@/pages/UsersPage';
 import { AdminRoute } from '@/routes/AdminRoute';
 import { DefaultRoute } from '@/routes/DefaultRoute';
 import { ProtectedRoute } from '@/routes/ProtectedRoute';
+
+/**
+ * «Документы» — lazy-route (ADR-062 §Последствия): WYSIWYG-редактор (TipTap/ProseMirror)
+ * увеличивает бандл, поэтому его чанк грузится только при заходе на `/documents`, а не в
+ * основном бандле.
+ */
+const DocumentsPage = lazy(() =>
+  import('@/pages/DocumentsPage').then((m) => ({ default: m.DocumentsPage })),
+);
+
+/** Fallback загрузки lazy-маршрута (по центру доступной области). */
+function RouteFallback() {
+  return (
+    <div className="flex h-full min-h-[40vh] items-center justify-center">
+      <Spinner className="text-text-secondary" />
+    </div>
+  );
+}
 
 export function App() {
   return (
@@ -47,6 +67,17 @@ export function App() {
               страниц (ADR-022, 08-design-system.md). */}
           <Route path="/roles" element={<RolesPage />} />
           <Route path="/teams" element={<TeamsPage />} />
+          {/* «Документы» — второй full-bleed маршрут (ADR-061); двухпанельный
+              сайдбар-shell внутри страницы. Page-level view-guard documents:view.
+              Lazy-route (ADR-062): чанк редактора вне основного бандла. */}
+          <Route
+            path="/documents"
+            element={
+              <Suspense fallback={<RouteFallback />}>
+                <DocumentsPage />
+              </Suspense>
+            }
+          />
           {/* Страница «Пользователи» — admin-only (ADR-021, 08-design-system.md). */}
           <Route element={<AdminRoute />}>
             <Route path="/users" element={<UsersPage />} />

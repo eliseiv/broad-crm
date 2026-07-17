@@ -1,6 +1,6 @@
 # ADR-033 · UI-пакет: плоская навигация + светлая/тёмная тема + упрощение таблицы «Номера»
 
-- **Статус:** accepted (**тема-часть частично переопределена** — [ADR-041](ADR-041-login-theme-session-ux.md), [ADR-046](ADR-046-ui-infra-fix-pack.md))
+- **Статус:** accepted (**тема-часть частично переопределена** — [ADR-041](ADR-041-login-theme-session-ux.md), [ADR-046](ADR-046-ui-infra-fix-pack.md); **§Layout-ветка навигации частично superseded** — [ADR-061](ADR-061-documents-sidebar-two-panel-nav.md): маршрут `/documents` — второй full-bleed после `/mail`, `isFullBleed` расширен; плоский хэдер-ряд §1 и порядок `DefaultRoute` **сохранены**)
 
 > ⚠️ **ТЕМА-ЧАСТЬ ЭТОГО ADR ЧАСТИЧНО ПЕРЕОПРЕДЕЛЕНА — реализуйте по актуальным docs, не по этому тексту.**
 > - **Дефолт темы — СВЕТЛАЯ**, а не системный `prefers-color-scheme` ([ADR-041](ADR-041-login-theme-session-ux.md)): подписка на `matchMedia` снята; нет сохранённого выбора → `light`.

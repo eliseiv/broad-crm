@@ -161,6 +161,104 @@
   }
 }
 
+/*
+ * Оформление контента WYSIWYG-редактора документов (ProseMirror, TipTap — ADR-062).
+ * Tailwind base сбрасывает заголовки/списки/цитаты; редактор рендерит семантические
+ * элементы, поэтому их вид задаём здесь через тема-зависимые токены (светлая/тёмная).
+ * Скоуп — только `.doc-prose` (контент редактора и просмотра markdown).
+ */
+.doc-prose {
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1.7;
+}
+.doc-prose:focus {
+  outline: none;
+}
+.doc-prose > * + * {
+  margin-top: 0.75em;
+}
+.doc-prose h1 {
+  font-size: 1.6em;
+  font-weight: 700;
+  line-height: 1.25;
+  margin-top: 1.2em;
+}
+.doc-prose h2 {
+  font-size: 1.3em;
+  font-weight: 700;
+  line-height: 1.3;
+  margin-top: 1.1em;
+}
+.doc-prose h3 {
+  font-size: 1.12em;
+  font-weight: 600;
+  margin-top: 1em;
+}
+.doc-prose p {
+  margin: 0;
+}
+.doc-prose ul,
+.doc-prose ol {
+  padding-left: 1.5em;
+}
+.doc-prose ul {
+  list-style: disc;
+}
+.doc-prose ol {
+  list-style: decimal;
+}
+.doc-prose li > ul,
+.doc-prose li > ol {
+  margin-top: 0.25em;
+}
+.doc-prose li {
+  margin: 0.15em 0;
+}
+.doc-prose a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+.doc-prose strong {
+  font-weight: 700;
+}
+.doc-prose em {
+  font-style: italic;
+}
+.doc-prose code {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.88em;
+  background: var(--surface-3);
+  border-radius: 5px;
+  padding: 0.1em 0.35em;
+}
+.doc-prose pre {
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  padding: 0.85em 1em;
+  overflow-x: auto;
+}
+.doc-prose pre code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.85em;
+}
+.doc-prose blockquote {
+  border-left: 3px solid var(--border-strong);
+  padding-left: 1em;
+  color: var(--text-secondary);
+}
+.doc-prose hr {
+  border: 0;
+  border-top: 1px solid var(--border-subtle);
+}
+.doc-prose h1:first-child,
+.doc-prose h2:first-child,
+.doc-prose h3:first-child {
+  margin-top: 0;
+}
+
 /* prefers-reduced-motion (NFR-8): отключаем анимации/переходы */
 @media (prefers-reduced-motion: reduce) {
   *,

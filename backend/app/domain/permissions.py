@@ -22,6 +22,7 @@ CATALOG: dict[str, tuple[str, ...]] = {
     "sms": ("view", "edit", "transfer", "sync", "delete"),
     "roles": ("view", "create", "edit", "delete"),
     "teams": ("view", "create", "edit", "delete"),
+    "documents": ("view", "create", "edit", "delete", "share"),
 }
 
 # Страница вне матрицы прав (гейтится require_admin, не через permissions).

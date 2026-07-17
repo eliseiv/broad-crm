@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings, get_settings
 from app.db import get_session, get_sessionmaker
 from app.domain.channels import CHANNEL_MAIL, CHANNEL_SMS, Channel
+from app.domain.documents import DocumentScope
 from app.domain.mail import MailScope
 from app.domain.permissions import full_catalog_permissions, permissions_subset
 from app.domain.sms import SmsScope
@@ -27,6 +28,7 @@ from app.infra.sms_telegram import SmsBotClient
 from app.infra.telegram import TelegramClient
 from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.backend_repository import BackendRepository
+from app.repositories.document_repository import DocumentRepository
 from app.repositories.mail_account_repository import MailAccountRepository
 from app.repositories.proxy_repository import ProxyRepository
 from app.repositories.role_repository import RoleRepository
@@ -41,6 +43,7 @@ from app.services.ai_key_service import AiKeyService
 from app.services.auth_service import AuthService
 from app.services.backend_monitor_service import BackendMonitorService
 from app.services.backend_service import BackendService
+from app.services.document_service import DocumentService
 from app.services.mail_ingest_service import MailIngestService
 from app.services.mail_service import MailService
 from app.services.mail_telegram_service import MailTelegramService
@@ -95,6 +98,12 @@ class Principal:
     # у супер-админа не используются (`sees_all_teams=True` перекрывает их — §3).
     mail_includes_unassigned: bool = False
     sms_includes_unassigned: bool = False
+    # Единственная роль пользователя (`users.role_id`, ADR-021) — для per-node фильтра
+    # видимости документов (ADR-059): узел виден ⇔ публичен ИЛИ его эффективный набор
+    # ролей содержит `role_id`. Берётся из той же уже загруженной строки (лишнего запроса
+    # нет). У консольного супер-админа роли-строки в `users` нет → `None` (его видимость
+    # покрывает admin-предикат `sees_all`, роль не нужна).
+    role_id: uuid.UUID | None = None
 
 
 async def get_current_principal(
@@ -144,6 +153,7 @@ async def get_current_principal(
         user_id=user.id,
         mail_includes_unassigned=user.mail_includes_unassigned,
         sms_includes_unassigned=user.sms_includes_unassigned,
+        role_id=user.role_id,
     )
 
 
@@ -342,6 +352,40 @@ async def resolve_channel_scope(
     return refs, includes_unassigned
 
 
+def principal_sees_all_documents(principal: Principal) -> bool:
+    """Admin-уровень видимости документов ⇔ супер-админ ИЛИ полный каталог прав (ADR-059).
+
+    Тот же admin-предикат, что «видит все SMS/почты» (ADR-032); нового права не вводится,
+    устойчив к переименованию роли. Такой актор видит и правит любой узел (per-role фильтр
+    не применяется).
+    """
+    return principal.is_superadmin or permissions_subset(
+        full_catalog_permissions(), principal.permissions
+    )
+
+
+def get_document_scope(principal: PrincipalDep) -> DocumentScope:
+    """Фабрика scope видимости документов (ADR-059): `sees_all` + `role_id` пользователя.
+
+    `role_id` уже в принципале (загружен той же строкой пользователя — без доп. запроса);
+    у admin-уровня не используется. Синхронная — БД не требуется (в отличие от SMS/почты,
+    где scope — множество команд).
+    """
+    return DocumentScope(
+        sees_all=principal_sees_all_documents(principal),
+        role_id=principal.role_id,
+    )
+
+
+def get_document_service(session: DbSession, settings: SettingsDep) -> DocumentService:
+    """Сервис модуля «Документы» (CRUD дерева, резолюция видимости, copy, soft-delete)."""
+    return DocumentService(
+        repository=DocumentRepository(session),
+        roles=RoleRepository(session),
+        settings=settings,
+    )
+
+
 def get_sms_message_service(session: DbSession) -> SmsMessageService:
     """Сервис ленты входящих SMS (require sms:view + scope)."""
     return SmsMessageService(session)
@@ -524,6 +568,8 @@ MailServiceDep = Annotated[MailService, Depends(get_mail_service)]
 MailIngestServiceDep = Annotated[MailIngestService, Depends(get_mail_ingest_service)]
 MailTelegramServiceDep = Annotated[MailTelegramService, Depends(get_mail_telegram_service)]
 MailScopeDep = Annotated[MailScope, Depends(get_mail_scope)]
+DocumentServiceDep = Annotated[DocumentService, Depends(get_document_service)]
+DocumentScopeDep = Annotated[DocumentScope, Depends(get_document_scope)]
 ClientIp = Annotated[str, Depends(get_client_ip)]
 SmsScopeDep = Annotated[SmsScope, Depends(get_sms_scope)]
 SmsMessageServiceDep = Annotated[SmsMessageService, Depends(get_sms_message_service)]

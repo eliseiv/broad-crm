@@ -40,6 +40,7 @@ CRM-система мониторинга backend-сервисов и серве
 | Teams (CRM-команды: лидер + участники M2M) | [modules/teams/README.md](modules/teams/README.md) | backend, frontend |
 | SMS (СМС: Twilio-приём + Telegram-доставка операторам) | [modules/sms/README.md](modules/sms/README.md) | backend, frontend, devops |
 | UI (страница «Серверы», спидометры) | [modules/ui/README.md](modules/ui/README.md) | frontend |
+| Documents (Документы — менеджер знаний: дерево папок + Markdown-документы, WYSIWYG, видимость по ролям, внешний read-only API для RAG) | [modules/documents/README.md](modules/documents/README.md) | backend, frontend |
 
 ## Статусы модулей
 
@@ -57,6 +58,7 @@ CRM-система мониторинга backend-сервисов и серве
 | proxies | `implemented` (правки ADR-023/024/027 — `spec-ready`) | Реализован (Спринт 1) — модель+миграция 0006, монитор, Telegram-алерты, CRUD API, страница `/proxies`, тесты. **Правки:** карточка — только IP ([ADR-023](adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)); overall-deadline проверки против зависания ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)); grace-порог 30 мин алерта (`error_since`/`alert_sent`, `PROXY_ALERT_AFTER_SEC`, миграция 0014, унификация с бэками — [ADR-027](adr/ADR-027-proxies-alert-grace.md)) |
 | backends | `implemented` (правки ADR-023/024 — `spec-ready`) | Реализован (Спринт 2) — модель+миграция 0007, healthcheck-монитор `GET /health`, Telegram-алерты, CRUD API, страница `/backends`, тесты ([ADR-020](adr/ADR-020-backends-healthcheck-monitor.md)). **Правки:** одна кнопка «Удалить» ([ADR-023](adr/ADR-023-ui-nav-dropdown-proxy-ip-single-delete.md)); overall-deadline + grace-порог 30 мин алерта, миграция 0013 ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) |
 | ui | `spec-ready` | Не реализован — спецификация готова |
+| documents | `implemented` | Реализован (Спринт 1–2, [ADR-059](adr/ADR-059-documents-module.md)/[ADR-060](adr/ADR-060-documents-external-readonly-api-key.md)/[ADR-061](adr/ADR-061-documents-sidebar-two-panel-nav.md)/[ADR-062](adr/ADR-062-documents-wysiwyg-tiptap.md)): единая таблица `document_nodes` + `document_node_roles` (миграции 0029/0030), permission-based enforcement, вычисляемое наследование видимости по ролям (рекурсивный CTE), soft-delete для RAG, внутренний API `/api/documents/*` + внешний read-only `X-API-Key`-API `/api/external/documents/*`, двухпанельный сайдбар `/documents` (full-bleed), WYSIWYG (TipTap + `@tiptap/extension-link`). Тесты qa зелёные (backend/frontend). Не задеплоен на прод |
 
 ## Глоссарий
 

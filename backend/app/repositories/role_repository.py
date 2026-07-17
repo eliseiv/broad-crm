@@ -63,6 +63,27 @@ class RoleRepository:
         """Возвращает роль по id или None."""
         return await self._session.get(Role, role_id)
 
+    async def list_refs(self) -> list[Role]:
+        """Все роли без агрегатов (`{id, name}`) — источник `role-refs` для модалки видимости.
+
+        Лёгкий метод под `GET /api/documents/role-refs` (гейт `documents:share`, ADR-059):
+        НЕ переиспользует admin-gated `GET /api/roles` (класс дефекта TD-050). Сортировка —
+        на вызывающей стороне.
+        """
+        return list((await self._session.execute(select(Role))).scalars().all())
+
+    async def existing_ids(self, role_ids: set[uuid.UUID]) -> set[uuid.UUID]:
+        """Подмножество `role_ids`, реально существующих в `roles` (валидация `visibility`).
+
+        Несуществующий `role_id` в `PATCH /nodes/{id}/visibility` → 422 validation_error
+        (04-api.md). Пустой вход → пустой результат без запроса.
+        """
+        if not role_ids:
+            return set()
+        stmt = select(Role.id).where(Role.id.in_(role_ids))
+        result = await self._session.execute(stmt)
+        return set(result.scalars().all())
+
     async def exists_by_name(self, name: str, *, exclude_id: uuid.UUID | None = None) -> bool:
         """Занято ли имя роли (для 409 role_name_taken).
 

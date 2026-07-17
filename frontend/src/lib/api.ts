@@ -83,7 +83,11 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   } = options;
   const headers: Record<string, string> = {};
 
-  if (body !== undefined) headers['Content-Type'] = 'application/json';
+  // multipart/form-data (POST /api/documents/upload): НЕ ставим Content-Type вручную —
+  // браузер сам добавит `multipart/form-data; boundary=…` (без boundary сервер не
+  // распарсит части). JSON-путь не затрагивается (обратная совместимость).
+  const isFormData = typeof FormData !== 'undefined' && body instanceof FormData;
+  if (body !== undefined && !isFormData) headers['Content-Type'] = 'application/json';
   if (!skipAuth) {
     const token = authToken ?? getToken();
     if (token) headers['Authorization'] = `Bearer ${token}`;
@@ -92,7 +96,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
   const res = await fetch(buildUrl(path), {
     method,
     headers,
-    body: body !== undefined ? JSON.stringify(body) : undefined,
+    body: body !== undefined ? (isFormData ? body : JSON.stringify(body)) : undefined,
     signal,
   });
 

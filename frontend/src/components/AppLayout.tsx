@@ -30,6 +30,8 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/users', label: 'Пользователи', page: 'users' },
   { to: '/roles', label: 'Роли', page: 'roles' },
   { to: '/teams', label: 'Команды', page: 'teams' },
+  // «Документы» — пункт 10 в конце ряда (ADR-061 §1), гейт documents:view.
+  { to: '/documents', label: 'Документы', page: 'documents' },
 ];
 
 /**
@@ -61,16 +63,18 @@ export function AppLayout() {
     backends: useCanViewPage('backends'),
     roles: useCanViewPage('roles'),
     teams: useCanViewPage('teams'),
+    documents: useCanViewPage('documents'),
     users: isAdmin,
   };
 
   // Только видимые по правам пункты (скрытый по правам пункт не рендерится).
   const visibleItems = NAV_ITEMS.filter((item) => Boolean(access[item.page]));
 
-  // Два режима shell по маршруту (08-design-system.md «Full-bleed layout»):
-  //  • /mail (full-bleed) — фиксированная высота; скролл внутри панелей master-detail.
-  //  • не-mail — обычный поток документа (min-h-screen), ширину держит внутренний div.
-  const isFullBleed = location.pathname.startsWith('/mail');
+  // Два режима shell по маршруту (08-design-system.md «Full-bleed layout», ADR-061):
+  //  • /mail и /documents (full-bleed) — фиксированная высота; скролл внутри панелей.
+  //  • остальные — обычный поток документа (min-h-screen), ширину держит внутренний div.
+  const isFullBleed =
+    location.pathname.startsWith('/mail') || location.pathname.startsWith('/documents');
 
   const handleLogout = () => {
     clearSession();

@@ -8,6 +8,8 @@ from app.api import (
     ai_keys,
     auth,
     backends,
+    documents,
+    documents_external,
     health,
     mail,
     mail_ingest,
@@ -40,3 +42,5 @@ api_router.include_router(roles.router)
 api_router.include_router(teams.router)
 api_router.include_router(sms.router)
 api_router.include_router(sms_webhooks.router)
+api_router.include_router(documents.router)
+api_router.include_router(documents_external.router)

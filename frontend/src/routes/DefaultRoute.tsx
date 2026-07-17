@@ -19,6 +19,8 @@ const NAV_ORDER: { path: string; page: string }[] = [
   { path: '/users', page: 'users' },
   { path: '/roles', page: 'roles' },
   { path: '/teams', page: 'teams' },
+  // «Документы» — в конце плоского порядка (ADR-061 §1), приоритеты не меняются.
+  { path: '/documents', page: 'documents' },
 ];
 
 /**

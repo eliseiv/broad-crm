@@ -19,6 +19,7 @@ dependencies = [
     "httpx[socks]>=0.27,<0.28",
     "structlog>=24,<25",
     "twilio>=9.3,<10",
+    "python-multipart>=0.0.12,<0.1",
 ]
 
 [dependency-groups]

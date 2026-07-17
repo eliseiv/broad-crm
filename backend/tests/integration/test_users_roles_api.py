@@ -66,6 +66,7 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
         "sms",
         "roles",
         "teams",
+        "documents",
     ]
     by_page = {p["page"]: p["actions"] for p in pages}
     assert by_page["dashboard"] == ["view"]
@@ -74,6 +75,8 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
     assert by_page["sms"] == ["view", "edit", "transfer", "sync", "delete"]
     assert by_page["roles"] == ["view", "create", "edit", "delete"]
     assert by_page["teams"] == ["view", "create", "edit", "delete"]
+    # documents (ADR-059): share — отдельное чувствительное действие смены видимости.
+    assert by_page["documents"] == ["view", "create", "edit", "delete", "share"]
     assert "users" not in by_page
 
 

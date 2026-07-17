@@ -1206,3 +1206,78 @@ export interface ApiErrorBody {
     details: Array<{ field: string; message: string }> | null;
   };
 }
+
+// --- Документы (модуль `documents`, ADR-059/061/062; 04-api.md §Documents) ---
+
+/** Тип узла дерева документов. */
+export type DocumentNodeType = 'folder' | 'document';
+
+/** Режим видимости узла: наследуется от предка/публичен ↔ ограничен ролями. */
+export type DocumentVisibilityMode = 'inherit' | 'restricted';
+
+/**
+ * Узел дерева документов (04-api.md §Documents «Форма узла в ответах»). `content_md`
+ * приходит ТОЛЬКО у документа и ТОЛЬКО в `GET /nodes/{id}` (в дереве/списках — `null`).
+ */
+export interface DocumentNode {
+  id: string;
+  node_type: DocumentNodeType;
+  parent_id: string | null;
+  name: string;
+  content_md: string | null;
+  owner_id: string;
+  visibility_mode: DocumentVisibilityMode;
+  content_version: number;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** POST /api/documents/folders — тело. */
+export interface DocumentFolderCreateRequest {
+  parent_id: string | null;
+  name: string;
+}
+
+/** POST /api/documents/documents — тело (`content_md` опц., default ""). */
+export interface DocumentCreateRequest {
+  parent_id: string | null;
+  name: string;
+  content_md?: string;
+}
+
+/**
+ * PATCH /api/documents/nodes/{id} — любое подмножество (presence-семантика).
+ * `expected_version` опц. (TD-064): при передаче ≠ текущему → 409 document_node_conflict.
+ */
+export interface DocumentNodeUpdateRequest {
+  name?: string;
+  content_md?: string;
+  expected_version?: number;
+}
+
+/** POST /api/documents/nodes/{id}/copy — тело (default target = тот же parent). */
+export interface DocumentCopyRequest {
+  target_parent_id: string | null;
+}
+
+/**
+ * GET/PATCH /api/documents/nodes/{id}/visibility — симметричная форма (read↔write).
+ * `role_ids` — СОБСТВЕННЫЕ роли узла (при `restricted`); `inherit` → `[]`.
+ */
+export interface DocumentVisibility {
+  visibility_mode: DocumentVisibilityMode;
+  role_ids: string[];
+}
+
+/** PATCH /api/documents/order — полная перестановка уровня одного `parent_id` → 204. */
+export interface DocumentOrderRequest {
+  parent_id: string | null;
+  ids: string[];
+}
+
+/** Элемент GET /api/documents/role-refs (лёгкий список ролей для модалки видимости). */
+export interface DocumentRoleRef {
+  id: string;
+  name: string;
+}

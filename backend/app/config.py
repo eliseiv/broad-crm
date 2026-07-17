@@ -363,6 +363,25 @@ class Settings(BaseSettings):
     )
     node_exporter_sha256: str = "6809dd0b3ec45fd6e992c19071d6b5253aed3ead7bf0686885a51d85c6643c66"
 
+    # --- Модуль «Документы» (modules/documents, ADR-059/060) ---
+    # Лимит размера markdown-контента документа (байт): проверяется и при upload, и при
+    # inline-правке контента (03-data-model.md). Превышение → 422 (upload →
+    # document_upload_invalid; inline → validation_error, поле content_md). Default 1 МБ.
+    documents_max_md_bytes: int = 1_048_576
+    # Статический ключ внешнего read-only контура /api/external/documents/* (RAG, ADR-060 §1).
+    # Только env (класс секретов MAIL_API_KEY: не в БД/логах/ответах/SPA/URL, ротация через
+    # деплой); входящий X-API-Key сверяется constant-time (hmac.compare_digest). Пусто ⇒
+    # внешний контур выключен (503 documents_external_not_configured).
+    documents_api_key: str = ""
+
+    @property
+    def documents_external_enabled(self) -> bool:
+        """Внешний read-only контур документов активен только при заданном DOCUMENTS_API_KEY.
+
+        Иначе все /api/external/documents/* → 503 documents_external_not_configured (ADR-060 §1).
+        """
+        return bool(self.documents_api_key)
+
     # --- Rate-limit входа (05-security.md, TD-005) ---
     login_rate_limit_attempts: int = 10
     login_rate_limit_window_sec: int = 300

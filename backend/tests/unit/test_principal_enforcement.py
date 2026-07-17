@@ -72,10 +72,13 @@ def _db_user(*, is_active: bool = True, permissions: dict[str, list[str]] | None
         permissions={"servers": ["view"], "mail": ["view"]} if permissions is None else permissions,
     )
     # ADR-055 §2.2: `Principal` несёт флаги «Без команды» каналов — колонки `users.*`.
+    # ADR-059: `get_current_principal` читает `user.role_id` (per-node фильтр видимости
+    # документов) — фейк-пользователь обязан нести этот атрибут.
     return SimpleNamespace(
         id=uuid.uuid4(),
         username="Никита",
         role=role,
+        role_id=uuid.uuid4(),
         is_active=is_active,
         mail_includes_unassigned=False,
         sms_includes_unassigned=False,

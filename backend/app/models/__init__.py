@@ -2,6 +2,8 @@
 
 from app.models.ai_key import AiKey, AiKeyStatus, AiProvider
 from app.models.base import Base
+from app.models.document_node import DocumentNode
+from app.models.document_node_role import document_node_roles
 from app.models.mail_account import MailAccount
 from app.models.mail_message import MailMessage
 from app.models.mail_message_read import MailMessageRead
@@ -30,6 +32,7 @@ __all__ = [
     "Backend",
     "BackendStatus",
     "Base",
+    "DocumentNode",
     "MailAccount",
     "MailMessage",
     "MailMessageRead",
@@ -54,6 +57,7 @@ __all__ = [
     "SmsTelegramLink",
     "Team",
     "User",
+    "document_node_roles",
     "user_channel_teams",
     "user_teams",
 ]

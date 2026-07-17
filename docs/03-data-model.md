@@ -1561,3 +1561,125 @@ ALTER TABLE mail_accounts ADD COLUMN app_name text NULL;
 **`display_name` НЕ дропается** — становится производным (сервер пересчитывает его при следующем create/update ящика; существующие значения остаются валидными). Обоснование — [ADR-047](adr/ADR-047-mail-fix-pack.md) §3.3.
 
 **`downgrade()`**: `ALTER TABLE mail_accounts DROP COLUMN app_name; ALTER TABLE mail_accounts DROP COLUMN number;` (`display_name` уже содержит склейку — данные не теряются).
+
+---
+
+## Таблицы модуля «Документы» (`document_nodes`, `document_node_roles`)
+
+Решение — [ADR-059](adr/ADR-059-documents-module.md) (гринфилд-менеджер знаний: единая таблица дерева, permission-based enforcement, вычисляемое наследование видимости по ролям, soft-delete для RAG). Модуль — [modules/documents](modules/documents/README.md), RBAC — [05-security.md](05-security.md#каталог-прав-канон-на-сервере), контракт — [04-api.md#documents](04-api.md#documents). Миграции (концепт): **`0029_document_nodes`**, **`0030_document_node_roles`**.
+
+> ⚠️ **Первый soft-delete в проекте.** Все прочие таблицы — hard-delete ([TD-001](100-known-tech-debt.md)); здесь удаление **логическое** (`deleted_at`) — RAG обязан узнавать об удалениях. Все внутренние выборки обязаны нести `WHERE deleted_at IS NULL`.
+
+### Таблица `document_nodes` (единое дерево папок и документов)
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `id` | `uuid` | PK, `DEFAULT gen_random_uuid()` | Идентификатор узла. |
+| `node_type` | `text` | `NOT NULL`, **CHECK** `ck_document_nodes_node_type`: `node_type IN ('folder','document')` | Папка или документ. |
+| `parent_id` | `uuid` | `NULL`, FK → `document_nodes(id)` **`ON DELETE CASCADE`** | Родитель в дереве. `NULL` = корень. Физический каскад при hard-delete родителя не наступает в норме (удаление логическое); каскад страхует целостность. |
+| `name` | `text` | `NOT NULL`, **CHECK** `ck_document_nodes_name_len`: `char_length(name) BETWEEN 1 AND 255` | Имя узла. Дубли в одной папке **разрешены** (уникален только `id`, [ADR-059](adr/ADR-059-documents-module.md)) — UNIQUE `(parent_id, name)` НЕ вводится. |
+| `content_md` | `text` | `NULL`, **CHECK** `ck_document_nodes_folder_no_content`: `node_type = 'document' OR content_md IS NULL` | Markdown-контент документа. У папки — всегда `NULL`. Лимит размера — `DOCUMENTS_MAX_MD_BYTES` (env, проверка в сервисе). |
+| `owner_id` | `uuid` | `NOT NULL`, FK → `users(id)` **`ON DELETE RESTRICT`** | **Автор** (для отображения, НЕ гейт — enforcement permission-based, [05-security.md](05-security.md#видимость-документов-по-ролям-нормативно-adr-059)). Действия консольного супер-админа → `owner_id = SUPERADMIN_USER_ID` ([ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md); у него нет иного `user_id`). `RESTRICT` — удаление пользователя-автора заблокировано, пока есть его узлы. |
+| `visibility_mode` | `text` | `NOT NULL`, `DEFAULT 'inherit'`, **CHECK** `ck_document_nodes_visibility_mode`: `visibility_mode IN ('inherit','restricted')` | `inherit` — наследует ближайшего `restricted`-предка (нет → публичен). `restricted` — доступ по набору ролей из `document_node_roles`. |
+| `content_version` | `bigint` | `NOT NULL`, `DEFAULT 1` | Инкремент **только** при изменении `content_md`/`name`. Точка фиксации для RAG (нужно ли переэмбеддить). Смена видимости/перемещение/soft-delete НЕ меняют. |
+| `position` | `integer` | `NOT NULL`, `DEFAULT 0` | Порядок узла внутри уровня. См. [«Колонка `position`»](#колонка-position-порядок-карточек): `ORDER BY position ASC, created_at DESC, id`. |
+| `deleted_at` | `timestamptz` | `NULL` | **Soft-delete.** `NOT NULL` = удалён (tombstone для RAG). Исключается из всех внутренних выборок. |
+| `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
+| `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | **Обновляется при ЛЮБОЙ мутации** (rename/content/visibility/move/delete) — водяной знак внешнего sync. |
+
+### DDL (концепт миграции)
+
+> Реализуется через Alembic. Точная миграция — задача backend, ниже целевой результат.
+>
+> **Требование (нормативно):** каждая Alembic-миграция ОБЯЗАНА иметь рабочую функцию `downgrade()` — см. [07-deployment.md «Откат миграций БД»](07-deployment.md#откат-миграций-бд).
+
+```sql
+CREATE TABLE document_nodes (
+    id                uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    node_type         text NOT NULL,
+    parent_id         uuid REFERENCES document_nodes(id) ON DELETE CASCADE,
+    name              text NOT NULL,
+    content_md        text,
+    owner_id          uuid NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+    visibility_mode   text NOT NULL DEFAULT 'inherit',
+    content_version   bigint NOT NULL DEFAULT 1,
+    position          integer NOT NULL DEFAULT 0,
+    deleted_at        timestamptz,
+    created_at        timestamptz NOT NULL DEFAULT now(),
+    updated_at        timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT ck_document_nodes_node_type CHECK (node_type IN ('folder', 'document')),
+    CONSTRAINT ck_document_nodes_name_len CHECK (char_length(name) BETWEEN 1 AND 255),
+    CONSTRAINT ck_document_nodes_folder_no_content CHECK (node_type = 'document' OR content_md IS NULL),
+    CONSTRAINT ck_document_nodes_visibility_mode CHECK (visibility_mode IN ('inherit', 'restricted'))
+);
+
+CREATE INDEX ix_document_nodes_parent_id ON document_nodes (parent_id);
+CREATE INDEX ix_document_nodes_owner_id ON document_nodes (owner_id);
+CREATE INDEX ix_document_nodes_updated_at_id ON document_nodes (updated_at, id);
+```
+
+### Индексы и обоснование
+- `ix_document_nodes_parent_id` — обход дерева/дети уровня (`GET /tree`, `GET /nodes?parent_id=`) и обслуживание `ON DELETE CASCADE`.
+- `ix_document_nodes_owner_id` — reverse-lookup «узлы автора» и обслуживание `ON DELETE RESTRICT` при удалении пользователя.
+- **`ix_document_nodes_updated_at_id (updated_at, id)`** — компаундный keyset внешнего RAG-sync (`GET /api/external/documents`, `/changes`) по `(updated_at, id)`. **Не частичный** намеренно ([ADR-059](adr/ADR-059-documents-module.md) §6): внешний контур обязан пагинировать **включая** tombstones (`deleted_at IS NOT NULL`), поэтому частичный `WHERE deleted_at IS NULL` (исходно предлагавшийся) его не покрывает; отдельного «глобально свежие» внутреннего потребителя нет (дерево обходится по `parent_id`).
+
+### Политика удаления
+- **Узел** — **soft-delete** (`UPDATE document_nodes SET deleted_at = now() WHERE ...`). Папка — каскадный soft-delete **всего поддерева** (обход рекурсивным CTE вниз) в одной транзакции; tombstone на каждый узел. Физический `DELETE` строк — только будущий GC ([TD-067](100-known-tech-debt.md)).
+- **Пользователь-автор** — `ON DELETE RESTRICT`: пока у пользователя есть узлы, удаление заблокировано (переназначение авторства/зачистка — прикладная операция).
+- **Роль** — `document_node_roles` снимаются `ON DELETE CASCADE` (см. ниже); сам `restricted`-узел при удалении роли теряет её из эффективного набора.
+
+### Таблица `document_node_roles` (видимость узел ↔ роль, [ADR-059](adr/ADR-059-documents-module.md))
+
+Набор ролей, которым виден `restricted`-узел. Образец связки — [`user_channel_teams`](#таблица-user_channel_teams-per-channel-добавки-adr-055): composite PK, обе FK `ON DELETE CASCADE`, индекс на «правую» колонку. Строк **нет** для узлов `visibility_mode='inherit'` (их видимость наследуется/публична).
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `node_id` | `uuid` | PK-часть, FK → `document_nodes(id)` **`ON DELETE CASCADE`** | `restricted`-узел. |
+| `role_id` | `uuid` | PK-часть, FK → `roles(id)` **`ON DELETE CASCADE`** | Роль, которой узел виден. |
+
+Составной `PRIMARY KEY (node_id, role_id)` — пара не дублируется; префикс `(node_id)` покрывает сборку эффективного набора ролей узла.
+
+### DDL (концепт миграции)
+
+```sql
+CREATE TABLE document_node_roles (
+    node_id  uuid NOT NULL REFERENCES document_nodes(id) ON DELETE CASCADE,
+    role_id  uuid NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+    PRIMARY KEY (node_id, role_id)
+);
+
+CREATE INDEX ix_document_node_roles_role_id ON document_node_roles (role_id);
+```
+
+### Индексы и обоснование
+- `PK (node_id, role_id)` — уникальность пары + выборка по префиксу `(node_id)` (эффективный набор ролей узла при резолве видимости).
+- **`ix_document_node_roles_role_id` — обязателен:** под `ON DELETE CASCADE` при удалении роли (иначе seq-scan) и под обратную выборку «какие узлы видит роль».
+
+### Политика удаления
+- **Узел** — при soft-delete узла строки `document_node_roles` **сохраняются** (нужны, если узел восстановят/для истории); при физическом GC ([TD-067](100-known-tech-debt.md)) — снимаются `ON DELETE CASCADE`.
+- **Роль** — hard delete роли снимает её строки `ON DELETE CASCADE` (симметрично `user_channel_teams`) ⇒ роль исчезает из эффективных наборов автоматически.
+
+### Резолюция эффективной видимости (рекурсивный CTE, [ADR-059](adr/ADR-059-documents-module.md) §4)
+
+Эффективный набор ролей узла = `document_node_roles` **ближайшего `restricted`-предка** (вверх по `parent_id`, включая сам узел). Нет `restricted`-предка до корня → узел **публичен** внутри модуля.
+
+```sql
+WITH RECURSIVE chain AS (
+    SELECT id, parent_id, visibility_mode, 0 AS depth
+    FROM document_nodes WHERE id = :node_id AND deleted_at IS NULL
+  UNION ALL
+    SELECT n.id, n.parent_id, n.visibility_mode, c.depth + 1
+    FROM document_nodes n JOIN chain c ON n.id = c.parent_id
+    WHERE n.deleted_at IS NULL
+)
+SELECT id FROM chain WHERE visibility_mode = 'restricted'
+ORDER BY depth ASC LIMIT 1;   -- ближайший restricted-предок; нет строки ⇒ узел публичен
+```
+
+### Миграции `0029_document_nodes` / `0030_document_node_roles` (концепт)
+
+> `revision = "0029_document_nodes"` — **19 символов** ≤ 32 ([правило id](#1-revision-id--не-длиннее-32-символов)); `revision = "0030_document_node_roles"` — **24 символа** ≤ 32. `down_revision` первой = **фактическая голова цепочки на момент реализации** (backend сверяет по `alembic_version`; сейчас планируется `0028_mail_dedup_orphan_cleanup`), второй — `"0029_document_nodes"`.
+
+**`upgrade()`** — `CREATE TABLE document_nodes` (+ 4 CHECK + 3 индекса), затем `CREATE TABLE document_node_roles` (+ индекс). **Backfill не нужен** (таблицы стартуют пустыми).
+
+**`downgrade()`** (рабочий, обязателен) — `DROP TABLE document_node_roles;` затем `DROP TABLE document_nodes;` (порядок из-за FK).
