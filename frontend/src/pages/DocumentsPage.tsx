@@ -77,6 +77,13 @@ function DocumentsWorkspace() {
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mobileDetail, setMobileDetail] = useState(false);
+  // Только что созданный узел — фолбэк правой панели до прихода рефетча дерева (см. selectedNode).
+  // `treeUpdatedAt` — отметка снимка дерева на момент создания: фолбэк действует, только пока
+  // рефетч не пришёл, и перестаёт действовать с приходом ЛЮБОГО нового снимка.
+  const [justCreated, setJustCreated] = useState<{
+    node: DocumentNode;
+    treeUpdatedAt: number;
+  } | null>(null);
 
   // Модальное состояние (single-instance модалки на всю страницу).
   const [createKind, setCreateKind] = useState<'folder' | 'document' | null>(null);
@@ -88,10 +95,20 @@ function DocumentsWorkspace() {
   const copyMutation = useCopyNode();
 
   const rows = useMemo(() => flattenVisible(tree, expanded), [tree, expanded]);
-  const selectedNode = useMemo(
-    () => nodes.find((n) => n.id === selectedId) ?? null,
-    [nodes, selectedId],
-  );
+  const selectedNode = useMemo(() => {
+    const fromTree = nodes.find((n) => n.id === selectedId);
+    if (fromTree) return fromTree;
+    // Локальный фолбэк на только что созданный узел (08-design-system.md §Страница «Документы»,
+    // ADR-063): рефетч дерева ещё в полёте, но узел уже должен быть открыт справа — без
+    // промежуточного мигания заглушкой «Выберите документ или папку».
+    //
+    // Окно фолбэка — строго «узел ещё не приходил с сервера»: он самоочищается приходом рефетча
+    // (снимок дерева обновился ⇒ отметка разошлась), а не только появлением узла в дереве. Иначе
+    // фолбэк залипал бы на узле, которого в свежем дереве УЖЕ НЕТ — например, после каскадного
+    // удаления родительской папки, — и рендерил бы полностью редактируемый удалённый документ.
+    if (!justCreated || justCreated.node.id !== selectedId) return null;
+    return justCreated.treeUpdatedAt === treeQuery.dataUpdatedAt ? justCreated.node : null;
+  }, [nodes, selectedId, justCreated, treeQuery.dataUpdatedAt]);
 
   // Ленивая догрузка контента выбранного документа (content_md не входит в дерево).
   const isDocumentSelected = selectedNode?.node_type === 'document';
@@ -112,19 +129,23 @@ function DocumentsWorkspace() {
     });
   }, []);
 
-  /** Раскрыть цепочку предков узла (чтобы он был виден в дереве после создания/открытия). */
-  const expandAncestors = useCallback(
-    (nodeId: string) => {
+  /**
+   * Раскрыть цепочку папок ОТ РОДИТЕЛЯ вверх до корня (08-design-system.md §Страница «Документы»,
+   * ADR-063). Параметризация именно по `parent_id`, а не по id созданного узла: родитель
+   * существовал до создания, поэтому присутствует даже в ещё не обновлённом снимке дерева —
+   * раскрытие не ждёт рефетча и созданный узел сразу виден, в т.ч. внутри свёрнутой папки.
+   */
+  const expandFrom = useCallback(
+    (parentId: string | null) => {
+      if (!parentId) return;
       const byId = new Map(nodes.map((n) => [n.id, n]));
-      const chain = new Set<string>();
-      let current = byId.get(nodeId);
-      const guard = new Set<string>();
-      while (current?.parent_id && !guard.has(current.parent_id)) {
-        guard.add(current.parent_id);
+      const chain = new Set<string>([parentId]);
+      let current = byId.get(parentId);
+      while (current?.parent_id && !chain.has(current.parent_id)) {
         chain.add(current.parent_id);
         current = byId.get(current.parent_id);
       }
-      if (chain.size > 0) setExpanded((prev) => new Set([...prev, ...chain]));
+      setExpanded((prev) => new Set([...prev, ...chain]));
     },
     [nodes],
   );
@@ -144,13 +165,17 @@ function DocumentsWorkspace() {
     [nodes, toggleExpand, handleSelect],
   );
 
+  /** Создание папки/документа и загрузка .md — общий путь: узел сразу виден и открыт. */
   const openCreated = useCallback(
     (node: DocumentNode) => {
-      expandAncestors(node.id);
+      expandFrom(node.parent_id);
+      // Отметка текущего снимка дерева: фолбэк действует, пока рефетч (инвалидация после создания)
+      // не принесёт новый снимок — тогда `dataUpdatedAt` разойдётся и фолбэк снимется.
+      setJustCreated({ node, treeUpdatedAt: treeQuery.dataUpdatedAt });
       setSelectedId(node.id);
       setMobileDetail(true);
     },
-    [expandAncestors],
+    [expandFrom, treeQuery.dataUpdatedAt],
   );
 
   const handleCopy = useCallback(
@@ -182,6 +207,11 @@ function DocumentsWorkspace() {
 
   const handleDeleted = useCallback(
     (node: DocumentNode) => {
+      // Удаление — каскадный soft-delete поддерева: фолбэк-узел мог быть среди удалённых потомков
+      // (удаляют папку F, а залип фолбэк на её ребёнке X — id не совпадут, поэтому снимаем его
+      // безусловно). Мостик «создание → рефетч» после удаления в любом случае не нужен: удаление
+      // инвалидирует дерево и рефетч всё равно придёт.
+      setJustCreated(null);
       if (selectedId === node.id) {
         setSelectedId(null);
         setMobileDetail(false);
@@ -331,11 +361,13 @@ function DocumentsWorkspace() {
       />
     );
   } else if (nodeQuery.data) {
-    // Ключ по id:content_version — на новую версию (собственное сохранение или 409-refetch)
-    // редактор перемонтируется со свежим контентом.
+    // Ключ ремоунта — только id узла (ADR-063 §B): редактор пересобирается при СМЕНЕ документа и
+    // ни при каком другом событии. Прежний составной ключ `id:content_version` отменён — он делал
+    // собственное сохранение неотличимым от внешнего изменения (курсор в начало, сброс скролла).
+    // Внешние правки приходят в редактор ресинком по расхождению версий, а не ремоунтом.
     detail = (
       <DocumentEditor
-        key={`${nodeQuery.data.id}:${nodeQuery.data.content_version}`}
+        key={nodeQuery.data.id}
         node={nodeQuery.data}
         canEdit={canEdit}
         onBack={() => setMobileDetail(false)}

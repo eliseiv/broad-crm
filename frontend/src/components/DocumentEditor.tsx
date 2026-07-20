@@ -203,8 +203,14 @@ function Toolbar({ editor }: { editor: Editor }) {
  * WYSIWYG-редактор документа на TipTap (ADR-062, 08-design-system.md «Компонент
  * DocumentEditor»). Хранение — markdown в `content_md`: при открытии `content_md` парсится
  * в ProseMirror (tiptap-markdown), при сохранении сериализуется обратно в markdown и уходит
- * в PATCH /nodes/{id}. Компонент keyed родителем по `id:content_version` — на новую версию
- * (в т.ч. после собственного сохранения или 409-refetch) перемонтируется со свежим контентом.
+ * в PATCH /nodes/{id}.
+ *
+ * Жизненный цикл (ADR-063 §B; прежняя норма «keyed родителем по `id:content_version`» ОТМЕНЕНА —
+ * она делала собственное сохранение неотличимым от внешнего изменения и пересобирала редактор:
+ * курсор в начало, скролл сброшен). Действующая норма: ключ ремоунта — только `id` узла, а
+ * контент ресинкается по расхождению `content_version` с базовой версией текущего маунта
+ * (внешняя правка / рефетч после 409). Собственное сохранение обновляет базовую версию в колбэке
+ * мутации ⇒ ресинк на него не срабатывает, курсор и позиция скролла сохраняются.
  *
  * Optimistic-lock (TD-064, опц.): PATCH шлётся с `expected_version = node.content_version`;
  * конфликт → 409 document_node_conflict → тост «документ изменён» + рефетч свежей версии.
@@ -218,9 +224,9 @@ export function DocumentEditor({ node, canEdit, onBack }: DocumentEditorProps) {
   const queryClient = useQueryClient();
   const updateMutation = useUpdateNode();
   const [dirty, setDirty] = useState(false);
-  // Базовая версия для optimistic-lock. Инициализируется версией узла; после успешного
-  // сохранения родитель перемонтирует компонент (ключ по content_version), поэтому ref
-  // достаточно как снимок на текущий маунт.
+  // Базовая версия текущего маунта (ADR-063 §B): версия, с которой смонтирован или последний раз
+  // синхронизирован контент редактора. Служит и признаком внешнего изменения (расхождение с
+  // серверной content_version → ресинк), и `expected_version` для optimistic-lock (TD-064).
   const baseVersionRef = useRef(node.content_version);
 
   const editor = useEditor({
@@ -241,7 +247,9 @@ export function DocumentEditor({ node, canEdit, onBack }: DocumentEditorProps) {
     content: node.content_md ?? '',
     editorProps: {
       attributes: {
-        class: 'doc-prose min-h-full max-w-3xl focus:outline-none',
+        // mx-auto — колонка контента центрируется в области редактирования, поля симметричны
+        // (ADR-063 §C). Выравнивание самого текста не меняется: он остаётся по левому краю.
+        class: 'doc-prose mx-auto min-h-full max-w-3xl focus:outline-none',
         'aria-label': `Содержимое документа «${node.name}»`,
       },
     },
@@ -253,23 +261,43 @@ export function DocumentEditor({ node, canEdit, onBack }: DocumentEditorProps) {
     editor?.setEditable(canEdit);
   }, [editor, canEdit]);
 
+  // Ресинк контента по расхождению версий (ADR-063 §B.2): пришедшая с сервера content_version
+  // ≠ базовой ⇒ контент изменён ИЗВНЕ (рефетч после 409, правка другим пользователем) —
+  // содержимое редактора заменяется серверным, базовая версия обновляется, флаг несохранённых
+  // изменений сбрасывается. Второй аргумент setContent — emitUpdate=false: замена контента не
+  // должна порождать событие правки, иначе документ немедленно помечается изменённым.
+  // Команда setContent переопределена расширением tiptap-markdown (парсит markdown-строку).
+  useEffect(() => {
+    if (!editor) return;
+    if (node.content_version === baseVersionRef.current) return;
+    baseVersionRef.current = node.content_version;
+    editor.commands.setContent(node.content_md ?? '', false);
+    setDirty(false);
+  }, [editor, node.content_version, node.content_md]);
+
   const handleSave = useCallback(() => {
     if (!editor || !canEdit) return;
     const markdown = editor.storage.markdown.getMarkdown() as string;
     updateMutation.mutate(
       { id: node.id, payload: { content_md: markdown, expected_version: baseVersionRef.current } },
       {
-        onSuccess: () => {
-          setDirty(false);
+        onSuccess: (data) => {
+          // ADR-063 §B.3: собственное сохранение — не внешнее изменение. Базовая версия
+          // обновляется значением из ответа PATCH ⇒ ресинк не срабатывает, курсор и позиция
+          // скролла сохраняются (в т.ч. при Ctrl+S посреди длинного документа).
+          baseVersionRef.current = data.content_version;
+          // Правки, набранные ПОКА PATCH был в полёте, этим ответом не сохранены: сбрасывать
+          // флаг изменений в этом случае нельзя — кнопка погасла бы, Ctrl+S стал бы no-op, и
+          // пользователь ушёл бы со страницы, считая текст сохранённым (молчаливая потеря).
+          const current = editor.storage.markdown.getMarkdown() as string;
+          if (current === markdown) setDirty(false);
           toast.success('Документ сохранён');
-          // content_version инкрементнулся на сервере; инвалидация узла (в хуке) обновит
-          // кэш, родитель перемонтирует редактор со свежей версией.
         },
         onError: (err) => {
           if (err instanceof ApiError && err.status === 409) {
             toast.error('Документ изменён другим пользователем — загружена актуальная версия.');
-            // Рефетч свежего узла: новая content_version → родитель перемонтирует редактор
-            // со свежим контентом (ключ по id:content_version).
+            // Инвалидация уместна только здесь: нужны ЧУЖИЕ данные (ADR-063 §A). Свежий контент
+            // попадёт в редактор ресинком по расхождению версий, а не ремоунтом.
             void queryClient.invalidateQueries({ queryKey: [...documentNodeKey, node.id] });
             return;
           }
@@ -287,6 +315,36 @@ export function DocumentEditor({ node, canEdit, onBack }: DocumentEditorProps) {
       },
     );
   }, [editor, canEdit, node.id, updateMutation, queryClient]);
+
+  /**
+   * Фокус по клику в пустое место области документа (ADR-063 §C). Клик ниже последнего блока или
+   * сбоку от колонки текста ставит каретку в ближайшую к точке клика позицию.
+   *
+   * onMouseDown, а не onClick: к моменту click браузер уже выставил selection и preventDefault
+   * бесполезен. Клик ВНУТРИ редактируемого текста отдаётся ProseMirror без preventDefault —
+   * обычный клик, drag-выделение и клик по ссылке не изменяются. В режиме просмотра (нет
+   * documents:edit либо редактор не готов) фокус не ставится.
+   *
+   * Трейд-офф: выделение мышью, НАЧАТОЕ с полей вне колонки и протянутое в текст, не работает.
+   * Выделение изнутри текста не затрагивается.
+   */
+  const handleSurfaceMouseDown = useCallback(
+    (e: React.MouseEvent<HTMLDivElement>) => {
+      if (!editor || !canEdit) return;
+      if (editor.view.dom.contains(e.target as Node)) return;
+      e.preventDefault();
+      // Координаты зажимаются в прямоугольник области редактирования: клик правее колонки
+      // ставит курсор в конец ТОЙ ЖЕ строки, а не в конец документа.
+      const rect = editor.view.dom.getBoundingClientRect();
+      const left = Math.min(Math.max(e.clientX, rect.left + 1), rect.right - 1);
+      const top = Math.min(Math.max(e.clientY, rect.top + 1), rect.bottom - 1);
+      const coords = editor.view.posAtCoords({ left, top });
+      // Позиция не определяется → фолбэк «конец документа».
+      if (coords) editor.chain().focus().setTextSelection(coords.pos).run();
+      else editor.chain().focus('end').run();
+    },
+    [editor, canEdit],
+  );
 
   // Ctrl/Cmd+S — сохранить (только при праве и наличии изменений).
   useEffect(() => {
@@ -333,9 +391,19 @@ export function DocumentEditor({ node, canEdit, onBack }: DocumentEditorProps) {
 
       {canEdit && editor && <Toolbar editor={editor} />}
 
-      <div className="scrollbar-none min-h-0 flex-1 overflow-y-auto px-4 py-4">
+      {/* Обработчик только проксирует клик в пустоту на редактор — клавиатурного эквивалента не
+          требует: вся клавиатурная работа идёт внутри contenteditable, доступного по Tab. */}
+      <div
+        className="scrollbar-none min-h-0 flex-1 overflow-y-auto px-4 py-4"
+        onMouseDown={handleSurfaceMouseDown}
+      >
         {editor ? (
-          <EditorContent editor={editor} />
+          // h-full — иначе промежуточный wrapper EditorContent остаётся height:auto и min-h-full
+          // на contenteditable резолвится относительно родителя неопределённой высоты, не давая
+          // высоты вообще: клик ниже последнего блока не попадал бы в редактируемую область.
+          // @tiptap/react пробрасывает className на этот wrapper (EditorContentProps extends
+          // HTMLProps<HTMLDivElement>, render спредит ...rest на div).
+          <EditorContent editor={editor} className="h-full" />
         ) : (
           <p className="text-[13px] text-text-tertiary">Загрузка редактора…</p>
         )}

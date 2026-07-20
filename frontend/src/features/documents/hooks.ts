@@ -114,16 +114,40 @@ export function useUploadMd() {
 }
 
 /**
- * PATCH /api/documents/nodes/{id} (rename/content). Инвалидирует дерево (имя/позиция)
- * и кэш конкретного узла (контент/версия). `expected_version` опц. → 409 при конфликте.
+ * PATCH /api/documents/nodes/{id} (rename/content). Инвалидирует дерево (имя/позиция) и
+ * **сливает** ответ в кэш узла. `expected_version` опц. → 409 при конфликте.
+ *
+ * Кэш узла (ADR-063 §A, 04-api.md §PATCH /api/documents/nodes/{id}): ответ этого PATCH несёт
+ * `content_md: null` — контент отдаёт только GET /nodes/{id}. Поэтому класть ответ в кэш узла
+ * целиком ЗАПРЕЩЕНО: это затирает контент и даёт видимую потерю текста на экране (данные на
+ * сервере целы). Ответ сливается поверх предыдущего значения:
+ *
+ * - предыдущего значения нет → частичная запись НЕ сеется (следующий GET заполнит кэш целиком);
+ * - в теле запроса был `content_md` (строго `!== undefined`; `''` — валидный контент нового
+ *   документа) → в кэш идёт отправленное клиентом значение: сервер подтвердил его записью;
+ * - иначе (rename и любая другая мутация без `content_md`) → контент берётся из прежнего кэша;
+ * - остальные поля (`name`, `content_version`, `updated_at`, `position`) — из ответа сервера.
+ *
+ * Правило действует для ВСЕХ потребителей этого PATCH — и сохранения контента в редакторе, и
+ * переименования (общий хук; иначе rename открытого документа опустошает его). Инвалидация узла
+ * на успешном пути не применяется (лишний round-trip GET) — только в ветке 409, где нужны чужие
+ * данные.
  */
 export function useUpdateNode() {
   const queryClient = useQueryClient();
   return useMutation<DocumentNode, unknown, { id: string; payload: DocumentNodeUpdateRequest }>({
     mutationFn: ({ id, payload }) => updateNode(id, payload),
-    onSuccess: (data) => {
+    onSuccess: (data, variables) => {
       invalidateTree(queryClient);
-      queryClient.setQueryData([...documentNodeKey, data.id], data);
+      queryClient.setQueryData<DocumentNode>([...documentNodeKey, data.id], (previous) => {
+        if (!previous) return undefined;
+        const sent = variables.payload.content_md;
+        return {
+          ...previous,
+          ...data,
+          content_md: sent !== undefined ? sent : previous.content_md,
+        };
+      });
     },
   });
 }
