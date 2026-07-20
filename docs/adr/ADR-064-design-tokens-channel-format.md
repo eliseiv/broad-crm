@@ -3,7 +3,7 @@
 - **Статус:** accepted
 - **Дата:** 2026-07-21
 - **Область:** frontend / дизайн-система (токены, `tailwind.config.ts`, `index.css`, компонент `Button`, а также сырые потребители конвертируемых токенов в `.ts/.tsx` — инлайновые стили, SVG-атрибуты, аргументы `color-mix()`, JS-константы цвета: `main.tsx`, `components/Gauge.tsx`, `components/MailTagChip.tsx`, `components/ui/Pill.tsx`, `lib/zones.ts`)
-- **Связи:** уточняет §Цветовые токены и §Темизация [08-design-system.md](../08-design-system.md); механизм темы ([ADR-033](ADR-033-flat-nav-theme-toggle-numbers-table.md), [ADR-041](ADR-041-login-theme-session-ux.md), [ADR-046](ADR-046-ui-infra-fix-pack.md) §4) **не меняется**.
+- **Связи:** уточняет §Цветовые токены и §Темизация [08-design-system.md](../08-design-system.md); механизм темы ([ADR-033](ADR-033-flat-nav-theme-toggle-numbers-table.md), [ADR-041](ADR-041-login-theme-session-ux.md), [ADR-046](ADR-046-ui-infra-fix-pack.md) §4) **не меняется**. Токен-контракт-тест `Button.tokens.test.ts`, введённый в рамках этого ADR, статически импортирует `tailwind.config.ts` — это потребовало включить конфиг в файловый список app-проекта `tsconfig.app.json` (build-фикс TS6307, [ADR-066](ADR-066-tailwind-config-in-app-tsproject.md)).
 
 ## Контекст
 
