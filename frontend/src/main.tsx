@@ -44,9 +44,9 @@ createRoot(rootElement).render(
         richColors
         toastOptions={{
           style: {
-            background: 'var(--surface-2)',
-            border: '1px solid var(--border-strong)',
-            color: 'var(--text-primary)',
+            background: 'rgb(var(--surface-2))',
+            border: '1px solid rgb(var(--border-strong))',
+            color: 'rgb(var(--text-primary))',
           },
         }}
       />

@@ -102,7 +102,7 @@ export function Gauge({ value, label, size = 188 }: GaugeProps) {
         <path
           d={ARC_PATH}
           fill="none"
-          stroke="var(--gauge-track)"
+          stroke="rgb(var(--gauge-track))"
           strokeWidth={STROKE}
           strokeLinecap="round"
         />
@@ -139,7 +139,7 @@ export function Gauge({ value, label, size = 188 }: GaugeProps) {
           className="font-mono"
           fontSize={52}
           fontWeight={700}
-          fill={isPlaceholder ? 'var(--text-tertiary)' : 'var(--text-primary)'}
+          fill={isPlaceholder ? 'rgb(var(--text-tertiary))' : 'rgb(var(--text-primary))'}
         >
           {isPlaceholder ? '—' : rounded}
         </text>

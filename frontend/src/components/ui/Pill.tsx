@@ -11,20 +11,20 @@ export type PillTone = 'accent' | 'yellow' | 'neutral' | 'green';
  */
 const TONE_STYLE: Record<PillTone, CSSProperties> = {
   accent: {
-    backgroundColor: 'color-mix(in srgb, var(--accent) 16%, transparent)',
-    color: 'var(--accent-hover)',
+    backgroundColor: 'color-mix(in srgb, rgb(var(--accent)) 16%, transparent)',
+    color: 'rgb(var(--accent-hover))',
   },
   yellow: {
-    backgroundColor: 'color-mix(in srgb, var(--status-yellow) 16%, transparent)',
-    color: 'var(--status-yellow)',
+    backgroundColor: 'color-mix(in srgb, rgb(var(--status-yellow)) 16%, transparent)',
+    color: 'rgb(var(--status-yellow))',
   },
   neutral: {
-    backgroundColor: 'var(--surface-3)',
-    color: 'var(--text-secondary)',
+    backgroundColor: 'rgb(var(--surface-3))',
+    color: 'rgb(var(--text-secondary))',
   },
   green: {
-    backgroundColor: 'color-mix(in srgb, var(--status-green) 16%, transparent)',
-    color: 'var(--status-green)',
+    backgroundColor: 'color-mix(in srgb, rgb(var(--status-green)) 16%, transparent)',
+    color: 'rgb(var(--status-green))',
   },
 };
 

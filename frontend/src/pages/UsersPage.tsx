@@ -4,19 +4,11 @@ import { AddUserModal } from '@/components/AddUserModal';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
+import { Pill } from '@/components/ui/Pill';
 import { Spinner } from '@/components/ui/Spinner';
 import { useTeams } from '@/features/teams/hooks';
 import { useRoles, useUsers } from '@/features/users/hooks';
 import type { UserListItem } from '@/types/api';
-
-/** Секция списка: команда (или бакет «Без команды») + её пользователи. */
-interface UserGroup {
-  key: string;
-  title: string;
-  users: UserListItem[];
-}
-
-const NO_TEAM_KEY = '__no_team__';
 
 /**
  * Бейдж производного тристатуса пользователя (ADR-028, 08-design-system.md
@@ -30,42 +22,17 @@ function StatusBadge({ status }: { status: UserListItem['status'] }) {
 }
 
 /**
- * Группирует пользователей по CRM-командам (08-design-system.md «Список
- * пользователей»): пользователь в нескольких командах попадает в каждую группу;
- * пользователи без команды — в бакет «Без команды» в конце. Команды сортируются
- * по названию для стабильности.
- */
-function groupByTeams(users: UserListItem[]): UserGroup[] {
-  const teams = new Map<string, UserGroup>();
-  const noTeam: UserListItem[] = [];
-
-  for (const user of users) {
-    if (user.teams.length === 0) {
-      noTeam.push(user);
-      continue;
-    }
-    for (const team of user.teams) {
-      const group = teams.get(team.id);
-      if (group) group.users.push(user);
-      else teams.set(team.id, { key: team.id, title: team.name, users: [user] });
-    }
-  }
-
-  const result = Array.from(teams.values()).sort((a, b) => a.title.localeCompare(b.title, 'ru'));
-  if (noTeam.length > 0) {
-    result.push({ key: NO_TEAM_KEY, title: 'Без команды', users: noTeam });
-  }
-  return result;
-}
-
-/**
- * Страница «Пользователи» (08-design-system.md «Страница Пользователи», ADR-022).
- * Admin-only (гейтинг — AdminRoute). Содержит ТОЛЬКО пользователей, сгруппированных
- * по CRM-командам. Роли — на странице «Роли», команды — на странице «Команды».
+ * Страница «Пользователи» (08-design-system.md «Страница Пользователи», ADR-065).
+ * Admin-only (гейтинг — AdminRoute). Плоский список пользователей БЕЗ группировки
+ * по командам и без дублирования (ADR-065 отменяет прежнюю группировку ADR-021/022):
+ * одна строка = один пользователь, сортировка по `username`; принадлежность к командам
+ * показана чипами в строке. Роли — на странице «Роли», команды — на странице «Команды».
  */
 export function UsersPage() {
   const usersQuery = useUsers();
   const rolesQuery = useRoles();
+  // useTeams нужен модалке AddUserModal (мультивыбор команд), а не раскладке
+  // списка — убирать нельзя (ADR-065 §5).
   const teamsQuery = useTeams();
 
   const [modalOpen, setModalOpen] = useState(false);
@@ -74,8 +41,11 @@ export function UsersPage() {
   const roles = rolesQuery.data?.items ?? [];
   const teams = teamsQuery.data?.items ?? [];
   const usersData = usersQuery.data?.items;
-  const users = useMemo(() => usersData ?? [], [usersData]);
-  const groups = useMemo(() => groupByTeams(users), [users]);
+  // Плоский список, отсортированный по username (ADR-065 §3: localeCompare, локаль 'ru').
+  const users = useMemo(
+    () => [...(usersData ?? [])].sort((a, b) => a.username.localeCompare(b.username, 'ru')),
+    [usersData],
+  );
 
   const openAdd = () => {
     setEditUser(undefined);
@@ -137,60 +107,62 @@ export function UsersPage() {
       )}
 
       {!usersQuery.isLoading && !usersQuery.isError && users.length > 0 && (
-        <div className="flex flex-col gap-8">
-          {groups.map((group) => (
-            <section key={group.key}>
-              <h2 className="mb-3 border-b border-border-subtle pb-2 text-base font-semibold text-text-secondary">
-                {group.title}
-              </h2>
-              <ul className="flex flex-col gap-3">
-                {group.users.map((user) => (
-                  <li key={user.id}>
-                    <Card
-                      interactive
-                      role="button"
-                      tabIndex={0}
-                      aria-label={`Изменить пользователя ${user.username}`}
-                      onClick={() => openEdit(user)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          openEdit(user);
-                        }
-                      }}
-                      className="flex cursor-pointer flex-wrap items-center justify-between gap-3 p-4"
-                    >
-                      <div className="flex min-w-0 items-center gap-3">
-                        <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-chip bg-surface-3 text-text-secondary">
-                          <UserIcon className="h-5 w-5" aria-hidden="true" />
-                        </span>
-                        <div className="flex min-w-0 flex-col gap-0.5">
-                          <span className="truncate font-mono text-sm font-medium text-text-primary">
-                            {user.username}
-                          </span>
-                          {user.telegram && (
-                            <span className="truncate font-mono text-[13px] text-text-secondary">
-                              @{user.telegram}
-                            </span>
-                          )}
-                          <span className="truncate text-[13px] text-text-secondary">
-                            {user.role_name}
-                          </span>
-                        </div>
+        <ul className="flex flex-col gap-3">
+          {users.map((user) => (
+            <li key={user.id}>
+              <Card
+                interactive
+                role="button"
+                tabIndex={0}
+                aria-label={`Изменить пользователя ${user.username}`}
+                onClick={() => openEdit(user)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    openEdit(user);
+                  }
+                }}
+                className="flex cursor-pointer flex-wrap items-center justify-between gap-3 p-4"
+              >
+                <div className="flex min-w-0 items-center gap-3">
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-chip bg-surface-3 text-text-secondary">
+                    <UserIcon className="h-5 w-5" aria-hidden="true" />
+                  </span>
+                  <div className="flex min-w-0 flex-col gap-1">
+                    <span className="truncate font-mono text-sm font-medium text-text-primary">
+                      {user.username}
+                    </span>
+                    {user.telegram && (
+                      <span className="truncate font-mono text-[13px] text-text-secondary">
+                        @{user.telegram}
+                      </span>
+                    )}
+                    <span className="truncate text-[13px] text-text-secondary">
+                      {user.role_name}
+                    </span>
+                    {/* Принадлежность к командам — чипами (ADR-065 §2). Пустой массив →
+                        единичная подпись «Без команды» вторичным цветом. */}
+                    {user.teams.length > 0 ? (
+                      <div className="flex flex-wrap gap-1">
+                        {user.teams.map((team) => (
+                          <Pill key={team.id} tone="neutral" label={team.name} title={team.name} />
+                        ))}
                       </div>
-                      <div className="flex shrink-0 items-center gap-3">
-                        {/* Беспарольный пользователь ещё не завершил «открытый первый
-                            вход» (ADR-025 §5) — единственный визуальный признак учётки. */}
-                        {!user.has_password && <Badge tone="yellow">Без пароля</Badge>}
-                        <StatusBadge status={user.status} />
-                      </div>
-                    </Card>
-                  </li>
-                ))}
-              </ul>
-            </section>
+                    ) : (
+                      <span className="text-[13px] text-text-secondary">Без команды</span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex shrink-0 items-center gap-3">
+                  {/* Беспарольный пользователь ещё не завершил «открытый первый
+                      вход» (ADR-025 §5) — единственный визуальный признак учётки. */}
+                  {!user.has_password && <Badge tone="yellow">Без пароля</Badge>}
+                  <StatusBadge status={user.status} />
+                </div>
+              </Card>
+            </li>
           ))}
-        </div>
+        </ul>
       )}
 
       <AddUserModal

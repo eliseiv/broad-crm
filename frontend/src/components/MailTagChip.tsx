@@ -33,9 +33,11 @@ export function MailTagChip({
   className,
 }: MailTagChipProps) {
   const style: CSSProperties = {
-    color: `color-mix(in srgb, ${color} 50%, var(--text-primary))`,
-    backgroundColor: `color-mix(in srgb, ${color} 16%, var(--surface-2))`,
-    borderColor: `color-mix(in srgb, ${color} 40%, var(--surface-2))`,
+    // channel-формат токенов (ADR-064 §C.2): токен-аргументы color-mix обёрнуты в
+    // rgb(var(--x)); ${color} — произвольный цвет тега (не токен ДС), не оборачивается.
+    color: `color-mix(in srgb, ${color} 50%, rgb(var(--text-primary)))`,
+    backgroundColor: `color-mix(in srgb, ${color} 16%, rgb(var(--surface-2)))`,
+    borderColor: `color-mix(in srgb, ${color} 40%, rgb(var(--surface-2)))`,
   };
   return (
     <span

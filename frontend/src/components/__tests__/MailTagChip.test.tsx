@@ -14,16 +14,30 @@ describe('MailTagChip (единый тег-чип, WCAG AA color-mix)', () => {
     return screen.getByText(name).closest('span[style]') as HTMLElement;
   }
 
-  it('красит текст/фон/границу через color-mix, а не сырым HEX', () => {
+  it('красит текст/фон/границу через color-mix с токенами в channel-формате (ADR-064 §C.2)', () => {
     render(<MailTagChip name="важное" color="#123456" />);
     const chip = chipOf('важное');
     const style = chip.getAttribute('style') ?? '';
 
-    // Все три канала — color-mix с токенами темы, сырой цвет только внутри формулы.
+    // Все три канала — color-mix с токенами темы, сырой цвет тега только внутри формулы.
     expect(style).toContain('color-mix');
+
+    // ADR-064 §C.2: токен-аргументы обёрнуты в rgb(var(--x)) (голый var(--x) — невалидный
+    // цвет, свойство «тихо» отбрасывается). Ассерт на ПОЛНУЮ обёртку, а не на подстроку
+    // `var(--text-primary)` (которая ⊂ `rgb(var(--text-primary))` и маскировала бы формат).
+    expect(style).toContain('rgb(var(--text-primary))');
+    expect(style).toContain('rgb(var(--surface-2))');
+    // Голого (необёрнутого) токена в стиле не осталось.
+    expect(style).not.toMatch(/[^(]var\(--text-primary\)/);
+    expect(style).not.toMatch(/[^(]var\(--surface-2\)/);
+
+    // surface-2 участвует и в заливке, и в границе — обёрнут в обоих (§C.2: surface-2 ×2).
+    expect(style.match(/rgb\(var\(--surface-2\)\)/g)).toHaveLength(2);
+
+    // Тег-цвет (${color}) — произвольный цвет тега, НЕ токен ДС: остаётся сырым HEX,
+    // rgb()-обёрткой не затронут.
     expect(style).toContain('#123456');
-    expect(style).toContain('var(--text-primary)');
-    expect(style).toContain('var(--surface-2)');
+    expect(style).not.toContain('rgb(#123456');
     // Плоский color: НЕ равен сырому tag.color (иначе провал контраста).
     expect(chip.style.color).not.toBe('#123456');
   });

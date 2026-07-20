@@ -14,21 +14,24 @@
  */
 :root,
 [data-theme='light'] {
-  --bg-base: #f2f4f7;
-  --surface-1: #ffffff;
-  --surface-2: #f7f8fa;
-  --surface-3: #eaecf1;
-  --border-subtle: #e3e6eb;
-  --border-strong: #cdd2db;
-  --text-primary: #111827;
-  --text-secondary: #4b5563;
-  --text-tertiary: #61697a;
-  --accent: #4f46e5;
-  --accent-hover: #4338ca;
-  --status-green: #15803d;
-  --status-yellow: #b45309;
-  --status-red: #dc2626;
-  --gauge-track: #e1e4ea;
+  /* Цветовые токены — space-separated RGB-триплеты (channel-формат, ADR-064 §A/§B).
+     Значение переменной само по себе НЕ валидный цвет — потребители оборачивают в
+     rgb(var(--x)) (§C.1 ниже) либо через Tailwind rgb(var(--x)/<alpha-value>). */
+  --bg-base: 242 244 247;
+  --surface-1: 255 255 255;
+  --surface-2: 247 248 250;
+  --surface-3: 234 236 241;
+  --border-subtle: 227 230 235;
+  --border-strong: 205 210 219;
+  --text-primary: 17 24 39;
+  --text-secondary: 75 85 99;
+  --text-tertiary: 97 105 122;
+  --accent: 79 70 229;
+  --accent-hover: 67 56 202;
+  --status-green: 21 128 61;
+  --status-yellow: 180 83 9;
+  --status-red: 220 38 38;
+  --gauge-track: 225 228 234;
 
   /* Градиенты дуги gauge — светлые концы затемнены (не «вымываются» на белом) */
   --gauge-green-from: #15803d;
@@ -46,21 +49,22 @@
 }
 
 [data-theme='dark'] {
-  --bg-base: #0a0c10;
-  --surface-1: #11141a;
-  --surface-2: #161a22;
-  --surface-3: #1e232d;
-  --border-subtle: #232834;
-  --border-strong: #2e3542;
-  --text-primary: #e6e9ef;
-  --text-secondary: #9aa4b2;
-  --text-tertiary: #5c6573;
-  --accent: #6366f1;
-  --accent-hover: #818cf8;
-  --status-green: #22c55e;
-  --status-yellow: #eab308;
-  --status-red: #ef4444;
-  --gauge-track: #262c38;
+  /* channel-триплеты, тёмная тема (ADR-064 §B). */
+  --bg-base: 10 12 16;
+  --surface-1: 17 20 26;
+  --surface-2: 22 26 34;
+  --surface-3: 30 35 45;
+  --border-subtle: 35 40 52;
+  --border-strong: 46 53 66;
+  --text-primary: 230 233 239;
+  --text-secondary: 154 164 178;
+  --text-tertiary: 92 101 115;
+  --accent: 99 102 241;
+  --accent-hover: 129 140 248;
+  --status-green: 34 197 94;
+  --status-yellow: 234 179 8;
+  --status-red: 239 68 68;
+  --gauge-track: 38 44 56;
 
   /* Градиенты дуги gauge (тема-зависимы, ADR-033) */
   --gauge-green-from: #16a34a;
@@ -79,7 +83,7 @@
 
 @layer base {
   * {
-    border-color: var(--border-subtle);
+    border-color: rgb(var(--border-subtle));
   }
 
   html,
@@ -108,8 +112,8 @@
 
   body {
     margin: 0;
-    background-color: var(--bg-base);
-    color: var(--text-primary);
+    background-color: rgb(var(--bg-base));
+    color: rgb(var(--text-primary));
     font-family: 'Inter', system-ui, sans-serif;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -118,14 +122,14 @@
 
   /* Видимый focus-ring (a11y) — 08-design-system.md, NFR-8 */
   :focus-visible {
-    outline: 2px solid var(--accent);
+    outline: 2px solid rgb(var(--accent));
     outline-offset: 2px;
     border-radius: 4px;
   }
 
   /* Выделение текста следует теме (accent тема-зависим, ADR-033). */
   ::selection {
-    background: color-mix(in srgb, var(--accent) 35%, transparent);
+    background: color-mix(in srgb, rgb(var(--accent)) 35%, transparent);
   }
 }
 
@@ -153,9 +157,9 @@
   .skeleton-shimmer {
     background: linear-gradient(
       90deg,
-      var(--surface-2) 25%,
-      var(--surface-3) 50%,
-      var(--surface-2) 75%
+      rgb(var(--surface-2)) 25%,
+      rgb(var(--surface-3)) 50%,
+      rgb(var(--surface-2)) 75%
     );
     background-size: 200% 100%;
   }
@@ -168,7 +172,7 @@
  * Скоуп — только `.doc-prose` (контент редактора и просмотра markdown).
  */
 .doc-prose {
-  color: var(--text-primary);
+  color: rgb(var(--text-primary));
   font-size: 14px;
   line-height: 1.7;
 }
@@ -216,7 +220,7 @@
   margin: 0.15em 0;
 }
 .doc-prose a {
-  color: var(--accent);
+  color: rgb(var(--accent));
   text-decoration: underline;
 }
 .doc-prose strong {
@@ -228,13 +232,13 @@
 .doc-prose code {
   font-family: 'JetBrains Mono', ui-monospace, monospace;
   font-size: 0.88em;
-  background: var(--surface-3);
+  background: rgb(var(--surface-3));
   border-radius: 5px;
   padding: 0.1em 0.35em;
 }
 .doc-prose pre {
-  background: var(--surface-3);
-  border: 1px solid var(--border-subtle);
+  background: rgb(var(--surface-3));
+  border: 1px solid rgb(var(--border-subtle));
   border-radius: 10px;
   padding: 0.85em 1em;
   overflow-x: auto;
@@ -245,13 +249,13 @@
   font-size: 0.85em;
 }
 .doc-prose blockquote {
-  border-left: 3px solid var(--border-strong);
+  border-left: 3px solid rgb(var(--border-strong));
   padding-left: 1em;
-  color: var(--text-secondary);
+  color: rgb(var(--text-secondary));
 }
 .doc-prose hr {
   border: 0;
-  border-top: 1px solid var(--border-subtle);
+  border-top: 1px solid rgb(var(--border-subtle));
 }
 .doc-prose h1:first-child,
 .doc-prose h2:first-child,

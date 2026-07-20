@@ -27,7 +27,10 @@ export const ZONE_GRADIENT: Record<Zone, { from: string; to: string }> = {
  * (index.css) переключаются с data-theme.
  */
 export const ZONE_COLOR: Record<Zone, string> = {
-  green: 'var(--status-green)',
-  yellow: 'var(--status-yellow)',
-  red: 'var(--status-red)',
+  // channel-формат токенов (ADR-064 §C.2) — обёрнуто в rgb(var(--x)), т.к. значение
+  // переменной само по себе не валидный цвет. Стопы ZONE_GRADIENT — gauge-* (не токены
+  // ДС, §B), их не оборачиваем.
+  green: 'rgb(var(--status-green))',
+  yellow: 'rgb(var(--status-yellow))',
+  red: 'rgb(var(--status-red))',
 };

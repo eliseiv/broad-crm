@@ -5,35 +5,38 @@ const config: Config = {
   darkMode: 'class',
   theme: {
     extend: {
+      // channel-формат токенов (ADR-064 §A): каждый токен — rgb(var(--x) / <alpha-value>),
+      // чтобы opacity-модификаторы Tailwind (bg-status-red/90, ring-accent/40 …) работали.
+      // Значения переменных в index.css — space-separated RGB-триплеты (§B).
       colors: {
         bg: {
-          base: 'var(--bg-base)',
+          base: 'rgb(var(--bg-base) / <alpha-value>)',
         },
         surface: {
-          1: 'var(--surface-1)',
-          2: 'var(--surface-2)',
-          3: 'var(--surface-3)',
+          1: 'rgb(var(--surface-1) / <alpha-value>)',
+          2: 'rgb(var(--surface-2) / <alpha-value>)',
+          3: 'rgb(var(--surface-3) / <alpha-value>)',
         },
         border: {
-          subtle: 'var(--border-subtle)',
-          strong: 'var(--border-strong)',
+          subtle: 'rgb(var(--border-subtle) / <alpha-value>)',
+          strong: 'rgb(var(--border-strong) / <alpha-value>)',
         },
         text: {
-          primary: 'var(--text-primary)',
-          secondary: 'var(--text-secondary)',
-          tertiary: 'var(--text-tertiary)',
+          primary: 'rgb(var(--text-primary) / <alpha-value>)',
+          secondary: 'rgb(var(--text-secondary) / <alpha-value>)',
+          tertiary: 'rgb(var(--text-tertiary) / <alpha-value>)',
         },
         accent: {
-          DEFAULT: 'var(--accent)',
-          hover: 'var(--accent-hover)',
+          DEFAULT: 'rgb(var(--accent) / <alpha-value>)',
+          hover: 'rgb(var(--accent-hover) / <alpha-value>)',
         },
         status: {
-          green: 'var(--status-green)',
-          yellow: 'var(--status-yellow)',
-          red: 'var(--status-red)',
+          green: 'rgb(var(--status-green) / <alpha-value>)',
+          yellow: 'rgb(var(--status-yellow) / <alpha-value>)',
+          red: 'rgb(var(--status-red) / <alpha-value>)',
         },
         gauge: {
-          track: 'var(--gauge-track)',
+          track: 'rgb(var(--gauge-track) / <alpha-value>)',
         },
       },
       fontFamily: {

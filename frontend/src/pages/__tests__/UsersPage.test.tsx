@@ -105,7 +105,12 @@ const TEAMS: TeamListResponse = {
   ],
 };
 
-describe('UsersPage (пользователи по командам, ADR-022/025)', () => {
+/** Все карточки-строки пользователей в порядке DOM (aria-label «Изменить пользователя …»). */
+function userCards(): HTMLElement[] {
+  return screen.getAllByRole('button', { name: /^Изменить пользователя / });
+}
+
+describe('UsersPage (плоский список с чипами команд, ADR-065)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     state.users = undefined;
@@ -139,7 +144,7 @@ describe('UsersPage (пользователи по командам, ADR-022/025
     expect(screen.queryByText('Пока нет ролей')).not.toBeInTheDocument();
   });
 
-  it('groups users by teams with a «Без команды» bucket, shows telegram and status', () => {
+  it('рендерит плоский список без секций-заголовков команд (ADR-065 §1)', () => {
     state.users = {
       items: [
         makeUser({
@@ -152,22 +157,105 @@ describe('UsersPage (пользователи по командам, ADR-022/025
       ],
     };
 
+    const { container } = render(<UsersPage />, { wrapper });
+
+    // Группировка упразднена: нет секций-контейнеров и нет заголовков-названий команд
+    // (в т.ч. «Без команды» как заголовок секции). Команда «Продажи» — это чип, не heading.
+    expect(container.querySelectorAll('section')).toHaveLength(0);
+    expect(screen.queryByRole('heading', { name: 'Продажи' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Без команды' })).not.toBeInTheDocument();
+
+    // Оба пользователя — плоскими строками одного списка (ровно 2 карточки).
+    expect(userCards()).toHaveLength(2);
+    expect(screen.getByText('Никита')).toBeInTheDocument();
+    expect(screen.getByText('Пётр')).toBeInTheDocument();
+
+    // telegram и роль сохранены в строке (ADR-065 §4).
+    expect(screen.getByText('@nikita_01')).toBeInTheDocument();
+    expect(screen.getAllByText('Оператор').length).toBeGreaterThan(0);
+  });
+
+  it('пользователь в нескольких командах встречается в списке РОВНО один раз (ADR-065 §1)', () => {
+    state.users = {
+      items: [
+        makeUser({
+          id: 'u1',
+          username: 'Мультикомандный',
+          teams: [
+            { id: 't1', name: 'Продажи' },
+            { id: 't2', name: 'Маркетинг' },
+          ],
+        }),
+      ],
+    };
+
     render(<UsersPage />, { wrapper });
 
-    const teamSection = screen.getByRole('heading', { name: 'Продажи' }).closest('section');
-    const noTeamSection = screen.getByRole('heading', { name: 'Без команды' }).closest('section');
-    expect(teamSection).not.toBeNull();
-    expect(noTeamSection).not.toBeNull();
+    // Одна строка = один пользователь: дублирования по секциям больше нет.
+    expect(userCards()).toHaveLength(1);
+    expect(
+      screen.getAllByRole('button', { name: 'Изменить пользователя Мультикомандный' }),
+    ).toHaveLength(1);
 
-    // Никита — в секции «Продажи»; Пётр — в бакете «Без команды».
-    expect(within(teamSection as HTMLElement).getByText('Никита')).toBeInTheDocument();
-    expect(within(noTeamSection as HTMLElement).getByText('Пётр')).toBeInTheDocument();
+    // Обе команды видны — но как чипы В ЕДИНСТВЕННОЙ строке пользователя.
+    const card = userCards()[0];
+    expect(within(card).getByText('Продажи')).toBeInTheDocument();
+    expect(within(card).getByText('Маркетинг')).toBeInTheDocument();
+  });
 
-    // telegram отображается как @ник, если задан; статусы — бейджами.
-    expect(screen.getByText('@nikita_01')).toBeInTheDocument();
-    expect(screen.getByText('Активен')).toBeInTheDocument();
-    expect(screen.getByText('Неактивен')).toBeInTheDocument();
-    expect(screen.getAllByText('Оператор').length).toBeGreaterThan(0);
+  it('сортирует пользователей по username через localeCompare («ru»), а не по code-unit', () => {
+    // Порядок API — намеренно неотсортированный. localeCompare('ru'): Анна < борис < Яков
+    // (кириллица по алфавиту, регистр — третичный). Наивный code-unit-sort дал бы
+    // Анна(0x410) < Яков(0x42F) < борис(0x431) — иной порядок, что и различает кейс.
+    state.users = {
+      items: [
+        makeUser({ id: 'u1', username: 'Яков' }),
+        makeUser({ id: 'u2', username: 'борис' }),
+        makeUser({ id: 'u3', username: 'Анна' }),
+      ],
+    };
+
+    render(<UsersPage />, { wrapper });
+
+    const order = userCards().map((c) => c.getAttribute('aria-label'));
+    expect(order).toEqual([
+      'Изменить пользователя Анна',
+      'Изменить пользователя борис',
+      'Изменить пользователя Яков',
+    ]);
+  });
+
+  it('рендерит команды чипами (ui/Pill) по user.teams (ADR-065 §2)', () => {
+    state.users = {
+      items: [
+        makeUser({
+          id: 'u1',
+          username: 'Никита',
+          teams: [{ id: 't1', name: 'Продажи' }],
+        }),
+      ],
+    };
+
+    render(<UsersPage />, { wrapper });
+
+    // Чип команды — примитив ui/Pill: span с сигнатурными классами rounded-chip + инлайн-tone.
+    const chip = screen.getByText('Продажи');
+    expect(chip.tagName).toBe('SPAN');
+    expect(chip).toHaveClass('rounded-chip');
+    expect(chip.getAttribute('style') ?? '').not.toBe('');
+    // Название команды — НЕ фолбэк «Без команды».
+    expect(screen.queryByText('Без команды')).not.toBeInTheDocument();
+  });
+
+  it('при пустом teams показывает фолбэк «Без команды» вторичным цветом (ADR-065 §2)', () => {
+    state.users = { items: [makeUser({ id: 'u1', username: 'Одиночка', teams: [] })] };
+
+    render(<UsersPage />, { wrapper });
+
+    const fallback = screen.getByText('Без команды');
+    // Фолбэк — подпись вторичным цветом, а НЕ чип ui/Pill (нет rounded-chip).
+    expect(fallback).toHaveClass('text-text-secondary');
+    expect(fallback).not.toHaveClass('rounded-chip');
   });
 
   it('рендерит тристатус-бейдж (ADR-028): «Ожидает входа» / «Активен» / «Неактивен»', () => {
@@ -210,45 +298,6 @@ describe('UsersPage (пользователи по командам, ADR-022/025
       .getByText('Парольный')
       .closest('[role="button"]') as HTMLElement;
     expect(within(withPasswordCard).queryByText('Без пароля')).not.toBeInTheDocument();
-  });
-
-  it('shows a user that belongs to several teams in each of its groups', () => {
-    state.teams = {
-      items: [
-        ...TEAMS.items,
-        {
-          id: 't2',
-          name: 'Маркетинг',
-          leader_id: 'u9',
-          leader_username: 'Ольга',
-          member_count: 1,
-          number_count: 0,
-          mailbox_count: 0,
-          members: [{ id: 'u9', username: 'Ольга' }],
-          created_at: '2026-07-08T09:00:00Z',
-          updated_at: '2026-07-08T09:00:00Z',
-        },
-      ],
-    };
-    state.users = {
-      items: [
-        makeUser({
-          id: 'u1',
-          username: 'Никита',
-          teams: [
-            { id: 't1', name: 'Продажи' },
-            { id: 't2', name: 'Маркетинг' },
-          ],
-        }),
-      ],
-    };
-
-    render(<UsersPage />, { wrapper });
-
-    const sales = screen.getByRole('heading', { name: 'Продажи' }).closest('section');
-    const marketing = screen.getByRole('heading', { name: 'Маркетинг' }).closest('section');
-    expect(within(sales as HTMLElement).getByText('Никита')).toBeInTheDocument();
-    expect(within(marketing as HTMLElement).getByText('Никита')).toBeInTheDocument();
   });
 
   it('opens the add-user modal from the toolbar', async () => {
