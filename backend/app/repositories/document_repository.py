@@ -357,6 +357,15 @@ class DocumentRepository:
         """Сброс pending-изменений в БД без commit (id новых узлов становятся доступны)."""
         await self._session.flush()
 
+    async def refresh(self, node: DocumentNode) -> None:
+        """Перечитывает узел из БД (значения, вычисленные СЕРВЕРОМ, становятся загруженными).
+
+        Нужен после `flush` UPDATE-а: `updated_at` (`onupdate=func.now()`) считает сервер и
+        инлайн он не возвращается ⇒ атрибут остаётся unloaded, а его чтение в async-контексте
+        вне greenlet упало бы `MissingGreenlet`. Тот же приём, что в `apply_patch`.
+        """
+        await self._session.refresh(node)
+
     async def set_roles(self, node_id: uuid.UUID, role_ids: list[uuid.UUID]) -> None:
         """Перезаписывает набор ролей узла (`restricted`): удаляет старые, вставляет новые."""
         await self._session.execute(

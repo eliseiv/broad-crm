@@ -3,6 +3,7 @@
 - Статус: accepted
 - Дата: 2026-06-28
 - **Амендирован:** [ADR-040](ADR-040-backend-relations-secrets-reverse-lookup.md) — тем же примитивом Fernet/`FERNET_KEY` шифруются **два новых секрета бэка** `api_key`/`admin_api_key` (`backends.api_key_encrypted`/`admin_api_key_encrypted`), по образцу SSH-пароля/пароля прокси/AI-ключа.
+- **Амендирован:** [ADR-067](ADR-067-server-ssh-key-auth.md) §1 (2026-07-22) — тем же примитивом и тем же `FERNET_KEY` шифруется **новый класс материала сервера**: приватный SSH-ключ и парольная фраза (`servers.ssh_private_key_encrypted`/`ssh_key_passphrase_encrypted bytea`). Перечень секретов в §Решении (`ssh_password_encrypted`) перестал быть исчерпывающим; сам примитив, схема ключа и остаточные риски — **без изменений**.
 
 ## Контекст
 

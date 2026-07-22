@@ -1,5 +1,61 @@
 import '@testing-library/jest-dom/vitest';
 
+// --- Полифилл Web Storage (localStorage/sessionStorage) ---------------------------------
+// На Node ≥ 22 у `globalThis` есть СОБСТВЕННЫЙ геттер `localStorage`, который без флага
+// `--localstorage-file` отдаёт `undefined` («ExperimentalWarning: localStorage is not
+// available because --localstorage-file was not provided»). Он перекрывает реализацию
+// jsdom, поэтому в тестах `localStorage`/`sessionStorage` === undefined, и любой тест,
+// трогающий их (auth-стор ADR-041, тема, AppLayout, api), падает на `.clear()`/`.getItem()`.
+// Это дефект РАНТАЙМА, а не кода приложения: в браузере и в CI-образе оба хранилища есть.
+// Ставим минимальную spec-совместимую реализацию поверх Map — только если хранилища
+// действительно нет (на рантайме с рабочим Web Storage полифилл не активируется).
+class MemoryStorage implements Storage {
+  private readonly map = new Map<string, string>();
+
+  get length(): number {
+    return this.map.size;
+  }
+
+  key(index: number): string | null {
+    return Array.from(this.map.keys())[index] ?? null;
+  }
+
+  getItem(key: string): string | null {
+    // Спека требует именно `null` для отсутствующего ключа (не `undefined`).
+    return this.map.has(String(key)) ? (this.map.get(String(key)) as string) : null;
+  }
+
+  setItem(key: string, value: string): void {
+    this.map.set(String(key), String(value));
+  }
+
+  removeItem(key: string): void {
+    this.map.delete(String(key));
+  }
+
+  clear(): void {
+    this.map.clear();
+  }
+
+  [name: string]: unknown;
+}
+
+for (const name of ['localStorage', 'sessionStorage'] as const) {
+  let existing: Storage | undefined;
+  try {
+    existing = (globalThis as Record<string, unknown>)[name] as Storage | undefined;
+  } catch {
+    existing = undefined;
+  }
+  if (!existing) {
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      writable: true,
+      value: new MemoryStorage(),
+    });
+  }
+}
+
 if (!window.matchMedia) {
   Object.defineProperty(window, 'matchMedia', {
     writable: true,

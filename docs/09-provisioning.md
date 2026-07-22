@@ -14,8 +14,9 @@ sequenceDiagram
     participant T as целевой сервер
     participant SD as file_sd
     SVC->>DB: status=installing
-    SVC->>SVC: decrypt(ssh_password) в памяти
-    SVC->>AR: run playbook install_node_exporter (host=ip, user, pass)
+    SVC->>SVC: decrypt креда в памяти (пароль ИЛИ ключ+passphrase, по auth_method)
+    SVC->>SVC: key-режим: снять passphrase, записать ключ 0600 во временный каталог
+    SVC->>AR: run playbook install_node_exporter (host=ip, user, pass ИЛИ private_key_file)
     AR->>T: SSH → скачать/распаковать node_exporter, systemd unit, enable+start
     AR-->>SVC: rc=0 (успех) / rc!=0 (ошибка)
     alt успех
@@ -29,16 +30,34 @@ sequenceDiagram
 ## Запуск
 
 - Библиотека **ansible-runner** (вызов из backend-процесса), движок **ansible-core** в backend-образе.
-- **Предусловие controller (backend-образ):** установлены `ansible-core`, `openssh-client` и **`sshpass`**. `sshpass` ОБЯЗАТЕЛЕН для password-аутентификации по SSH (`ansible_password`) — без него Ansible завершает таск ошибкой `"you must install the sshpass program"`, а добавление сервера падает (в UI — `«node_exporter installation failed»`). Зафиксировано в [07-deployment.md](07-deployment.md#backend-образ) и [02-tech-stack.md](02-tech-stack.md#backend).
+- **Предусловие controller (backend-образ):** установлены `ansible-core`, `openssh-client` и **`sshpass`**. `sshpass` ОБЯЗАТЕЛЕН для password-аутентификации по SSH (`ansible_password`) — без него Ansible завершает таск ошибкой `"you must install the sshpass program"`, а добавление сервера падает (в UI — `«node_exporter installation failed»`). Требование **сохраняется и после [ADR-067](adr/ADR-067-server-ssh-key-auth.md)** (парольный вход остаётся; в key-режиме `sshpass` не задействован). Зафиксировано в [07-deployment.md](07-deployment.md#backend-образ) и [02-tech-stack.md](02-tech-stack.md#backend).
+- **Предусловие для key-режима:** `private_data_dir` создаётся в выделенном **`ANSIBLE_PRIVATE_DATA_ROOT`** (`tempfile.mkdtemp(dir=…)`, default `/var/run/crm/ansible`) — каталог заведён в образе (`chown app:app`, `0700`) и в проде перекрыт **`tmpfs`** с **`mode: 0o1777`** (поле числовое: значение в кавычках отвергается на разборе и роняет `docker compose config`/`up` целиком, а голое `1777` разберётся десятично и даст `0o3361`; [07-deployment.md](07-deployment.md#tmpfs-для-приватных-данных-ansible-нормативно-adr-067-5)). ⛔ `mode=1700` (равно как и `0o3361` из голого `1777`) ломает `mkdtemp` под non-root `app` и убивает **весь** провижининг, включая парольный; ⛔ `tmpfs` на `/tmp` не монтируется (там спулятся загружаемые файлы).
 - На Этапе 1 — асинхронная фоновая задача (FastAPI background task / `asyncio` task, запускающая ansible-runner в thread/executor, т.к. он блокирующий). Без внешнего брокера ([ADR-006](adr/ADR-006-async-provisioning-bez-brokera.md)).
 - Таймаут — `ANSIBLE_TIMEOUT_SEC` (по умолчанию 300 с); по таймауту → `status=error`.
 
 ## Передача кредов (безопасно)
 
+Способ входа выбирает **`servers.auth_method`** ([ADR-067](adr/ADR-067-server-ssh-key-auth.md)); ветка определяется **только** этим полем, а не наличием/отсутствию материала (CHECK `ck_servers_auth_material` гарантирует их согласованность).
+
+### Ветка `auth_method='password'` (без изменений)
+
 - SSH-пароль расшифровывается из БД (`FERNET_KEY`) только в памяти, непосредственно перед запуском.
-- Передаётся в ansible-runner через `extravars`/env в памяти (`ansible_user`, `ansible_password`). Не писать в постоянные файлы; если runner требует inventory-файл — временный с правами `0600`, удаляемый в `finally`.
+- Передаётся в ansible-runner через inventory/`extravars` **в памяти** (`ansible_user`, `ansible_password`). Не писать в постоянные файлы.
 - На тасках с паролем — `no_log: true`. Расшифрованный пароль не логируется ни на каком уровне ([05-security.md](05-security.md)).
-- `ANSIBLE_HOST_KEY_CHECKING=false` на Этапе 1 ([TD-007](100-known-tech-debt.md)).
+
+### Ветка `auth_method='key'` (нормативно, [ADR-067](adr/ADR-067-server-ssh-key-auth.md) §5)
+
+1. `decrypt_secret(ssh_private_key_encrypted)` (+ `ssh_key_passphrase_encrypted`, если задана) — **в памяти**.
+2. **Парольная фраза снимается в памяти:** ключ загружается `cryptography` и **пере-сериализуется в незашифрованный OpenSSH-PEM**. Фраза дальше **не идёт никуда** — ни в файл, ни в env, ни в argv, ни в лог.
+3. Ключ пишется файлом **внутри уже существующего временного `private_data_dir`** (`tempfile.mkdtemp` → каталог `0700`), создание — `os.open(path, O_CREAT|O_EXCL|O_WRONLY, 0o600)`. **Не `open()` + последующий `chmod`:** между ними есть окно, когда файл существует с umask-правами.
+4. В host_vars inventory — `ansible_ssh_private_key_file: "<путь>"` (+ `ansible_user`, `ansible_connection: ssh`). **`ansible_password` в key-режиме не задаётся вовсе** (иначе Ansible потянет `sshpass`-ветку).
+5. `finally`: явный `os.remove` файла ключа, затем существующий `shutil.rmtree(private_data_dir, ignore_errors=True)` — чтобы промах `ignore_errors` по каталогу не оставил именно ключ.
+
+> **Почему не `ansible_runner.run(ssh_key=…)`** (штатный параметр, который сам пишет ключ и поднимает `ssh-agent`): на **зашифрованном** ключе `ssh-add` уходит в интерактивное приглашение ввода фразы и висит до `job_timeout` ⇒ добавление сервера молча превращалось бы в `provisioning timeout`. Снятие фразы в памяти (шаг 2) убирает интерактив целиком. `sshpass -P passphrase … ssh-add` отклонён — фраза оказалась бы в argv (видна в `ps`).
+
+> **Логи key-ветки безопасны by construction:** inventory содержит **только путь** к файлу; материал ключа в inventory/`extravars`/логи не попадает. `no_log` здесь ничего не защищает — защищать в inventory нечего.
+
+- `ANSIBLE_HOST_KEY_CHECKING=false` на Этапе 1 ([TD-007](100-known-tech-debt.md)) — одинаково для обеих веток.
 
 ## Привилегии (`become`)
 
@@ -63,7 +82,9 @@ sequenceDiagram
 6. **Открыть `exporter_port` на firewall цели ТОЛЬКО для IP CRM-сервера** (если задан `scrape_source_ip` — см. ниже). Идемпотентно.
 7. Проверка: порт слушается, сервис `active`.
 
-Параметры передаются как extravars: `target_ip`, `ansible_user`, `ansible_password`, `exporter_port`, **`scrape_source_ip`**.
+Параметры передаются как extravars/host_vars: `target_ip`, `ansible_user`, `exporter_port`, **`scrape_source_ip`** и — в зависимости от `auth_method` — **либо** `ansible_password` (password-режим), **либо** `ansible_ssh_private_key_file` (key-режим, [ADR-067](adr/ADR-067-server-ssh-key-auth.md)). Оба одновременно не передаются никогда.
+
+> **Плейбук от способа входа не зависит и правки не требует** — аутентификация целиком в транспорте connection-плагина. Шаги 1–7 и допущение о `become` (root/NOPASSWD-sudo) одинаковы для обеих веток.
 
 Идемпотентность: повторный прогон не даёт `changed` (кроме реальных изменений версии/конфига).
 
@@ -100,7 +121,7 @@ sequenceDiagram
 - Prometheus перечитывает каталог (`refresh_interval: 30s`), рестарт не нужен ([ADR-004](adr/ADR-004-file-sd-registraciya-targetov.md)).
 - Запись атомарна: писать во временный файл и `os.replace()` на финальный, чтобы Prometheus не прочитал полу-записанный JSON.
 - Метки `server_id`/`name` позволяют сопоставлять метрики с реестром и подписывать в Grafana.
-- **Права доступа (нормативно, усвоенный урок).** Backend пишет файлы под своим uid (`app`), Prometheus читает под другим uid (read-only mount) → target-файлы ОБЯЗАНЫ быть **world-readable**: файлы `0644`, каталог `${FILE_SD_DIR}` — `0755`. Иначе Prometheus не может прочитать таргеты, скрейп не стартует, `up` отсутствует, сервер показывается «Не в сети» при успешной установке агента. Требование к backend: при атомарной записи явно `chmod 0644` финальный файл (umask может дать `0600`); каталог создавать с `0755`.
+- **Права доступа (нормативно, усвоенный урок).** Backend пишет файлы под своим uid (`app`), Prometheus читает под другим uid (read-only mount) → target-файлы ОБЯЗАНЫ быть **world-readable**: файлы `0644`, каталог `${FILE_SD_DIR}` — `0755`. Иначе Prometheus не может прочитать таргеты, скрейп не стартует, `up` отсутствует, сервер показывается «Не в сети» при успешной установке агента. Требование к backend: при атомарной записи явно `chmod 0644` финальный файл (umask может дать `0600`); каталог создавать с `0755`. `uid` пользователя `app` **запинен** (`999`, `backend/Dockerfile`) — [07-deployment.md §Пин uid/gid](07-deployment.md#пин-uidgid-пользователя-app-нормативно); для `file_sd` это менее критично (файлы world-readable), но volume наследует владельца из образа так же, как `documents-attachments`.
 
 ## Definition of done провижининга (нормативно)
 
@@ -133,7 +154,8 @@ Prometheus скрейпит `<target_ip>:${EXPORTER_PORT}` (9100). Порт ОБ
 
 | Ситуация | Результат |
 |----------|-----------|
-| SSH-недоступность / неверные креды | `status=error`, `error_message="SSH connection failed"` (без пароля) |
+| SSH-недоступность / неверные креды (пароль **или** ключ не принят хостом) | `status=error`, `error_message="SSH connection failed"` (без секретов) |
+| **Ключ расшифровался, но не загружается `cryptography`** (ротация `FERNET_KEY`, ручная правка строки) — key-режим | `status=error`, `error_message="SSH key unusable"` ([ADR-067](adr/ADR-067-server-ssh-key-auth.md) §5). **Отдельно от `"SSH connection failed"` намеренно:** иначе оператор чинил бы сеть/firewall вместо кредов. До целевого хоста при этом не доходит ни одного пакета |
 | Таймаут плейбука | `status=error`, `error_message="provisioning timeout"` |
 | Ошибка установки (rc≠0) | `status=error`, краткая причина из stderr (отфильтрованная от секретов) |
 | Успех, но порт не слушается | `status=error`, `error_message="exporter not reachable"` |

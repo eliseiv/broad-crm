@@ -57,6 +57,7 @@ function server(): Server {
     name: 'Server 01',
     ip: '10.0.0.10',
     ssh_user: 'root',
+    auth_method: 'password',
     exporter_port: 9100,
     provision_status: 'online',
     position: 0,

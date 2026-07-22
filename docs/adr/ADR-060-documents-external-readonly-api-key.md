@@ -4,6 +4,7 @@
 - **Дата:** 2026-07-17
 - **Контекст-модули:** [documents](../modules/documents/README.md)
 - **Связано:** [ADR-059](ADR-059-documents-module.md); секреты — [05-security.md](../05-security.md#секреты-и-их-хранение), внешний контракт — [04-api.md](../04-api.md#external-documents-read-only-rag)
+- **Амендирован:** [ADR-068](ADR-068-documents-image-attachments.md) §6 (2026-07-22) — граница контура **уточняется**: состав эндпоинтов и `ExternalDocumentNode` **не меняются**, но «полный узел» §3 перестал быть полным по содержимому (см. уточнение в §3)
 
 ## Контекст
 
@@ -31,6 +32,8 @@
 
 - `GET /?updated_after=&include_deleted=&cursor=&limit=` — список для синка, keyset-пагинация по `(updated_at, id)` **ASC** (forward-walk от водяного знака; техника — образец mail-курсора, но направление ASC и поле `updated_at`, а не `internal_date DESC`).
 - `GET /{id}` — полный узел (+`content_md`); удалённый → **`410 document_node_gone`** с tombstone.
+
+  > ⚠️ **Уточнение 2026-07-22 ([ADR-068](ADR-068-documents-image-attachments.md) §6):** «полный узел» — полный по **метаданным и тексту**, но не по бинарному содержимому. С появлением вложений-изображений `content_md` может содержать ссылки вида `![alt](/api/documents/attachments/{id})`, ведущие на **внутренний, авторизуемый JWT** эндпоинт: внешний потребитель по `X-API-Key` их **не разрешит** (`401`) и байтов картинки не получит. `ExternalDocumentNode` полем `attachments[]` **не расширяется**, состав эндпоинтов §3 не меняется. RAG индексирует alt-текст и видит факт наличия изображения. Это **явно зафиксированное ограничение** контура (read-only-текстовый), а не дефект — выдача бинарников наружу вынесена в [TD-074](../100-known-tech-debt.md) отдельным ADR при появлении требования.
 - `GET /changes?since=&cursor=&limit=` — дельта: изменённые узлы + tombstones с водяного знака `since`.
 - Tombstone — `{id, deleted_at, content_version}` без `content_md` (soft-delete, [ADR-059](ADR-059-documents-module.md) §5).
 

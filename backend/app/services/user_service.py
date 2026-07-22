@@ -19,6 +19,7 @@ from app.domain.telegram import TelegramFormatError, validate_telegram
 from app.errors import (
     telegram_taken,
     unprocessable,
+    user_in_use,
     user_not_found,
     username_taken,
 )
@@ -284,7 +285,21 @@ class UserService:
 
     async def delete_user(self, user_id: uuid.UUID) -> None:
         """Hard-delete; повтор → 404. Лидерство ведомых команд авто-передаётся
-        следующему участнику (или `NULL`), затем пользователь удаляется (ADR-026)."""
+        следующему участнику (или `NULL`), затем пользователь удаляется (ADR-026).
+
+        **Пользователя может держать FK `ON DELETE RESTRICT`** (`document_nodes.owner_id`,
+        `document_attachments.created_by` — ADR-059/ADR-068): тогда `commit` даёт
+        `IntegrityError`, и исход обязан быть прикладным **`409 user_in_use`**, а НЕ
+        `500 internal_error` (04-api.md#delete-apiusersid, TD-077) — тот же принцип, что
+        `409 role_in_use` для `users.role_id`.
+
+        Перехват исключения, а не проактивный `EXISTS`: перечень FK `RESTRICT` на
+        `users.id` растёт (ADR-059 → ADR-068), и предварительная проверка рассинхронизируется
+        с ним молча, а перехват — нет. `rollback` откатывает и авто-передачу лидерства (она
+        идёт в этой же транзакции ДО удаления, ADR-026) ⇒ после `409` состояние БД не
+        изменено вовсе, частичного эффекта нет. Состав удерживающих узлов в ответе НЕ
+        раскрывается — анти-энумерация модуля «Документы» (ADR-059) не ослабляется.
+        """
         user = await self._users.get_by_id(user_id)
         if user is None:
             raise user_not_found()
@@ -292,8 +307,16 @@ class UserService:
         for team_id in await self._teams.ids_led_by(user_id):
             await self._teams.promote_next_leader(team_id, exclude_user_id=user_id)
 
-        await self._users.delete_by_id(user_id)
-        await self._users.session.commit()
+        try:
+            # Перехват охватывает и сам `DELETE`, и `commit`: FK не `DEFERRABLE`, поэтому
+            # `RESTRICT` срабатывает уже на выполнении statement'а, а не на фиксации
+            # (проверено на Postgres 16 — иначе исключение прошло бы мимо и дало 500).
+            await self._users.delete_by_id(user_id)
+            await self._users.session.commit()
+        except IntegrityError as exc:
+            await self._users.session.rollback()
+            logger.info("user_delete_restricted", user_id=str(user_id))
+            raise user_in_use() from exc
         logger.info("user_deleted", user_id=str(user_id))
 
     async def _replace_membership_with_transfer(

@@ -12,10 +12,12 @@ import {
   Heading1,
   Heading2,
   Heading3,
+  Image as ImageIcon,
   Italic,
   Link2,
   List,
   ListOrdered,
+  Loader2,
   Quote,
   Save,
   SquareCode,
@@ -26,7 +28,14 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { documentNodeKey, useUpdateNode } from '@/features/documents/hooks';
+import { ATTACHMENT_ACCEPT, validateAttachmentFile } from '@/features/documents/attachments';
+import { documentNodeKey, useUpdateNode, useUploadAttachment } from '@/features/documents/hooks';
+import { DocumentImage } from '@/features/documents/imageExtension';
+import {
+  addImageUploadPlaceholder,
+  findImageUploadPlaceholder,
+  removeImageUploadPlaceholder,
+} from '@/features/documents/imageUploadPlaceholder';
 import type { DocumentNode } from '@/types/api';
 
 interface DocumentEditorProps {
@@ -75,7 +84,34 @@ function ToolbarAction({
   );
 }
 
-function Toolbar({ editor }: { editor: Editor }) {
+/**
+ * Список изображений из буфера обмена. Сначала `items` (Ctrl+V скриншота даёт именно их),
+ * затем — фолбэк на `files`. Не-картиночная вставка сюда не попадает и обрабатывается
+ * редактором по умолчанию.
+ */
+function clipboardImageFiles(data: DataTransfer | null): File[] {
+  if (!data) return [];
+  const files: File[] = [];
+  for (const item of Array.from(data.items ?? [])) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      const file = item.getAsFile();
+      if (file) files.push(file);
+    }
+  }
+  if (files.length > 0) return files;
+  return Array.from(data.files ?? []).filter((file) => file.type.startsWith('image/'));
+}
+
+function Toolbar({
+  editor,
+  onInsertImage,
+  imageUploading,
+}: {
+  editor: Editor;
+  /** Открыть выбор файла для вставки изображения (гейт `documents:edit` — как весь тулбар). */
+  onInsertImage: () => void;
+  imageUploading: boolean;
+}) {
   const groups: ToolbarButton[][] = [
     [
       {
@@ -195,6 +231,34 @@ function Toolbar({ editor }: { editor: Editor }) {
           ))}
         </div>
       ))}
+
+      {/* Изображение (ADR-068): кнопка открывает скрытый file-picker; второй жест — Ctrl+V
+          (editorProps.handlePaste). Drag-and-drop файлов не поддерживается — решение
+          владельца, `handleDrop` намеренно НЕ переопределяется. */}
+      <div className="flex items-center gap-0.5">
+        <span className="mx-1 h-5 w-px bg-border-subtle" aria-hidden="true" />
+        {/* Кнопка НЕ блокируется во время загрузки: каждая загрузка независима (свой промис
+            mutateAsync, свой плейсхолдер), а Ctrl+V и без того позволяет отправить несколько
+            картинок сразу — блокировка только у кнопки создавала бы асимметрию жестов.
+            Спиннер здесь — индикатор занятости, а не запрет. */}
+        <button
+          type="button"
+          aria-label="Изображение"
+          aria-busy={imageUploading}
+          onClick={onInsertImage}
+          className={cn(
+            'inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors',
+            'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+            'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
+          )}
+        >
+          {imageUploading ? (
+            <Loader2 className="h-4 w-4 animate-spin" aria-hidden={true} />
+          ) : (
+            <ImageIcon className="h-4 w-4" aria-hidden={true} />
+          )}
+        </button>
+      </div>
     </div>
   );
 }
@@ -219,11 +283,25 @@ function Toolbar({ editor }: { editor: Editor }) {
  * цитата/блок кода) плюс «ссылка» — через @tiptap/extension-link (ADR-062 §2, поправка
  * 2026-07-18: граница зависимости расширена этим официальным расширением TipTap). Markdown-
  * ссылки `[text](url)` открываются кликабельными и сохраняются при round-trip (URL не теряется).
+ *
+ * Изображения (ADR-068): @tiptap/extension-image с `inline:false`/`allowBase64:false`; два
+ * жеста вставки — кнопка тулбара и Ctrl+V (`handlePaste`), drag-and-drop файлов НЕ
+ * поддерживается (`handleDrop` не переопределяется). Оба жеста ведут в один путь
+ * `POST /nodes/{id}/attachments`; отрисовка — авторизованный `fetch` + `blob:` (NodeView),
+ * т.к. `<img src="/api/…">` ушёл бы без `Authorization`.
  */
 export function DocumentEditor({ node, canEdit, onBack }: DocumentEditorProps) {
   const queryClient = useQueryClient();
   const updateMutation = useUpdateNode();
+  const uploadAttachmentMutation = useUploadAttachment();
   const [dirty, setDirty] = useState(false);
+  // Число картинок «в полёте» (Ctrl+V может дать несколько сразу): >0 — спиннер на кнопке
+  // тулбара. Загрузки независимы, поэтому счётчик ничего не запрещает — только индицирует.
+  const [uploadsInFlight, setUploadsInFlight] = useState(0);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // `editorProps` фиксируются при создании редактора, поэтому handlePaste дёргает загрузку
+  // через ref — иначе он навсегда захватил бы колбэк первого рендера (устаревший `node.id`).
+  const uploadImageRef = useRef<(file: File) => void>(() => {});
   // Базовая версия текущего маунта (ADR-063 §B): версия, с которой смонтирован или последний раз
   // синхронизирован контент редактора. Служит и признаком внешнего изменения (расхождение с
   // серверной content_version → ресинк), и `expected_version` для optimistic-lock (TD-064).
@@ -242,6 +320,9 @@ export function DocumentEditor({ node, canEdit, onBack }: DocumentEditorProps) {
         linkOnPaste: true,
         HTMLAttributes: { rel: 'noopener noreferrer nofollow', target: '_blank' },
       }),
+      // Изображения (ADR-068): inline:false + allowBase64:false, отрисовка через
+      // авторизованный fetch + blob: (NodeView). Конфигурация — imageExtension.ts.
+      DocumentImage,
       Markdown.configure({ html: false, transformPastedText: true, transformCopiedText: true }),
     ],
     content: node.content_md ?? '',
@@ -251,6 +332,21 @@ export function DocumentEditor({ node, canEdit, onBack }: DocumentEditorProps) {
         // (ADR-063 §C). Выравнивание самого текста не меняется: он остаётся по левому краю.
         class: 'doc-prose mx-auto min-h-full max-w-3xl focus:outline-none',
         'aria-label': `Содержимое документа «${node.name}»`,
+      },
+      /**
+       * Второй жест вставки картинки — Ctrl+V (ADR-068). Перехватываем, только если в
+       * буфере есть файл-изображение; любая другая вставка идёт штатным путём.
+       *
+       * `handleDrop` НЕ переопределяется — drag-and-drop файлов не поддерживается (решение
+       * владельца); перетаскивание ВНУТРИ документа остаётся дефолтным ProseMirror.
+       */
+      handlePaste: (view, event) => {
+        if (!view.editable) return false;
+        const files = clipboardImageFiles(event.clipboardData);
+        if (files.length === 0) return false;
+        event.preventDefault();
+        for (const file of files) uploadImageRef.current(file);
+        return true;
       },
     },
     onUpdate: () => setDirty(true),
@@ -274,6 +370,107 @@ export function DocumentEditor({ node, canEdit, onBack }: DocumentEditorProps) {
     editor.commands.setContent(node.content_md ?? '', false);
     setDirty(false);
   }, [editor, node.content_version, node.content_md]);
+
+  /**
+   * Загрузка картинки и вставка узла изображения (ADR-068 §2–§4). Оба жеста — кнопка тулбара
+   * и Ctrl+V — ведут сюда: единственный путь появления картинки в документе.
+   *
+   * Порядок: клиентская предпроверка (размер/тип — подсказка, граница на сервере) →
+   * плейсхолдер на месте будущей картинки → `POST /nodes/{id}/attachments` → вставка ноды с
+   * `src` из поля **`url` ответа сервера** (клиент URL не конструирует) и `alt` = `filename`.
+   * Ссылка попадает в `content_md` только при сохранении документа — вставка помечает его
+   * изменённым через штатный `onUpdate`.
+   *
+   * ⚠️ **Только `mutateAsync`, без per-call `onSuccess`/`onError`/`onSettled`.** Все загрузки
+   * идут через ОДИН хук ⇒ один `MutationObserver`, а `mutate()` в `@tanstack/query-core`
+   * 5.59.16 при каждом вызове перецепляет observer и перетирает его `mutateOptions`: колбэки
+   * ПЕРВОГО из параллельных вызовов не вызвались бы никогда. Ctrl+V с несколькими картинками
+   * даёт ровно такой параллелизм, и цена была бы не косметической — висящий плейсхолдер,
+   * невставленная (осиротевшая на volume) картинка и навсегда занятый счётчик загрузок.
+   * Промис `mutateAsync` приходит от самой мутации, поэтому от observer не зависит; весь
+   * посткондишен живёт в `try/catch/finally` этого вызова.
+   */
+  const uploadImage = useCallback(
+    async (file: File) => {
+      if (!editor || editor.isDestroyed || !canEdit) return;
+      const invalid = validateAttachmentFile(file);
+      if (invalid) {
+        toast.error(invalid);
+        return;
+      }
+
+      const placeholderId = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      addImageUploadPlaceholder(editor.view, placeholderId, editor.state.selection.from);
+      setUploadsInFlight((n) => n + 1);
+
+      // Плейсхолдер снимается ровно один раз: на успешном пути — до вставки картинки
+      // (иначе оба элемента мелькнули бы рядом), иначе — в finally.
+      let placeholderCleared = false;
+      const clearPlaceholder = () => {
+        if (placeholderCleared || editor.isDestroyed) return;
+        placeholderCleared = true;
+        removeImageUploadPlaceholder(editor.view, placeholderId);
+      };
+
+      try {
+        const attachment = await uploadAttachmentMutation.mutateAsync({ nodeId: node.id, file });
+        if (!editor.isDestroyed) {
+          // Позиция берётся у плейсхолдера: пока файл летел, документ мог измениться.
+          const pos = findImageUploadPlaceholder(editor.state, placeholderId);
+          clearPlaceholder();
+          const at = pos ?? editor.state.selection.from;
+          editor
+            .chain()
+            .insertContentAt(at, {
+              type: 'image',
+              attrs: { src: attachment.url, alt: attachment.filename },
+            })
+            .focus()
+            .run();
+        }
+        toast.success('Изображение загружено');
+      } catch (err) {
+        if (err instanceof ApiError) {
+          if (err.status === 422) {
+            // document_attachment_invalid: тип вне whitelist / размер (04-api.md).
+            toast.error(
+              err.message || 'Изображение не прошло проверку: PNG, JPEG, WebP или GIF до 5 МБ',
+            );
+          } else if (err.status === 403) {
+            toast.error('Недостаточно прав для загрузки изображения');
+          } else if (err.status === 404) {
+            toast.error('Документ недоступен');
+          } else {
+            toast.error(err.message);
+          }
+        } else {
+          toast.error('Не удалось загрузить изображение');
+        }
+      } finally {
+        clearPlaceholder();
+        setUploadsInFlight((n) => Math.max(0, n - 1));
+      }
+    },
+    [editor, canEdit, node.id, uploadAttachmentMutation],
+  );
+
+  // Актуальная версия загрузчика для handlePaste (см. комментарий у `uploadImageRef`).
+  useEffect(() => {
+    uploadImageRef.current = uploadImage;
+  }, [uploadImage]);
+
+  const handlePickImage = useCallback(() => fileInputRef.current?.click(), []);
+
+  const handleImageFileChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const picked = e.target.files?.[0];
+      // Сброс значения — иначе повторный выбор ТОГО ЖЕ файла не даёт события change.
+      e.target.value = '';
+      // Ошибки обрабатываются внутри uploadImage (тосты) — промис намеренно не ожидается.
+      if (picked) void uploadImage(picked);
+    },
+    [uploadImage],
+  );
 
   const handleSave = useCallback(() => {
     if (!editor || !canEdit) return;
@@ -389,7 +586,27 @@ export function DocumentEditor({ node, canEdit, onBack }: DocumentEditorProps) {
         )}
       </div>
 
-      {canEdit && editor && <Toolbar editor={editor} />}
+      {canEdit && editor && (
+        <Toolbar
+          editor={editor}
+          onInsertImage={handlePickImage}
+          imageUploading={uploadsInFlight > 0}
+        />
+      )}
+
+      {/* Скрытый file-picker кнопки «Изображение». accept — ровно whitelist контракта
+          (png/jpeg/webp/gif; SVG исключён нормативно). Валидация — на сервере по magic bytes. */}
+      {canEdit && (
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={ATTACHMENT_ACCEPT}
+          className="sr-only"
+          tabIndex={-1}
+          aria-hidden="true"
+          onChange={handleImageFileChange}
+        />
+      )}
 
       {/* Обработчик только проксирует клик в пустоту на редактор — клавиатурного эквивалента не
           требует: вся клавиатурная работа идёт внутри contenteditable, доступного по Tab. */}

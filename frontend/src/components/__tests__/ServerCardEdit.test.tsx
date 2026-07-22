@@ -36,6 +36,7 @@ function server(overrides: Partial<Server> = {}): Server {
     name: 'Server 01',
     ip: '10.0.0.10',
     ssh_user: 'root',
+    auth_method: 'password',
     exporter_port: 9100,
     provision_status: 'online',
     position: 0,
@@ -69,7 +70,9 @@ describe('ServerCard detail → edit (ADR-035, состав — ADR-049 §1)', (
     expect(dialog.getByText('10.0.0.10')).toBeInTheDocument();
     expect(dialog.getByText('Пользователь')).toBeInTheDocument();
     expect(dialog.getByText('root')).toBeInTheDocument();
-    expect(dialog.getByText('Пароль')).toBeInTheDocument();
+    // ADR-067 §6: «Способ входа» (значение «Пароль») + строка секрета «Пароль».
+    expect(dialog.getByText('Способ входа')).toBeInTheDocument();
+    expect(dialog.getAllByText('Пароль')).toHaveLength(2);
     expect(dialog.queryByRole('button', { name: 'Информация' })).not.toBeInTheDocument();
     // edit-модалка ещё не открыта.
     expect(screen.queryByText('Изменить сервер')).not.toBeInTheDocument();

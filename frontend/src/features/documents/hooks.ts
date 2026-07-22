@@ -12,9 +12,11 @@ import {
   reorderNodes,
   setVisibility,
   updateNode,
+  uploadAttachment,
   uploadMd,
 } from '@/features/documents/api';
 import type {
+  DocumentAttachment,
   DocumentCopyRequest,
   DocumentCreateRequest,
   DocumentFolderCreateRequest,
@@ -149,6 +151,26 @@ export function useUpdateNode() {
         };
       });
     },
+  });
+}
+
+/**
+ * Загрузка изображения в документ (POST /nodes/{id}/attachments, ADR-068). Дерево НЕ
+ * инвалидируется: вложение не меняет ни структуру, ни имя узла. Кэш узла тоже не трогаем —
+ * ссылка попадает в `content_md` только вместе с сохранением документа (PATCH), а вложение
+ * иммутабельно (замена картинки = новая загрузка = новый `id`).
+ *
+ * ⚠️ **Вызывать только через `mutateAsync` и обрабатывать результат в `try/catch/finally`
+ * вызывающего.** Загрузки бывают ПАРАЛЛЕЛЬНЫМИ (Ctrl+V может дать несколько картинок сразу),
+ * а хук даёт один `MutationObserver` на компонент: `mutate()` при каждом вызове перецепляет
+ * observer и перетирает его per-call `onSuccess`/`onError`/`onSettled`, из-за чего колбэки
+ * первого из параллельных вызовов не срабатывают никогда. Промис `mutateAsync` приходит от
+ * самой мутации и от observer не зависит. Общее `isPending` по той же причине непригодно как
+ * индикатор конкретной загрузки — счётчик держит вызывающий.
+ */
+export function useUploadAttachment() {
+  return useMutation<DocumentAttachment, unknown, { nodeId: string; file: File }>({
+    mutationFn: ({ nodeId, file }) => uploadAttachment(nodeId, file),
   });
 }
 

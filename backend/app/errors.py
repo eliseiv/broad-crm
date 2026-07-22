@@ -111,6 +111,21 @@ def role_name_taken() -> AppError:
     )
 
 
+def user_in_use() -> AppError:
+    """Пользователь владеет документами/вложениями — hard-delete запрещён. 409 (TD-077).
+
+    Зеркало FK `document_nodes.owner_id` / `document_attachments.created_by`
+    `ON DELETE RESTRICT` (ADR-059/ADR-068) — тот же принцип, что `role_in_use` для
+    `users.role_id`: нарушение целостности обязано выходить прикладным `409`, а не
+    `500 internal_error`. Состав узлов НЕ раскрывается (анти-энумерация ADR-059).
+    """
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="user_in_use",
+        message="Пользователь владеет документами или вложениями — удаление запрещено",
+    )
+
+
 def role_in_use() -> AppError:
     return AppError(
         status_code=status.HTTP_409_CONFLICT,
@@ -563,6 +578,35 @@ def document_copy_cycle() -> AppError:
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
         code="document_copy_cycle",
         message="Нельзя скопировать узел внутрь самого себя или своего потомка.",
+    )
+
+
+def document_attachment_not_found() -> AppError:
+    """Вложения нет ЛИБО узел-владелец невидим по роли ЛИБО узел soft-deleted (ADR-068). 404.
+
+    **Единый код на все три случая** (анти-энумерация): различие кодов сообщало бы о
+    существовании невидимого узла — та же логика, что у `document_node_not_found`.
+    """
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="document_attachment_not_found",
+        message="Изображение не найдено",
+    )
+
+
+def document_attachment_invalid() -> AppError:
+    """`POST /api/documents/nodes/{id}/attachments`: тип вне whitelist / расхождение
+    заявленного и фактического типа / превышен `DOCUMENTS_MAX_IMAGE_BYTES` (ADR-068 §2). 422.
+
+    Единый код: детализация «слишком большой» vs «не тот тип» ничего не даёт атакующему
+    и не нужна UI сверх текста сообщения.
+    """
+    return AppError(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        code="document_attachment_invalid",
+        message=(
+            "Недопустимое изображение: только PNG, JPEG, WebP или GIF " "в пределах лимита размера."
+        ),
     )
 
 

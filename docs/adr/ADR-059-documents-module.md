@@ -66,7 +66,7 @@
 - **Модуль вводит soft-delete впервые в репо** — reviewer/qa обязаны проверять `WHERE deleted_at IS NULL` во ВСЕХ внутренних выборках (пропуск = утечка удалённого узла в UI). Это не распространяется на другие таблицы (они остаются hard-delete).
 - `owner_id` FK `ON DELETE RESTRICT` — удаление пользователя-автора узлов заблокировано, пока у него есть узлы; действия консольного супер-админа пишут `owner_id = SUPERADMIN_USER_ID` (у него нет иного `user_id`, [ADR-051](ADR-051-superadmin-db-anchor-personal-state.md)).
 - Внешний доступ и WYSIWYG — отдельными ADR ([ADR-060](ADR-060-documents-external-readonly-api-key.md)/[ADR-062](ADR-062-documents-wysiwyg-tiptap.md)); сайдбар-навигация — [ADR-061](ADR-061-documents-sidebar-two-panel-nav.md).
-- Отложенные усиления: optimistic-lock [TD-064](../100-known-tech-debt.md), вложения/изображения [TD-065](../100-known-tech-debt.md), полнотекстовый поиск [TD-066](../100-known-tech-debt.md), ретенция tombstones [TD-067](../100-known-tech-debt.md).
+- Отложенные усиления: optimistic-lock [TD-064](../100-known-tech-debt.md), вложения/изображения [TD-065](../100-known-tech-debt.md) (⚠️ **сужен 2026-07-22** — **изображения реализованы** ([ADR-068](ADR-068-documents-image-attachments.md), 2026-07-22; тесты зелёные 2026-07-23); в остатке только вложения-НЕизображения, SVG исключён нормативно), полнотекстовый поиск [TD-066](../100-known-tech-debt.md), ретенция tombstones [TD-067](../100-known-tech-debt.md).
 - Контракты остальных модулей **не затронуты** — гринфилд.
 
 ## Альтернативы

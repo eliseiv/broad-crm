@@ -105,6 +105,24 @@ class DocumentVisibilityResponse(BaseModel):
     role_ids: list[uuid.UUID]
 
 
+class DocumentAttachmentResponse(BaseModel):
+    """Вложение-изображение документа (04-api.md#вложения-изображения-документов-adr-068).
+
+    `url` — **канонический адрес, который формирует сервер** (`/api/documents/attachments/<id>`);
+    клиент его не конструирует, иначе форма ссылки стала бы неявным контрактом, размазанным
+    по фронту. `checksum` — sha256 hex содержимого, он же `ETag` отдачи.
+    """
+
+    id: uuid.UUID
+    document_node_id: uuid.UUID
+    filename: str
+    mime: str
+    size_bytes: int
+    checksum: str
+    url: str
+    created_at: datetime
+
+
 class RoleRef(BaseModel):
     """Элемент `GET /api/documents/role-refs` — роль для модалки видимости (`{id, name}`)."""
 

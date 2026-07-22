@@ -49,6 +49,11 @@ from app.schemas.documents import (
     FolderCreateRequest,
     RoleRef,
 )
+from app.services.document_attachment_service import (
+    ATTACHMENT_URL_PREFIX,
+    DocumentAttachmentService,
+)
+from app.services.document_visibility import ensure_visible_node
 
 logger = get_logger(__name__)
 
@@ -77,10 +82,12 @@ class DocumentService:
         repository: DocumentRepository,
         roles: RoleRepository,
         settings: Settings,
+        attachments: DocumentAttachmentService,
     ) -> None:
         self._repo = repository
         self._roles = roles
         self._settings = settings
+        self._attachments = attachments
 
     # --- Чтение -----------------------------------------------------------
 
@@ -295,6 +302,7 @@ class DocumentService:
         roles_map = await self._repo.roles_for_nodes([n.id for n in nodes])
 
         id_map: dict[uuid.UUID, uuid.UUID] = {}
+        copies: list[DocumentNode] = []
         new_root: DocumentNode | None = None
         for original in nodes:
             if original.id == node_id:
@@ -317,6 +325,7 @@ class DocumentService:
             self._repo.add(copy)
             await self._repo.flush()
             id_map[original.id] = copy.id
+            copies.append(copy)
             if original.id == node_id:
                 new_root = copy
 
@@ -326,8 +335,25 @@ class DocumentService:
             for role_id in role_ids
         ]
         await self._repo.insert_roles(role_rows)
-        await self._repo.session.commit()
         assert new_root is not None  # поддерево всегда содержит корень (get_node дал 404 иначе)
+        # Вложения копируются ФИЗИЧЕСКИ (новые id + новые файлы), ссылки в `content_md`
+        # копии переписываются со старых id на новые — всё в этой же транзакции (ADR-068 §5).
+        attachment_map = await self._attachments.copy_for_nodes(id_map, created_by=owner_id)
+        if attachment_map and _rewrite_attachment_links(copies, attachment_map):
+            await self._repo.flush()
+            # ⚠️ Обязательный `refresh` после UPDATE-флеша (регресс `500` на копии документа
+            # с вложением). `updated_at` вычисляет СЕРВЕР (`onupdate=func.now()`), и на
+            # UPDATE значение инлайн не забирается (в отличие от INSERT, где сработал бы
+            # `eager_defaults="auto"` через RETURNING) ⇒ атрибут остаётся unloaded. Тогда
+            # `_serialize` ниже прочитал бы его ленивой догрузкой синхронным IO вне
+            # greenlet → `MissingGreenlet` → `500`. `expire_on_commit=False` не спасает:
+            # атрибут гасит именно flush UPDATE, а не commit.
+            # Выбран явный `refresh` (а не `eager_defaults=True` на маппере): правка
+            # локальна, не меняет форму SQL всех прочих UPDATE-ов `document_nodes` и
+            # повторяет уже принятый в репозитории паттерн `flush` + `refresh`
+            # (`apply_patch`/`set_visibility`). Достаточно корня — только он сериализуется.
+            await self._repo.refresh(new_root)
+        await self._repo.session.commit()
         logger.info("document_copied", source_id=str(node_id), new_id=str(new_root.id))
         return self._serialize(new_root, include_content=False)
 
@@ -467,19 +493,12 @@ class DocumentService:
     # --- Внутренние помощники --------------------------------------------
 
     async def _ensure_visible(self, scope: DocumentScope, node_id: uuid.UUID) -> DocumentNode:
-        """Загружает узел и проверяет видимость по роли. Невидим/нет → 404."""
-        node = await self._repo.get_node(node_id)
-        if node is None:
-            raise document_node_not_found()
-        if scope.sees_all:
-            return node
-        governing = await self._repo.governing_restricted(node_id)
-        if governing is None:
-            return node  # публичен внутри модуля
-        role_ids = await self._repo.node_role_ids(governing)
-        if scope.role_id is not None and scope.role_id in role_ids:
-            return node
-        raise document_node_not_found()
+        """Загружает узел и проверяет видимость по роли. Невидим/нет → 404.
+
+        Само правило живёт в `document_visibility` — единый источник и для вложений
+        (ADR-068: «доступ к картинке = доступ к её узлу»).
+        """
+        return await ensure_visible_node(self._repo, scope, node_id)
 
     async def _resolve_parent(self, scope: DocumentScope, parent_id: uuid.UUID | None) -> None:
         """Проверяет родителя: null допустим; иначе — видимый узел-папка (404/400)."""
@@ -512,6 +531,37 @@ class DocumentService:
             created_at=node.created_at,
             updated_at=node.updated_at,
         )
+
+
+def _rewrite_attachment_links(
+    copies: list[DocumentNode], attachment_map: dict[uuid.UUID, uuid.UUID]
+) -> bool:
+    """Литеральная замена `/api/documents/attachments/<old>` → `…/<new>` в копиях (ADR-068 §5).
+
+    **Regex-разбор markdown запрещён** (ложные срабатывания в коде/цитатах) — только
+    подстановка по точной подстроке для каждой пары карты копирования. Коллизий не бывает:
+    новые `id` — свежие UUID, они не могут совпасть со старыми.
+
+    Возвращает `True`, если хоть один `content_md` действительно изменился. Атрибут
+    присваивается ТОЛЬКО при фактическом изменении: иначе unit-of-work сгенерировал бы
+    холостой `UPDATE` (а с ним — гашение серверного `updated_at`) там, где ссылок на
+    вложения в тексте нет вовсе.
+    """
+    replacements = [
+        (f"{ATTACHMENT_URL_PREFIX}{old_id}", f"{ATTACHMENT_URL_PREFIX}{new_id}")
+        for old_id, new_id in attachment_map.items()
+    ]
+    changed = False
+    for copy in copies:
+        content = copy.content_md
+        if not content:
+            continue
+        for old_url, new_url in replacements:
+            content = content.replace(old_url, new_url)
+        if content != copy.content_md:
+            copy.content_md = content
+            changed = True
+    return changed
 
 
 def _same_parent(node_parent: uuid.UUID | None, level_parent: uuid.UUID | None) -> bool:

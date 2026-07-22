@@ -8,7 +8,7 @@ from datetime import datetime
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.server import ProvisionStatus, Server
+from app.models.server import ProvisionStatus, Server, ServerAuthMethod
 
 
 class ServerRepository:
@@ -28,15 +28,25 @@ class ServerRepository:
         name: str,
         ip: str,
         ssh_user: str,
-        ssh_password_encrypted: bytes,
+        auth_method: ServerAuthMethod,
+        ssh_password_encrypted: bytes | None,
+        ssh_private_key_encrypted: bytes | None,
+        ssh_key_passphrase_encrypted: bytes | None,
         exporter_port: int,
     ) -> Server:
-        """Создаёт запись сервера со статусом pending."""
+        """Создаёт запись сервера со статусом pending.
+
+        Согласованность материала («ровно один способ», ADR-067 §1) сверх сервиса
+        гарантирует CHECK `ck_servers_auth_material` в БД.
+        """
         server = Server(
             name=name,
             ip=ip,
             ssh_user=ssh_user,
+            auth_method=auth_method.value,
             ssh_password_encrypted=ssh_password_encrypted,
+            ssh_private_key_encrypted=ssh_private_key_encrypted,
+            ssh_key_passphrase_encrypted=ssh_key_passphrase_encrypted,
             exporter_port=exporter_port,
             provision_status=ProvisionStatus.pending.value,
         )

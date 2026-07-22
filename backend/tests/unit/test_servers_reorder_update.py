@@ -19,7 +19,7 @@ from typing import Any, cast
 
 import pytest
 from app.errors import AppError
-from app.models.server import ProvisionStatus
+from app.models.server import ProvisionStatus, ServerAuthMethod
 from app.schemas.server import ServerUpdateRequest
 from app.services.server_service import ServerService
 
@@ -30,7 +30,11 @@ class FakeServer:
     name: str = "Server 01"
     ip: str = "10.0.0.10"
     ssh_user: str = "root"
-    ssh_password_encrypted: bytes = b"encrypted"
+    # ADR-067: дискриминатор способа входа + материал ровно одного способа.
+    auth_method: str = ServerAuthMethod.password.value
+    ssh_password_encrypted: bytes | None = b"encrypted"
+    ssh_private_key_encrypted: bytes | None = None
+    ssh_key_passphrase_encrypted: bytes | None = None
     exporter_port: int = 9100
     provision_status: str = ProvisionStatus.online.value
     error_message: str | None = None

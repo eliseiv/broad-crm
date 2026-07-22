@@ -153,7 +153,7 @@ flowchart TB
 - **За сменой темы ОС приложение НЕ следует (нормативно, [ADR-041](adr/ADR-041-login-theme-session-ux.md)).** Подписка на `matchMedia('(prefers-color-scheme: dark)')` change — снята. При отсутствии выбора всегда `light`; `prefers-color-scheme` в выборе темы не участвует.
 - **Персистентность выбора — `localStorage`, ключ `crm-theme`** (значения `"light"`/`"dark"`). Пусто = «выбор не сделан» → действует дефолт `light`.
 - **Без FOUC — скрипт темы вынесен из inline в ОТДЕЛЬНЫЙ СТАТИЧЕСКИЙ ФАЙЛ (нормативно, [ADR-046](adr/ADR-046-ui-infra-fix-pack.md) §4.1).** Скрипт подключается в `<head>` синхронным тегом **до бандла**: `<script src="/theme-init.js"></script>` (файл — статика своего origin, напр. `frontend/public/theme-init.js`). Логика: `const t = localStorage.getItem('crm-theme'); document.documentElement.dataset.theme = (t === 'light' || t === 'dark') ? t : 'light';` (+ синхронизация `meta[name=theme-color]`).
-  - **Inline-скрипт ЗАПРЕЩЁН.** Прод-CSP несёт `script-src 'self'` **без** `'unsafe-inline'`/nonce/hash → inline-скрипт **не исполняется**, `data-theme` не проставляется. Это и был root cause бага «каждая перезагрузка = тёмная тема» ([ADR-046](adr/ADR-046-ui-infra-fix-pack.md)). **CSP не ослабляется** — меняется способ подключения скрипта, а не политика ([05-security.md](05-security.md#content-security-policy-spa-location-)).
+  - **Inline-скрипт ЗАПРЕЩЁН.** Прод-CSP несёт `script-src 'self'` **без** `'unsafe-inline'`/nonce/hash → inline-скрипт **не исполняется**, `data-theme` не проставляется. Это и был root cause бага «каждая перезагрузка = тёмная тема» ([ADR-046](adr/ADR-046-ui-infra-fix-pack.md)). **CSP не ослабляется** — меняется способ подключения скрипта, а не политика ([05-security.md](05-security.md#csp)).
   - **Файл `/theme-init.js` — НЕхешированный корневой ассет** → отдаётся с `Cache-Control: no-cache` (как `index.html`) — [07-deployment.md](07-deployment.md#reverse-proxy-nginx--требования).
 - **`color-scheme`** переключается вместе с темой: `:root { color-scheme: light }`, `[data-theme='dark'] { color-scheme: dark }` — чтобы нативные контролы (скроллбары, чекбоксы, date-инпуты) следовали теме.
 - **CSS-структура `index.css` (нормативно, [ADR-046](adr/ADR-046-ui-infra-fix-pack.md) §4.2): СВЕТЛЫЕ значения — на голом `:root`** (и дублируются под `[data-theme='light']`); **ТЁМНЫЕ — только под `[data-theme='dark']`** (значения — таблица выше). Прочие компоненты не трогаются (используют переменные).
@@ -248,10 +248,24 @@ export function usageToZone(p: number): "green" | "yellow" | "red" {
 ## Модалка добавления (`AddServerModal`)
 
 - Radix Dialog, тёмная поверхность `--surface-1`, overlay с затемнением+blur.
-- 4 поля: **Название**, **IP** (моношрифт, валидация формата), **Пользователь**, **Пароль** (type=password, toggle видимости).
+- Поля: **Название**, **IP** (моношрифт, валидация формата), **Пользователь**, затем — **переключатель способа входа** и поля выбранного способа (см. ниже).
 - Кнопки: «Отмена» (ghost) / «Добавить» (primary, акцент). Состояние loading на «Добавить» (спиннер, disabled).
-- Ошибки API: 409 → «Сервер с таким IP уже добавлен»; 422 → подсветка поля IP; общая → toast.
+- Ошибки API: 409 → «Сервер с таким IP уже добавлен»; 422 → подсветка поля из `details[].field`; общая → toast.
 - Закрытие по Esc/overlay (если не идёт отправка), focus-trap, возврат фокуса.
+
+### Переключатель «Пароль / SSH-ключ» (нормативно, [ADR-067](adr/ADR-067-server-ssh-key-auth.md) §6)
+
+Сегментированная **radio-группа** из двух опций — **«Пароль»** (по умолчанию) / **«SSH-ключ»**, сразу под полем «Пользователь». Только в режиме **`add`**; в `edit` её нет (правится только «Название»).
+
+| Способ | Поля |
+|--------|------|
+| **Пароль** | «Пароль» — `type=password` + toggle видимости (как сейчас) |
+| **SSH-ключ** | «Приватный ключ» — `Textarea`, **моношрифт**, плейсхолдер `-----BEGIN OPENSSH PRIVATE KEY-----`; «Парольная фраза (опц.)» — `type=password` |
+
+- **Переключение режима ОЧИЩАЕТ поля другого режима** — тело запроса всегда несёт материал ровно одного способа; иначе сервер вернёт `422` по правилу «ровно один способ» ([04-api.md](04-api.md#post-apiservers)), и пользователь увидит ошибку, которую сам не создавал.
+- Подсказки под полями — через проп `hint` примитива (норма связи `aria-describedby`, [Подсказка под полем формы](#подсказка-под-полем-формы-связывается-с-контролом-нормативно-a11y-nfr-8)), **не** соседним `<p>`. Рекомендуемый текст для ключа: «Вставьте содержимое файла ключа целиком, включая строки BEGIN/END».
+- **Маппинг ошибок `422` на поля:** `details[].field` ∈ `ssh_password` / `ssh_private_key` / `ssh_key_passphrase` → подсветка **соответствующего** контрола. Сообщения приходят с сервера и уже человекочитаемы (формулировки — [04-api.md](04-api.md#post-apiservers)); придумывать локальные варианты не нужно.
+- Значение вставляется **вставкой из буфера** — поле ключа не обязано поддерживать выбор файла (это не upload-контур; ключ уходит обычным JSON-полем).
 
 ## Режим редактирования модалок (add + edit)
 
@@ -297,9 +311,15 @@ export function usageToZone(p: number): "green" | "yellow" | "red" {
 | Страница | Видно сразу | Внутри блока **«Информация»** (свёрнут) |
 |----------|-------------|------------------------------------------|
 | **Бэки** ⚠️ | — **detail-модалка `BackendDetailModal` УПРАЗДНЕНА** | — блок «Информация» переехал **на карточку** ([Страница «Бэки»](#страница-бэки)) |
-| **Серверы** ⚠️ | **Название** (`name`, **inline-editable** карандашом — [ADR-039](adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md)), **IP** (`ip`, моно), **Пользователь** (`ssh_user`, моно), **Пароль** (reveal) | — **блока «Информация» в `ServerDetailModal` БОЛЬШЕ НЕТ**; секция «Бэки» переехала **на карточку** ([Страница «Серверы»](#страница-серверы)) |
+| **Серверы** ⚠️ | **Название** (`name`, **inline-editable** карандашом — [ADR-039](adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md)), **IP** (`ip`, моно), **Пользователь** (`ssh_user`, моно), **Способ входа** (`auth_method` → «Пароль»/«SSH-ключ», [ADR-067](adr/ADR-067-server-ssh-key-auth.md)), затем **строка секрета** — см. врезку ниже | — **блока «Информация» в `ServerDetailModal` БОЛЬШЕ НЕТ**; секция «Бэки» переехала **на карточку** ([Страница «Серверы»](#страница-серверы)) |
 | **ИИ-ключи** | **Название** (`name`), **Провайдер** (`provider` → OpenAI/Anthropic) | **Ключ** (`key_masked`, моно + reveal), сворачиваемая секция **«Бэки»** (`backend_count`) — **БЕЗ ИЗМЕНЕНИЙ** |
 | **Прокси** | **Название** (`name`), **Хост** (`host`, моно), **Порт** (`port`, моно) | **Тип** (`proxy_type` → HTTP/HTTPS/SOCKS5), **Логин** (`username`), **Пароль** (reveal, если `has_password`) — **БЕЗ ИЗМЕНЕНИЙ** |
+
+> **Строка секрета сервера зависит от `auth_method` (нормативно, [ADR-067](adr/ADR-067-server-ssh-key-auth.md) §6):**
+> - `password` → строка **«Пароль»** с маской `••••••••` и **кнопкой-глазом** (гейт `servers:edit`) — поведение [ADR-035](adr/ADR-035-detail-view-secret-reveal.md)/[ADR-049](adr/ADR-049-servers-backends-card-first-detail.md) §4 **не ослаблено**;
+> - `key` → строка **«SSH-ключ»** с маской `••••••••` и **БЕЗ кнопки-глаза**.
+>
+> Это **первый в проекте не-раскрываемый секрет**, поэтому правило формулируется явно: прежняя норма «глаз рендерится при `<page>:edit`» дополняется — **для не-раскрываемого секрета глаз не рендерится ни при каком праве** (в т.ч. у супер-админа). Маска здесь означает «материал задан», а не «нажми, чтобы увидеть». `ServerCard` способ входа **не показывает** (карточка — про метрики и статус).
 
 **Свёрнутый блок «Информация» в detail-модалке** (паттерн: кнопка-триггер, `aria-expanded`/`aria-controls`, `ChevronDown` с поворотом на 180°) остаётся в силе **только для ИИ-ключа и Прокси**. Для них:
 
@@ -307,9 +327,10 @@ export function usageToZone(p: number): "green" | "yellow" | "red" {
 - Секция **«Бэки»** ИИ-ключа ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)) — **вложена внутрь** «Информации»; её поведение не меняется.
 - **Если внутри «Информации» не осталось ни одной строки и ни одной секции — блок «Информация» НЕ рендерится** (см. правило пустых полей ниже).
 
-**Сервер (`ServerDetailModal`) — четыре строки сразу, без сворачивания** ([ADR-049](adr/ADR-049-servers-backends-card-first-detail.md) §1). Порядок: **Название → IP → Пользователь → Пароль**.
+**Сервер (`ServerDetailModal`) — пять строк сразу, без сворачивания** ([ADR-049](adr/ADR-049-servers-backends-card-first-detail.md) §1 в редакции [ADR-067](adr/ADR-067-server-ssh-key-auth.md) §6). Порядок: **Название → IP → Пользователь → Способ входа → строка секрета**.
 
-- **Обе новые строки рендерятся ВСЕГДА:** `servers.ssh_user` и `servers.ssh_password_encrypted` — `NOT NULL` в модели, поэтому правило «пустое поле не рендерится» здесь **не срабатывает никогда**. Флаг `has_password` у сервера **не вводится** (у сервера пароль обязателен — в отличие от прокси/бэка).
+- **Все строки рендерятся ВСЕГДА:** `ssh_user` и `auth_method` — `NOT NULL` в модели, а строка секрета присутствует при любом способе входа, поэтому правило «пустое поле не рендерится» здесь **не срабатывает никогда**. Флаг `has_password`/`has_key` у сервера **не вводится**: с [ADR-067](adr/ADR-067-server-ssh-key-auth.md) наличие материала — однозначная функция `auth_method` (гарантия CHECK `ck_servers_auth_material`), так что производный флаг был бы лишним источником рассинхрона. ⚠️ Прежняя формулировка «`ssh_password_encrypted` — `NOT NULL`» **устарела**: колонка стала nullable, но вывод (флаг не нужен) сохранился по другой причине.
+- **Строка секрета зависит от `auth_method`:** `password` → «Пароль», маска + **глаз**; `key` → «SSH-ключ», маска **без глаза** (материал не раскрывается вовсе — [ADR-067](adr/ADR-067-server-ssh-key-auth.md) §4, врезка в [составе detail-view](#состав-detail-view-нормативно-adr-046-2в-в-редакции-adr-049-0)).
 - **Reveal пароля не ослаблен:** строка показывает маску `••••••••` + глаз; **значение запрашивается только по клику** на глаз (гейт `servers:edit`, `Cache-Control: no-store`, аудит) — перенос строки из свёрнутого блока в главный меняет только её **место**, а не момент раскрытия ([05-security.md](05-security.md#секреты-в-card-first-ui-нормативно-adr-049)).
 - Inline-edit «Название» ([ADR-039](adr/ADR-039-ui-server-inline-edit-backends-search-empty-sms-label.md)) — как прежде.
 
@@ -323,6 +344,7 @@ export function usageToZone(p: number): "green" | "yellow" | "red" {
 
 **Reveal секрета (нормативно, [ADR-035](adr/ADR-035-detail-view-secret-reveal.md)):**
 - Секретное поле показывается как **`••••••••`** (`****`). Рядом — иконка-кнопка **глаз** (`Eye`/`EyeOff`, aria-label «Показать пароль» / «Показать ключ»), видна **только при `<page>:edit`** (для прокси — дополнительно только при `has_password=true`; для бэка — API KEY только при `has_api_key=true`, ADMIN API KEY только при `has_admin_api_key=true`, иначе поле «—» без глаза).
+- **⛔ ИСКЛЮЧЕНИЕ — не-раскрываемые секреты ([ADR-067](adr/ADR-067-server-ssh-key-auth.md) §4/§6):** если у секрета **нет reveal-эндпоинта by design**, глаз **не рендерится ни при каком праве**, включая `<page>:edit` — правило «глаз при `<page>:edit`» на такие поля **не распространяется**. Поле остаётся статической маской `••••••••` (не кнопка: без `role="button"`, без `tabIndex`, без focus-ring — иначе a11y-дефект «фокусируемый элемент без действия»). **Действующий состав:** сервер при `auth_method='key'` — строка **«SSH-ключ»** (приватный ключ и парольная фраза write-only; `GET /api/servers/{id}/ssh-password` → `404 secret_not_set`). Реализуется отдельным примитивом **`SecretStaticField`** (`frontend/src/components/DetailFields.tsx:113`, применён в `ServerDetailModal.tsx:164`) — маска **без** ветки reveal вообще, а не `SecretField` со скрытой кнопкой: так «глаз при `<page>:edit`» невозможно вернуть случайной правкой пропа. См. врезку в [§Состав detail-view](#состав-detail-view-нормативно-adr-046-2в-в-редакции-adr-049-0). Для `password`-серверов, прокси, ИИ-ключей и бэков правило выше — без изменений.
 - Клик по глазу → **on-demand** запрос к reveal-эндпоинту (`GET /api/servers/{id}/ssh-password` · `GET /api/proxies/{id}/password` · `GET /api/ai-keys/{id}/key` · `GET /api/backends/{id}/api-key` · `GET /api/backends/{id}/admin-api-key`, [04-api.md](04-api.md#reveal-секретов-по-требованию-adr-035)) → показ `value` (моношрифт). Опц. кнопка **копировать** (`Copy`).
 - Повторный клик по глазу → снова `••••`. **Значение живёт только в локальном стейте модалки**, не в TanStack Query-кэше / Zustand; сбрасывается при закрытии модалки.
 - Состояния кнопки: idle → loading (спиннер во время запроса) → shown / hidden; ошибка запроса (`403`/сеть) → toast **«Не удалось показать»**, поле остаётся `••••`.
@@ -2152,12 +2174,24 @@ Full-bleed под хэдером (без внешнего `max-w-[1400px]`/`py-8
 
 ### Компонент `DocumentEditor` (WYSIWYG, нормативно, [ADR-062](adr/ADR-062-documents-wysiwyg-tiptap.md))
 
-WYSIWYG-редактор документа на **TipTap** (`@tiptap/react`+`@tiptap/starter-kit`+`@tiptap/extension-link`+`tiptap-markdown`, [02-tech-stack.md](02-tech-stack.md#frontend)) — **новая зависимость** (осознанный отход от NFR-1). **Хранение — markdown** в `content_md`: редактор сериализует ProseMirror ↔ markdown, БД/внешний RAG видят только markdown; редактор заменяем без миграции данных.
+WYSIWYG-редактор документа на **TipTap** (шесть пакетов: `@tiptap/react`+`@tiptap/starter-kit`+`@tiptap/extension-link`+`@tiptap/extension-image`+`@tiptap/pm`+`tiptap-markdown`, [02-tech-stack.md](02-tech-stack.md#frontend)) — **новая зависимость** (осознанный отход от NFR-1). **Хранение — markdown** в `content_md`: редактор сериализует ProseMirror ↔ markdown, БД/внешний RAG видят только markdown; редактор заменяем без миграции данных.
 
 - Тулбар форматирования (заголовки/жирный/курсив/списки/код/цитата/ссылка) — иконки `lucide-react`; тёмные/светлые токены (`--surface-2/3`, `--border-subtle`, `--accent`); видимый focus-ring; a11y тулбара.
 - **Пункт «ссылка» — нормативен** ([поправка ADR-062 §2](adr/ADR-062-documents-wysiwyg-tiptap.md#поправка-2026-07-18--граница-расширена-tiptapextension-link) от 2026-07-18): реализуется через `@tiptap/extension-link` (в `@tiptap/starter-kit` Link-расширения нет). Кнопка тулбара добавляет/снимает ссылку на выделении; markdown-ссылки `[text](url)` в загруженном документе открываются кликабельными и **сохраняются при round-trip** (URL не теряется).
 - Сохранение — `PATCH /api/documents/nodes/{id}` (`content_md` из markdown-сериализации; `content_version` инкрементируется сервером). Optimistic-lock (`expected_version`) — опционален ([TD-064](100-known-tech-debt.md)).
 - Грузится только на `/documents` (можно lazy-route — ProseMirror увеличивает бандл).
+
+#### Изображения в `DocumentEditor` (нормативно, [ADR-068](adr/ADR-068-documents-image-attachments.md))
+
+Расширение **`@tiptap/extension-image`** ([02-tech-stack.md](02-tech-stack.md#frontend)) — тот же класс, что `@tiptap/extension-link` (официальное расширение линии TipTap 2.x). Регистрируется с **`inline: false`** и **`allowBase64: false`**. Кастомизация расширения и плейсхолдер загрузки импортируют ProseMirror-примитивы **напрямую из `@tiptap/pm/*`** (`frontend/src/features/documents/imageExtension.ts`, `imageUploadPlaceholder.ts`), поэтому `@tiptap/pm` 2.27.2 зафиксирован в манифесте явно — версия в дереве при этом не менялась (пакет и раньше был peer-зависимостью `@tiptap/core`).
+
+- **Два жеста, один путь.** Кнопка тулбара **«Изображение»** (иконка `image` из `lucide-react`) открывает скрытый `<input type="file" accept="image/png,image/jpeg,image/webp,image/gif">`; **`Ctrl+V`** обрабатывается через `editorProps.handlePaste` (перехват, если в `clipboardData` есть `image/*`). Оба ведут в `POST /api/documents/nodes/{id}/attachments` и вставляют ноду с `src` из поля **`url` ответа сервера** (клиент URL **не конструирует**) и `alt` = `filename`.
+- **`handleDrop` НЕ переопределяется** — drag-and-drop файлов не поддерживается (решение владельца); поведение перетаскивания **внутри** документа остаётся дефолтным ProseMirror.
+- **`allowBase64: false` — обязательное требование, а не настройка вкуса:** иначе вставка из буфера положила бы `data:`-URI прямо в `content_md`, съедая `DOCUMENTS_MAX_MD_BYTES` base64-мусором в обход хранилища вложений и его лимитов (и засорив корпус для RAG). **Любая** картинка проходит через upload.
+- **Отрисовка — через авторизованный `fetch` + `blob:`** (NodeView-компонент, а не голый `<img src>`): JWT живёт в `localStorage` ⇒ браузер отправит запрос картинки **без** `Authorization` и получит `401`. Обязателен **`URL.revokeObjectURL`** при размонтировании (иначе blob'ы копятся на всю сессию вкладки). Ошибка/`404` → плашка **«Изображение недоступно»** + alt-текст; документ при этом **не ломается**.
+- Во время загрузки — плейсхолдер/спиннер на месте будущей картинки; ошибка загрузки → toast.
+- Markdown round-trip: нода сериализуется в `![alt](src)` и парсится обратно — формат хранения остаётся каноничным markdown (RAG-контракт [ADR-060](adr/ADR-060-documents-external-readonly-api-key.md) не затронут).
+- Кнопка тулбара рендерится **только** при `documents:edit` (UX-гейт; граница — сервер).
 
 #### Кэш узла после мутации (нормативно, [ADR-063](adr/ADR-063-documents-editor-cache-lifecycle-focus.md) §A)
 

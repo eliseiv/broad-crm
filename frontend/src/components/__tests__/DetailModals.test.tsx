@@ -51,6 +51,7 @@ function makeServer(over: Partial<Server> = {}): Server {
     name: 'Server 01',
     ip: '10.0.0.10',
     ssh_user: 'root',
+    auth_method: 'password',
     exporter_port: 9100,
     provision_status: 'online',
     position: 0,
@@ -184,7 +185,9 @@ describe('ServerDetailModal (ADR-049 §1: креды в главном блок�
     expect(dialog.getByText('10.0.0.10')).toBeInTheDocument();
     expect(dialog.getByText('Пользователь')).toBeInTheDocument();
     expect(dialog.getByText('root')).toBeInTheDocument();
-    expect(dialog.getByText('Пароль')).toBeInTheDocument();
+    // ADR-067 §6: строка «Способ входа» + строка секрета — обе со значением / меткой «Пароль».
+    expect(dialog.getByText('Способ входа')).toBeInTheDocument();
+    expect(dialog.getAllByText('Пароль')).toHaveLength(2);
     expect(dialog.getByText(MASK)).toBeInTheDocument();
 
     // Свёрнутый блок «Информация» УПРАЗДНЁН (разворот ADR-046 §2в).

@@ -3,7 +3,7 @@
 - Статус: `accepted`
 - Дата: 2026-07-06
 - Контекст модулей: [mail](../modules/mail/README.md)
-- Связанные: [ADR-012](ADR-012-mail-read-through-proxy.md) (read-through-прокси, sandbox-iframe), [ADR-013](ADR-013-mail-newest-first-master-detail-inline-reply.md), [05-security.md](../05-security.md#content-security-policy-spa-location-), [07-deployment.md](../07-deployment.md#reverse-proxy-nginx-требования)
+- Связанные: [ADR-012](ADR-012-mail-read-through-proxy.md) (read-through-прокси, sandbox-iframe), [ADR-013](ADR-013-mail-newest-first-master-detail-inline-reply.md), [05-security.md](../05-security.md#csp), [07-deployment.md](../07-deployment.md#reverse-proxy-nginx--требования)
 
 ## Контекст
 
@@ -23,7 +23,9 @@ img-src 'self' data: https:
 
 Добавляется **только** источник `https:` (любой origin по HTTPS). **НЕ** добавляются `http:`, `*`, `'unsafe-inline'`/`'unsafe-eval'` и прочие послабления. Изменяется **исключительно** директива `img-src`; остальные директивы CSP (`script-src 'self'`, `frame-ancestors 'none'`, `connect-src 'self'` и т.д.) остаются без изменений.
 
-Нормативное значение CSP (побайтово совпадает в [05-security.md](../05-security.md#content-security-policy-spa-location-), [07-deployment.md](../07-deployment.md#reverse-proxy-nginx-требования) и `frontend/nginx/default.conf`):
+> **Амендмент 2026-07-22 ([ADR-068](ADR-068-documents-image-attachments.md) §3):** директива с тех пор расширена ещё одним источником — **`blob:`** (вложения-изображения документов грузятся авторизованным `fetch` и подставляются как `blob:`-URL). Решение ADR-015 этим **не отменяется** (`https:` остаётся, `script-src 'self'` по-прежнему не тронут), но **строка ниже — историческая**: действующее нормативное значение читать в [05-security.md](../05-security.md#csp).
+
+Значение CSP на момент принятия ADR-015 (тогда — побайтово совпадающее с [05-security.md](../05-security.md#csp), [07-deployment.md](../07-deployment.md#reverse-proxy-nginx--требования) и `frontend/nginx/default.conf`):
 
 ```
 default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'

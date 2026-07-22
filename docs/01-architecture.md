@@ -169,7 +169,7 @@ sequenceDiagram
 
 ## Deployment topology
 
-Один хост / одна docker-compose сеть. Сервисы: `backend`, `frontend` (nginx со статикой SPA), `postgres`, `prometheus`, `grafana`. Backend и Prometheus делят volume `file_sd` (targets). Reverse-proxy (nginx) терминирует TLS и проксирует `/api` → backend, `/` → SPA. Prometheus и Grafana наружу не публикуются (NFR-9). Подробнее — [07-deployment.md](07-deployment.md).
+Один хост / одна docker-compose сеть. Сервисы: `backend`, `frontend` (nginx со статикой SPA), `postgres`, `prometheus`, `grafana`. Backend и Prometheus делят volume `file_sd` (targets); отдельный volume **`documents-attachments`** (изображения документов, [ADR-068](adr/ADR-068-documents-image-attachments.md)) смонтирован **только в `backend`** — он, в отличие от `file_sd`, **из БД не восстановим** и требует бэкапа вместе с `pgdata`. Reverse-proxy (nginx) терминирует TLS и проксирует `/api` → backend, `/` → SPA. Prometheus и Grafana наружу не публикуются (NFR-9). Подробнее — [07-deployment.md](07-deployment.md).
 
 ## Границы и связи модулей
 

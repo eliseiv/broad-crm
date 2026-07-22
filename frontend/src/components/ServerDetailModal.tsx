@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
-import { DetailEditPencil, DetailRow, SecretRevealField } from '@/components/DetailFields';
+import {
+  DetailEditPencil,
+  DetailRow,
+  SecretRevealField,
+  SecretStaticField,
+} from '@/components/DetailFields';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
@@ -26,14 +31,18 @@ function validateName(name: string): string | undefined {
 
 /**
  * Read-only detail-модалка сервера (08-design-system.md «Detail-view», ADR-035; состав —
- * **ADR-049 §1**) с инлайн-редактированием названия (ADR-039). Сразу, **без сворачивания**,
- * видны ЧЕТЫРЕ строки: **Название** (карандаш → inline-edit прямо в видимой зоне, `PATCH
- * name`, Сохранить/Отмена) → **IP** → **Пользователь** (`ssh_user`) → **Пароль** (reveal под
- * `servers:edit`). Креды — основной рабочий контекст сервера, поэтому свёрнутый блок
- * **«Информация» УПРАЗДНЁН** (разворот ADR-046 §2в), а секция **«Бэки» переехала на карточку**
- * (`ServerCard`, ADR-049 §2) — дублировать её и здесь запрещено. Обе строки кредов рендерятся
- * всегда (`ssh_user`/`ssh_password_encrypted` — NOT NULL; флаг `has_password` не вводится).
- * Reveal не ослаблен: маска `••••••••`, значение — только по клику на глаз (ADR-049 §4).
+ * **ADR-049 §1 в редакции ADR-067 §6**) с инлайн-редактированием названия (ADR-039). Сразу,
+ * **без сворачивания**, видны ПЯТЬ строк: **Название** (карандаш → inline-edit прямо в видимой
+ * зоне, `PATCH name`, Сохранить/Отмена) → **IP** → **Пользователь** (`ssh_user`) → **Способ
+ * входа** (`auth_method`) → **строка секрета**. Креды — основной рабочий контекст сервера,
+ * поэтому свёрнутый блок **«Информация» УПРАЗДНЁН** (разворот ADR-046 §2в), а секция **«Бэки»
+ * переехала на карточку** (`ServerCard`, ADR-049 §2) — дублировать её и здесь запрещено.
+ *
+ * Все строки рендерятся всегда: `ssh_user`/`auth_method` — NOT NULL, а материал секрета есть
+ * при любом способе входа. Флагов `has_password`/`has_key` нет — наличие материала однозначно
+ * определяется `auth_method` (CHECK `ck_servers_auth_material`, ADR-067 §1). Reveal пароля не
+ * ослаблен: маска `••••••••`, значение — только по клику на глаз (ADR-049 §4); у key-сервера
+ * раскрывать нечего — маска без глаза (ADR-067 §4).
  */
 export function ServerDetailModal({ open, onOpenChange, server, canEdit }: ServerDetailModalProps) {
   const [editing, setEditing] = useState(false);
@@ -137,17 +146,31 @@ export function ServerDetailModal({ open, onOpenChange, server, canEdit }: Serve
 
         <DetailRow label="IP" value={server.ip} mono />
 
-        {/* Порядок (нормативно, ADR-049 §1): Название → IP → Пользователь → Пароль. */}
+        {/* Порядок (нормативно, ADR-049 §1 в редакции ADR-067 §6):
+            Название → IP → Пользователь → Способ входа → строка секрета. */}
         <DetailRow label="Пользователь" value={server.ssh_user} mono />
-        {/* SSH-пароль задаётся при создании сервера ⇒ секрет есть всегда: строка с
-            маской + глаз рендерится всегда (ADR-046 §3 — «секрет есть → строка есть»). */}
-        <SecretRevealField
-          label="Пароль"
-          canReveal={canEdit}
-          reveal={(signal) => revealServerPassword(server.id, signal)}
-          showAria="Показать пароль"
-          hideAria="Скрыть пароль"
+        <DetailRow
+          label="Способ входа"
+          value={server.auth_method === 'key' ? 'SSH-ключ' : 'Пароль'}
         />
+        {/* Материал задаётся при создании сервера ⇒ секрет есть всегда: строка рендерится
+            всегда (ADR-046 §3 — «секрет есть → строка есть»), но её ВИД зависит от способа
+            входа (ADR-067 §6):
+            • password → «Пароль», маска + глаз (гейт servers:edit, ADR-035/ADR-049 §4);
+            • key      → «SSH-ключ», маска БЕЗ глаза — приватный ключ и парольная фраза
+              write-only, reveal-эндпоинта нет by design (ADR-067 §4), поэтому глаз не
+              рендерится ни при каком праве. */}
+        {server.auth_method === 'key' ? (
+          <SecretStaticField label="SSH-ключ" />
+        ) : (
+          <SecretRevealField
+            label="Пароль"
+            canReveal={canEdit}
+            reveal={(signal) => revealServerPassword(server.id, signal)}
+            showAria="Показать пароль"
+            hideAria="Скрыть пароль"
+          />
+        )}
       </div>
     </Modal>
   );

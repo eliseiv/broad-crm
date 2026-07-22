@@ -4,20 +4,32 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import dataclass
 
+from fastapi import status
 from sqlalchemy.exc import IntegrityError
 
+from app.config import get_settings
+from app.domain.ssh_keys import (
+    FIELD_PASSPHRASE,
+    FIELD_PRIVATE_KEY,
+    SshKeyError,
+    normalize_private_key,
+    validate_private_key,
+)
 from app.errors import (
+    AppError,
     provisioning_unavailable,
+    secret_not_set,
     server_conflict,
     server_not_found,
     unprocessable,
 )
 from app.infra import file_sd
-from app.infra.crypto import decrypt_secret, encrypt_password
+from app.infra.crypto import decrypt_secret, encrypt_password, encrypt_secret
 from app.infra.prometheus import PrometheusUnavailable
 from app.logging import get_logger
-from app.models.server import ProvisionStatus, Server
+from app.models.server import ProvisionStatus, Server, ServerAuthMethod
 from app.repositories.backend_repository import BackendRepository
 from app.repositories.server_repository import ServerRepository
 from app.schemas.backend import BackendRef, BackendRefListResponse
@@ -40,6 +52,37 @@ logger = get_logger(__name__)
 # (asyncio хранит только weak ref на задачи).
 _background_tasks: set[asyncio.Task[None]] = set()
 
+# Лимиты полей материала входа (04-api.md#post-apiservers). Размер ключа — из env
+# (`SSH_KEY_MAX_BYTES`), пароль и парольная фраза — 1..256 символов.
+_SECRET_MAX_LEN = 256
+
+_FIELD_PASSWORD = "ssh_password"
+
+
+def _auth_material_error(field: str, message: str) -> AppError:
+    """`422 validation_error` с точным `details[].field` (ADR-067 §3, 04-api.md).
+
+    Код контракта — `validation_error` при статусе 422 (значение присутствует/отсутствует
+    семантически недопустимо), а не 400 `errors.validation_error` (структурная форма тела)
+    и не `unprocessable`. Тот же приём, что `_content_md_error` в модуле «Документы».
+    """
+    return AppError(
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+        code="validation_error",
+        message=message,
+        details=[{"field": field, "message": message}],
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthMaterial:
+    """Зашифрованный материал входа ровно одного способа (ADR-067 §1)."""
+
+    auth_method: ServerAuthMethod
+    ssh_password_encrypted: bytes | None
+    ssh_private_key_encrypted: bytes | None
+    ssh_key_passphrase_encrypted: bytes | None
+
 
 class ServerService:
     """CRUD реестра серверов + интеграция с monitoring и provisioning."""
@@ -57,18 +100,26 @@ class ServerService:
         self._backends = backends
 
     async def create_server(self, payload: ServerCreateRequest) -> ServerCreatedResponse:
-        """Создаёт сервер (pending) и запускает фоновый провижининг."""
+        """Создаёт сервер (pending) и запускает фоновый провижининг.
+
+        Материал входа — ровно одного способа (`auth_method`, ADR-067 §3): пароль ЛИБО
+        приватный ключ с опциональной парольной фразой. Всё шифруется Fernet одним и тем
+        же `FERNET_KEY` и в ответ не возвращается.
+        """
         ip = str(payload.ip)
+        material = self._build_auth_material(payload)
         if await self._repo.exists_by_ip(ip):
             raise server_conflict()
 
-        encrypted = encrypt_password(payload.ssh_password)
         try:
             server = await self._repo.create(
                 name=payload.name,
                 ip=ip,
                 ssh_user=payload.ssh_user,
-                ssh_password_encrypted=encrypted,
+                auth_method=material.auth_method,
+                ssh_password_encrypted=material.ssh_password_encrypted,
+                ssh_private_key_encrypted=material.ssh_private_key_encrypted,
+                ssh_key_passphrase_encrypted=material.ssh_key_passphrase_encrypted,
                 exporter_port=self._repo_default_port(),
             )
             await self._repo.session.commit()
@@ -85,26 +136,120 @@ class ServerService:
             logger.error("provisioning_schedule_failed", server_id=str(server.id))
             raise provisioning_unavailable() from exc
 
-        logger.info("server_created", server_id=str(server.id))
+        logger.info("server_created", server_id=str(server.id), auth_method=server.auth_method)
         return ServerCreatedResponse(
             id=server.id,
             name=server.name,
             ip=str(server.ip),
             ssh_user=server.ssh_user,
+            auth_method=ServerAuthMethod(server.auth_method),
             exporter_port=server.exporter_port,
             provision_status=ProvisionStatus(server.provision_status),
             position=server.position,
         )
 
+    @staticmethod
+    def _build_auth_material(payload: ServerCreateRequest) -> _AuthMaterial:
+        """Валидация «ровно один способ» + лимиты + разбор ключа, затем шифрование.
+
+        Прецеденция строго сверху вниз (04-api.md#post-apiservers): (1) ровно один способ
+        — лишнее поле «чужого» режима (даже `null`/`""`) и отсутствующее/пустое
+        обязательное поле дают `422` с именем ИМЕННО этого поля; (2) лимиты размера — ДО
+        разбора (анти-DoS); (3) нормализация ключа; (4) реальный разбор `cryptography`
+        (4 шага, `app/domain/ssh_keys.py`); (5) шифрование Fernet.
+        """
+        provided = payload.model_fields_set
+        if payload.auth_method is ServerAuthMethod.key:
+            return ServerService._key_material(payload, provided)
+        return ServerService._password_material(payload, provided)
+
+    @staticmethod
+    def _password_material(payload: ServerCreateRequest, provided: set[str]) -> _AuthMaterial:
+        """Материал парольного режима (прежнее поведение + правило «ровно один способ»)."""
+        for foreign in (FIELD_PRIVATE_KEY, FIELD_PASSPHRASE):
+            if foreign in provided:
+                raise _auth_material_error(
+                    foreign, "Поле недопустимо при входе по паролю — уберите его"
+                )
+        password = payload.ssh_password or ""
+        if not password:
+            raise _auth_material_error(_FIELD_PASSWORD, "Укажите пароль")
+        if len(password) > _SECRET_MAX_LEN:
+            raise _auth_material_error(_FIELD_PASSWORD, "Пароль длиннее допустимого")
+        return _AuthMaterial(
+            auth_method=ServerAuthMethod.password,
+            ssh_password_encrypted=encrypt_password(password),
+            ssh_private_key_encrypted=None,
+            ssh_key_passphrase_encrypted=None,
+        )
+
+    @staticmethod
+    def _key_material(payload: ServerCreateRequest, provided: set[str]) -> _AuthMaterial:
+        """Материал key-режима: лимит → нормализация → разбор → шифрование (ADR-067 §3).
+
+        **Семантика `ssh_key_passphrase` (нормативно для этой реализации).** Поле
+        опционально, поэтому «не задана» и «задана» различаются так: `null` (или поле
+        отсутствует) = НЕ задана; непустая строка = задана (1–256, 04-api.md); **пустая
+        строка/пробелы — ошибка**, а не молчаливое «не задана». Иначе фраза длиной 0
+        нарушала бы объявленный диапазон 1–256 незаметно для клиента и гасила бы исход
+        «Ключ не защищён парольной фразой — уберите её» (шаг 2 процедуры разбора), при
+        том что симметричный `ssh_password: ""` даёт `422`.
+        """
+        if _FIELD_PASSWORD in provided:
+            raise _auth_material_error(
+                _FIELD_PASSWORD, "Поле недопустимо при входе по ключу — уберите его"
+            )
+        raw_key = payload.ssh_private_key or ""
+        if not raw_key.strip():
+            raise _auth_material_error(FIELD_PRIVATE_KEY, "Укажите приватный SSH-ключ")
+        # Размер — ДО разбора: не отдавать многомегабайтную строку в разбор (анти-DoS).
+        if len(raw_key.encode("utf-8")) > get_settings().ssh_key_max_bytes:
+            raise _auth_material_error(FIELD_PRIVATE_KEY, "Приватный ключ длиннее допустимого")
+
+        passphrase = payload.ssh_key_passphrase
+        if passphrase is not None:
+            if not passphrase.strip():
+                raise _auth_material_error(
+                    FIELD_PASSPHRASE, "Парольная фраза не может быть пустой — уберите поле"
+                )
+            if len(passphrase) > _SECRET_MAX_LEN:
+                raise _auth_material_error(FIELD_PASSPHRASE, "Парольная фраза длиннее допустимой")
+
+        normalized = normalize_private_key(raw_key)
+        try:
+            validate_private_key(normalized, passphrase)
+        except SshKeyError as exc:
+            # Наружу идёт только фиксированное сообщение контракта; текст исключения
+            # `cryptography` не пробрасывается ни в ответ, ни в лог (ADR-067 §3 п.4).
+            raise _auth_material_error(exc.field, exc.message) from exc
+
+        return _AuthMaterial(
+            auth_method=ServerAuthMethod.key,
+            ssh_password_encrypted=None,
+            ssh_private_key_encrypted=encrypt_secret(normalized),
+            ssh_key_passphrase_encrypted=(
+                encrypt_secret(passphrase) if passphrase is not None else None
+            ),
+        )
+
     async def reveal_ssh_password(self, server_id: uuid.UUID) -> str:
         """On-demand reveal SSH-пароля сервера (ADR-035, require servers:edit).
 
-        Расшифровка `ssh_password_encrypted` в памяти обработчика. Нет записи → 404.
-        Значение возвращается вызывающему роутеру и НЕ логируется здесь.
+        Расшифровка `ssh_password_encrypted` в памяти обработчика. Нет записи → 404
+        `server_not_found`; сервер с `auth_method='key'` → 404 `secret_not_set` (пароля у
+        него нет — ADR-067 §4). Парного эндпоинта для приватного ключа и парольной фразы
+        НЕ существует: это write-only секреты. Значение возвращается вызывающему роутеру
+        и НЕ логируется здесь.
         """
         server = await self._repo.get_by_id(server_id)
         if server is None:
             raise server_not_found()
+        if server.auth_method != ServerAuthMethod.password.value:
+            raise secret_not_set()
+        if server.ssh_password_encrypted is None:
+            # Недостижимо при живом CHECK `ck_servers_auth_material`; страховка от 500,
+            # если граница целостности когда-либо будет снята вручную.
+            raise secret_not_set()
         return decrypt_secret(server.ssh_password_encrypted)
 
     def _repo_default_port(self) -> int:
@@ -159,6 +304,7 @@ class ServerService:
                 name=server.name,
                 ip=str(server.ip),
                 ssh_user=server.ssh_user,
+                auth_method=ServerAuthMethod(server.auth_method),
                 exporter_port=server.exporter_port,
                 provision_status=ProvisionStatus(server.provision_status),
                 position=server.position,
@@ -176,6 +322,7 @@ class ServerService:
                 name=server.name,
                 ip=str(server.ip),
                 ssh_user=server.ssh_user,
+                auth_method=ServerAuthMethod(server.auth_method),
                 exporter_port=server.exporter_port,
                 provision_status=ProvisionStatus(server.provision_status),
                 position=server.position,
@@ -191,6 +338,7 @@ class ServerService:
             name=server.name,
             ip=str(server.ip),
             ssh_user=server.ssh_user,
+            auth_method=ServerAuthMethod(server.auth_method),
             exporter_port=server.exporter_port,
             provision_status=ProvisionStatus(server.provision_status),
             position=server.position,
@@ -275,6 +423,7 @@ class ServerService:
             name=server.name,
             ip=str(server.ip),
             ssh_user=server.ssh_user,
+            auth_method=ServerAuthMethod(server.auth_method),
             exporter_port=server.exporter_port,
             provision_status=ProvisionStatus(server.provision_status),
             position=server.position,

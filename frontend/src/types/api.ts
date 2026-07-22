@@ -24,12 +24,26 @@ export interface ServerMetrics {
   ssd: Metric;
 }
 
+/**
+ * Способ входа на целевой сервер (04-api.md, ADR-067): пароль ЛИБО приватный SSH-ключ.
+ * **Не секрет** — это способ входа, а не материал. Флагов `has_password`/`has_key` не
+ * вводится: CHECK `ck_servers_auth_material` делает наличие материала однозначной
+ * функцией `auth_method`.
+ */
+export type ServerAuthMethod = 'password' | 'key';
+
 export interface Server {
   id: string;
   name: string;
   ip: string;
   /** SSH-логин целевого сервера (не секрет). Показывается в detail-view (ADR-035). */
   ssh_user: string;
+  /**
+   * Способ входа (04-api.md, ADR-067). UI по нему рисует строку «Способ входа» и решает,
+   * рендерить ли кнопку-глаз reveal: `key` → приватный ключ и парольная фраза write-only,
+   * маска БЕЗ глаза (ADR-067 §4/§6).
+   */
+  auth_method: ServerAuthMethod;
   exporter_port: number;
   provision_status: ProvisionStatus;
   /** Порядок карточки (drag-and-drop). Меньше = выше. 04-api.md. */
@@ -142,17 +156,43 @@ export interface SecretRevealResponse {
   value: string;
 }
 
-export interface CreateServerRequest {
+/** Общая часть тела POST /api/servers (04-api.md). */
+interface CreateServerBase {
   name: string;
   ip: string;
   ssh_user: string;
+}
+
+/**
+ * Ветка «пароль» (04-api.md §POST /api/servers, ADR-067). `auth_method` опционален с
+ * дефолтом `password` ⇒ прежнее тело `{name,ip,ssh_user,ssh_password}` остаётся валидным.
+ * Поля key-ветки в этом теле присутствовать НЕ должны — даже пустыми: правило «ровно один
+ * способ» даёт `422` на любое поле чужого режима.
+ */
+export interface CreateServerPasswordRequest extends CreateServerBase {
+  auth_method?: 'password';
   ssh_password: string;
 }
+
+/**
+ * Ветка «приватный SSH-ключ» (04-api.md, ADR-067). `ssh_private_key` — 1–`SSH_KEY_MAX_BYTES`
+ * байт (16384 по умолчанию), `ssh_key_passphrase` — опциональна и допустима ТОЛЬКО здесь.
+ */
+export interface CreateServerKeyRequest extends CreateServerBase {
+  auth_method: 'key';
+  ssh_private_key: string;
+  ssh_key_passphrase?: string;
+}
+
+/** Тело POST /api/servers — дискриминировано по `auth_method` (04-api.md, ADR-067). */
+export type CreateServerRequest = CreateServerPasswordRequest | CreateServerKeyRequest;
 
 export interface CreateServerResponse {
   id: string;
   name: string;
   ip: string;
+  ssh_user: string;
+  auth_method: ServerAuthMethod;
   exporter_port: number;
   provision_status: ProvisionStatus;
   position: number;
@@ -168,6 +208,8 @@ export interface UpdateServerResponse {
   id: string;
   name: string;
   ip: string;
+  ssh_user: string;
+  auth_method: ServerAuthMethod;
   exporter_port: number;
   provision_status: ProvisionStatus;
   position: number;
@@ -1280,4 +1322,28 @@ export interface DocumentOrderRequest {
 export interface DocumentRoleRef {
   id: string;
   name: string;
+}
+
+/** MIME-типы вложений-изображений — ровно четыре (04-api.md, ADR-068 §2.3; SVG исключён). */
+export type DocumentAttachmentMime = 'image/png' | 'image/jpeg' | 'image/webp' | 'image/gif';
+
+/**
+ * Вложение-изображение документа (04-api.md §Вложения, схема `DocumentAttachment`, ADR-068).
+ * Ответ `POST /api/documents/nodes/{id}/attachments`.
+ *
+ * `url` — **канонический адрес, который формирует сервер**; клиент его НЕ конструирует
+ * (иначе форма ссылки стала бы неявным контрактом, размазанным по фронту). Именно это
+ * значение уходит в `src` узла изображения и в markdown `![alt](url)`.
+ */
+export interface DocumentAttachment {
+  id: string;
+  document_node_id: string;
+  /** Исходное имя файла (1–255) — идёт в `alt` вставляемой картинки. */
+  filename: string;
+  mime: DocumentAttachmentMime;
+  size_bytes: number;
+  /** sha256 hex (64 симв.); он же `ETag` отдачи. */
+  checksum: string;
+  url: string;
+  created_at: string;
 }

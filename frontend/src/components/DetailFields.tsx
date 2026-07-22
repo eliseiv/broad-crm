@@ -100,6 +100,33 @@ export function DetailInfoSection({ children }: { children: ReactNode }) {
 
 const MASK = '••••••••';
 
+/**
+ * **Не-раскрываемый секрет** detail-view (08-design-system.md «Reveal секрета» ⛔ ИСКЛЮЧЕНИЕ,
+ * ADR-067 §4/§6): у секрета нет reveal-эндпоинта **by design**, поэтому кнопка-глаз не
+ * рендерится **ни при каком праве**, включая `<page>:edit` и супер-админа. Маска здесь
+ * означает «материал задан», а не «нажми, чтобы увидеть».
+ *
+ * Поле — **статический текст**: без `role="button"`, без `tabIndex`, без focus-ring (иначе
+ * a11y-дефект «фокусируемый элемент без действия»). Действующий состав — сервер при
+ * `auth_method='key'` (строка «SSH-ключ»: приватный ключ и парольная фраза write-only).
+ */
+export function SecretStaticField({
+  label,
+  maskDisplay = MASK,
+}: {
+  label: string;
+  maskDisplay?: string;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-[12px] font-medium uppercase tracking-wide text-text-tertiary">
+        {label}
+      </span>
+      <span className="break-all font-mono text-sm leading-8 text-text-primary">{maskDisplay}</span>
+    </div>
+  );
+}
+
 interface SecretRevealFieldProps {
   /** Метка поля («Пароль» / «Ключ»). */
   label: string;

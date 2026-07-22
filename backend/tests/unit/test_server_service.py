@@ -9,7 +9,7 @@ from typing import Any, cast
 import pytest
 from app.errors import AppError
 from app.infra.prometheus import PrometheusUnavailable
-from app.models.server import ProvisionStatus
+from app.models.server import ProvisionStatus, ServerAuthMethod
 from app.schemas.metrics import Metric, MetricDetail, ServerMetrics
 from app.schemas.server import ServerCreateRequest
 from app.services.monitoring_service import InstanceMetrics
@@ -22,7 +22,12 @@ class FakeServer:
     name: str = "Server 01"
     ip: str = "10.0.0.10"
     ssh_user: str = "root"
-    ssh_password_encrypted: bytes = b"encrypted"
+    # Способ входа + материал ровно одного способа (ADR-067): по умолчанию — парольный
+    # сервер, как до ADR-067 (в БД инвариант держит CHECK `ck_servers_auth_material`).
+    auth_method: str = ServerAuthMethod.password.value
+    ssh_password_encrypted: bytes | None = b"encrypted"
+    ssh_private_key_encrypted: bytes | None = None
+    ssh_key_passphrase_encrypted: bytes | None = None
     exporter_port: int = 9100
     provision_status: str = ProvisionStatus.online.value
     error_message: str | None = None
@@ -65,7 +70,10 @@ class FakeRepo:
             name=cast(str, kwargs["name"]),
             ip=cast(str, kwargs["ip"]),
             ssh_user=cast(str, kwargs["ssh_user"]),
-            ssh_password_encrypted=cast(bytes, kwargs["ssh_password_encrypted"]),
+            auth_method=cast(ServerAuthMethod, kwargs["auth_method"]).value,
+            ssh_password_encrypted=cast(bytes | None, kwargs["ssh_password_encrypted"]),
+            ssh_private_key_encrypted=cast(bytes | None, kwargs["ssh_private_key_encrypted"]),
+            ssh_key_passphrase_encrypted=cast(bytes | None, kwargs["ssh_key_passphrase_encrypted"]),
             exporter_port=cast(int, kwargs["exporter_port"]),
             provision_status=ProvisionStatus.pending.value,
         )

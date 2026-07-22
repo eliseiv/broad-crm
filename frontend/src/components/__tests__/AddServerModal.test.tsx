@@ -54,7 +54,10 @@ describe('AddServerModal', () => {
     await user.type(screen.getByLabelText('Название'), ' Server 01 ');
     await user.type(screen.getByLabelText('IP-адрес'), '10.0.0.10');
     await user.type(screen.getByLabelText('Пользователь'), ' root ');
-    await user.type(screen.getByLabelText('Пароль'), 'secret');
+    await user.type(
+      screen.getByLabelText('Пароль', { selector: 'input[type="password"]' }),
+      'secret',
+    );
     await user.click(screen.getByRole('button', { name: 'Добавить' }));
 
     expect(mutation.mutate).toHaveBeenCalledWith(
@@ -77,7 +80,10 @@ describe('AddServerModal', () => {
     await user.type(screen.getByLabelText('Название'), 'Server 01');
     await user.type(screen.getByLabelText('IP-адрес'), '10.0.0.10');
     await user.type(screen.getByLabelText('Пользователь'), 'root');
-    await user.type(screen.getByLabelText('Пароль'), 'secret');
+    await user.type(
+      screen.getByLabelText('Пароль', { selector: 'input[type="password"]' }),
+      'secret',
+    );
     await user.click(screen.getByRole('button', { name: 'Добавить' }));
 
     expect(screen.getByText('Сервер с таким IP уже добавлен')).toBeInTheDocument();

@@ -5,6 +5,17 @@
 - **Контекст-модули:** [documents](../modules/documents/README.md)
 - **⚠️ Разворачивает курс «минимум зависимостей» (NFR-1) — оформлено явно как осознанное исключение.**
 - **Связано:** [ADR-059](ADR-059-documents-module.md); стек — [02-tech-stack.md](../02-tech-stack.md#frontend), примитив — [08-design-system.md](../08-design-system.md#компонент-documenteditor-wysiwyg-нормативно-adr-062)
+- **Амендирован:** [ADR-068](ADR-068-documents-image-attachments.md) (2026-07-22) — граница зависимости TipTap расширена `@tiptap/extension-image` **и `@tiptap/pm`**; перечень пакетов в поправке §2 перестал быть закрытым (см. врезку ниже)
+
+> **Амендмент 2026-07-22 ([ADR-068](ADR-068-documents-image-attachments.md)):** вставка изображений в документы расширяет **закрытый перечень** пакетов TipTap из поправки §2. Само решение (WYSIWYG на TipTap, markdown — источник истины, редактор заменяем без миграции данных) — **в силе**.
+>
+> | Перестало быть нормой (ADR-062 §2) | Действующая норма |
+> |---|---|
+> | «`@tiptap/react` + `@tiptap/starter-kit` + `@tiptap/extension-link` + `tiptap-markdown` — используются **только** в `DocumentEditor`» как **закрытый** перечень | **Шесть пакетов:** `@tiptap/react` + `@tiptap/starter-kit` + `@tiptap/extension-link` + **`@tiptap/extension-image`** + **`@tiptap/pm`** + `tiptap-markdown` — по-прежнему **только** в `DocumentEditor` и `features/documents`, на другие модули не расширяются. `@tiptap/extension-image` регистрируется с **`allowBase64: false`** — [ADR-068](ADR-068-documents-image-attachments.md) §5 |
+>
+> **`@tiptap/pm` 2.27.2 добавлен в манифест при реализации (2026-07-22) и новой библиотекой в дереве НЕ является:** это ProseMirror-бандл TipTap, и раньше присутствовавший транзитивно как peer-зависимость `@tiptap/core` (версия в `frontend/package-lock.json` не изменилась). Явный пин потребовался из-за **прямых** импортов ProseMirror-примитивов (`frontend/src/features/documents/imageExtension.ts`, `imageUploadPlaceholder.ts` — `@tiptap/pm/{markdown,model,state,view}`): то, что импортируется напрямую, обязано быть в `dependencies`, иначе версия управляется чужим деревом. Отхода от NFR-1 сверх уже задокументированного §1 здесь нет.
+>
+> Логика поправки §2 («расширение в пределах уже принятой экосистемы, а не новый разворот NFR-1») применяется к `@tiptap/extension-image` **без изменений**: это официальное расширение той же линии TipTap 2.x. Хранение остаётся каноничным markdown — изображение живёт в `content_md` ссылкой `![alt](/api/documents/attachments/{id})`, байты в документ не попадают.
 
 ## Контекст
 
@@ -14,7 +25,7 @@
 
 ### §1. WYSIWYG — на TipTap (ProseMirror), новая runtime-зависимость frontend
 
-Вводится **TipTap**: `@tiptap/react` + `@tiptap/starter-kit` + `@tiptap/extension-link` + `tiptap-markdown` (сериализация ProseMirror ↔ markdown). Регистрируется в таблице зависимостей [02-tech-stack.md §Frontend](../02-tech-stack.md#frontend). Это **первая rich-text библиотека** в проекте и **осознанный отход** от NFR-1. (`@tiptap/extension-link` добавлен [поправкой §2](#поправка-2026-07-18--граница-расширена-tiptapextension-link) — см. ниже.)
+Вводится **TipTap**: `@tiptap/react` + `@tiptap/starter-kit` + `@tiptap/extension-link` + `tiptap-markdown` (сериализация ProseMirror ↔ markdown). ⚠️ **Перечень исторический** — действующий состав с 2026-07-22 — **шесть** пакетов (+`@tiptap/extension-image`, +`@tiptap/pm`), см. врезку-амендмент в шапке. Регистрируется в таблице зависимостей [02-tech-stack.md §Frontend](../02-tech-stack.md#frontend). Это **первая rich-text библиотека** в проекте и **осознанный отход** от NFR-1. (`@tiptap/extension-link` добавлен [поправкой §2](#поправка-2026-07-18--граница-расширена-tiptapextension-link) — см. ниже.)
 
 **Обоснование против NFR-1:**
 - Notion-подобный WYSIWYG с нуля на `contenteditable` — большой объём и высокий риск (selection/IME/undo/copy-paste), несоизмеримый с одной точечной задачей; TipTap/ProseMirror — зрелый headless-редактор без навязанного UI (тёмная/светлая тема через наши токены).
@@ -33,6 +44,8 @@
 
 **Решение (осознанная поправка границы, а не молчаливое расширение).** В авторизованный список пакетов TipTap добавляется **`@tiptap/extension-link`** (версия из линии установленного TipTap **2.27.x**; 2.x-расширения версионируются в lockstep с ядром — в [02-tech-stack.md §Frontend](../02-tech-stack.md#frontend) зафиксировано как `2.x`). Итоговая граница зависимости:
 
+> ⚠️ **Перечень устарел** — амендирован [ADR-068](ADR-068-documents-image-attachments.md) (добавлены `@tiptap/extension-image` **и `@tiptap/pm`** — итого **шесть** пакетов), действующий состав — во врезке в шапке ADR.
+>
 > `@tiptap/react` + `@tiptap/starter-kit` + **`@tiptap/extension-link`** + `tiptap-markdown` — используются **только** в `DocumentEditor` (`features/documents`), на другие модули не расширяются.
 
 **Почему это остаётся в духе исходного решения, а не новый разворот NFR-1.** `@tiptap/extension-link` — **официальное расширение той же библиотеки TipTap/ProseMirror**, уже авторизованной §1. Граница расширяется **в пределах уже принятой экосистемы**, а не новой сторонней библиотекой; принципиального нового отхода от NFR-1 сверх уже задокументированного в §1 нет. Хранение остаётся каноничным markdown в `content_md` (extension-link лишь даёт ProseMirror-узел ссылки, который `tiptap-markdown` сериализует обратно в `[text](url)`), редактор по-прежнему заменяем без миграции данных.

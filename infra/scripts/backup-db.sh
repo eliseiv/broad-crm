@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# Pre-deploy бэкап Postgres (07-deployment.md#бэкапы-и-данные).
-# Снимает pg_dump БД crm в $ROOT/backups/crm-<timestamp>.sql.
-# Восстановление: docker compose exec -T postgres psql -U "$POSTGRES_USER" "$POSTGRES_DB" < <файл>
+# УСТАРЕЛ — оставлен как совместимость для существующих cron/ручных вызовов.
+#
+# Раньше снимал ТОЛЬКО pg_dump и работал БЕЗ простоя. После ADR-068 бэкап приложения —
+# это ДВА СОГЛАСОВАННЫХ объекта (pgdata + volume documents-attachments): дамп в одиночку
+# восстанавливает документы с БИТЫМИ картинками, потому что байтов изображений в БД нет
+# и перегенерировать их неоткуда. Чтобы старый вызов не давал молча неполный бэкап,
+# скрипт делегирует полному backup.sh.
+#
+# ⚠️ СМЕНА ПОВЕДЕНИЯ для существующих деплоев: backup.sh ОСТАНАВЛИВАЕТ backend на время
+# съёмки (окно простоя API в десятки секунд) — раньше этот скрипт простоя не давал.
+# Если вызов стоит в ночном cron, убедитесь, что окно допустимо.
 set -euo pipefail
 
-ROOT="$(git -C "$(dirname "$0")" rev-parse --show-toplevel)"
-COMPOSE=(docker compose --env-file "$ROOT/.env" -f "$ROOT/infra/docker-compose.yml")
-
-BACKUP_DIR="$ROOT/backups"
-mkdir -p "$BACKUP_DIR"
-TS="$(date +%Y%m%d-%H%M%S)"
-OUT="$BACKUP_DIR/crm-$TS.sql"
-
-echo "[backup] pg_dump → $OUT"
-# Креды читаются из env самого postgres-контейнера, не передаются с хоста.
-"${COMPOSE[@]}" exec -T postgres sh -c 'pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"' > "$OUT"
-echo "[backup] готово: $OUT"
+DIR="$(cd "$(dirname "$0")" && pwd)"
+echo "[backup-db] УСТАРЕЛ: полный бэкап = pgdata + documents-attachments (ADR-068)." >&2
+echo "[backup-db] ⚠️ backup.sh ОСТАНАВЛИВАЕТ backend на время съёмки — будет окно простоя API." >&2
+echo "[backup-db] вызываю $DIR/backup.sh — используйте его напрямую." >&2
+# Через `bash …`, а не через exec-бит файла: скрипты в infra/scripts исторически лежат
+# с режимом 0644, и прямой запуск дал бы exit=126 permission denied.
+exec bash "$DIR/backup.sh" "$@"

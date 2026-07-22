@@ -43,6 +43,47 @@ services:
     volumes:
       # file_sd: backend пишет targets/<id>.json (rw), Prometheus читает (ro).
       - file_sd:/etc/prometheus/targets
+      # documents-attachments: байты изображений документов (ADR-068 §8).
+      # Монтируется ТОЛЬКО сюда — второго читателя нет (в отличие от file_sd),
+      # отсюда права 0700/0600, заданные в backend/Dockerfile. Точка монтирования
+      # создана в образе с chown app:app: пустой named-volume пришёл бы root:root,
+      # и backend под USER app не создал бы даже шард-каталог <aa>/<bb>.
+      # ⚠️ БЭКАП: этот volume — ВТОРОЙ объект состояния наряду с pgdata и обязан
+      # сниматься СОГЛАСОВАННО с ним (infra/scripts/backup.sh; backup-db.sh — только
+      # устаревший шим); из БД не восстановим — в ней метаданные и checksum, байтов нет.
+      # ⚠️ Владелец файлов на volume — ЧИСЛОВОЙ uid 999 (`app`, запинен в
+      # backend/Dockerfile). Права 0700/0600 ⇒ сдвиг uid при пересборке образа сделал бы
+      # уже лежащие вложения нечитаемыми. uid — часть формата бэкапа, не менять.
+      - documents-attachments:/var/lib/crm/documents/attachments
+      # private_data_dir ansible-runner (ADR-067 §5, 07-deployment.md §tmpfs):
+      # на время прогона плейбука здесь материализуется РАСШИФРОВАННЫЙ приватный
+      # SSH-ключ файлом 0600. tmpfs ⇒ он живёт только в памяти: не попадает на
+      # диск, в слои образа, в volume'ы и бэкапы, исчезает вместе с контейнером.
+      - type: tmpfs
+        target: /var/run/crm/ansible
+        tmpfs:
+          size: 67108864   # 64 МБ: inventory/env/артефакты одного прогона (единицы МБ)
+                           # + ключ (≤ SSH_KEY_MAX_BYTES = 16 КБ). Загрузки файлов сюда
+                           # НЕ попадают — multipart спулится в обычный /tmp.
+          # ⛔⛔ НОРМАТИВНАЯ ФОРМА — ровно `0o1777`, не «примерно 1777».
+          # Поле tmpfs.mode числовое (uint32), проверено на docker 29.6.1 / compose v5.1.4:
+          #   mode: "01777" → decoding failed … expected type 'uint32', got unconvertible
+          #                   type 'string' ⇒ падает и `config`, и `up`: НЕ поднимается
+          #                   ВЕСЬ стек, а не только провижининг;
+          #   mode: 1777    → разбирается ДЕСЯТИЧНО ⇒ режим 0o3361 (d-wxrwS--t): без sticky
+          #                   и без w у others ⇒ mkdtemp под app падает с PermissionError,
+          #                   т.е. ЛЮБОЕ добавление сервера (включая парольное) ломается;
+          #   mode: 0o1777  → 1777 drwxrwxrwt ✅.
+          # Docker монтирует tmpfs под root:root, а опции uid=/gid= в compose не
+          # выражаются — потому нужен именно world-writable+sticky, как у системного /tmp.
+          # Сам ключ защищён правами ВЛОЖЕННОГО mkdtemp-каталога (0700, владелец app)
+          # и файла (0600); sticky-бит не даёт чужому пользователю их удалить.
+          mode: 0o1777
+      # ⛔ tmpfs на /tmp НЕ монтировать (прежнее предписание отменено, ADR-067 §5):
+      # Starlette/python-multipart спуливают туда UploadFile > ~1 МБ, а изображения
+      # документов допускаются до DOCUMENTS_MAX_IMAGE_BYTES = 5 МБ ⇒ несколько
+      # параллельных загрузок + артефакты ansible-runner на одном 64-МБ разделе дали бы
+      # No space left on device. Каталоги разведены намеренно.
     networks:
       - crm-net
     depends_on:
@@ -148,8 +189,12 @@ networks:
     driver: bridge
 
 volumes:
+  # Бэкапу подлежат ДВА объекта состояния и только согласованно (ADR-068, 07-deployment.md
+  # §Бэкапы): pgdata и documents-attachments. Одна БД без файлов = документы с битыми
+  # картинками; файлы без БД = никем не адресуемый мусор.
   pgdata:
   prom-data:
   grafana-data:
   file_sd:
+  documents-attachments:
   proxy-certs:

@@ -7,9 +7,9 @@ from typing import Any, ClassVar
 
 import pytest
 from app.config import get_settings
-from app.infra.ansible import AnsibleResult
+from app.infra.ansible import AnsibleResult, PasswordAuth
 from app.infra.crypto import encrypt_password
-from app.models.server import ProvisionStatus
+from app.models.server import ProvisionStatus, ServerAuthMethod
 from app.services import provisioning_service
 from app.services.provisioning_service import ProvisioningService
 
@@ -20,7 +20,12 @@ class FakeServer:
     name: str = "Server 01"
     ip: str = "10.0.0.10"
     ssh_user: str = "root"
-    ssh_password_encrypted: bytes = b""
+    # ADR-067: ветка провижининга выбирается ТОЛЬКО по `auth_method`; по умолчанию —
+    # парольный сервер (поведение до ADR-067).
+    auth_method: str = ServerAuthMethod.password.value
+    ssh_password_encrypted: bytes | None = b""
+    ssh_private_key_encrypted: bytes | None = None
+    ssh_key_passphrase_encrypted: bytes | None = None
     exporter_port: int = 9100
     provision_status: str = ProvisionStatus.pending.value
     error_message: str | None = None
@@ -112,7 +117,9 @@ async def test_provisioning_success_transitions_pending_installing_online_and_wr
         (ProvisionStatus.installing, None),
         (ProvisionStatus.online, None),
     ]
-    assert runner_calls[0]["ssh_password"] == "ssh-secret"
+    # ADR-067: материал входа приходит в runner дискриминированным объектом `auth`
+    # (`PasswordAuth`/`KeyAuth`), а не отдельным параметром `ssh_password`.
+    assert runner_calls[0]["auth"] == PasswordAuth(password="ssh-secret")
     assert writes == [
         {
             "server_id": fake_repo.server.id,

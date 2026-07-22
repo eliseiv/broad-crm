@@ -11,6 +11,7 @@ flowchart TB
         prom["prometheus<br/>:9090 (внутр.)"]
         graf["grafana<br/>:3000 (внутр.)"]
         vol_sd[("volume: file_sd<br/>targets/*.json")]
+        vol_att[("volume: documents-attachments<br/>изображения документов (ADR-068)")]
     end
     proxy -->|/api| be
     proxy -->|/| spa["SPA (статика, собрана Vite)"]
@@ -18,6 +19,7 @@ flowchart TB
     be --> db
     be -->|PromQL| prom
     be -->|пишет| vol_sd
+    be -->|пишет/читает| vol_att
     prom -->|читает file_sd| vol_sd
     graf --> prom
     prom -->|scrape :9100| targets["целевые серверы (node_exporter)"]
@@ -47,15 +49,106 @@ flowchart TB
 | `frontend-build` | node:20 (multi-stage) | — | Сборка SPA, артефакт копируется в `proxy` |
 | `backend` | собственный (python:3.12-slim) | — (внутр. 8000) | FastAPI + ansible-runner + ansible-core |
 | `postgres` | `postgres:16` | — (внутр. 5432) | БД (volume `pgdata`) |
-| `prometheus` | `prom/prometheus:v2.54` | — (внутр. 9090) | Метрики, file_sd (volume `file_sd`) |
+| `prometheus` | `prom/prometheus:v2.54` | — (внутр. 9090) | Метрики, file_sd (volume `file_sd`, **read-only**) |
 | `grafana` | `grafana/grafana:11.2` | — (через proxy `/grafana`) | Drill-down дашборды (volume `grafana-data`) |
 
 **Наружу публикуется только `proxy`.** `postgres`, `prometheus`, `grafana`, `backend` доступны лишь внутри `crm-net` (NFR-9, [05-security.md](05-security.md)).
 
-### Backend-образ
-Базовый `python:3.12-slim`; устанавливается `ansible-core`, `openssh-client`, **`sshpass`**, зависимости проекта (через `uv`). Backend-контейнер должен иметь сетевой доступ по SSH (порт 22) к целевым серверам и доступ к volume `file_sd`.
+### Volume `documents-attachments` (нормативно, [ADR-068](adr/ADR-068-documents-image-attachments.md))
 
-> **`sshpass` ОБЯЗАТЕЛЕН** (усвоенный урок): Ansible для **password-аутентификации по SSH** (`ansible_password`) вызывает внешний `sshpass`. Без него провижининг падает с `"you must install the sshpass program"`, что в UI выглядело как `«node_exporter installation failed»`. Поскольку креды серверов на Этапе 1 — пароли ([модалка добавления](08-design-system.md)), `sshpass` критичен для happy-path добавления сервера.
+Named volume для **байтов изображений документов**; метаданные — в БД (`document_attachments`).
+
+```yaml
+services:
+  backend:
+    volumes:
+      - documents-attachments:/var/lib/crm/documents/attachments   # rw, ТОЛЬКО backend
+volumes:
+  documents-attachments:
+```
+
+- **Монтируется исключительно в `backend`** — в отличие от `file_sd`, у которого есть второй читатель (`prometheus`, `:ro`). Отсюда и разные права: у вложений файлы **`0600`**, каталоги **`0700`** (у file_sd — `0644`/`0755`, потому что читающий процесс работает под другим uid). **Приводить их «к единому виду» запрещено** — это сделало бы приватные изображения world-readable внутри контейнера.
+- **⚠️ Точка монтирования ОБЯЗАНА быть создана в образе с `chown app:app`** (`DOCUMENTS_ATTACHMENTS_DIR`, см. [Каталоги, создаваемые в образе](#каталоги-создаваемые-в-образе-нормативно)). Backend работает под `USER app`, а **пустой** named-volume Docker создаёт `root:root` и наследует владельца из образа только при первом монтировании ⇒ без `mkdir`+`chown` в Dockerfile первая же загрузка упадёт на создании шард-каталога. Это ровно тот механизм, что уже применён для `FILE_SD_DIR`.
+- Каталог — `DOCUMENTS_ATTACHMENTS_DIR` (см. [Переменные окружения](#переменные-окружения)); backend создаёт недостающие подкаталоги шардинга (`<aa>/<bb>`) сам (`0700`).
+- **Второй объект состояния:** до [ADR-068](adr/ADR-068-documents-image-attachments.md) бэкапа требовал только `pgdata`; теперь БД и этот volume обязаны сниматься **согласованно** — см. [Бэкапы и данные](#бэкапы-и-данные).
+- `client_max_body_size 50m` на `location /api` уже перекрывает лимит загрузки (5 МБ) — менять не требуется.
+
+### Backend-образ
+Базовый `python:3.12-slim`; устанавливается `ansible-core`, `openssh-client`, **`sshpass`**, зависимости проекта (через `uv`). Backend-контейнер должен иметь сетевой доступ по SSH (порт 22) к целевым серверам и доступ к volume'ам `file_sd` и **`documents-attachments`** ([ADR-068](adr/ADR-068-documents-image-attachments.md)).
+
+> **`sshpass` ОБЯЗАТЕЛЕН** (усвоенный урок): Ansible для **password-аутентификации по SSH** (`ansible_password`) вызывает внешний `sshpass`. Без него провижининг падает с `"you must install the sshpass program"`, что в UI выглядело как `«node_exporter installation failed»`. **Требование сохраняется и после [ADR-067](adr/ADR-067-server-ssh-key-auth.md)**: вход по SSH-ключу — второй способ **рядом** с паролем, парольные серверы никуда не делись (в key-режиме `sshpass` просто не задействован).
+
+#### Каталоги, создаваемые в образе (нормативно)
+
+**Образ работает под non-root (`USER app`).** Docker монтирует пустой named-volume и `tmpfs` **под `root:root`**, поэтому каждый каталог, в который backend пишет, обязан быть либо создан в Dockerfile с `chown app:app` (тогда пустой named-volume наследует права при первом монтировании), либо смонтирован с правами, допускающими запись `app`. Прецедент в проекте — `FILE_SD_DIR` (`mkdir -p` + `chown -R app:app` в `backend/Dockerfile`); **обе новые директории следуют ему**:
+
+```dockerfile
+ENV FILE_SD_DIR=/etc/prometheus/targets \
+    DOCUMENTS_ATTACHMENTS_DIR=/var/lib/crm/documents/attachments \
+    ANSIBLE_PRIVATE_DATA_ROOT=/var/run/crm/ansible
+
+RUN mkdir -p "$FILE_SD_DIR" "$DOCUMENTS_ATTACHMENTS_DIR" "$ANSIBLE_PRIVATE_DATA_ROOT" \
+    && chown -R app:app /app "$FILE_SD_DIR" "$DOCUMENTS_ATTACHMENTS_DIR" "$ANSIBLE_PRIVATE_DATA_ROOT" \
+    && chmod 0700 "$DOCUMENTS_ATTACHMENTS_DIR" "$ANSIBLE_PRIVATE_DATA_ROOT"
+```
+
+- **`DOCUMENTS_ATTACHMENTS_DIR`** ([ADR-068](adr/ADR-068-documents-image-attachments.md)) — точка монтирования volume `documents-attachments`. Без `chown` в образе пустой volume придёт `root:root`, и backend под `app` **не создаст даже шард-каталог** `<aa>/<bb>` — загрузка падала бы на первом же файле. Режим `0700` (а не `0755` как у file_sd) — у вложений один читатель.
+- **`ANSIBLE_PRIVATE_DATA_ROOT`** ([ADR-067](adr/ADR-067-server-ssh-key-auth.md) §5) — корень для `private_data_dir` ansible-runner; провижининг обязан вызывать `tempfile.mkdtemp(dir=<этот каталог>, prefix="ansible-runner-")`, а **не** безадресный `mkdtemp()` в `/tmp`.
+
+#### Пин uid/gid пользователя `app` (нормативно)
+
+Пользователь `app` в `backend/Dockerfile` создаётся с **явными `--uid 999` / `--gid 999`** — значение **запинено и менять его нельзя**:
+
+```dockerfile
+    && groupadd --system --gid 999 app \
+    && useradd --system --uid 999 --gid app --no-create-home --home-dir /app app
+```
+
+(дословный фрагмент `RUN`-цепочки в `backend/Dockerfile`, stage `runtime` — там же ставятся `openssh-client`/`sshpass`/`ca-certificates`).
+
+- **999 — не произвольное число, а де-факто значение уже выкаченных образов.** Прежняя редакция создавала пользователя без `--uid`/`--gid`, и `useradd --system` в `python:3.12-slim` выдавал ровно `999`. Проверено в этой сессии (docker 29.6.1, 2026-07-22):
+
+  ```console
+  $ docker run --rm python:3.12-slim sh -c 'groupadd --system app \
+        && useradd --system --gid app --no-create-home --home-dir /app app && id app'
+  uid=999(app) gid=999(app) groups=999(app)
+  ```
+
+  Пин фиксирует **то же** значение ⇒ пересборка образа не сдвигает владельца на уже существующих volume'ах. Без пина значение выбиралось бы динамически (`useradd --system` идёт вниз от 999), а тег `python:3.12-slim` **мутабелен**: apt-пакеты базового образа могут добавить своих системных пользователей и сдвинуть распределение при любой CI-пересборке.
+- **⚠️ uid 999 — часть формата бэкапа.** И на volume `documents-attachments`, и в tar-архиве (`tar -p`) хранится **числовой** uid, а не имя. У вложений права `0700`/`0600` и единственный читатель, поэтому сдвиг uid делает уже лежащие файлы нечитаемыми для backend — **все изображения в документах молча ломаются**, а восстановление из бэкапа воспроизводит **старый** uid и само это не чинит. Смена значения потребует перечиповки (`chown -R`) **существующих volume'ов (`documents-attachments`, `file_sd`) и всех архивов** — то есть является миграцией данных, а не правкой Dockerfile. Процедура восстановления — [Восстановление](#восстановление-нормативно-оба-артефакта--одной-метки).
+
+#### `tmpfs` для приватных данных Ansible (нормативно, [ADR-067](adr/ADR-067-server-ssh-key-auth.md) §5)
+
+В `docker-compose.yml` сервиса `backend` — **отдельный** tmpfs-mount на `ANSIBLE_PRIVATE_DATA_ROOT`:
+
+```yaml
+    volumes:
+      - type: tmpfs
+        target: /var/run/crm/ansible
+        tmpfs:
+          size: 67108864   # 64 МБ
+          mode: 0o1777     # ЧИСЛО, восьмеричный литерал = 1777 (sticky+world-writable).
+                           # ⛔ БЕЗ кавычек (строка отвергается на разборе) и ⛔ не голое 1777
+                           # (разберётся десятично → 0o3361). См. предупреждение ниже.
+```
+
+Причина — не производительность, а безопасность: на время прогона плейбука провижининг материализует в `private_data_dir` **расшифрованный приватный SSH-ключ** файлом `0600`. На `tmpfs` он живёт только в памяти ⇒ не попадает на постоянный диск, в слои образа, в volume'ы и в бэкапы, и исчезает при остановке контейнера, даже если `finally` не отработал.
+
+- **⛔ ЗАПИСЬ РЕЖИМА: нормативная форма — `mode: 0o1777`.** Поле `tmpfs.mode` в compose — **числовое** (`uint32`), отсюда три следствия: **(а)** любое значение **в кавычках** отвергается ещё на разборе — падает и `docker compose config`, и `up`, т.е. **не поднимается весь стек**, а не только провижининг; **(б)** голое `mode: 1777` разбирается **десятично** и даёт режим `0o3361`; **(в)** корректны только `0o1777` и **некавыченное** `01777` (go-yaml трактует ведущий ноль как восьмеричный литерал YAML 1.1 и отдаёт **целое**, а не строку). Поясняющий комментарий «ВОСЬМЕРИЧНО» парсер не читает. Фактические прогоны на docker 29.6.1 / compose v5.1.4 (`alpine:3.20`, long-syntax mount из сниппета выше):
+
+  | значение | `docker compose config` | `stat -c '%a %A'` точки монтирования |
+  |---|---|---|
+  | `mode: "01777"` | ⛔ `decoding failed due to the following error(s): 'services[a].volumes[0].tmpfs.mode' expected type 'uint32', got unconvertible type 'string'` | — (контейнер не стартует) |
+  | `mode: 0o1777` | OK | ✅ `1777 drwxrwxrwt` |
+  | `mode: 01777` | OK | ✅ `1777 drwxrwxrwt` |
+  | `mode: 1777` | OK | ⛔ `3361 d-wxrwS--t` |
+
+  Там же проверено поведение под non-root (`user: "1000:1000"`, как `USER app` в `backend/Dockerfile`): при `0o1777` `mkdir` в точке монтирования проходит, при `1777` — `mkdir: can't create directory …: Permission denied`. **Пишем `0o1777`.**
+- **⛔ `mode=1700` (и любой не-world-writable режим, включая `0o3361` из голого `1777`) — ОШИБКА, ломающая провижининг ЦЕЛИКОМ, включая парольную ветку.** Docker создаёт tmpfs с владельцем `root:root`; если в others нет `w`, процесс под `app` не сможет создать в нём каталог, `tempfile.mkdtemp` упадёт с `PermissionError`, и **любое** добавление сервера завершится ошибкой. Требуется эффективный режим **`0o1777`** — та же семантика, что у системного `/tmp`: sticky-бит не даёт чужому пользователю удалять/переименовывать наши файлы, а сам ключ защищён правами **вложенного** каталога `mkdtemp` (`0700`, владелец `app`) и файла (`0600`). Альтернатива «смонтировать tmpfs с `uid=`/`gid=`» в compose не выражается — поэтому нормативен именно `0o1777`.
+- **⛔ Монтировать `tmpfs` на `/tmp` НЕ следует.** Прежнее предписание (`/tmp:size=64m,mode=1700`) **отменено** — оно и ломало права (см. выше), и создавало конкуренцию за один маленький раздел: `python-multipart`/Starlette спуливают `UploadFile` больше ~1 МБ в `tempfile.gettempdir()` (= `/tmp`), а изображения документов допускаются до `DOCUMENTS_MAX_IMAGE_BYTES` = 5 МБ ⇒ несколько параллельных загрузок + артефакты ansible-runner в 64 МБ дали бы `No space left on device` на пустом месте. Спулинг multipart и `private_data_dir` **разведены по разным каталогам**: `/tmp` остаётся обычным (пишущий слой контейнера, без лимита), Ansible работает в своём tmpfs.
+- **Обоснование размера 64 МБ:** в `private_data_dir` живут inventory/env/артефакты одного прогона (единицы МБ) плюс ключ (≤ `SSH_KEY_MAX_BYTES` = 16 КБ); провижининги идут в одном воркере и редко параллельно (NFR-1, [TD-004](100-known-tech-debt.md)). Загрузки файлов сюда **не попадают** (см. выше).
+- Без tmpfs решение остаётся **работоспособным** (каталог создан в образе с `0700`/`app`), но ключ на время прогона окажется в пишущем слое контейнера — остаточный риск [TD-073](100-known-tech-debt.md) выше.
+- **Проверяется рантайм-smoke'ом, а не ревью:** `docker compose exec -u app backend python -c "import tempfile,os; print(tempfile.mkdtemp(dir=os.environ['ANSIBLE_PRIVATE_DATA_ROOT']))"` обязан отработать без `PermissionError` (чек-лист — [06-testing-strategy.md §Runtime-smoke](06-testing-strategy.md#runtime-smoke-стека-перед-релизом)). Ошибка прав тут не видна ни одному юнит-/интеграционному тесту и убивает добавление серверов целиком.
 
 ### proxy-образ (nginx + TLS)
 Базовый `nginx:1.27-alpine` + кастомный entrypoint автогенерации self-signed TLS ([TLS-сертификаты](#tls-сертификаты)). **Требует `openssl`** для генерации серта: `apk add --no-cache openssl` в Dockerfile (в `nginx:alpine` openssl не предустановлен). Без него entrypoint падает при первом старте.
@@ -96,7 +189,7 @@ location / {
     add_header X-Content-Type-Options nosniff always;
     add_header X-Frame-Options DENY always;
     add_header Referrer-Policy no-referrer always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
     add_header Cache-Control "no-cache" always;        # HTML и НЕхешированные корневые ассеты (ADR-046 §4.4)
 }
 
@@ -110,7 +203,7 @@ location /assets/ {
     add_header X-Content-Type-Options nosniff always;
     add_header X-Frame-Options DENY always;
     add_header Referrer-Policy no-referrer always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'" always;
     # ⚠️ БЕЗ `always` — намеренно (см. правило ниже): immutable-кэш обязан покрывать
     #    ТОЛЬКО успешную отдачу существующего ассета, но НЕ 404 битого выката.
     add_header Cache-Control "public, max-age=31536000, immutable";
@@ -132,10 +225,10 @@ location /assets/ {
     - **Как правильно.** Без `always` `add_header` применяется **только к успешным кодам** (`200`/`204`/`301`/`302`/`304`…) — ровно к отдаче существующего хешированного ассета. `404` уезжает **без freshness-заголовков** и не кэшируется агрессивно → следующий запрос после починки выката попадёт на сервер.
     - **⛔ Не «возвращать `always` для единообразия» при рефакторинге конфига.** Асимметрия внутри блока (security — `always`, `Cache-Control` — без) **намеренна**: security-заголовки обязаны быть на **любом** ответе, а вечный immutable-кэш — только на **успешном**.
   - **`try_files $uri =404;` в `location /assets/` — нормативно** (явный контракт): несуществующий ассет отдаёт `404`, а **не** SPA-fallback `index.html`. Поведенчески на текущем конфиге это no-op (`location /` и `location /assets/` — соседние блоки, `try_files … /index.html` из `/` не наследуется), но директива фиксирует намерение: JS-бандл никогда не должен подменяться HTML-страницей (иначе браузер выполнит `index.html` как скрипт и упадёт с невнятной синтаксической ошибкой вместо честного `404`).
-  - **⚠️ Ловушка nginx (обязательно к соблюдению):** директива **`add_header` во ВЛОЖЕННОМ `location` ОТМЕНЯЕТ ВСЕ унаследованные `add_header`** родительского блока (наследование не аддитивное, а «замещающее на уровне блока»). Следовательно, в **каждом** вложенном `location`, где появляется `Cache-Control`, **обязаны быть продублированы ВСЕ security-заголовки и CSP** — **побайтово** равные нормативному значению ([05-security.md](05-security.md#content-security-policy-spa-location-)). Пропуск дубля **молча снимет** CSP/HSTS/`X-Frame-Options`/`Referrer-Policy` с этих ответов — регрессия безопасности без единого сообщения об ошибке. `devops-reviewer` **обязан** проверить и это, и отсутствие `always` на `Cache-Control` в `/assets/`.
+  - **⚠️ Ловушка nginx (обязательно к соблюдению):** директива **`add_header` во ВЛОЖЕННОМ `location` ОТМЕНЯЕТ ВСЕ унаследованные `add_header`** родительского блока (наследование не аддитивное, а «замещающее на уровне блока»). Следовательно, в **каждом** вложенном `location`, где появляется `Cache-Control`, **обязаны быть продублированы ВСЕ security-заголовки и CSP** — **побайтово** равные нормативному значению ([05-security.md](05-security.md#csp)). Пропуск дубля **молча снимет** CSP/HSTS/`X-Frame-Options`/`Referrer-Policy` с этих ответов — регрессия безопасности без единого сообщения об ошибке. `devops-reviewer` **обязан** проверить и это, и отсутствие `always` на `Cache-Control` в `/assets/`.
 - Backend читает IP в порядке `X-Real-IP` → `X-Forwarded-For[0]` → `client.host`. Без проброса все запросы будут с IP прокси → rate-limit заблокирует всех.
 - **Разделение ответственности за security-заголовки** (нормативно, без дублей — [05-security.md](05-security.md#http-заголовки-безопасности-нормативно)): для `/api` 4 заголовка (+HSTS) ставит backend-middleware (`setdefault`); для SPA (`location /`) те же 4 + CSP ставит nginx (`add_header ... always`). HSTS не дублировать.
-- **Значение CSP — нормативное** ([05-security.md](05-security.md#content-security-policy-spa-location-)); строка в nginx обязана побайтово совпадать с зафиксированной там.
+- **Значение CSP — нормативное** ([05-security.md](05-security.md#csp)); строка в nginx обязана побайтово совпадать с зафиксированной там.
 - `proxy_set_header X-Forwarded-Proto $scheme;` нужен, чтобы backend корректно понимал, что соединение за TLS (для условного HSTS).
 - **SMS-webhook'и наружу (нормативно, [ADR-030](adr/ADR-030-sms-module-full-merge.md), [modules/sms](modules/sms/README.md)).** Публичные пути `POST /api/sms/webhooks/twilio/sms` (приём Twilio) и `POST /api/sms/telegram/webhook` (апдейты SMS-бота) обслуживаются существующим `location /api` (отдельных `location` не требуется — они под `/api`, JWT-exempt на уровне backend, гейт — подпись/секрет). **Подпись Twilio — единственный источник URL:** backend реконструирует полный внешний `https`-URL webhook для валидации `X-Twilio-Signature` **из `SMS_PUBLIC_BASE_URL` + путь** (нормативный источник истины, [05-security.md](05-security.md#подпись-twilio-post-apismswebhookstwiliosms)); `SMS_PUBLIC_BASE_URL` **обязан** совпадать с внешним HTTPS-адресом Twilio-webhook, иначе приём вернёт `401 invalid_twilio_signature`. Проброс `X-Forwarded-Proto`/`X-Forwarded-Host` (уже присутствует в `location /api` выше) для подписи **не требуется** (используется для логов/HSTS, не как источник URL подписи). Оба webhook-URL должны быть достижимы снаружи по HTTPS (Twilio-консоль и Telegram `setWebhook` указывают на них). Тело Twilio — `application/x-www-form-urlencoded` (мелкое); действующий `client_max_body_size 50m` на `location /api` (поднят ради батч-приёма почты — см. требование выше) для него с огромным запасом достаточен.
 - **Настройка ботов почты (5 шт., [ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) §9) — одноразовые операции деплоя, скриптом/вручную.** Для **каждого** бота: `setWebhook` на CRM-URL (основной — `https://<host>/api/mail/telegram/webhook/<MAIL_BOT_WEBHOOK_SECRET>`; push-боты — `https://<host>/api/mail/telegram/push-webhook/<bot_name>` с `secret_token = MAIL_BOT_<NAME>_WEBHOOK_SECRET`), `drop_pending_updates=false` (не терять очередь). Идемпотентно, повторять при деплое.
@@ -248,6 +341,10 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `SMS_DELIVERY_MAX_ATTEMPTS` | `5` | Потолок попыток доставки одного SMS одному получателю до `failed`-остановки (retry-монитор) |
 | `DOCUMENTS_API_KEY` | `<external api key>` | **Секрет** (только env, класс `MAIL_API_KEY`): статический ключ внешнего **read-only** контура документов для RAG (модуль «Документы» — [modules/documents](modules/documents/README.md), [ADR-060](adr/ADR-060-documents-external-readonly-api-key.md)). Входящий `X-API-Key` сверяется constant-time (`hmac.compare_digest`); не в БД/логах/ответах/SPA/URL; ротация через деплой. Пусто → внешний контур выключен (`503 documents_external_not_configured`); внутренний API `/api/documents/*` под JWT продолжает работать |
 | `DOCUMENTS_MAX_MD_BYTES` | `1048576` | Потолок размера markdown-контента документа (байт, default 1 МБ). Проверяется при upload и при inline-правке контента; превышение → `422` (upload → `document_upload_invalid`; inline → `validation_error`, поле `content_md`) ([modules/documents](modules/documents/README.md), [03-data-model.md](03-data-model.md#таблицы-модуля-документы-document_nodes-document_node_roles)) |
+| `DOCUMENTS_ATTACHMENTS_DIR` | `/var/lib/crm/documents/attachments` | Корень хранения **байтов изображений документов** (volume `documents-attachments`, только backend — [ADR-068](adr/ADR-068-documents-image-attachments.md)). Путь файла строится **только** из `id` вложения и расширения из `mime`; каталоги `0700`, файлы `0600` |
+| `DOCUMENTS_MAX_IMAGE_BYTES` | `5242880` | Потолок размера одного изображения (байт, default 5 МБ). Проверяется **по мере чтения потока** с обрывом; превышение → `422 document_attachment_invalid`. Не путать с `DOCUMENTS_MAX_MD_BYTES` (это лимит **текста** документа; `data:`-картинки в тексте запрещены — [ADR-068](adr/ADR-068-documents-image-attachments.md) §4) |
+| `SSH_KEY_MAX_BYTES` | `16384` | Потолок размера приватного SSH-ключа в `POST /api/servers` (байт, 16 КБ — RSA-4096 PEM с запасом). Проверяется **до** разбора (анти-DoS); превышение → `422 validation_error`, поле `ssh_private_key` ([ADR-067](adr/ADR-067-server-ssh-key-auth.md)) |
+| `ANSIBLE_PRIVATE_DATA_ROOT` | `/var/run/crm/ansible` | Корень для временных `private_data_dir` ansible-runner ([ADR-067](adr/ADR-067-server-ssh-key-auth.md) §5). Провижининг обязан вызывать `tempfile.mkdtemp(dir=<это значение>)`, **а не безадресный `mkdtemp()`** в `/tmp` — иначе расшифрованный SSH-ключ уедет в общий каталог, конкурирующий со спулингом загружаемых файлов. Каталог создаётся в образе (`chown app:app`, `0700`) и в проде перекрывается **отдельным `tmpfs`-mount'ом с `mode: 0o1777`** (⛔ поле числовое: значение **в кавычках** отвергается на разборе и роняет весь `docker compose config`/`up`, а голое `1777` разберётся десятично → `0o3361` и `mkdtemp` упадёт с `PermissionError`; см. [Backend-образ](#tmpfs-для-приватных-данных-ansible-нормативно-adr-067-5)) |
 | `EXPORTER_PORT` | `9100` | Порт node_exporter по умолчанию |
 | `SCRAPE_SOURCE_IP` | `37.27.192.211` | Публичный IP CRM-сервера, с которого Prometheus достукивается до remote-целей (SNAT). Передаётся в плейбук как `scrape_source_ip` → открытие `9100` на цели ТОЛЬКО для этого IP. **Пусто → плейбук firewall не трогает** (для self-host не задавать: источник = docker-подсеть, см. [09-provisioning.md](09-provisioning.md#сетевая-доступность-node_exporter-9100)) |
 | `FILE_SD_DIR` | `/etc/prometheus/targets` | Каталог file_sd (общий volume) |
@@ -257,6 +354,8 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `GF_SECURITY_ADMIN_PASSWORD` | `change-me` | Grafana admin |
 | `VITE_API_BASE_URL` | `/api` | База API для SPA (build-time) |
 | `VITE_POLL_INTERVAL_MS` | `15000` | Интервал polling карточек |
+| `ATTACHMENTS_VOLUME` | *(пусто)* | **Переменная скрипта бэкапа, приложением НЕ читается** (`infra/scripts/backup.sh`). Оверрайд имени named-volume вложений, когда его нельзя вывести из `docker compose config` (нет `python3` на хосте) или имя нестандартное. Пусто → имя берётся из разобранного compose (обычно `crm_documents-attachments`) |
+| `ALLOW_EMPTY_ATTACHMENTS` | `0` | **Переменная скрипта бэкапа, приложением НЕ читается** (`infra/scripts/backup.sh`). `1` снимает fail-closed-гейты «volume существует, но ПУСТ» (до `stop backend`) и «volume опустел внутри окна» (после); прогон при этом помечается — предупреждения в **stderr** + маркер `documents-attachments-<ts>.tgz.EMPTY` рядом с архивом. ⛔ **Только одноразовый ручной прогон** (bootstrap первого деплоя [ADR-068](adr/ADR-068-documents-image-attachments.md)); **прописывать в cron/CI запрещено** — постоянно выставленный knob превращает внезапно опустевший volume в «успешный» бэкап с `rc=0`. Гейт «volume НЕ существует» этой переменной **не снимается** — см. [Первый деплой ADR-068](#первый-деплой-adr-068-bootstrap-volume-нормативно) |
 
 > **Удалены (Этап 1):** `GRAFANA_BASE_URL` (backend) и `VITE_GRAFANA_URL` (frontend) — drill-down ссылка из карточки сервера убрана ([ADR-005, поправка](adr/ADR-005-custom-gauge-vs-grafana-embed.md#поправка-2026-06-30--удаление-drill-down-ссылки-из-карточки)). Grafana остаётся в составе compose (datasource-only) и доступна напрямую через proxy `/grafana`; ссылки из UI на неё больше нет.
 
@@ -315,14 +414,118 @@ scrape_configs:
 
 - **CI (GitHub Actions) НЕ использует git-SHA тегирование и registry** ([Q-DEP-2](99-open-questions.md): registry не используется). CI собирает образы на сервере через `docker compose up -d --build`; по умолчанию образы получают тег `current` (`image: crm-*:${IMAGE_TAG:-current}` в `docker-compose.yml`). Идентификатор версии = **git-коммит**, доставленный rsync'ом (рекомендуется деплоить из чистого `main`, фиксируя SHA релиза в логе деплоя).
 - **`IMAGE_TAG` — опциональный override** тега образов в `docker-compose.yml` (значение по умолчанию `current`). Позволяет вручную зафиксировать/переключить версию образов при ручных операциях.
-- **`infra/scripts/deploy.sh` и `infra/scripts/rollback.sh` — опциональный legacy-инструментарий** ручного деплоя/отката (тегирование git-SHA, alias'ы `:current`/`:previous`). **CI их не использует**; сохранены как справка/ручной путь. Push в registry — не используется ([Q-DEP-2](99-open-questions.md)); может быть задействован опционально вместе с этими скриптами.
+- **`infra/scripts/deploy.sh` и `infra/scripts/rollback.sh` — опциональный legacy-инструментарий** ручного деплоя/отката (тегирование git-SHA, alias'ы `:current`/`:previous`). ⚠️ **`deploy.sh` первым шагом вызывает `bash infra/scripts/backup.sh`** ⇒ ручной деплой теперь (а) даёт **окно простоя API** на время съёмки бэкапа и (б) под `set -e` **обрывается целиком**, если бэкап не снят (в том числе на первом деплое [ADR-068](adr/ADR-068-documents-image-attachments.md), пока volume не создан — сначала [bootstrap](#первый-деплой-adr-068-bootstrap-volume-нормативно)). Это осознанно: деплой без точки отката запрещён, а шаг и так предшествует пересборке стека. **CI их не использует**; сохранены как справка/ручной путь. Push в registry — не используется ([Q-DEP-2](99-open-questions.md)); может быть задействован опционально вместе с этими скриптами.
 
 ## Бэкапы и данные
 
-- `pgdata` — единственное состояние, требующее бэкапа (реестр серверов). Метрики восстанавливаются Prometheus'ом со временем.
-- Бэкап Postgres: `pg_dump` БД `crm` перед каждым деплоем с миграциями (рекомендуемый snapshot-перед-релизом), файл с временной меткой в каталоге бэкапов хоста. Восстановление — `pg_restore`/`psql` в свежий контейнер `postgres`.
-- `file_sd` восстановим из БД (backend может перегенерировать `targets/*.json` из реестра) — рекомендация для backend ([modules/provisioning](modules/provisioning/README.md)).
+- **Состояний, требующих бэкапа, ДВА** ([ADR-068](adr/ADR-068-documents-image-attachments.md)): `pgdata` **и** `documents-attachments`. Метрики восстанавливаются Prometheus'ом со временем.
+- Бэкап Postgres: `pg_dump` БД `crm` перед каждым деплоем с миграциями (snapshot-перед-релизом), файл с временной меткой в `<root>/backups`. Снимать его **отдельной командой не следует** — это делает `infra/scripts/backup.sh` вместе со вторым объектом (см. [Инструмент бэкапа](#инструмент-бэкапа--infrascriptsbackupsh-нормативно)). Восстановление БД — `psql` в работающий контейнер `postgres` **при остановленном backend и ТОЛЬКО в пустую схему** (дамп снят без `--clean`: заливка в непустую БД молча не восстанавливает состояние), затем распаковка архива вложений — процедура целиком в [§Восстановление](#восстановление-нормативно-оба-артефакта--одной-метки).
+- **`documents-attachments` — байты изображений документов; снимается СОГЛАСОВАННО с `pgdata`** — согласованность обеспечивается **остановкой backend** на время съёмки (окно простоя API, см. ниже), а не «по возможности». Рассинхрон даёт одну из двух аномалий: строка `document_attachments` без файла ⇒ **битая картинка в документе**, либо файл без строки ⇒ мусор, никем не адресуемый. БД о файлах ничего не знает и сама расхождение не починит; сверка — по `checksum` (sha256) строки против файла.
+- **Бэкап `pgdata` в одиночку больше НЕ является полным бэкапом приложения** — восстановление только БД вернёт документы с неработающими изображениями.
+- **⚠️ Откат миграции `0031_servers_ssh_key_auth` УДАЛЯЕТ строки** серверов с `auth_method='key'` ([ADR-067](adr/ADR-067-server-ssh-key-auth.md) §2) — pre-deploy бэкап (`bash infra/scripts/backup.sh`) перед релизом с этой миграцией обязателен, а не «рекомендуем».
+- `file_sd` восстановим из БД (backend может перегенерировать `targets/*.json` из реестра) — рекомендация для backend ([modules/provisioning](modules/provisioning/README.md)). **`documents-attachments` из БД НЕ восстановим** (в БД нет байтов) — в этом ключевое отличие двух volume'ов и причина, по которой первый бэкапить не нужно, а второй обязателен.
 - `proxy-certs` (TLS) и `grafana-data` — бэкапятся опционально; self-signed серт регенерируется, дашборды на Этапе 1 не провижинятся.
+
+### Инструмент бэкапа — `infra/scripts/backup.sh` (нормативно)
+
+Согласованный съём обоих объектов выполняет **`infra/scripts/backup.sh`** (запуск — **всегда `bash infra/scripts/backup.sh`**, а не `./backup.sh`: exec-бит скриптов `infra/scripts/*` **не гарантирован** — часть из них хранится в git с режимом `100644`, а после rsync/чекаута на прод-хосте режим определяется тем, что записано в индексе. По той же причине через `bash …` вызывают друг друга шим `backup-db.sh` и `deploy.sh`). Ручные `pg_dump`/`tar` по отдельности **не являются** бэкапом приложения: разлучённые артефакты дают одну из аномалий рассинхрона выше.
+
+- **⚠️ Окно простоя backend.** Согласованность обеспечивается **остановкой `backend`** на время съёмки (`docker compose stop backend` → дамп + tar → `start backend` + ожидание `healthy`, до 180 с): пока backend остановлен, ни в БД, ни на volume никто не пишет, поэтому оба артефакта относятся к одному состоянию. **API недоступен всё время работы скрипта** (обычно десятки секунд). `postgres` при этом **не** останавливается — из него снимается дамп. Прерывание (`Ctrl-C`/`kill`) обрабатывается: backend поднимается в trap'е — `restart: unless-stopped` **вручную остановленный контейнер сам не поднимет**.
+- **Артефакты — в `<root>/backups`, с одной временной меткой; разлучать их нельзя:** `crm-<ts>.sql` (дамп БД) и `documents-attachments-<ts>.tgz` (байты вложений, `tar -p` — права и владелец сохраняются). Оба пишутся в `<файл>.part` и переименовываются **только после** успешной проверки; `.part` подчищается trap'ом. Каталог `backups` исключён из rsync-деплоя (см. [CI/CD](#cicd)) — деплой его не затирает.
+  - **Побочный артефакт-маркер `documents-attachments-<ts>.tgz.EMPTY`** — кладётся рядом **только** когда архив вложений оказался пустым и прогон продолжен по `ALLOW_EMPTY_ATTACHMENTS=1`. Текст маркера сообщает, что архив содержит только `./`, при какой метке и почему он снят, и что **восстановление из него не вернёт изображения, а начинается с `rm -rf /data/*`**. Смысл: через месяц пустой `.tgz` неотличим от здорового по одному листингу каталога. **Имена нормативных артефактов маркер не меняет** — `crm-<ts>.sql` и `documents-attachments-<ts>.tgz` остаются прежними; маркер — дополнительный файл, а не третий объект бэкапа. Его наличие рядом с архивом — **сигнал не восстанавливать вложения из этой метки** без разбирательства.
+- **Fail-closed проверки (скрипт не отдаёт «зелёный» результат на пустом месте).** Четыре гейта; принципиально **где именно** каждый стоит относительно `stop backend` (`infra/scripts/backup.sh`):
+  1. **Volume НЕ СУЩЕСТВУЕТ** — `docker volume inspect`, **ДО `stop backend`**: `rc=1`, **простоя нет, дамп не снимается, артефактов нет**. Имя берётся из разобранного `docker compose config --format json` (оверрайд — `ATTACHMENTS_VOLUME`); проверка обязательна, потому что `docker run -v <несуществующее имя>` **молча создал бы пустой volume**, и архив выглядел бы валидным. **`ALLOW_EMPTY_ATTACHMENTS` этот случай НЕ снимает** — нужен [bootstrap](#первый-деплой-adr-068-bootstrap-volume-нормативно).
+  2. **Volume существует, но ПУСТ** — подсчёт объектов на volume, смонтированном `:ro`, **тоже ДО `stop backend`** (чтение остановки не требует): без оверрайда `rc=1`, **окна простоя нет** и дамп не снимается. Снимается knob'ом `ALLOW_EMPTY_ATTACHMENTS=1` (тогда прогон идёт дальше, но помечается — см. ниже). Порядок действий при отказе: проверить, тот ли volume смонтирован (`docker volume ls`; `docker run --rm -v <vol>:/data:ro alpine:3.20 find /data`); если вложений действительно ещё нет — повторить прогон **вручную** с оверрайдом.
+  3. **Сверка «объектов в архиве» vs «объектов на volume»** — **ПОСЛЕ `stop backend`**, и эталон (`SRC_COUNT`) снимается тоже **после** остановки: пока backend жив, он может принять загрузку между замером и `tar`, и строгая сверка оборвала бы **исправный** бэкап. При остановленном backend писателей нет ⇒ сверка детерминирована. Расхождение → артефакты **не сохраняются** (остаются только `.part`, их чистит trap, backend поднимается trap'ом).
+  4. **Страховка «volume опустел МЕЖДУ гейтом 2 и остановкой»** (ошибочный `rm`, пересоздание volume) — **ПОСЛЕ `stop backend`**: тот же fail-closed и тот же одноразовый оверрайд. Этот путь **тоже** помечает прогон как пустой (маркер `.EMPTY` + предупреждающий финал) — иначе он оставался бы последней лазейкой к «внешне здоровому» пустому бэкапу.
+  - **Итог для оператора:** отказ по гейтам 1–2 **не стоит ни секунды простоя** (проверено devops-ревью: `.State.StartedAt` контейнера `backend` до и после прогона идентичны) и не оставляет мусора; отказ по гейтам 3–4 приходится на уже открытое окно простоя, но backend поднимается trap'ом, а полу-артефакты удаляются.
+- **`ALLOW_EMPTY_ATTACHMENTS=1` — ОДНОРАЗОВЫЙ ручной оверрайд.** ⛔ **Запрещено прописывать его в cron, systemd-timer, CI или обёртку деплоя.** Прогон с оверрайдом **не молчит**: предупреждение о пустом volume и финальная строка «готово, но ⚠️ ВЛОЖЕНИЙ НЕТ … данные вложений потеряны» идут в **stderr** (типовой cron `… >/dev/null` шлёт оператору именно stderr), а рядом с архивом остаётся маркер `.EMPTY`. Запрет держится на другом: **постоянно выставленный knob делает `rc=0` привычным** — планировщик считает прогон успешным, ретраев и алертов нет, а на диске копится череда **пустых** архивов, каждый из которых при восстановлении начинается с `rm -rf /data/*`. Разбирать «внезапно опустел volume» надо в момент события, а не через месяц по маркерам. Оверрайд применяется **вручную, на конкретный прогон**, с осознанным подтверждением, что вложений действительно ещё нет.
+- **`infra/scripts/backup-db.sh` — устаревший шим,** оставлен только ради существующих cron/ручных вызовов: печатает предупреждение и делегирует `backup.sh` (через `bash …`, а не exec-бит). Он **больше не снимает «только БД»** — прежнее поведение давало бы молча неполный бэкап. ⚠️ Для существующих ночных cron это **смена поведения**: появилось окно простоя API, которого раньше не было — убедитесь, что окно допустимо, либо перенесите вызов.
+- **Обязателен ПЕРЕД деплоем с миграциями** — `downgrade` миграции `0031_servers_ssh_key_auth` **удаляет** строки серверов с `auth_method='key'` ([ADR-067](adr/ADR-067-server-ssh-key-auth.md) §2). На **первом** деплое релиза ADR-068 обязательному бэкапу предшествует bootstrap volume — см. ниже.
+
+#### Первый деплой ADR-068: bootstrap volume (нормативно)
+
+**Проблема, которую надо снять один раз.** На прод-хосте, где ADR-068 ещё не выкачен, volume `documents-attachments` **не существует** (в прежней редакции `infra/docker-compose.yml` его нет), а `backup.sh` **обязан** упасть на проверке существования (гейт 1 выше). Итог: обязательный pre-deploy бэкап невыполним ровно на том релизе, где он объявлен обязательным. Тот же капкан у `infra/scripts/deploy.sh` — он под `set -e` первым шагом вызывает `backup.sh` и оборвётся целиком.
+
+**Норма — bootstrap ДО первого прогона бэкапа (выполняется один раз, на хосте):**
+
+```bash
+docker volume create crm_documents-attachments        # имя = <project>_documents-attachments, project по умолчанию `crm`
+ALLOW_EMPTY_ATTACHMENTS=1 bash infra/scripts/backup.sh   # одноразово: вложений ещё нет ⇒ архив пуст + маркер .EMPTY
+```
+
+Проверено в этой сессии (docker 29.6.1, 2026-07-22):
+
+- заранее созданный вручную volume compose **принимает** — печатает предупреждение `volume "…_documents-attachments" already exists but was not created by Docker Compose. Use external: true to use an existing volume` и продолжает (`rc=0`, контейнер стартует). Предупреждение ожидаемо и не является отказом;
+- **пустой** volume при первом монтировании **наследует владельца и права из образа**: в контейнере с `USER app` и каталогом `0700 app:app` `stat -c "%u:%g %a"` точки монтирования даёт **`999:999 700`**, а `mkdir -p …/aa/bb` под `app` проходит. То есть ручное создание volume **не** ломает механизм [Каталогов, создаваемых в образе](#каталоги-создаваемые-в-образе-нормативно).
+
+**Что даст этот прогон.** Архив вложений будет **пустым** (вложений ещё нет), поэтому скрипт положит рядом маркер `documents-attachments-<ts>.tgz.EMPTY` и завершится предупреждающим финалом в stderr. Для bootstrap это **ожидаемо**: пара артефактов нужна ради дампа БД, а не ради вложений. ⛔ Восстанавливать вложения из этой метки нельзя — процедура начинается с `rm -rf /data/*` и стёрла бы всё, что появилось после.
+
+**Границы применимости.** Bootstrap выполняется **только** если `docker volume ls` не показывает `<project>_documents-attachments`. После первого успешного деплоя ADR-068 volume существует всегда, и `ALLOW_EMPTY_ATTACHMENTS` больше не нужен — повторное его появление в командной строке означает, что что-то не так с volume, а не «так задумано».
+
+#### Восстановление (нормативно; оба артефакта — ОДНОЙ метки)
+
+**⛔ Дамп заливается ТОЛЬКО в пустую схему.** `infra/scripts/backup.sh` снимает **обычный** `pg_dump` — **без** `--clean`/`--create` (`infra/scripts/backup.sh`, шаг `pg_dump -U "$POSTGRES_USER" "$POSTGRES_DB"`), поэтому в БД с существующими данными он **не восстанавливает состояние, а безмолвно проваливается**: `psql` по умолчанию продолжает после ошибок и возвращает **`0`**. Порядок ниже (пересоздание схемы + `ON_ERROR_STOP=1`) — **обязательная часть процедуры**, а не рекомендация.
+
+```bash
+# 0. Backend остановлен на ВСЁ время восстановления.
+docker compose --env-file .env -f infra/docker-compose.yml stop backend
+
+# 1. Пустая схема: дамп не содержит DROP-ов и на непустой БД конфликтует с существующими объектами.
+docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
+    sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" "$POSTGRES_DB" \
+             -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"'
+
+# 2. Заливка дампа. ON_ERROR_STOP=1 ОБЯЗАТЕЛЕН — иначе psql проглотит ошибки и вернёт 0.
+docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
+    sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" "$POSTGRES_DB"' < backups/crm-<ts>.sql
+
+# 3. ТОЛЬКО ПОСЛЕ успеха шага 2 (exit code 0) — вложения той же метки.
+docker run --rm -v crm_documents-attachments:/data -v "$PWD/backups":/backup:ro \
+    alpine:3.20 sh -c 'rm -rf /data/* && tar xzpf /backup/documents-attachments-<ts>.tgz -C /data'
+
+docker compose --env-file .env -f infra/docker-compose.yml start backend
+```
+
+- `<ts>` — общая временная метка пары артефактов; подставьте фактическую (со скобками `<>` строки не выполнятся: `<` — редирект оболочки).
+- **⛔ Перед шагом 3 убедитесь, что архив вложений НЕ пуст:** рядом не должно быть маркера `documents-attachments-<ts>.tgz.EMPTY`, а `tar tzf backups/documents-attachments-<ts>.tgz | wc -l` обязан дать больше `1`. Восстановление начинается с `rm -rf /data/*` ⇒ распаковка пустого архива **стирает все вложения**. Скрипт помечает такие архивы сам, но при восстановлении из чужого/старого файла проверяйте вручную.
+- **⛔ Шаг 3 выполняется ТОЛЬКО после успешного шага 2.** Если БД не восстановилась, а файлы уже перезаписаны (`rm -rf /data/*`), получится ровно тот рассинхрон, ради предотвращения которого вводился согласованный бэкап: **файлы откатились, БД осталась текущей**. Проверять именно **exit code** шага 2, а не глазами по выводу.
+- **Оба `psql` — с `-v ON_ERROR_STOP=1`.** Проверено в этой сессии (docker 29.6.1, образ `postgres:16`, 2026-07-22) на стенде «таблица `servers` со строкой `id=1` → `pg_dump` → добавлена строка `id=2` → восстановление». Прогон выполнялся против одиночного контейнера через `docker exec -i` (стека compose под рукой нет); `docker compose exec -T` отличается только оболочкой запуска — тот же non-TTY stdin, та же команда внутри контейнера:
+
+  ```console
+  $ docker exec -i crmtest sh -c 'psql -U crm crm' < dump.sql          # наивный путь, без пересоздания схемы
+  ERROR:  relation "servers" already exists
+  ERROR:  duplicate key value violates unique constraint "servers_pkey"
+  DETAIL:  Key (id)=(1) already exists.
+  CONTEXT:  COPY servers, line 1
+  ERROR:  multiple primary keys for table "servers" are not allowed
+  psql exit code: 0            # ⛔ безмолвный провал: id=2 остался, состояние НЕ восстановлено
+  $ docker exec -i crmtest sh -c 'psql -v ON_ERROR_STOP=1 -U crm crm' < dump.sql
+  ERROR:  relation "servers" already exists
+  psql exit code: 3            # ✅ отказ виден вызывающему
+
+  # полный цикл: шаг 1 + шаг 2 в точной форме сниппета выше
+  $ docker exec -i crmtest sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" "$POSTGRES_DB" \
+             -c "DROP SCHEMA public CASCADE; CREATE SCHEMA public;"'
+  NOTICE:  drop cascades to 2 other objects
+  DETAIL:  drop cascades to extension pgcrypto
+  drop cascades to table servers
+  DROP SCHEMA
+  CREATE SCHEMA
+  exit=0
+  $ docker exec -i crmtest sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" "$POSTGRES_DB"' < dump.sql
+  exit=0
+  $ docker exec crmtest psql -U crm crm -tAc 'SELECT id,name FROM servers ORDER BY id;'
+  1|before                     # ✅ ровно состояние дампа: строки id=2 больше нет
+  ```
+
+  (`psql exit code:`/`exit=` — вывод обёртки `echo "$?"` вокруг команды, сама команда приведена дословно.)
+- **Расширения переживают `DROP SCHEMA public CASCADE`** — `DROP` сносит и `pgcrypto` (`drop cascades to extension pgcrypto` в выводе выше), но дамп содержит `CREATE EXTENSION IF NOT EXISTS pgcrypto WITH SCHEMA public;` (строка 41 дампа стенда) и создаёт его заново: после цикла `SELECT extname FROM pg_extension WHERE extname='pgcrypto'` снова отдаёт `pgcrypto`, а таблица с `DEFAULT gen_random_uuid()` восстанавливается вместе с данными. Отдельного шага установки расширений не требуется.
+- **Почему не `pg_dump --clean --if-exists` вместо шага 1** (вариант рассмотрен и отклонён): (а) он **не чинит уже снятые** архивы — а восстанавливаться придётся именно из них; (б) `DROP`-ы дампа не удаляют объекты, появившиеся **после** его снятия; (в) без `ON_ERROR_STOP` `psql` всё равно вернул бы `0`, т.е. корень дефекта — безмолвность, а не отсутствие флага. Пересоздание схемы решает все три случая одной командой. Если devops добавит `--clean --if-exists` в `backup.sh` — это допустимо как **дополнение**, шаг 1 и `ON_ERROR_STOP=1` остаются обязательными.
+- **Креды Postgres читаются ВНУТРИ контейнера** (`sh -c 'psql -U "$POSTGRES_USER" …'`) — так же, как их читает `pg_dump` в `infra/scripts/backup.sh`; с хоста они не передаются.
+- **`rm -rf /data/*` перед распаковкой** — иначе на volume останутся файлы, которых нет в восстановленной БД (мусор, [TD-076](100-known-tech-debt.md)). Именно поэтому «пустой» архив опаснее отсутствующего, и скрипт его не создаёт (см. выше).
+- **Имя volume** — `crm_documents-attachments` при дефолтном `name: crm` в `infra/docker-compose.yml`; при переопределённом `COMPOSE_PROJECT_NAME` берите фактическое (`docker volume ls`).
+- **Владелец восстановленных файлов — числовой `999:999`** (каталоги `0700`, файлы `0600`): в tar и на volume хранится **число**, не имя. Отсюда пин `--uid 999 / --gid 999` в `backend/Dockerfile` — см. [Пин uid/gid пользователя `app`](#пин-uidgid-пользователя-app-нормативно).
 
 ## Откат и восстановление
 
@@ -341,7 +544,7 @@ Single-host docker-compose, Этап 1. Цель — быстро вернуть
 Миграции forward-only применяются в entrypoint backend (`alembic upgrade head`). Политика отката на Этапе 1 — **двухуровневая, в порядке предпочтения**:
 
 1. **`alembic downgrade` (основной путь).** Требование к backend (нормативно): **каждая миграция Alembic ОБЯЗАНА иметь рабочую функцию `downgrade()`**, протестированную на откат на одну ревизию. Откат: `docker compose run --rm backend alembic downgrade -1` (или до конкретной ревизии), затем деплой предыдущего коммита приложения (rsync + `up -d --build`). Это требование закреплено в [03-data-model.md](03-data-model.md) и [modules/servers](modules/servers/README.md). **Исключение — one-time data-fix / backfill-миграции** (напр. `0016_backfill_team_leaders`): их `downgrade()` реализуется как **no-op** и это ЯВНО задокументировано в самой миграции и в [03-data-model.md](03-data-model.md). Такая миграция не меняет схему и корректирует данные, прежнее (ошибочное) состояние которых восстанавливать не нужно; `downgrade -1` выполняется успешно (no-op) и не ломает цепочку. Откат приложения выполняется как обычно (rsync + `up -d --build`), схема при этом остаётся валидной.
-2. **Восстановление из бэкапа (fallback).** Если `downgrade` невозможен (например, миграция с потерей данных) — восстановить Postgres из snapshot'а, снятого перед деплоем (см. [«Бэкапы и данные»](#бэкапы-и-данные)), затем задеплоить предыдущий коммит приложения.
+2. **Восстановление из бэкапа (fallback).** Если `downgrade` невозможен (например, миграция с потерей данных) — восстановить Postgres из snapshot'а, снятого перед деплоем, **строго по процедуре** [§Восстановление](#восстановление-нормативно-оба-артефакта--одной-метки) (пересоздание схемы + `ON_ERROR_STOP=1`; заливка дампа в непустую БД молча не восстанавливает состояние), затем задеплоить предыдущий коммит приложения. Если вложения (`documents-attachments`) откатываются вместе с БД — распаковывать архив **только после** успешной заливки дампа.
 
 > На Этапе 1 (одна таблица `servers`, простая схема) `downgrade` реализуем для всех миграций — это основной механизм. Бэкап-восстановление — страховка.
 
@@ -350,7 +553,7 @@ Single-host docker-compose, Этап 1. Цель — быстро вернуть
 2. Если деплой **без миграций** → задеплоить предыдущий рабочий коммит (rsync + `docker compose up -d --build`) либо поднять предыдущие образы из кэша (`up -d` без `--build`) — см. [«Откат приложения»](#откат-приложения-backendfrontend).
 3. Если деплой **с миграциями**:
    a. Остановить backend (`docker compose stop backend`).
-   b. Откатить миграцию: `alembic downgrade -1` (основной путь) либо восстановить БД из pre-deploy бэкапа (fallback).
+   b. Откатить миграцию: `alembic downgrade -1` (основной путь) либо восстановить БД из pre-deploy бэкапа (fallback) — **по процедуре** [§Восстановление](#восстановление-нормативно-оба-артефакта--одной-метки), не «просто залить дамп».
    c. Задеплоить предыдущий рабочий коммит (rsync + `docker compose up -d --build`).
 4. Проверить `GET /api/health` (`status: ok`, `db: up`, `prometheus: up`).
 5. Зафиксировать инцидент; при необходимости расхождения docs↔реализация — эскалировать architect.

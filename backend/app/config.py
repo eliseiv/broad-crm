@@ -350,6 +350,16 @@ class Settings(BaseSettings):
     ansible_timeout_sec: int = 300
     ansible_host_key_checking: bool = False
     ansible_playbook_path: str = "ansible/install_node_exporter.yml"
+    # Корень для временных `private_data_dir` ansible-runner (ADR-067 §5): провижининг
+    # обязан вызывать `tempfile.mkdtemp(dir=<это значение>)`, а НЕ безадресный `mkdtemp()`
+    # в `/tmp` — иначе расшифрованный SSH-ключ уедет в общий каталог, конкурирующий со
+    # спулингом загружаемых файлов. Каталог создаётся в образе (`chown app:app`, `0700`),
+    # в проде перекрывается отдельным `tmpfs`-mount'ом (07-deployment.md).
+    ansible_private_data_root: str = "/var/run/crm/ansible"
+    # Потолок размера приватного SSH-ключа в `POST /api/servers` (байт, ADR-067 §3 п.2).
+    # Проверяется ДО разбора (анти-DoS); превышение → 422 validation_error,
+    # поле `ssh_private_key`. 16 КБ покрывают RSA-4096 PEM с запасом.
+    ssh_key_max_bytes: int = 16_384
     # Публичный IP CRM-сервера, с которого Prometheus скрейпит цели; плейбук
     # открывает firewall на цели для этого источника (TD-017). Пусто → шаг
     # firewall пропускается.
@@ -373,6 +383,14 @@ class Settings(BaseSettings):
     # деплой); входящий X-API-Key сверяется constant-time (hmac.compare_digest). Пусто ⇒
     # внешний контур выключен (503 documents_external_not_configured).
     documents_api_key: str = ""
+    # Корень хранения БАЙТОВ изображений документов (volume `documents-attachments`,
+    # ADR-068 §1/§8). Путь файла строится ТОЛЬКО из `id` вложения и расширения,
+    # выведенного из `mime`; каталоги `0700`, файлы `0600`.
+    documents_attachments_dir: str = "/var/lib/crm/documents/attachments"
+    # Потолок размера одного изображения (байт, default 5 МБ, ADR-068 §2). Проверяется
+    # ПО МЕРЕ ЧТЕНИЯ ПОТОКА с обрывом; превышение → 422 document_attachment_invalid.
+    # НЕ путать с `documents_max_md_bytes` (лимит ТЕКСТА документа).
+    documents_max_image_bytes: int = 5_242_880
 
     @property
     def documents_external_enabled(self) -> bool:

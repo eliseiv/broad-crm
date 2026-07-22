@@ -46,6 +46,7 @@ vi.mock('@/features/documents/hooks', () => ({
   useCopyNode: () => ({ mutate: vi.fn(), isPending: false }),
   useDeleteNode: () => ({ mutate: vi.fn(), isPending: false }),
   useUpdateNode: () => ({ mutate: vi.fn(), isPending: false }),
+  useUploadAttachment: () => ({ mutate: vi.fn(), isPending: false }),
   useSetVisibility: () => ({ mutate: vi.fn(), isPending: false }),
   useRoleRefs: () => ({ data: [], isLoading: false, error: null }),
   useNodeVisibility: () => ({ data: undefined, isLoading: false, error: null }),

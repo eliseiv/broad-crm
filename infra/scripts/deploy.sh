@@ -20,8 +20,12 @@ GIT_SHA="$(git -C "$ROOT" rev-parse --short HEAD)"
 
 echo "[deploy] git-SHA=$GIT_SHA"
 
-# 1. Pre-deploy бэкап Postgres (страховка для отката через restore).
-"$ROOT/infra/scripts/backup-db.sh"
+# 1. Pre-deploy бэкап: pgdata + documents-attachments СОГЛАСОВАННО (ADR-068; страховка
+# для отката через restore). ⚠️ backup.sh останавливает backend на время съёмки — здесь
+# это допустимо, шаг и так предшествует пересборке/перезапуску стека.
+# Через `bash …`: файлы в infra/scripts лежат с режимом 0644, прямой запуск дал бы
+# exit=126 permission denied и под `set -e` оборвал бы весь деплой на первом же шаге.
+bash "$ROOT/infra/scripts/backup.sh"
 
 # 2. Сохранить текущие образы как :previous (если уже деплоились).
 for svc in crm-backend crm-proxy; do

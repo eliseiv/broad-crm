@@ -7,7 +7,7 @@ from typing import Any
 import pytest
 from app.api import deps
 from app.errors import prometheus_unavailable, server_conflict, server_not_found
-from app.models.server import ProvisionStatus
+from app.models.server import ProvisionStatus, ServerAuthMethod
 from app.schemas.metrics import Metric, MetricDetail
 from app.schemas.server import (
     ServerCreatedResponse,
@@ -39,6 +39,9 @@ class FakeServersService:
                 name="New server",
                 ip="10.0.0.20",
                 ssh_user="root",
+                # ADR-067: `auth_method` присутствует в каждом элементе списка —
+                # UI по нему решает, рендерить ли кнопку-глаз reveal.
+                auth_method=ServerAuthMethod.password,
                 exporter_port=9100,
                 provision_status=ProvisionStatus.online,
                 position=0,
@@ -53,6 +56,7 @@ class FakeServersService:
                 name="Old server",
                 ip="10.0.0.10",
                 ssh_user="admin",
+                auth_method=ServerAuthMethod.key,
                 exporter_port=9100,
                 provision_status=ProvisionStatus.pending,
                 position=1,
@@ -74,6 +78,7 @@ class FakeServersService:
             name=payload.name,
             ip=str(ip),
             ssh_user=payload.ssh_user,
+            auth_method=payload.auth_method,
             exporter_port=9100,
             provision_status=ProvisionStatus.pending,
             position=0,

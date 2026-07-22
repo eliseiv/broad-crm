@@ -1,5 +1,6 @@
-import { apiRequest } from '@/lib/api';
+import { apiRequest, apiRequestBlob } from '@/lib/api';
 import type {
+  DocumentAttachment,
   DocumentCopyRequest,
   DocumentCreateRequest,
   DocumentFolderCreateRequest,
@@ -97,4 +98,30 @@ export function deleteNode(id: string): Promise<void> {
 /** GET /api/documents/role-refs — роли для модалки видимости (гейт documents:share). */
 export function listRoleRefs(signal?: AbortSignal): Promise<DocumentRoleRef[]> {
   return apiRequest<DocumentRoleRef[]>('/documents/role-refs', { signal });
+}
+
+/**
+ * POST /api/documents/nodes/{id}/attachments — загрузка изображения (multipart `file`).
+ * Гейт `documents:edit` + видимость узла (ADR-068 §2). Валидация — серверная: размер по
+ * потоку и тип по magic bytes; отказ → `422 document_attachment_invalid`.
+ * В ответе `url` — канонический адрес вложения, который клиент подставляет в `src`.
+ */
+export function uploadAttachment(nodeId: string, file: File): Promise<DocumentAttachment> {
+  const form = new FormData();
+  form.append('file', file);
+  return apiRequest<DocumentAttachment>(`/documents/nodes/${nodeId}/attachments`, {
+    method: 'POST',
+    body: form,
+  });
+}
+
+/**
+ * GET /api/documents/attachments/{id} — байты картинки под JWT (ADR-068 §3).
+ * `<img src="/api/…">` напрямую НЕ работает: браузер отправит запрос без `Authorization`
+ * и получит `401`, а анонимная раздача означала бы утечку в обход видимости узла. Поэтому
+ * байты забираются авторизованным `fetch` и подставляются как `blob:`-URL.
+ * Нет / невидим / soft-deleted → единый `404 document_attachment_not_found`.
+ */
+export function fetchAttachmentBlob(id: string, signal?: AbortSignal): Promise<Blob> {
+  return apiRequestBlob(`/documents/attachments/${id}`, { signal });
 }

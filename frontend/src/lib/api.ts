@@ -69,10 +69,11 @@ async function parseError(res: Response): Promise<ApiError> {
 }
 
 /**
- * Централизованный fetch-клиент. Добавляет Authorization, парсит ошибки,
- * на 401 сбрасывает сессию (редирект на /login выполняет роутер).
+ * Общая часть запроса: сборка URL/заголовков, единая обработка 401/403 и ошибок.
+ * Возвращает `Response` — тело разбирают обёртки (`apiRequest` — JSON, `apiRequestBlob` —
+ * бинарь). Вынесено, чтобы бинарный путь не дублировал auth/ошибочный контур.
  */
-export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+async function performRequest(path: string, options: RequestOptions): Promise<Response> {
   const {
     method = 'GET',
     body,
@@ -125,9 +126,31 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
     throw await parseError(res);
   }
 
+  return res;
+}
+
+/**
+ * Централизованный fetch-клиент. Добавляет Authorization, парсит ошибки,
+ * на 401 сбрасывает сессию (редирект на /login выполняет роутер).
+ */
+export async function apiRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const res = await performRequest(path, options);
+
   if (res.status === 204) {
     return undefined as T;
   }
 
   return (await res.json()) as T;
+}
+
+/**
+ * Бинарный вариант клиента — возвращает `Blob` вместо JSON. Нужен для вложений-изображений
+ * документов (04-api.md §GET /api/documents/attachments/{id}, ADR-068 §3): эндпоинт защищён
+ * JWT, а браузер отправляет `<img src>` **без** `Authorization` ⇒ картинку обязан загрузить
+ * наш код авторизованным `fetch`, после чего подставить `URL.createObjectURL(blob)`.
+ * Ошибочный контур (401/403/404) — общий с `apiRequest` (`ApiError`).
+ */
+export async function apiRequestBlob(path: string, options: RequestOptions = {}): Promise<Blob> {
+  const res = await performRequest(path, options);
+  return await res.blob();
 }

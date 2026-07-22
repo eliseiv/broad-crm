@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 import pytest
 from app.api import deps
 from app.errors import server_not_found, unprocessable
-from app.models.server import ProvisionStatus
+from app.models.server import ProvisionStatus, ServerAuthMethod
 from app.schemas.server import ServerSummaryResponse, ServerUpdateRequest
 from conftest import make_principal
 from fastapi import FastAPI
@@ -36,6 +36,8 @@ class FakeServersService:
             name=payload.name,
             ip="10.0.0.12",
             ssh_user="root",
+            # ADR-067: способ входа — обязательное поле summary-объекта (04-api.md).
+            auth_method=ServerAuthMethod.password,
             exporter_port=9100,
             provision_status=ProvisionStatus.online,
             position=2,

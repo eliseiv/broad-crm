@@ -28,6 +28,7 @@ from app.infra.sms_telegram import SmsBotClient
 from app.infra.telegram import TelegramClient
 from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.backend_repository import BackendRepository
+from app.repositories.document_attachment_repository import DocumentAttachmentRepository
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.mail_account_repository import MailAccountRepository
 from app.repositories.proxy_repository import ProxyRepository
@@ -43,6 +44,7 @@ from app.services.ai_key_service import AiKeyService
 from app.services.auth_service import AuthService
 from app.services.backend_monitor_service import BackendMonitorService
 from app.services.backend_service import BackendService
+from app.services.document_attachment_service import DocumentAttachmentService
 from app.services.document_service import DocumentService
 from app.services.mail_ingest_service import MailIngestService
 from app.services.mail_service import MailService
@@ -377,12 +379,28 @@ def get_document_scope(principal: PrincipalDep) -> DocumentScope:
     )
 
 
+def get_document_attachment_service(
+    session: DbSession, settings: SettingsDep
+) -> DocumentAttachmentService:
+    """Сервис вложений-изображений документов (ADR-068): загрузка/отдача/удаление/копия."""
+    return DocumentAttachmentService(
+        attachments=DocumentAttachmentRepository(session),
+        documents=DocumentRepository(session),
+        settings=settings,
+    )
+
+
 def get_document_service(session: DbSession, settings: SettingsDep) -> DocumentService:
-    """Сервис модуля «Документы» (CRUD дерева, резолюция видимости, copy, soft-delete)."""
+    """Сервис модуля «Документы» (CRUD дерева, резолюция видимости, copy, soft-delete).
+
+    Вложения инжектируются, потому что «Создать копию» обязана скопировать их физически и
+    переписать ссылки в `content_md` в ТОЙ ЖЕ транзакции (ADR-068 §5).
+    """
     return DocumentService(
         repository=DocumentRepository(session),
         roles=RoleRepository(session),
         settings=settings,
+        attachments=get_document_attachment_service(session, settings),
     )
 
 
@@ -569,6 +587,9 @@ MailIngestServiceDep = Annotated[MailIngestService, Depends(get_mail_ingest_serv
 MailTelegramServiceDep = Annotated[MailTelegramService, Depends(get_mail_telegram_service)]
 MailScopeDep = Annotated[MailScope, Depends(get_mail_scope)]
 DocumentServiceDep = Annotated[DocumentService, Depends(get_document_service)]
+DocumentAttachmentServiceDep = Annotated[
+    DocumentAttachmentService, Depends(get_document_attachment_service)
+]
 DocumentScopeDep = Annotated[DocumentScope, Depends(get_document_scope)]
 ClientIp = Annotated[str, Depends(get_client_ip)]
 SmsScopeDep = Annotated[SmsScope, Depends(get_sms_scope)]

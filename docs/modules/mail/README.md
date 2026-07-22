@@ -207,7 +207,7 @@ RBAC: `CATALOG["mail"] = ("view","create","edit","delete","sync","tags")`; `repl
 - `body_html` — **недоверенный** контент. Рендерится **только** в `<iframe srcDoc={…} sandbox="">` — **без** `allow-scripts` и **без** `allow-same-origin` + `referrerPolicy="no-referrer"`. DOMPurify не добавляется.
 - Пусто/`null` → `body_text` (моношрифт, `white-space: pre-wrap`), iframe не создаётся. `body_truncated=true` → пометка «Письмо показано не полностью»; `body_present=false` → «Тело письма недоступно».
 - **Фон/цвет текста тела следуют теме CRM** ([ADR-047](../../adr/ADR-047-mail-fix-pack.md) §6): `dark` → `#161A22`/`#E6E9EF`, `light` → `#F7F8FA`/`#111827` (литералы — iframe не наследует CSS-переменные родителя). **Билдер srcDoc — единый источник** для `MailDetail` и Mail Mini App (дублировать запрещено).
-- Удалённые (https) **изображения** отрисовываются (CSP `img-src 'self' data: https:` — [ADR-015](../../adr/ADR-015-csp-img-src-remote-mail-images.md)); скрипты письма по-прежнему не исполняются. Компромисс — трекинг-пиксели. `cid:`-картинки не резолвятся ([TD-026](../../100-known-tech-debt.md)).
+- Удалённые (https) **изображения** отрисовываются — в CSP `img-src` присутствует источник `https:` ([ADR-015](../../adr/ADR-015-csp-img-src-remote-mail-images.md); **действующее полное значение директивы — [05-security.md](../../05-security.md#csp)**, дублировать строку здесь нельзя: она уже расширялась `blob:` под вложения документов — [ADR-068](../../adr/ADR-068-documents-image-attachments.md)); скрипты письма по-прежнему не исполняются. Компромисс — трекинг-пиксели. `cid:`-картинки не резолвятся ([TD-026](../../100-known-tech-debt.md)).
 
 ## Гейт `mail_enabled`
 
