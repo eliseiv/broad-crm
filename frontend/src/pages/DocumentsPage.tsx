@@ -56,7 +56,7 @@ export function DocumentsPage() {
   const canView = useCanViewPage('documents');
   if (!canView) {
     return (
-      <div className="mx-auto max-w-[1400px] px-6 py-8">
+      <div className="w-full px-6 py-8">
         <InsufficientPermissions />
       </div>
     );

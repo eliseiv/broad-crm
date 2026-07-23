@@ -238,8 +238,10 @@ describe('AppLayout — режимы shell по маршруту (08-design-syst
     const { unmount } = renderAt('/servers');
     const serversWrapper = screen.getByText('Контент серверов').parentElement;
     expect(serversWrapper?.tagName).toBe('DIV');
-    expect(serversWrapper?.classList.contains('mx-auto')).toBe(true);
-    expect(serversWrapper?.classList.contains('max-w-[1400px]')).toBe(true);
+    // Полная ширина (решение владельца, 2026-07-23): контейнер max-w-[1400px] упразднён.
+    expect(serversWrapper?.classList.contains('w-full')).toBe(true);
+    expect(serversWrapper?.classList.contains('mx-auto')).toBe(false);
+    expect(serversWrapper?.classList.contains('max-w-[1400px]')).toBe(false);
     expect(serversWrapper?.classList.contains('px-6')).toBe(true);
     expect(serversWrapper?.classList.contains('py-8')).toBe(true);
     expect(serversWrapper?.parentElement?.tagName).toBe('MAIN');
@@ -284,7 +286,8 @@ describe('AppLayout — режимы shell по маршруту (08-design-syst
     expect(main?.classList.contains('overflow-hidden')).toBe(false);
     const wrapper = screen.getByText('Контент дашборда').parentElement;
     expect(wrapper?.tagName).toBe('DIV');
-    expect(wrapper?.classList.contains('max-w-[1400px]')).toBe(true);
+    expect(wrapper?.classList.contains('w-full')).toBe(true);
+    expect(wrapper?.classList.contains('max-w-[1400px]')).toBe(false);
     expect(wrapper?.parentElement?.tagName).toBe('MAIN');
   });
 

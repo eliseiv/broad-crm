@@ -97,7 +97,7 @@ export function AppLayout() {
           isFullBleed ? 'shrink-0' : 'sticky top-0 z-30',
         )}
       >
-        <div className="mx-auto flex max-w-[1400px] items-center gap-4 px-6 py-3">
+        <div className="flex w-full items-center gap-4 px-6 py-3">
           <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
             <ServerCog className="h-[18px] w-[18px]" aria-hidden="true" />
           </span>
@@ -156,7 +156,9 @@ export function AppLayout() {
         </main>
       ) : (
         <main>
-          <div className="mx-auto max-w-[1400px] px-6 py-8">
+          {/* Контент — на всю ширину вьюпорта (решение владельца, 2026-07-23): прежний
+              контейнер max-w-[1400px] упразднён, отступы по краям сохранены. */}
+          <div className="w-full px-6 py-8">
             <Outlet />
           </div>
         </main>
