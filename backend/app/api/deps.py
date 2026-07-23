@@ -44,6 +44,7 @@ from app.services.ai_key_service import AiKeyService
 from app.services.auth_service import AuthService
 from app.services.backend_monitor_service import BackendMonitorService
 from app.services.backend_service import BackendService
+from app.services.backend_user_service import BackendUserService
 from app.services.document_attachment_service import DocumentAttachmentService
 from app.services.document_service import DocumentService
 from app.services.mail_ingest_service import MailIngestService
@@ -526,6 +527,11 @@ def get_backend_service(
     return BackendService(repository=BackendRepository(session), monitor=monitor)
 
 
+def get_backend_user_service(session: DbSession) -> BackendUserService:
+    """Сервис страницы «Пользователи бэков» (прокси CRM Admin API, modules/backend-users)."""
+    return BackendUserService(repository=BackendRepository(session))
+
+
 def get_mail_service(session: DbSession, settings: SettingsDep) -> MailService:
     """Сервис почты (ADR-044): чтение из БД CRM + транзит операций ящика/reply в агрегатор.
 
@@ -582,6 +588,7 @@ ServerServiceDep = Annotated[ServerService, Depends(get_server_service)]
 AiKeyServiceDep = Annotated[AiKeyService, Depends(get_ai_key_service)]
 ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]
 BackendServiceDep = Annotated[BackendService, Depends(get_backend_service)]
+BackendUserServiceDep = Annotated[BackendUserService, Depends(get_backend_user_service)]
 MailServiceDep = Annotated[MailService, Depends(get_mail_service)]
 MailIngestServiceDep = Annotated[MailIngestService, Depends(get_mail_ingest_service)]
 MailTelegramServiceDep = Annotated[MailTelegramService, Depends(get_mail_telegram_service)]

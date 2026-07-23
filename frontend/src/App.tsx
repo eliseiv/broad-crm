@@ -4,6 +4,8 @@ import { AppLayout } from '@/components/AppLayout';
 import { Spinner } from '@/components/ui/Spinner';
 import { AiKeysPage } from '@/pages/AiKeysPage';
 import { BackendsPage } from '@/pages/BackendsPage';
+import { BackendUserDetailPage } from '@/pages/BackendUserDetailPage';
+import { BackendUsersPage } from '@/pages/BackendUsersPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { MailMiniAppPage } from '@/pages/MailMiniAppPage';
@@ -59,6 +61,10 @@ export function App() {
           <Route path="/ai-keys" element={<AiKeysPage />} />
           <Route path="/proxies" element={<ProxiesPage />} />
           <Route path="/backends" element={<BackendsPage />} />
+          {/* «Пользователи бэков» — прокси CRM Admin API (contract v1); page-level
+              view-guard backend-users:view внутри страниц. */}
+          <Route path="/backend-users" element={<BackendUsersPage />} />
+          <Route path="/backend-users/:backendId/:userId" element={<BackendUserDetailPage />} />
           <Route path="/mail" element={<MailPage />} />
           {/* «СМС» — категория «Агрегатор», не-full-bleed; page-level view-guard
               `sms:view` внутри страницы (ADR-030, 08-design-system.md «Страница СМС»). */}

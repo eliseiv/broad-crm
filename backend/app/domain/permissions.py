@@ -18,6 +18,9 @@ CATALOG: dict[str, tuple[str, ...]] = {
     "ai-keys": ("view", "create", "edit", "delete"),
     "proxies": ("view", "create", "edit", "delete"),
     "backends": ("view", "create", "edit", "delete"),
+    # «Пользователи бэков»: view — просмотр списка/карточки; edit — admin-операции
+    # (начисление токенов / выдача подписки) через CRM Admin API бэка.
+    "backend-users": ("view", "edit"),
     "mail": ("view", "create", "edit", "delete", "sync", "tags"),
     "sms": ("view", "edit", "transfer", "sync", "delete"),
     "roles": ("view", "create", "edit", "delete"),

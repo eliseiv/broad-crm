@@ -839,6 +839,42 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 
 ---
 
+## Backend Users
+
+Страница «Пользователи бэков» ([ADR-069](adr/ADR-069-backend-users-page-admin-contract.md), модуль — [modules/backend-users](modules/backend-users/README.md)). **CRM — прокси** к универсальному **CRM Admin API contract v1** бэков: собственного хранилища нет, admin-ключ бэка (`admin_api_key_encrypted`, [ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)) расшифровывается в памяти и уходит в бэк заголовком `X-Admin-Key`; во frontend не попадает. Префикс admin-эндпоинтов бэка (`/api/billing/admin` ИЛИ `/v1/admin`) определяется автоматически и кэшируется в памяти процесса.
+
+RBAC: чтение — `require("backend-users","view")`; admin-операции — `require("backend-users","edit")` + аудит-событие `backend_admin_action` (structlog, без секретов).
+
+### GET /api/backend-users
+
+Объединённый список пользователей + сводка. Query: `backend_id?` (UUID; нет — «Все приложения»: fan-out по всем бэкам с admin-ключом), `search?`, `date_from?`/`date_to?` (ISO-дата, фильтр по регистрации), `is_paid?`, `limit` (1–100, def 50), `offset`.
+
+**Response 200** — `BackendUsersListResponse`: `{ total, items: BackendUserItem[], stats: { users_total, paid_users, payments_sum_usd, cr_percent }, errors: [{ backend_id, backend_name, message }] }`. `items` — merge источников по `registered_at DESC` (глубина окна ≤ 1000); `cr_percent` считает CRM; `errors[]` — не ответившие при fan-out бэки (partial data, UI показывает предупреждение). Упавший единственный источник (`backend_id` задан) → транзит его ошибки.
+
+### GET /api/backend-users/{backend_id}/products
+
+Тарифы бэка для формы «Установить план» → `{ items: [{ product_id, name, price, period }] }`.
+
+### GET /api/backend-users/{backend_id}/users/{user_id}
+
+Карточка: `{ backend_id, backend_name, id, external_id, registered_at, balance, subscription, revenue|null, media_stats|null }` — опциональные блоки контракта §4.5 при отсутствии = `null` (UI скрывает секции).
+
+### GET /api/backend-users/{backend_id}/users/{user_id}/payments · /requests
+
+Истории оплат/запросов (транзит, `occurred_at`/`sent_at` DESC, `limit`/`offset`).
+
+### POST /api/backend-users/{backend_id}/users/{user_id}/tokens
+
+Тело `{ amount: int }` (`!= 0`; отрицательное — списание). **НЕ идемпотентен** (контракт §3.1) — UI блокирует повторный сабмит. Response `{ id, tokens }`.
+
+### POST /api/backend-users/{backend_id}/users/{user_id}/subscription
+
+Тело `{ product_id, expires_in_days (1..3660), grant_id }` — **идемпотентен** по `grant_id` (генерирует UI при открытии формы). Response `{ id, tokens, subscription_active, subscription_expires_at, applied }`; `applied=false` — распознанный повтор.
+
+**Ошибки (все эндпоинты):** `401/403`; `404 backend_not_found`; `409 backend_admin_key_not_set` (у бэка нет admin-ключа); `404 backend_user_not_found` (транзит 404 бэка); `400 backend_admin_bad_request` (транзит 400: минус-баланс/неизвестный product); `502 backend_admin_rejected` (бэк отверг ключ), `502 backend_admin_not_supported` (оба префикса 404 — контракт не реализован), `502 backend_admin_unavailable` (сеть/таймаут/5xx/не-контрактные данные).
+
+---
+
 ## Mail
 
 Модуль «Почты». **CRM — система-запись:** лента писем, каталог ящиков и теги **читаются из БД CRM** (не проксируются). Агрегатор `postapp.store` — чистый IMAP/SMTP-connector: ему делегируются только жизненный цикл ящика (create/patch/delete/sync/test/OAuth, креды **транзитом**) и SMTP-отправка reply; он же **push'ит** новые письма и статус синка в CRM. Решение — [ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) (+ [ADR-045](adr/ADR-045-mail-outlook-oauth-headless-reonboarding.md) Outlook OAuth, [ADR-047](adr/ADR-047-mail-fix-pack.md) фикс-пакет). Модуль — [modules/mail](modules/mail/README.md).

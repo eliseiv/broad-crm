@@ -238,6 +238,60 @@ def backend_code_taken() -> AppError:
     )
 
 
+def backend_admin_key_not_set() -> AppError:
+    """У бэка не задан ADMIN API KEY — страница пользователей для него недоступна."""
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="backend_admin_key_not_set",
+        message="У бэка не задан Admin API Key",
+    )
+
+
+def backend_admin_unavailable(message: str = "Бэк не ответил на admin-запрос") -> AppError:
+    """Бэк недоступен/таймаут/5xx при вызове CRM Admin API (транзит 502)."""
+    return AppError(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        code="backend_admin_unavailable",
+        message=message,
+    )
+
+
+def backend_admin_rejected() -> AppError:
+    """Бэк отверг admin-ключ (401/403 от бэка) — ключ в карточке бэка неверен."""
+    return AppError(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        code="backend_admin_rejected",
+        message="Бэк не принял Admin API Key — проверьте ключ в карточке бэка",
+    )
+
+
+def backend_admin_not_supported() -> AppError:
+    """Оба варианта префикса CRM Admin API ответили 404 — бэк не реализует контракт."""
+    return AppError(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        code="backend_admin_not_supported",
+        message="Бэк не поддерживает CRM Admin API (контракт v1)",
+    )
+
+
+def backend_user_not_found() -> AppError:
+    """Пользователь не найден в бэке (транзит 404 от CRM Admin API)."""
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="backend_user_not_found",
+        message="Пользователь не найден в бэке",
+    )
+
+
+def backend_admin_bad_request(message: str) -> AppError:
+    """Бэк отверг admin-операцию (400 от CRM Admin API: минус-баланс, неизвестный product)."""
+    return AppError(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        code="backend_admin_bad_request",
+        message=message,
+    )
+
+
 def sms_number_not_found() -> AppError:
     return AppError(
         status_code=status.HTTP_404_NOT_FOUND,

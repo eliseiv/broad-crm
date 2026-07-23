@@ -1349,3 +1349,176 @@ export interface DocumentAttachment {
   url: string;
   created_at: string;
 }
+
+// --- Пользователи бэков (04-api.md#backend-users, CRM Admin API contract v1) ---
+
+/**
+ * Строка объединённого списка пользователей бэков (GET /api/backend-users).
+ * Данные — транзит из CRM Admin API бэка; `backend_*` добавляет CRM при агрегации.
+ */
+export interface BackendUserItem {
+  backend_id: string;
+  backend_name: string;
+  /** Стабильный id пользователя в бэке (User ID таблицы). */
+  id: string;
+  external_id: string | null;
+  is_paid: boolean;
+  payments_count: number;
+  renewals_count: number;
+  tokens: number;
+  subscription_active: boolean;
+  subscription_expires_at: string | null;
+  plan_id: string | null;
+  registered_at: string;
+}
+
+/** Сводка шапки списка. `cr_percent` считает CRM (paid/total, 1 знак). */
+export interface BackendUsersStats {
+  users_total: number;
+  paid_users: number;
+  payments_sum_usd: number;
+  cr_percent: number;
+}
+
+/** Бэк, не ответивший при агрегации «Все приложения» (partial-data warning). */
+export interface BackendUsersSourceError {
+  backend_id: string;
+  backend_name: string;
+  message: string;
+}
+
+/** Ответ GET /api/backend-users. */
+export interface BackendUsersListResponse {
+  total: number;
+  items: BackendUserItem[];
+  stats: BackendUsersStats;
+  errors: BackendUsersSourceError[];
+}
+
+export interface BackendUserBalance {
+  tokens: number;
+  credited_total: number | null;
+  spent_total: number | null;
+}
+
+export interface BackendUserSubscriptionInfo {
+  plan_id: string | null;
+  plan_name: string | null;
+  /** Строка вида «$9.99/мес» (формирует бэк). */
+  price: string | null;
+  active: boolean;
+  expires_at: string | null;
+  last_payment_at: string | null;
+  /** Например «Карта •••• 4242». */
+  last_payment_method: string | null;
+}
+
+/** Экономика пользователя; `null` — бэк её не считает (секция скрывается). */
+export interface BackendUserRevenue {
+  income_usd: number;
+  api_cost_usd: number;
+  /** Расход по провайдерам: `{ "Claude": 28.4, ... }`. */
+  providers: Record<string, number>;
+}
+
+export interface BackendUserMediaCounters {
+  total: number;
+  success: number;
+  failed: number;
+}
+
+export interface BackendUserAvgGeneration {
+  photo: number | null;
+  video: number | null;
+  overall: number | null;
+}
+
+/** Статистика генераций; `null` — не применимо к бэку (секция скрывается). */
+export interface BackendUserMediaStats {
+  photos: BackendUserMediaCounters;
+  videos: BackendUserMediaCounters;
+  avg_generation_sec: BackendUserAvgGeneration;
+}
+
+/** Ответ GET /api/backend-users/{backend_id}/users/{user_id}. */
+export interface BackendUserDetail {
+  backend_id: string;
+  backend_name: string;
+  id: string;
+  external_id: string | null;
+  registered_at: string;
+  balance: BackendUserBalance;
+  subscription: BackendUserSubscriptionInfo;
+  revenue: BackendUserRevenue | null;
+  media_stats: BackendUserMediaStats | null;
+}
+
+export interface BackendUserPayment {
+  title: string;
+  description: string | null;
+  amount: number;
+  currency: string;
+  status: 'success' | 'failed';
+  occurred_at: string;
+}
+
+export interface BackendUserPaymentsResponse {
+  total: number;
+  items: BackendUserPayment[];
+}
+
+export interface BackendUserRequestItem {
+  endpoint: string;
+  prompt_preview: string | null;
+  status_code: number;
+  status: 'ok' | 'slow' | 'error';
+  duration_sec: number | null;
+  sent_at: string;
+}
+
+export interface BackendUserRequestsResponse {
+  total: number;
+  items: BackendUserRequestItem[];
+}
+
+/** Тариф бэка (GET /api/backend-users/{backend_id}/products) для формы «Установить план». */
+export interface BackendProduct {
+  product_id: string;
+  name: string;
+  price: string | null;
+  period: string | null;
+}
+
+export interface BackendProductsResponse {
+  items: BackendProduct[];
+}
+
+/** Тело POST .../tokens. Отрицательное значение — списание; 0 отвергает форма. */
+export interface AddBackendUserTokensRequest {
+  amount: number;
+}
+
+/**
+ * Тело POST .../subscription. `grant_id` — ключ идемпотентности (contract v1 §3.2),
+ * генерируется при ОТКРЫТИИ модалки (crypto.randomUUID) — повторный сабмит той же
+ * формы не продлит подписку дважды.
+ */
+export interface GrantBackendUserSubscriptionRequest {
+  product_id: string;
+  expires_in_days: number;
+  grant_id: string;
+}
+
+export interface BackendUserTokensResponse {
+  id: string;
+  tokens: number;
+}
+
+/** `applied=false` — бэк распознал повтор grant_id и не продлил повторно. */
+export interface BackendUserGrantResponse {
+  id: string;
+  tokens: number;
+  subscription_active: boolean;
+  subscription_expires_at: string | null;
+  applied: boolean;
+}

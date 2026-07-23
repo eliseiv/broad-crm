@@ -7,6 +7,7 @@ from fastapi import APIRouter
 from app.api import (
     ai_keys,
     auth,
+    backend_users,
     backends,
     documents,
     documents_external,
@@ -32,6 +33,7 @@ api_router.include_router(servers.router)
 api_router.include_router(ai_keys.router)
 api_router.include_router(proxies.router)
 api_router.include_router(backends.router)
+api_router.include_router(backend_users.router)
 api_router.include_router(mail.router)
 api_router.include_router(mail_ingest.router)
 api_router.include_router(mail_telegram.router)

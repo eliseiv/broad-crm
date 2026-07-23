@@ -26,6 +26,7 @@ export const PAGE_LABEL: Record<string, string> = {
   'ai-keys': 'ИИ - ключи',
   proxies: 'Прокси',
   backends: 'Бэки',
+  'backend-users': 'Пользователи бэков',
   mail: 'Почты',
   sms: 'СМС',
   roles: 'Роли',

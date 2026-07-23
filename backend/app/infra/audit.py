@@ -35,3 +35,29 @@ def log_secret_revealed(principal: Principal, *, resource_type: str, resource_id
         resource_id=resource_id,
         at=datetime.now(UTC).isoformat(),
     )
+
+
+def log_backend_admin_action(
+    principal: Principal,
+    *,
+    action: str,
+    backend_id: str,
+    target_user_id: str,
+    detail: str,
+) -> None:
+    """Аудит admin-операции над пользователем бэка (modules/backend-users, нормативно).
+
+    `action` — `tokens_added` / `subscription_granted`; `detail` — публичные параметры
+    операции (сумма / product_id + дни), без секретов. Пишется ПОСЛЕ успешного ответа
+    бэка — неуспешная операция события не порождает.
+    """
+    logger.info(
+        "backend_admin_action",
+        actor=principal.username,
+        user_id=str(principal.user_id),
+        action=action,
+        backend_id=backend_id,
+        target_user_id=target_user_id,
+        detail=detail,
+        at=datetime.now(UTC).isoformat(),
+    )
