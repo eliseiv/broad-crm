@@ -125,6 +125,24 @@ ORDER BY anchor, depth ASC
 )
 
 
+# Эффективное исключение из RAG: узел исключён, если `rag_exclude=true` у него самого или
+# ЛЮБОГО предка (наследование вниз по дереву, симметрично видимости). Восходящий bulk-CTE
+# по образцу _EFFECTIVE_GOV_SQL; deleted_at не фильтруется по той же причине.
+_RAG_EXCLUDED_SQL = text(
+    """
+WITH RECURSIVE up AS (
+    SELECT n.id AS anchor, n.parent_id AS parent_id, n.rag_exclude AS rag_exclude
+    FROM document_nodes n
+    WHERE n.id IN :ids
+  UNION ALL
+    SELECT u.anchor, p.parent_id, p.rag_exclude
+    FROM document_nodes p JOIN up u ON p.id = u.parent_id
+)
+SELECT DISTINCT anchor FROM up WHERE rag_exclude
+"""
+)
+
+
 class DocumentRepository:
     """CRUD и резолюция видимости узлов дерева документов."""
 
@@ -325,6 +343,14 @@ class DocumentRepository:
             result[node_id] = sorted(roles_by_gov.get(gov, []), key=str) if gov is not None else []
         return result
 
+    async def rag_excluded_ids_for(self, node_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+        """Подмножество `node_ids`, ЭФФЕКТИВНО исключённых из RAG (флаг на узле/предке)."""
+        if not node_ids:
+            return set()
+        stmt = _RAG_EXCLUDED_SQL.bindparams(bindparam("ids", value=node_ids, expanding=True))
+        rows = (await self._session.execute(stmt)).all()
+        return {row[0] for row in rows}
+
     # --- Мутации ----------------------------------------------------------
 
     async def create(
@@ -410,9 +436,12 @@ class DocumentRepository:
         await self._session.refresh(node)
         return node
 
-    async def set_visibility(self, node: DocumentNode, *, visibility_mode: str) -> DocumentNode:
-        """Меняет `visibility_mode` узла (`content_version` НЕ трогается; `updated_at` — да)."""
+    async def set_visibility(
+        self, node: DocumentNode, *, visibility_mode: str, rag_exclude: bool
+    ) -> DocumentNode:
+        """Меняет `visibility_mode`/`rag_exclude` узла (`content_version` НЕ трогается; `updated_at` — да)."""
         node.visibility_mode = visibility_mode
+        node.rag_exclude = rag_exclude
         await self._session.flush()
         await self._session.refresh(node)
         return node

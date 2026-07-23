@@ -17,12 +17,18 @@ from typing import Annotated
 
 from fastapi import APIRouter, Query, Response
 
-from app.api.deps import DocumentServiceDep
+from app.api.deps import DbSession, DocumentServiceDep
+from app.domain.permissions import CATALOG
+from app.errors import AppError
 from app.infra.documents_api_key import DocumentsApiKeyDep
+from app.repositories.mail_telegram_link_repository import MailTelegramLinkRepository
+from app.repositories.sms_telegram_link_repository import SmsTelegramLinkRepository
+from app.repositories.user_repository import UserRepository
 from app.schemas.documents import (
     ExternalDocumentAccessResponse,
     ExternalDocumentDetail,
     ExternalDocumentListResponse,
+    ExternalUserAccessResponse,
 )
 
 router = APIRouter(prefix="/external/documents", tags=["documents-external"])
@@ -68,6 +74,54 @@ async def list_changes(
     """Дельта с водяного знака `since` (изменённые + tombstones). Нет/битый `since` → 400."""
     response.headers["Cache-Control"] = _NO_STORE
     return await service.changes_external(since=since, cursor_token=cursor, limit=limit)
+
+
+@router.get("/user-access/{telegram_user_id}", response_model=ExternalUserAccessResponse)
+async def get_user_access(
+    telegram_user_id: int,
+    session: DbSession,
+    _key: DocumentsApiKeyDep,
+    response: Response,
+) -> ExternalUserAccessResponse:
+    """Резолв пользователя CRM по telegram id (этап 2 RAG-бота).
+
+    Порядок: активный sms-линк → активный mail-линк (с user_id) → пользователь активен и не
+    системный. Не найден/неактивен → 404 user_not_linked (боту это «доступа нет»).
+    `sees_all_documents` — роль покрывает полный каталог прав (admin-уровень CRM).
+    """
+    response.headers["Cache-Control"] = _NO_STORE
+
+    user_id = None
+    sms_link = await SmsTelegramLinkRepository(session).get_active_by_telegram_user_id(
+        telegram_user_id
+    )
+    if sms_link is not None:
+        user_id = sms_link.user_id
+    else:
+        mail_link = await MailTelegramLinkRepository(session).get_by_telegram_user_id(
+            telegram_user_id
+        )
+        if mail_link is not None and mail_link.dead_at is None and mail_link.user_id is not None:
+            user_id = mail_link.user_id
+
+    user = await UserRepository(session).get_by_id(user_id) if user_id is not None else None
+    if user is None or not user.is_active:
+        raise AppError(
+            status_code=404,
+            code="user_not_linked",
+            message="Пользователь Telegram не привязан к активному пользователю CRM",
+        )
+
+    permissions = user.role.permissions or {}
+    sees_all = all(
+        set(actions) <= set(permissions.get(page, [])) for page, actions in CATALOG.items()
+    )
+    return ExternalUserAccessResponse(
+        user_id=user.id,
+        role_id=user.role_id,
+        role_name=user.role.name,
+        sees_all_documents=sees_all,
+    )
 
 
 @router.get("/{node_id}/access", response_model=ExternalDocumentAccessResponse)

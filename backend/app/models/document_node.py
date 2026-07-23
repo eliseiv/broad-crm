@@ -12,6 +12,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -80,6 +81,10 @@ class DocumentNode(Base):
     visibility_mode: Mapped[str] = mapped_column(
         Text, nullable=False, server_default=text("'inherit'")
     )
+    # «Не включать в RAG»: наследуется вниз по дереву (эффективное исключение = флаг на
+    # самом узле или любом предке). Смена флага — мутация (updated_at бампается,
+    # content_version — нет), правится из модалки видимости (documents:share).
+    rag_exclude: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     content_version: Mapped[int] = mapped_column(
         BigInteger, nullable=False, server_default=text("1")
     )

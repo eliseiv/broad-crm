@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/Button';
+import { Checkbox } from '@/components/ui/Checkbox';
 import { Modal } from '@/components/ui/Modal';
 import { MultiSelect } from '@/components/ui/MultiSelect';
 import { Spinner } from '@/components/ui/Spinner';
@@ -34,12 +35,14 @@ export function DocumentVisibilityModal({
 
   const [mode, setMode] = useState<DocumentVisibilityMode>('inherit');
   const [roleIds, setRoleIds] = useState<string[]>([]);
+  const [ragExclude, setRagExclude] = useState(false);
 
   // Префилл при получении собственных настроек узла (read↔write симметрия).
   useEffect(() => {
     if (visibilityQuery.data) {
       setMode(visibilityQuery.data.visibility_mode);
       setRoleIds(visibilityQuery.data.role_ids);
+      setRagExclude(visibilityQuery.data.rag_exclude ?? false);
     }
   }, [visibilityQuery.data]);
 
@@ -55,6 +58,7 @@ export function DocumentVisibilityModal({
     const payload = {
       visibility_mode: mode,
       role_ids: mode === 'restricted' ? roleIds : [],
+      rag_exclude: ragExclude,
     };
     setVisibilityMutation.mutate(
       { id: node.id, payload },
@@ -160,6 +164,12 @@ export function DocumentVisibilityModal({
               );
             })}
           </fieldset>
+
+          <Checkbox
+            label="Не включать в RAG"
+            checked={ragExclude}
+            onChange={(e) => setRagExclude(e.target.checked)}
+          />
 
           {mode === 'restricted' && (
             <MultiSelect

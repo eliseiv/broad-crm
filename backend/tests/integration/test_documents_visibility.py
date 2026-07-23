@@ -196,7 +196,7 @@ async def test_get_visibility_returns_own_role_ids_share_gate() -> None:
     assert body["visibility_mode"] == "restricted"
     assert sorted(body["role_ids"]) == expected
     assert r_inherit.status_code == 200
-    assert r_inherit.json() == {"visibility_mode": "inherit", "role_ids": []}
+    assert r_inherit.json() == {"visibility_mode": "inherit", "role_ids": [], "rag_exclude": False}
 
 
 async def test_view_gate_forbidden_without_permission() -> None:

@@ -1310,6 +1310,8 @@ export interface DocumentCopyRequest {
 export interface DocumentVisibility {
   visibility_mode: DocumentVisibilityMode;
   role_ids: string[];
+  /** «Не включать в RAG» — собственный флаг узла; наследуется вниз по дереву (backend). */
+  rag_exclude?: boolean;
 }
 
 /** PATCH /api/documents/order — полная перестановка уровня одного `parent_id` → 204. */

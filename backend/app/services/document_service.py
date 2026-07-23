@@ -123,7 +123,9 @@ class DocumentService:
         role_ids: list[uuid.UUID] = []
         if mode == "restricted":
             role_ids = sorted(await self._repo.node_role_ids(node_id), key=str)
-        return DocumentVisibilityResponse(visibility_mode=mode, role_ids=role_ids)
+        return DocumentVisibilityResponse(
+            visibility_mode=mode, role_ids=role_ids, rag_exclude=node.rag_exclude
+        )
 
     # --- Создание ---------------------------------------------------------
 
@@ -251,10 +253,14 @@ class DocumentService:
                         details=[{"field": "role_ids", "message": "Несуществующая роль"}],
                     )
             await self._repo.set_roles(node_id, role_ids)
-            node = await self._repo.set_visibility(node, visibility_mode="restricted")
+            node = await self._repo.set_visibility(
+                node, visibility_mode="restricted", rag_exclude=payload.rag_exclude
+            )
         else:
             await self._repo.set_roles(node_id, [])
-            node = await self._repo.set_visibility(node, visibility_mode="inherit")
+            node = await self._repo.set_visibility(
+                node, visibility_mode="inherit", rag_exclude=payload.rag_exclude
+            )
         await self._repo.session.commit()
         logger.info("document_visibility_changed", node_id=str(node.id))
         return self._serialize(node, include_content=False)
@@ -396,8 +402,16 @@ class DocumentService:
         )
         has_more = len(nodes) > limit
         page = nodes[:limit]
-        effective = await self._repo.effective_role_ids_for([node.id for node in page])
-        items = [self._external_node(node, effective.get(node.id, [])) for node in page]
+        # «Не включать в RAG»: эффективно исключённые узлы вырезаются ИЗ СТРАНИЦЫ (курсор
+        # считается по неотфильтрованной странице — страница может быть короче limit, это
+        # законно для keyset). Исключённый узел просто исчезает из полного листинга → RAG
+        # снимает его с индексации своим механизмом «не встречен в обходе».
+        rag_excluded = await self._repo.rag_excluded_ids_for([node.id for node in page])
+        visible_page = [node for node in page if node.id not in rag_excluded]
+        effective = await self._repo.effective_role_ids_for([node.id for node in visible_page])
+        items = [
+            self._external_node(node, effective.get(node.id, [])) for node in visible_page
+        ]
         next_cursor = (
             encode_document_cursor(page[-1].updated_at, page[-1].id) if has_more and page else None
         )

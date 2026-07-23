@@ -34,7 +34,11 @@ const ROLE_REFS = [
   { id: 'r2', name: 'Менеджер' },
 ];
 
-function setHooks(visibility: { visibility_mode: 'inherit' | 'restricted'; role_ids: string[] }) {
+function setHooks(visibility: {
+  visibility_mode: 'inherit' | 'restricted';
+  role_ids: string[];
+  rag_exclude?: boolean;
+}) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   mockNodeVisibility.mockReturnValue({ data: visibility, isLoading: false, error: null } as any);
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -91,7 +95,26 @@ describe('DocumentVisibilityModal (предзаполнение + inherit↔rest
     const [args] = mutate.mock.calls[0];
     expect(args).toEqual({
       id: 'n1',
-      payload: { visibility_mode: 'restricted', role_ids: ['r1'] },
+      payload: { visibility_mode: 'restricted', role_ids: ['r1'], rag_exclude: false },
+    });
+  });
+
+  it('чекбокс «Не включать в RAG» предзаполняется и уходит в payload', async () => {
+    const user = userEvent.setup();
+    const { mutate } = setHooks({ visibility_mode: 'inherit', role_ids: [], rag_exclude: true });
+    render(<DocumentVisibilityModal open onOpenChange={vi.fn()} node={NODE} />);
+
+    const checkbox = (await screen.findByLabelText('Не включать в RAG')) as HTMLInputElement;
+    expect(checkbox.checked).toBe(true);
+
+    await user.click(checkbox);
+    await user.click(screen.getByRole('button', { name: 'Сохранить' }));
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    const [args] = mutate.mock.calls[0];
+    expect(args).toEqual({
+      id: 'n1',
+      payload: { visibility_mode: 'inherit', role_ids: [], rag_exclude: false },
     });
   });
 });

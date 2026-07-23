@@ -63,6 +63,8 @@ class DocumentVisibilityRequest(BaseModel):
 
     visibility_mode: Literal["inherit", "restricted"]
     role_ids: list[uuid.UUID] = Field(default_factory=list)
+    # «Не включать в RAG» — собственный флаг узла (наследование вниз считает backend).
+    rag_exclude: bool = False
 
 
 class DocumentOrderRequest(BaseModel):
@@ -103,6 +105,7 @@ class DocumentVisibilityResponse(BaseModel):
 
     visibility_mode: Literal["inherit", "restricted"]
     role_ids: list[uuid.UUID]
+    rag_exclude: bool = False
 
 
 class DocumentAttachmentResponse(BaseModel):
@@ -163,6 +166,20 @@ class ExternalDocumentListResponse(BaseModel):
 
     items: list[ExternalDocumentNode]
     next_cursor: str | None
+
+
+class ExternalUserAccessResponse(BaseModel):
+    """Ответ `GET /api/external/documents/user-access/{telegram_user_id}` (этап 2 RAG).
+
+    Резолв пользователя CRM по числовому telegram id (привязки sms/mail-линков).
+    `sees_all_documents` — admin-уровень (роль покрывает полный каталог прав): per-role
+    фильтр документов к такому пользователю не применяется.
+    """
+
+    user_id: uuid.UUID
+    role_id: uuid.UUID
+    role_name: str
+    sees_all_documents: bool
 
 
 class ExternalDocumentAccessResponse(BaseModel):
