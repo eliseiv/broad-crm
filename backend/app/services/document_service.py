@@ -409,9 +409,7 @@ class DocumentService:
         rag_excluded = await self._repo.rag_excluded_ids_for([node.id for node in page])
         visible_page = [node for node in page if node.id not in rag_excluded]
         effective = await self._repo.effective_role_ids_for([node.id for node in visible_page])
-        items = [
-            self._external_node(node, effective.get(node.id, [])) for node in visible_page
-        ]
+        items = [self._external_node(node, effective.get(node.id, [])) for node in visible_page]
         next_cursor = (
             encode_document_cursor(page[-1].updated_at, page[-1].id) if has_more and page else None
         )

@@ -62,6 +62,7 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
         "ai-keys",
         "proxies",
         "backends",
+        "backend-users",
         "mail",
         "sms",
         "roles",
@@ -77,6 +78,8 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
     assert by_page["teams"] == ["view", "create", "edit", "delete"]
     # documents (ADR-059): share — отдельное чувствительное действие смены видимости.
     assert by_page["documents"] == ["view", "create", "edit", "delete", "share"]
+    # backend-users (ADR-069): edit — admin-операции над пользователями бэков.
+    assert by_page["backend-users"] == ["view", "edit"]
     assert "users" not in by_page
 
 

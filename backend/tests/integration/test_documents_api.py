@@ -381,7 +381,9 @@ async def test_visibility_patch_overwrite_and_inherit() -> None:
             after_inherit = (await c.get(f"/api/documents/nodes/{node_id}/visibility")).json()
     assert sorted(after_two["role_ids"]) == sorted([role_a_id, role_b_id])
     assert after_one["role_ids"] == [role_a_id]
-    assert after_inherit == {"visibility_mode": "inherit", "role_ids": []}
+    # `rag_exclude` появился в ответе visibility (этап 2 RAG-исключения); сброс режима
+    # видимости флаг не трогает — узел создан с дефолтом false.
+    assert after_inherit == {"visibility_mode": "inherit", "role_ids": [], "rag_exclude": False}
 
 
 async def test_visibility_nonexistent_role_rejected() -> None:

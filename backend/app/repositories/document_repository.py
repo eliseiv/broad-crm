@@ -439,7 +439,8 @@ class DocumentRepository:
     async def set_visibility(
         self, node: DocumentNode, *, visibility_mode: str, rag_exclude: bool
     ) -> DocumentNode:
-        """Меняет `visibility_mode`/`rag_exclude` узла (`content_version` НЕ трогается; `updated_at` — да)."""
+        """Меняет `visibility_mode`/`rag_exclude` узла (`content_version` НЕ трогается;
+        `updated_at` — да)."""
         node.visibility_mode = visibility_mode
         node.rag_exclude = rag_exclude
         await self._session.flush()
