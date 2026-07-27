@@ -171,9 +171,7 @@ async def test_cache_key_separates_instant_and_windowed_results() -> None:
 @pytest.mark.asyncio
 async def test_fetch_windowed_offline_when_up_max_zero_in_window() -> None:
     matcher = _instance_matcher([_INST])
-    q = _build_queries(
-        matcher, window_sec=_WINDOW_SEC, offline_window_sec=_OFFLINE_WINDOW_SEC
-    )
+    q = _build_queries(matcher, window_sec=_WINDOW_SEC, offline_window_sec=_OFFLINE_WINDOW_SEC)
     responses = _responses_for(
         _INST,
         window_sec=_WINDOW_SEC,
