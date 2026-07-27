@@ -83,6 +83,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
             monitoring=MonitoringService(get_prometheus_client()),
             poll_interval_sec=settings.notifier_poll_interval_sec,
             metric_window_sec=settings.notifier_metric_window_effective_sec,
+            offline_window_sec=settings.notifier_offline_window_effective_sec,
         )
         notifier_task = asyncio.create_task(notifier.run())
     else:

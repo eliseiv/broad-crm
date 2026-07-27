@@ -44,3 +44,11 @@ def test_default_window_equals_poll_interval_not_clamped() -> None:
 
     assert settings.notifier_metric_window_effective_sec == 90
     assert not [event for event in logs if event.get("event") == _CLAMP_EVENT]
+
+
+def test_offline_window_is_consecutive_scrapes_times_interval() -> None:
+    settings = Settings(
+        notifier_offline_consecutive_scrapes=5,
+        prometheus_scrape_interval_sec=15,
+    )
+    assert settings.notifier_offline_window_effective_sec == 75

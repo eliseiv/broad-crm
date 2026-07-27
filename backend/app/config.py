@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     notifier_metric_window_sec: int = 90
     # Эффективное окно после клампа к poll_interval; используется нотификатором.
     notifier_metric_window_effective_sec: int = Field(default=0, exclude=True)
+    # Offline-алерт только после N подряд неуспешных scrape Prometheus (default 5).
+    # Окно offline = N × prometheus_scrape_interval_sec (5×15s = 75s).
+    notifier_offline_consecutive_scrapes: int = 5
+    # Должен совпадать с global.scrape_interval в infra/prometheus/prometheus.yml.
+    prometheus_scrape_interval_sec: int = 15
+    notifier_offline_window_effective_sec: int = Field(default=0, exclude=True)
 
     @property
     def notifier_enabled(self) -> bool:
@@ -433,6 +439,10 @@ class Settings(BaseSettings):
             )
             effective_window = self.notifier_poll_interval_sec
         object.__setattr__(self, "notifier_metric_window_effective_sec", effective_window)
+        offline_window = (
+            self.notifier_offline_consecutive_scrapes * self.prometheus_scrape_interval_sec
+        )
+        object.__setattr__(self, "notifier_offline_window_effective_sec", offline_window)
         # Fail-fast на старте: невалидный/дублирующийся MAIL_BOT_*_TEAM_ID → ValueError.
         self._build_mail_push_bots()
 

@@ -57,7 +57,7 @@ up{instance="$inst"}   # 1 = online, 0/нет данных = offline
 
 ## Notifier: max-over-window (зоны) + min-over-window (offline)
 
-Применяется **исключительно** на пути нотификатора (`MonitoringService.fetch_for_instances(instances, window_sec=W)`), когда `window_sec` задан. UI-карты и read-path используют мгновенные запросы выше — **эти обёртки к ним не применяются** ([ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md), [ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). В windowed-режиме оборачиваются **две группы**: `usage_percent` CPU/RAM/SSD → `max_over_time` (зона по пику, [ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md)); `up` → `min_over_time` (offline по любому провалу в окне, [ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). `uptime`, `detail` — как в мгновенных запросах.
+Применяется **исключительно** на пути нотификатора (`MonitoringService.fetch_for_instances(instances, window_sec=W)`), когда `window_sec` задан. UI-карты и read-path используют мгновенные запросы выше — **эти обёртки к ним не применяются** ([ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md), [ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). В windowed-режиме: `usage_percent` CPU/RAM/SSD → `max_over_time` (зона по пику); `up` → `max_over_time` за отдельное offline-окно (`NOTIFIER_OFFLINE_CONSECUTIVE_SCRAPES × scrape_interval`, default 5×15s=75s) — offline только если **не было ни одного успешного scrape** в окне. `uptime`, `detail` — мгновенные.
 
 `$W` = `NOTIFIER_METRIC_WINDOW_SEC` (env, default `90`, нормативно `≥ NOTIFIER_POLL_INTERVAL_SEC`). `$step` = разрешение subquery, рекомендация `15s` (≈ scrape-интервал). Зона выводится из максимума через **неизменённый** `usage_to_zone()`.
 
@@ -85,16 +85,15 @@ max_over_time(
 )
 ```
 
-### Online / offline (min за окно) — только notifier
+### Online / offline (max за offline-окно) — только notifier
 
 ```promql
-min_over_time(up{instance="$inst"}[90s])   # 1 = up всё окно; 0 = падал в любой точке окна
+max_over_time(up{instance="$inst"}[75s])   # 0 = не было успешного scrape в окне (5×15s)
 ```
-Онлайн-статус нотификатора (`online = min_over_time(up[$W]) == 1`): сервер считается «падавшим» (`online=False`), если `up` был `0` **в любой точке** окна ([ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md)). Симметрично `max_over_time` для зон, но ловит **провал** доступности между опросами.
+Онлайн-статус нотификатора (`online = max_over_time(up[$W_offline]) == 1`): сервер считается offline, только если **не было ни одного успешного scrape** в окне `$W_offline = NOTIFIER_OFFLINE_CONSECUTIVE_SCRAPES × PROMETHEUS_SCRAPE_INTERVAL_SEC` (default **5×15s = 75s**). Одиночный провал scrape (таймаут node_exporter) **не** даёт offline-алерт.
 
-- **`up` — сырая серия → прямой range-vector `up[$W]` без subquery/step** (в отличие от вычисляемых usage-выражений): `min` берётся по фактическим scrape-сэмплам окна (точнее и дешевле resampling'а `[:step]`).
-- Нет `0`-сэмпла в окне (все `1`) → `min=1` → online. Нет данных вообще → результат пуст → instance отсутствует в ответе → трактуется как offline (как и мгновенный `up`).
-- **Остаточная оговорка:** провал `up` короче scrape (~15 с) может лечь между scrape-сэмплами и не дать `0` → сгладится (симметрично оговорке зон; ловим устойчивые ≥ scrape падения).
-
-- **Окно и перекрытие:** `$W ≥ poll_interval` → соседние окна опросов перекрываются, любой момент попадает хотя бы в одно окно (см. обоснование в [ADR-016](../../adr/ADR-016-notifier-max-over-window-zone.md#решение)). Слишком широкое окно → «залипание» (max держит пик / min держит offline всю длину окна) — потому берётся `poll_interval + запас`, а не десятки минут. **offline-окно = то же `NOTIFIER_METRIC_WINDOW_SEC`** (нового env нет, [ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md#2-выбор-окна--переиспользовать-notifier_metric_window_sec-нового-env-не-вводим)).
+- **`up` — сырая серия → прямой range-vector `up[$W_offline]` без subquery/step** (в отличие от вычисляемых usage-выражений).
+- Хотя бы один `up==1` в окне → `max=1` → online. Все сэмплы `0` → offline.
+- Нет данных вообще → результат пуст → instance отсутствует в ответе → offline (как и мгновенный `up`).
+- **Окно offline отделено от окна зон:** `$W_offline` (75s) ≠ `NOTIFIER_METRIC_WINDOW_SEC` (90s для CPU/RAM/SSD max). Опрос нотификатора — `NOTIFIER_POLL_INTERVAL_SEC` (60s), без изменений.
 - **detail/uptime не оборачиваются:** абсолютные `detail` (cores/GB) и `uptime` — мгновенные. В windowed-режиме нотификатор использует только `zone`/`usage_percent` (max) и `online` (min).

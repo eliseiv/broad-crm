@@ -210,6 +210,7 @@ class NotifierService:
         monitoring: MonitoringService,
         poll_interval_sec: int,
         metric_window_sec: int,
+        offline_window_sec: int,
     ) -> None:
         self._telegram = telegram
         self._monitoring = monitoring
@@ -217,6 +218,8 @@ class NotifierService:
         # Окно max-over-window для оценки зоны CPU/RAM/SSD (ADR-016). Уже
         # скламплено к poll_interval в config (notifier_metric_window_effective_sec).
         self._metric_window_sec = metric_window_sec
+        # Окно offline: N подряд неуспешных scrape (default 5×15s = 75s).
+        self._offline_window_sec = offline_window_sec
 
     async def poll_once(self) -> None:
         """Одна итерация опроса (modules/notifier «Итерация опроса»).
@@ -252,7 +255,9 @@ class NotifierService:
             # Windowed-режим (ADR-016): зона CPU/RAM/SSD по максимуму за окно
             # опроса; online/uptime/detail остаются мгновенными.
             metrics_by_instance = await self._monitoring.fetch_for_instances(
-                instances, window_sec=self._metric_window_sec
+                instances,
+                window_sec=self._metric_window_sec,
+                offline_window_sec=self._offline_window_sec,
             )
         except PrometheusUnavailable:
             logger.warning("notifier_prometheus_unavailable")

@@ -164,12 +164,18 @@ class _FakeMonitoring:
         # Окна, с которыми нотификатор вызвал fetch_for_instances (ADR-016):
         # ожидается effective metric_window_sec, а не None (windowed-режим).
         self.window_calls: list[int | None] = []
+        self.offline_window_calls: list[int | None] = []
 
     async def fetch_for_instances(
-        self, instances: list[str], window_sec: int | None = None
+        self,
+        instances: list[str],
+        window_sec: int | None = None,
+        *,
+        offline_window_sec: int | None = None,
     ) -> dict[str, InstanceMetrics]:
         self.calls.append(list(instances))
         self.window_calls.append(window_sec)
+        self.offline_window_calls.append(offline_window_sec)
         if self.raise_unavailable:
             raise PrometheusUnavailable("prom down")
         return self.result
@@ -207,6 +213,7 @@ def _alert_logs() -> list[NotifierAlertLog]:
 
 
 _METRIC_WINDOW_SEC = 90
+_OFFLINE_WINDOW_SEC = 75
 
 
 def _make_service(
@@ -214,12 +221,14 @@ def _make_service(
     telegram: _FakeTelegram,
     *,
     metric_window_sec: int = _METRIC_WINDOW_SEC,
+    offline_window_sec: int = _OFFLINE_WINDOW_SEC,
 ) -> NotifierService:
     return NotifierService(
         telegram=telegram,  # type: ignore[arg-type]
         monitoring=monitoring,  # type: ignore[arg-type]
         poll_interval_sec=1,
         metric_window_sec=metric_window_sec,
+        offline_window_sec=offline_window_sec,
     )
 
 
@@ -322,6 +331,7 @@ async def test_notifier_fetches_with_effective_window_max_over_window_zone(
 
     # Windowed-режим: окно передано, а не мгновенный запрос (None).
     assert mon.window_calls == [120]
+    assert mon.offline_window_calls == [_OFFLINE_WINDOW_SEC]
     assert mon.calls == [[inst]]
     # Зона max-за-окно продолжает работать сквозь evaluate/персист (ADR-014).
     assert len(tg.sent) == 1
