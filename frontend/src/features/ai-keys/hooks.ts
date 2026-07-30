@@ -7,6 +7,7 @@ import {
   listAiKeyBackends,
   listAiKeys,
   reorderAiKeys,
+  resetAiKeyBalance,
   updateAiKey,
 } from '@/features/ai-keys/api';
 import { env } from '@/lib/env';
@@ -17,6 +18,7 @@ import type {
   AiKeyStatusResponse,
   AiProvider,
   CreateAiKeyRequest,
+  ResetAiKeyBalanceRequest,
   ReorderAiKeysRequest,
   UpdateAiKeyRequest,
 } from '@/types/api';
@@ -110,6 +112,20 @@ export function useDeleteAiKey() {
  * onMutate: перезаписываем position ключей этого провайдера; onError: откат + toast;
  * onSettled: invalidate GET /api/ai-keys (08-design-system.md, 04-api.md).
  */
+export function useResetAiKeyBalance(id: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: ResetAiKeyBalanceRequest) => resetAiKeyBalance(id, payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: aiKeysKey });
+      toast.success('Баланс обновлён');
+    },
+    onError: () => {
+      toast.error('Не удалось обновить баланс');
+    },
+  });
+}
+
 export function useReorderAiKeys() {
   const queryClient = useQueryClient();
   return useMutation<void, unknown, ReorderAiKeysRequest, { previous?: AiKeysListResponse }>({

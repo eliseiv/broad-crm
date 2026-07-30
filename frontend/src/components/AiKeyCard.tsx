@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Clock, KeyRound, Loader2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { AddAiKeyModal } from '@/components/AddAiKeyModal';
+import { AiKeyBalanceDisplay } from '@/components/AiKeyBalanceDisplay';
 import { AiKeyDetailModal } from '@/components/AiKeyDetailModal';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -135,6 +136,8 @@ export function AiKeyCard({ aiKey, canEdit = true, canDelete = true }: AiKeyCard
             {aiKey.key_masked}
           </span>
         </div>
+
+        <AiKeyBalanceDisplay aiKey={aiKey} />
 
         {/* Причина ошибки при error */}
         {isError && errorMessage && <p className="text-[13px] text-status-red">{errorMessage}</p>}

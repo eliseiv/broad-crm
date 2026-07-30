@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AddAiKeyModal } from '@/components/AddAiKeyModal';
 import { AddBackendModal } from '@/components/AddBackendModal';
 import { AddProxyModal } from '@/components/AddProxyModal';
+import { makeTestAiKey } from '@/test-fixtures/aiKey';
 import type { AiKey, Backend, Proxy } from '@/types/api';
 
 /**
@@ -62,18 +63,15 @@ function describedTexts(el: HTMLElement): string[] {
 }
 
 function makeAiKey(): AiKey {
-  return {
+  return makeTestAiKey({
     id: 'key-1',
     name: 'Claude Prod',
     provider: 'anthropic',
     key_masked: 'sk-a…xyz',
-    check_status: 'working',
-    error_message: null,
-    position: 0,
-    backend_count: 0,
     last_checked_at: '2026-07-07T10:15:00Z',
     created_at: '2026-07-07T09:00:00Z',
-  };
+    updated_at: '2026-07-07T10:15:00Z',
+  });
 }
 
 function makeProxy(): Proxy {

@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import type { PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AiKeyCard } from '@/components/AiKeyCard';
+import { makeTestAiKey } from '@/test-fixtures/aiKey';
 import type { AiKey } from '@/types/api';
 
 const hooks = vi.hoisted(() => ({
@@ -24,6 +25,7 @@ vi.mock('@/features/ai-keys/hooks', () => ({
   }),
   useDeleteAiKey: () => ({ mutate: hooks.deleteMutate, isPending: false }),
   useUpdateAiKey: () => ({ mutate: hooks.updateMutate, isPending: false }),
+  useResetAiKeyBalance: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
@@ -33,19 +35,12 @@ function wrapper({ children }: PropsWithChildren) {
 }
 
 function makeKey(overrides: Partial<AiKey> = {}): AiKey {
-  return {
+  return makeTestAiKey({
     id: 'key-1',
     name: 'OpenAI Prod',
     provider: 'openai',
-    key_masked: 'sk-p…bA3T',
-    check_status: 'working',
-    error_message: null,
-    position: 0,
-    backend_count: 0,
-    last_checked_at: '2026-07-01T10:15:00Z',
-    created_at: '2026-07-01T09:00:00Z',
     ...overrides,
-  };
+  });
 }
 
 describe('AiKeyCard detail → edit (ADR-035)', () => {

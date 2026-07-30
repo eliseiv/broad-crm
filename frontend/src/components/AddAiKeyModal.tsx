@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Eye, EyeOff, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
+import { BalanceFormFields } from '@/components/BalanceFormFields';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
@@ -21,7 +22,7 @@ interface AddAiKeyModalProps {
   defaultProvider?: AiProvider;
 }
 
-type Field = keyof CreateAiKeyRequest;
+type Field = keyof CreateAiKeyRequest | 'balance_initial_usd' | 'billing_admin_key';
 type Errors = Partial<Record<Field, string>>;
 
 const PROVIDER_OPTIONS: SelectOption[] = [
@@ -31,7 +32,15 @@ const PROVIDER_OPTIONS: SelectOption[] = [
 
 const EMPTY: CreateAiKeyRequest = { name: '', provider: 'openai', key: '' };
 
-function validate(values: CreateAiKeyRequest): Errors {
+function validateAdd(values: {
+  name: string;
+  provider: AiProvider;
+  key: string;
+  balanceMonitoring: boolean;
+  balanceUsd: string;
+  thresholdUsd: string;
+  billingAdminKey: string;
+}): Errors {
   const errors: Errors = {};
   const name = values.name.trim();
   if (!name) errors.name = 'Укажите название';
@@ -43,6 +52,23 @@ function validate(values: CreateAiKeyRequest): Errors {
 
   if (!values.key.trim()) errors.key = 'Укажите ключ';
   else if (values.key.length > 512) errors.key = 'Не более 512 символов';
+
+  if (values.balanceMonitoring) {
+    const bal = values.balanceUsd.trim();
+    if (!bal) errors.balance_initial_usd = 'Укажите текущий баланс';
+    else if (Number(bal) < 0 || !Number.isFinite(Number(bal))) {
+      errors.balance_initial_usd = 'Некорректная сумма';
+    }
+    const thr = values.thresholdUsd.trim();
+    if (thr && (Number(thr) < 0 || !Number.isFinite(Number(thr)))) {
+      errors.balance_low_threshold_usd = 'Некорректная сумма';
+    }
+    if (!values.billingAdminKey.trim()) {
+      errors.billing_admin_key = 'Укажите Admin API key';
+    } else if (values.billingAdminKey.length > 512) {
+      errors.billing_admin_key = 'Не более 512 символов';
+    }
+  }
 
   return errors;
 }
@@ -89,12 +115,48 @@ function AddAiKeyDialog({
   const [touched, setTouched] = useState(false);
   const [showKey, setShowKey] = useState(false);
   const [checking, setChecking] = useState(false);
+  const [balanceMonitoring, setBalanceMonitoring] = useState(false);
+  const [balanceUsd, setBalanceUsd] = useState('');
+  const [thresholdUsd, setThresholdUsd] = useState('10');
+  const [billingAdminKey, setBillingAdminKey] = useState('');
+  const [showBillingAdminKey, setShowBillingAdminKey] = useState(false);
   const createMutation = useCreateAiKey();
 
-  const update = (field: Field, value: string) => {
+  const revalidateAdd = (overrides?: Partial<{
+    name: string;
+    provider: AiProvider;
+    key: string;
+    balanceMonitoring: boolean;
+    balanceUsd: string;
+    thresholdUsd: string;
+    billingAdminKey: string;
+  }>) => {
+    if (touched) {
+      setErrors(
+        validateAdd({
+          name: values.name,
+          provider: values.provider,
+          key: values.key,
+          balanceMonitoring,
+          balanceUsd,
+          thresholdUsd,
+          billingAdminKey,
+          ...overrides,
+        }),
+      );
+    }
+  };
+
+  const update = (field: 'name' | 'provider' | 'key', value: string) => {
     const next = { ...values, [field]: value } as CreateAiKeyRequest;
     setValues(next);
-    if (touched) setErrors(validate(next));
+    if (touched) {
+      revalidateAdd({
+        name: next.name,
+        provider: next.provider,
+        key: next.key,
+      });
+    }
   };
 
   const applyApiError = (err: unknown) => {
@@ -122,24 +184,37 @@ function AddAiKeyDialog({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setTouched(true);
-    const nextErrors = validate(values);
+    const nextErrors = validateAdd({
+      name: values.name,
+      provider: values.provider,
+      key: values.key,
+      balanceMonitoring,
+      balanceUsd,
+      thresholdUsd,
+      billingAdminKey,
+    });
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
 
-    createMutation.mutate(
-      {
-        name: values.name.trim(),
-        provider: values.provider,
-        key: values.key.trim(),
+    const payload: CreateAiKeyRequest = {
+      name: values.name.trim(),
+      provider: values.provider,
+      key: values.key.trim(),
+    };
+    if (balanceMonitoring) {
+      payload.balance_monitoring_enabled = true;
+      payload.balance_initial_usd = balanceUsd.trim();
+      payload.balance_low_threshold_usd = thresholdUsd.trim() || '10';
+      payload.billing_admin_key = billingAdminKey.trim();
+    }
+
+    createMutation.mutate(payload, {
+      onSuccess: () => {
+        toast.success('Ключ добавлен');
+        setChecking(true);
       },
-      {
-        onSuccess: () => {
-          toast.success('Ключ добавлен');
-          setChecking(true);
-        },
-        onError: applyApiError,
-      },
-    );
+      onError: applyApiError,
+    });
   };
 
   const isSubmitting = createMutation.isPending;
@@ -220,6 +295,36 @@ function AddAiKeyDialog({
               </button>
             }
           />
+          <BalanceFormFields
+            enabled={balanceMonitoring}
+            onEnabledChange={(v) => {
+              setBalanceMonitoring(v);
+              revalidateAdd({ balanceMonitoring: v });
+            }}
+            balanceUsd={balanceUsd}
+            onBalanceUsdChange={(v) => {
+              setBalanceUsd(v);
+              revalidateAdd({ balanceUsd: v });
+            }}
+            thresholdUsd={thresholdUsd}
+            onThresholdUsdChange={(v) => {
+              setThresholdUsd(v);
+              revalidateAdd({ thresholdUsd: v });
+            }}
+            billingAdminKey={billingAdminKey}
+            onBillingAdminKeyChange={(v) => {
+              setBillingAdminKey(v);
+              revalidateAdd({ billingAdminKey: v });
+            }}
+            showBillingAdminKey={showBillingAdminKey}
+            onToggleShowBillingAdminKey={() => setShowBillingAdminKey((s) => !s)}
+            errors={{
+              balance_initial_usd: errors.balance_initial_usd,
+              balance_low_threshold_usd: errors.balance_low_threshold_usd,
+              billing_admin_key: errors.billing_admin_key,
+            }}
+            disabled={isSubmitting}
+          />
         </form>
       )}
     </Modal>
@@ -249,9 +354,24 @@ function EditAiKeyDialog({
   const [errors, setErrors] = useState<Errors>({});
   const [touched, setTouched] = useState(false);
   const [showKey, setShowKey] = useState(false);
+  const [balanceMonitoring, setBalanceMonitoring] = useState(aiKey.balance_monitoring_enabled);
+  const [balanceUsd, setBalanceUsd] = useState(
+    aiKey.balance_remaining_usd ?? aiKey.balance_initial_usd ?? '',
+  );
+  const [thresholdUsd, setThresholdUsd] = useState(aiKey.balance_low_threshold_usd ?? '10');
+  const [billingAdminKey, setBillingAdminKey] = useState('');
+  const [showBillingAdminKey, setShowBillingAdminKey] = useState(false);
   const updateMutation = useUpdateAiKey(aiKey.id);
 
-  const validateEdit = (values: { name: string; provider: AiProvider; key: string }): Errors => {
+  const validateEdit = (values: {
+    name: string;
+    provider: AiProvider;
+    key: string;
+    balanceMonitoring: boolean;
+    balanceUsd: string;
+    thresholdUsd: string;
+    billingAdminKey: string;
+  }): Errors => {
     const next: Errors = {};
     const trimmedName = values.name.trim();
     if (!trimmedName) next.name = 'Укажите название';
@@ -260,16 +380,54 @@ function EditAiKeyDialog({
     if (values.provider !== 'openai' && values.provider !== 'anthropic')
       next.provider = 'Выберите провайдера';
 
-    // Ключ опционален в edit: пустое = «не менять». Проверяем только длину, если введён.
     if (values.key.length > 512) next.key = 'Не более 512 символов';
+
+    if (values.balanceMonitoring) {
+      const bal = values.balanceUsd.trim();
+      if (!bal) next.balance_initial_usd = 'Укажите текущий баланс';
+      else if (Number(bal) < 0 || !Number.isFinite(Number(bal))) {
+        next.balance_initial_usd = 'Некорректная сумма';
+      }
+      const thr = values.thresholdUsd.trim();
+      if (thr && (Number(thr) < 0 || !Number.isFinite(Number(thr)))) {
+        next.balance_low_threshold_usd = 'Некорректная сумма';
+      }
+      if (!aiKey.balance_monitoring_enabled && !values.billingAdminKey.trim()) {
+        next.billing_admin_key = 'Укажите Admin API key';
+      }
+      if (values.billingAdminKey.length > 512) {
+        next.billing_admin_key = 'Не более 512 символов';
+      }
+    }
+
     return next;
   };
 
-  // Передаём НОВОЕ значение в валидацию явно (образец AddServerDialog.update): setState
-  // в этом же рендере ещё не применён, поэтому полагаться на state нельзя — иначе inline-
-  // ошибка отстаёт на один ввод.
-  const revalidate = (overrides?: Partial<{ name: string; provider: AiProvider; key: string }>) => {
-    if (touched) setErrors(validateEdit({ name, provider, key, ...overrides }));
+  const revalidate = (
+    overrides?: Partial<{
+      name: string;
+      provider: AiProvider;
+      key: string;
+      balanceMonitoring: boolean;
+      balanceUsd: string;
+      thresholdUsd: string;
+      billingAdminKey: string;
+    }>,
+  ) => {
+    if (touched) {
+      setErrors(
+        validateEdit({
+          name,
+          provider,
+          key,
+          balanceMonitoring,
+          balanceUsd,
+          thresholdUsd,
+          billingAdminKey,
+          ...overrides,
+        }),
+      );
+    }
   };
 
   const applyApiError = (err: unknown) => {
@@ -299,14 +457,28 @@ function EditAiKeyDialog({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setTouched(true);
-    const nextErrors = validateEdit({ name, provider, key });
+    const nextErrors = validateEdit({
+      name,
+      provider,
+      key,
+      balanceMonitoring,
+      balanceUsd,
+      thresholdUsd,
+      billingAdminKey,
+    });
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
 
-    // Пустой key НЕ отправляется (04-api.md: «отсутствие поля = не менять ключ»).
     const payload: UpdateAiKeyRequest = { name: name.trim(), provider };
     const trimmedKey = key.trim();
     if (trimmedKey) payload.key = trimmedKey;
+
+    payload.balance_monitoring_enabled = balanceMonitoring;
+    if (balanceMonitoring) {
+      payload.balance_initial_usd = balanceUsd.trim();
+      payload.balance_low_threshold_usd = thresholdUsd.trim() || '10';
+      if (billingAdminKey.trim()) payload.billing_admin_key = billingAdminKey.trim();
+    }
 
     updateMutation.mutate(payload, {
       onSuccess: () => {
@@ -393,6 +565,37 @@ function EditAiKeyDialog({
               {showKey ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             </button>
           }
+        />
+        <BalanceFormFields
+          enabled={balanceMonitoring}
+          onEnabledChange={(v) => {
+            setBalanceMonitoring(v);
+            revalidate({ balanceMonitoring: v });
+          }}
+          balanceUsd={balanceUsd}
+          onBalanceUsdChange={(v) => {
+            setBalanceUsd(v);
+            revalidate({ balanceUsd: v });
+          }}
+          thresholdUsd={thresholdUsd}
+          onThresholdUsdChange={(v) => {
+            setThresholdUsd(v);
+            revalidate({ thresholdUsd: v });
+          }}
+          billingAdminKey={billingAdminKey}
+          onBillingAdminKeyChange={(v) => {
+            setBillingAdminKey(v);
+            revalidate({ billingAdminKey: v });
+          }}
+          showBillingAdminKey={showBillingAdminKey}
+          onToggleShowBillingAdminKey={() => setShowBillingAdminKey((s) => !s)}
+          errors={{
+            balance_initial_usd: errors.balance_initial_usd,
+            balance_low_threshold_usd: errors.balance_low_threshold_usd,
+            billing_admin_key: errors.billing_admin_key,
+          }}
+          billingAdminOptional={aiKey.balance_monitoring_enabled}
+          disabled={isSubmitting}
         />
       </form>
     </Modal>

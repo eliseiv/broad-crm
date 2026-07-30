@@ -12,6 +12,14 @@ export function formatUptime(seconds: number | null | undefined): string {
   return parts.join(' ');
 }
 
+/** Форматирует сумму в USD для отображения оценочного остатка (ADR-070). */
+export function formatUsd(value: string | number | null | undefined): string {
+  if (value == null) return '—';
+  const n = typeof value === 'string' ? Number(value) : value;
+  if (!Number.isFinite(n)) return '—';
+  return `$${n.toFixed(2)}`;
+}
+
 /**
  * Относительное время от ISO-метки (08-design-system.md):
  * <60с → «только что», 1–59 мин → «N мин назад», 1–23 ч → «N ч назад», ≥1 дн → «N дн назад».

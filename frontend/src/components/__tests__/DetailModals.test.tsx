@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ServerDetailModal } from '@/components/ServerDetailModal';
 import { ProxyDetailModal } from '@/components/ProxyDetailModal';
 import { AiKeyDetailModal } from '@/components/AiKeyDetailModal';
+import { makeTestAiKey } from '@/test-fixtures/aiKey';
 import type { AiKey, Proxy, Server } from '@/types/api';
 
 /**
@@ -21,7 +22,10 @@ import type { AiKey, Proxy, Server } from '@/types/api';
 
 const serversApi = vi.hoisted(() => ({ revealServerPassword: vi.fn() }));
 const proxiesApi = vi.hoisted(() => ({ revealProxyPassword: vi.fn() }));
-const aiKeysApi = vi.hoisted(() => ({ revealAiKeyValue: vi.fn() }));
+const aiKeysApi = vi.hoisted(() => ({
+  revealAiKeyValue: vi.fn(),
+  revealAiKeyBillingAdminKey: vi.fn(),
+}));
 const serverHooks = vi.hoisted(() => ({ updateMutate: vi.fn() }));
 
 const lazyBackendsQuery = () => ({
@@ -40,6 +44,7 @@ vi.mock('@/features/servers/hooks', () => ({
 }));
 vi.mock('@/features/ai-keys/hooks', () => ({
   useAiKeyBackends: () => lazyBackendsQuery(),
+  useResetAiKeyBalance: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
@@ -84,19 +89,13 @@ function makeProxy(over: Partial<Proxy> = {}): Proxy {
 }
 
 function makeKey(over: Partial<AiKey> = {}): AiKey {
-  return {
+  return makeTestAiKey({
     id: 'key-1',
     name: 'OpenAI Prod',
     provider: 'openai',
-    key_masked: 'sk-p…bA3T',
-    check_status: 'working',
-    error_message: null,
-    position: 0,
-    backend_count: 0,
     last_checked_at: null,
-    created_at: '2026-07-01T09:00:00Z',
     ...over,
-  };
+  });
 }
 
 beforeEach(() => vi.clearAllMocks());

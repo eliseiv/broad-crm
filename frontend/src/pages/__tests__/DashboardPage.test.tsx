@@ -8,6 +8,7 @@ import {
 } from '@/components/InsufficientPermissions';
 import { ApiError } from '@/lib/api';
 import { loginAs, loginSuperadmin, logout } from '@/test/authTestUtils';
+import { makeTestAiKey } from '@/test-fixtures/aiKey';
 import type { AiKey, MailMailbox, Server } from '@/types/api';
 
 // Навигация по клику — spy на useNavigate (клик по карточке = переход в раздел, ADR-017).
@@ -81,18 +82,13 @@ function server(id: string, online: boolean): Server {
 }
 
 function aiKey(id: string, status: AiKey['check_status']): AiKey {
-  return {
+  return makeTestAiKey({
     id,
     name: `Key ${id}`,
     provider: 'openai',
-    key_masked: 'sk-p…bA3T',
     check_status: status,
-    error_message: null,
-    position: 0,
-    backend_count: 0,
     last_checked_at: null,
-    created_at: '2026-07-02T09:15:00Z',
-  };
+  });
 }
 
 /** Успешные ответы по умолчанию, чтобы карточки не мешали друг другу в изоляции. */

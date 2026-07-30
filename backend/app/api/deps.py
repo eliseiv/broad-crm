@@ -39,6 +39,7 @@ from app.repositories.team_repository import TeamRepository
 from app.repositories.user_channel_team_repository import UserChannelTeamRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.user import TeamRef
+from app.services.ai_key_balance_sync_service import AiKeyBalanceSyncService
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.ai_key_service import AiKeyService
 from app.services.auth_service import AuthService
@@ -473,14 +474,30 @@ def get_ai_key_monitor(settings: SettingsDep) -> AiKeyMonitorService:
     )
 
 
+def get_ai_key_balance_sync(settings: SettingsDep) -> AiKeyBalanceSyncService:
+    """Синхронизация оценочного остатка AI-ключей (ADR-070)."""
+    telegram = (
+        TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
+        if settings.notifier_enabled
+        else None
+    )
+    return AiKeyBalanceSyncService(
+        sessionmaker=get_sessionmaker(),
+        telegram=telegram,
+        settings=settings,
+    )
+
+
 def get_ai_key_service(
     session: DbSession,
     monitor: Annotated[AiKeyMonitorService, Depends(get_ai_key_monitor)],
+    balance_sync: Annotated[AiKeyBalanceSyncService, Depends(get_ai_key_balance_sync)],
 ) -> AiKeyService:
     """Сервис реестра AI-ключей."""
     return AiKeyService(
         repository=AiKeyRepository(session),
         monitor=monitor,
+        balance_sync=balance_sync,
         backends=BackendRepository(session),
     )
 

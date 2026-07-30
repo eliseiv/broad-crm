@@ -237,6 +237,12 @@ export type AiProvider = 'openai' | 'anthropic';
 /** Статус проверки валидности AI-ключа (04-api.md). */
 export type AiKeyStatus = 'pending' | 'working' | 'error';
 
+/** Исход синхронизации оценочного остатка (ADR-070). */
+export type BalanceSyncStatus = 'ok' | 'error' | 'unknown';
+
+/** Уровень алерта по остатку (ADR-070). */
+export type BalanceAlertLevel = 'normal' | 'low' | 'depleted';
+
 /** Элемент списка AI-ключей. Полный ключ не возвращается — только маска. */
 export interface AiKey {
   id: string;
@@ -256,6 +262,16 @@ export interface AiKey {
   backend_count: number;
   last_checked_at: string | null;
   created_at: string;
+  updated_at: string;
+  balance_monitoring_enabled: boolean;
+  balance_initial_usd: string | null;
+  balance_remaining_usd: string | null;
+  balance_low_threshold_usd: string | null;
+  balance_anchor_at: string | null;
+  balance_last_sync_at: string | null;
+  balance_sync_status: BalanceSyncStatus | null;
+  balance_sync_error: string | null;
+  balance_alert_level: BalanceAlertLevel | null;
 }
 
 export interface AiKeysListResponse {
@@ -270,6 +286,10 @@ export interface CreateAiKeyRequest {
   name: string;
   provider: AiProvider;
   key: string;
+  balance_monitoring_enabled?: boolean;
+  balance_initial_usd?: string;
+  balance_low_threshold_usd?: string;
+  billing_admin_key?: string;
 }
 
 export interface CreateAiKeyResponse {
@@ -288,6 +308,15 @@ export interface UpdateAiKeyRequest {
   name?: string;
   provider?: AiProvider;
   key?: string;
+  balance_monitoring_enabled?: boolean;
+  balance_initial_usd?: string;
+  balance_low_threshold_usd?: string;
+  billing_admin_key?: string;
+}
+
+/** Тело POST /api/ai-keys/{id}/balance/reset (ADR-070). */
+export interface ResetAiKeyBalanceRequest {
+  balance_initial_usd: string;
 }
 
 /** Тело PATCH /api/ai-keys/order — перестановка внутри провайдер-группы (04-api.md). */

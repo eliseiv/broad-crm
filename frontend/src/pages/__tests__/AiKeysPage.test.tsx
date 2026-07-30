@@ -8,6 +8,7 @@ import {
   NO_SECTION_ACCESS_HINT,
 } from '@/components/InsufficientPermissions';
 import { loginAs, loginSuperadmin } from '@/test/authTestUtils';
+import { makeTestAiKey } from '@/test-fixtures/aiKey';
 import type { AiKey } from '@/types/api';
 
 const aiKeysHook = vi.hoisted(() => ({
@@ -45,18 +46,11 @@ function wrapper({ children }: PropsWithChildren) {
 }
 
 function makeKey(overrides: Partial<AiKey> & Pick<AiKey, 'id'>): AiKey {
-  return {
+  return makeTestAiKey({
     name: 'Key',
     provider: 'openai',
-    key_masked: 'sk-p…bA3T',
-    check_status: 'working',
-    error_message: null,
-    position: 0,
-    backend_count: 0,
-    last_checked_at: '2026-07-01T10:15:00Z',
-    created_at: '2026-07-01T09:00:00Z',
     ...overrides,
-  };
+  });
 }
 
 describe('AiKeysPage grouping', () => {

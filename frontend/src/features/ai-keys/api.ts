@@ -6,6 +6,7 @@ import type {
   BackendRefListResponse,
   CreateAiKeyRequest,
   CreateAiKeyResponse,
+  ResetAiKeyBalanceRequest,
   ReorderAiKeysRequest,
   SecretRevealResponse,
   UpdateAiKeyRequest,
@@ -42,6 +43,17 @@ export function deleteAiKey(id: string): Promise<void> {
  */
 export function revealAiKeyValue(id: string, signal?: AbortSignal): Promise<SecretRevealResponse> {
   return apiRequest<SecretRevealResponse>(`/ai-keys/${id}/key`, { signal });
+}
+
+export function revealAiKeyBillingAdminKey(
+  id: string,
+  signal?: AbortSignal,
+): Promise<SecretRevealResponse> {
+  return apiRequest<SecretRevealResponse>(`/ai-keys/${id}/billing-admin-key`, { signal });
+}
+
+export function resetAiKeyBalance(id: string, payload: ResetAiKeyBalanceRequest): Promise<AiKey> {
+  return apiRequest<AiKey>(`/ai-keys/${id}/balance/reset`, { method: 'POST', body: payload });
 }
 
 /**

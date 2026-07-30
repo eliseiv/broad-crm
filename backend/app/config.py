@@ -117,6 +117,8 @@ class Settings(BaseSettings):
     # --- Монитор AI-ключей (modules/ai-keys, ADR-010) ---
     # Интервал периодической проверки всех ключей; монитор стартует всегда.
     ai_key_check_interval_sec: int = 900
+    # Интервал синхронизации оценочного остатка (Admin Cost API, ADR-070).
+    ai_key_balance_sync_interval_sec: int = 3600
     # Таймаут HTTP-запроса к провайдеру при проверке ключа (GET /v1/models).
     ai_provider_timeout_sec: float = 10.0
     openai_api_base: str = "https://api.openai.com/v1"

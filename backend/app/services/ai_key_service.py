@@ -4,15 +4,24 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from datetime import UTC, datetime
 
 from app.domain.ai_keys import compute_key_fragments, mask_key
-from app.errors import ai_key_not_found, unprocessable
+from app.errors import ai_key_bad_request, ai_key_not_found, secret_not_set, unprocessable
+from app.infra.ai_provider_billing import compute_alert_level, default_low_threshold_usd
 from app.infra.crypto import decrypt_secret, encrypt_secret
 from app.logging import get_logger
-from app.models.ai_key import AiKey, AiKeyStatus, AiProvider
+from app.models.ai_key import (
+    AiKey,
+    AiKeyStatus,
+    AiProvider,
+    BalanceAlertLevel,
+    BalanceSyncStatus,
+)
 from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.backend_repository import BackendRepository
 from app.schemas.ai_key import (
+    AiKeyBalanceResetRequest,
     AiKeyCreateRequest,
     AiKeyListItem,
     AiKeyListResponse,
@@ -20,26 +29,27 @@ from app.schemas.ai_key import (
     AiKeyUpdateRequest,
 )
 from app.schemas.backend import BackendRef, BackendRefListResponse
+from app.services.ai_key_balance_sync_service import AiKeyBalanceSyncService
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 
 logger = get_logger(__name__)
 
-# Сильные ссылки на фоновые задачи немедленной проверки, чтобы их не собрал GC
-# (asyncio хранит только weak ref на задачи) — паттерн server_service.
 _background_tasks: set[asyncio.Task[None]] = set()
 
 
 class AiKeyService:
-    """CRUD реестра AI-ключей + запуск немедленной фоновой проверки при создании."""
+    """CRUD реестра AI-ключей + фоновые health-check и balance-sync."""
 
     def __init__(
         self,
         repository: AiKeyRepository,
         monitor: AiKeyMonitorService,
+        balance_sync: AiKeyBalanceSyncService,
         backends: BackendRepository,
     ) -> None:
         self._repo = repository
         self._monitor = monitor
+        self._balance_sync = balance_sync
         self._backends = backends
 
     async def create_key(self, payload: AiKeyCreateRequest) -> AiKeyListItem:
@@ -47,28 +57,25 @@ class AiKeyService:
         key_prefix, key_last4 = compute_key_fragments(payload.key)
         encrypted = encrypt_secret(payload.key)
 
+        balance_fields = _balance_create_fields(payload)
         ai_key = await self._repo.create(
             name=payload.name,
             provider=payload.provider.value,
             key_encrypted=encrypted,
             key_prefix=key_prefix,
             key_last4=key_last4,
+            **balance_fields,
         )
         await self._repo.session.commit()
 
-        # Немедленная фоновая проверка (asyncio.create_task + сильные ссылки).
-        # Ошибка внутри задачи не влияет на ответ 202 — статус отслеживается через
-        # GET /api/ai-keys/{id}/status.
-        task = asyncio.create_task(self._monitor.check_one(ai_key.id))
-        _background_tasks.add(task)
-        task.add_done_callback(_background_tasks.discard)
+        self._spawn_monitor(ai_key.id)
+        if ai_key.balance_monitoring_enabled:
+            self._spawn_balance_sync(ai_key.id)
 
         logger.info("ai_key_created", ai_key_id=str(ai_key.id))
-        # Новый ключ ещё не используется ни одним бэком → backend_count=0.
         return self._to_list_item(ai_key, 0)
 
     async def list_keys(self) -> AiKeyListResponse:
-        """Список ключей (position ASC, created_at DESC, id), полный ключ не раскрывается."""
         keys = await self._repo.list_all()
         counts = await self._backends.count_by_ai_keys([key.id for key in keys])
         return AiKeyListResponse(
@@ -76,10 +83,6 @@ class AiKeyService:
         )
 
     async def list_ai_key_backends(self, ai_key_id: uuid.UUID) -> BackendRefListResponse:
-        """Список бэков, использующих ключ (reverse-lookup, ADR-040, require ai-keys:view).
-
-        Нет ключа → 404 ai_key_not_found. Сортировка `position ASC, created_at DESC, id`.
-        """
         ai_key = await self._repo.get_by_id(ai_key_id)
         if ai_key is None:
             raise ai_key_not_found()
@@ -89,15 +92,6 @@ class AiKeyService:
         )
 
     async def update_key(self, ai_key_id: uuid.UUID, payload: AiKeyUpdateRequest) -> AiKeyListItem:
-        """Редактирует ключ (04-api.md, modules/ai-keys#редактирование-ключа).
-
-        Семантика секрета: `key` пустой/отсутствует = не менять; непустой → re-encrypt
-        + пересчёт `key_prefix`/`key_last4`. Re-check (`check_status='pending'`,
-        `error_message=NULL`, немедленная фоновая проверка от `prev='pending'`)
-        запускается, если изменился `provider` ИЛИ передан непустой `key`. Только
-        смена `name` — без re-check. `updated_at` обновляется через onupdate при
-        изменении любого поля. Нет записи → 404.
-        """
         ai_key = await self._repo.get_by_id(ai_key_id)
         if ai_key is None:
             raise ai_key_not_found()
@@ -105,22 +99,22 @@ class AiKeyService:
         provider_changed = (
             payload.provider is not None and payload.provider.value != ai_key.provider
         )
-        # «Непустой ключ» = не None и не пустая строка (пустая = «оставить как есть»).
         key_provided = payload.key is not None and payload.key != ""
 
         if payload.name is not None:
             ai_key.name = payload.name
         if provider_changed:
-            # mypy: provider_changed истинно ⇒ payload.provider не None.
             assert payload.provider is not None
             ai_key.provider = payload.provider.value
         if key_provided:
-            # mypy: key_provided истинно ⇒ payload.key непустая строка.
             assert payload.key is not None
             key_prefix, key_last4 = compute_key_fragments(payload.key)
             ai_key.key_encrypted = encrypt_secret(payload.key)
             ai_key.key_prefix = key_prefix
             ai_key.key_last4 = key_last4
+            ai_key.provider_api_key_id = None
+
+        balance_changed = _apply_balance_patch(ai_key, payload)
 
         re_check = provider_changed or key_provided
         if re_check:
@@ -131,26 +125,49 @@ class AiKeyService:
         await self._repo.session.refresh(ai_key)
 
         if re_check:
-            # Немедленная фоновая проверка (тот же путь, что POST; prev='pending').
-            task = asyncio.create_task(self._monitor.check_one(ai_key.id))
-            _background_tasks.add(task)
-            task.add_done_callback(_background_tasks.discard)
+            self._spawn_monitor(ai_key.id)
+        if balance_changed and ai_key.balance_monitoring_enabled:
+            self._spawn_balance_sync(ai_key.id)
 
         logger.info("ai_key_updated", ai_key_id=str(ai_key_id), re_check=re_check)
         counts = await self._backends.count_by_ai_keys([ai_key.id])
         return self._to_list_item(ai_key, counts.get(ai_key.id, 0))
 
-    async def reorder_keys(self, provider: AiProvider, ids: list[uuid.UUID]) -> None:
-        """Перестановка ключей ВНУТРИ провайдер-группы: `position = 0..M-1`.
+    async def reset_balance(
+        self, ai_key_id: uuid.UUID, payload: AiKeyBalanceResetRequest
+    ) -> AiKeyListItem:
+        """Новый якорь остатка после пополнения (ADR-070)."""
+        ai_key = await self._repo.get_by_id(ai_key_id)
+        if ai_key is None:
+            raise ai_key_not_found()
+        if not ai_key.balance_monitoring_enabled:
+            raise ai_key_bad_request("Мониторинг баланса не включён для этого ключа")
+        if ai_key.billing_admin_key_encrypted is None:
+            raise ai_key_bad_request("Admin API key не задан")
 
-        Прецеденция ошибок (04-api.md#прецеденция-ошибок-валидации): форма тела и
-        `provider` вне enum уже обработаны pydantic (400/422); здесь — существование
-        всех `id` (404, до полноты), затем полнота перестановки группы провайдера
-        (422; чужой провайдер трактуется как «лишний» → 422).
-        """
+        now = datetime.now(UTC)
+        threshold = ai_key.balance_low_threshold_usd or default_low_threshold_usd()
+        ai_key.balance_initial_usd = payload.balance_initial_usd
+        ai_key.balance_remaining_usd = payload.balance_initial_usd
+        ai_key.balance_anchor_at = now
+        ai_key.balance_last_sync_at = None
+        ai_key.balance_sync_status = BalanceSyncStatus.ok.value
+        ai_key.balance_sync_error = None
+        ai_key.balance_sync_fail_streak = 0
+        ai_key.balance_alert_level = compute_alert_level(payload.balance_initial_usd, threshold)
+        ai_key.provider_api_key_id = None
+
+        await self._repo.session.commit()
+        await self._repo.session.refresh(ai_key)
+
+        self._spawn_balance_sync(ai_key.id)
+        counts = await self._backends.count_by_ai_keys([ai_key.id])
+        return self._to_list_item(ai_key, counts.get(ai_key.id, 0))
+
+    async def reorder_keys(self, provider: AiProvider, ids: list[uuid.UUID]) -> None:
         all_ids = await self._repo.all_ids()
-        for ai_key_id in ids:
-            if ai_key_id not in all_ids:
+        for item_id in ids:
+            if item_id not in all_ids:
                 raise ai_key_not_found()
         group_ids = await self._repo.ids_by_provider(provider.value)
         if len(ids) != len(group_ids) or set(ids) != group_ids:
@@ -160,7 +177,6 @@ class AiKeyService:
         logger.info("ai_keys_reordered", provider=provider.value, count=len(ids))
 
     async def get_status(self, ai_key_id: uuid.UUID) -> AiKeyStatusResponse:
-        """Лёгкий статус проверки; отсутствует → 404 ai_key_not_found."""
         ai_key = await self._repo.get_by_id(ai_key_id)
         if ai_key is None:
             raise ai_key_not_found()
@@ -172,28 +188,48 @@ class AiKeyService:
         )
 
     async def reveal_key(self, ai_key_id: uuid.UUID) -> str:
-        """On-demand reveal ПОЛНОГО ключа (ADR-035, require ai-keys:edit).
-
-        Расшифровка `key_encrypted` в памяти обработчика (в обычных ответах — только
-        `key_masked`). Нет записи → 404 ai_key_not_found. Значение возвращается
-        роутеру и НЕ логируется здесь.
-        """
         ai_key = await self._repo.get_by_id(ai_key_id)
         if ai_key is None:
             raise ai_key_not_found()
         return decrypt_secret(ai_key.key_encrypted)
 
+    async def reveal_billing_admin_key(self, ai_key_id: uuid.UUID) -> str:
+        ai_key = await self._repo.get_by_id(ai_key_id)
+        if ai_key is None:
+            raise ai_key_not_found()
+        if ai_key.billing_admin_key_encrypted is None:
+            raise secret_not_set()
+        return decrypt_secret(ai_key.billing_admin_key_encrypted)
+
     async def delete_key(self, ai_key_id: uuid.UUID) -> None:
-        """Hard-delete; повтор → 404 ai_key_not_found."""
         deleted = await self._repo.delete_by_id(ai_key_id)
         if not deleted:
             raise ai_key_not_found()
         await self._repo.session.commit()
         logger.info("ai_key_deleted", ai_key_id=str(ai_key_id))
 
+    def _spawn_monitor(self, ai_key_id: uuid.UUID) -> None:
+        task = asyncio.create_task(self._monitor.check_one(ai_key_id))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
+    def _spawn_balance_sync(self, ai_key_id: uuid.UUID) -> None:
+        task = asyncio.create_task(self._balance_sync.sync_one(ai_key_id))
+        _background_tasks.add(task)
+        task.add_done_callback(_background_tasks.discard)
+
     @staticmethod
     def _to_list_item(ai_key: AiKey, backend_count: int) -> AiKeyListItem:
-        """Собирает элемент ответа; `key_masked` — только маска, без полного ключа."""
+        sync_status = (
+            BalanceSyncStatus(ai_key.balance_sync_status)
+            if ai_key.balance_sync_status
+            else None
+        )
+        alert_level = (
+            BalanceAlertLevel(ai_key.balance_alert_level)
+            if ai_key.balance_alert_level
+            else None
+        )
         return AiKeyListItem(
             id=ai_key.id,
             name=ai_key.name,
@@ -206,4 +242,93 @@ class AiKeyService:
             created_at=ai_key.created_at,
             updated_at=ai_key.updated_at,
             backend_count=backend_count,
+            balance_monitoring_enabled=ai_key.balance_monitoring_enabled,
+            balance_initial_usd=ai_key.balance_initial_usd,
+            balance_remaining_usd=ai_key.balance_remaining_usd,
+            balance_low_threshold_usd=ai_key.balance_low_threshold_usd,
+            balance_anchor_at=ai_key.balance_anchor_at,
+            balance_last_sync_at=ai_key.balance_last_sync_at,
+            balance_sync_status=sync_status,
+            balance_sync_error=ai_key.balance_sync_error,
+            balance_alert_level=alert_level,
         )
+
+
+def _balance_create_fields(payload: AiKeyCreateRequest) -> dict[str, object]:
+    if not payload.balance_monitoring_enabled:
+        return {"balance_monitoring_enabled": False}
+    assert payload.balance_initial_usd is not None
+    assert payload.billing_admin_key is not None
+    now = datetime.now(UTC)
+    threshold = payload.balance_low_threshold_usd or default_low_threshold_usd()
+    return {
+        "balance_monitoring_enabled": True,
+        "balance_initial_usd": payload.balance_initial_usd,
+        "balance_remaining_usd": payload.balance_initial_usd,
+        "balance_low_threshold_usd": threshold,
+        "balance_anchor_at": now,
+        "balance_sync_status": BalanceSyncStatus.ok.value,
+        "balance_alert_level": compute_alert_level(payload.balance_initial_usd, threshold),
+        "billing_admin_key_encrypted": encrypt_secret(payload.billing_admin_key.strip()),
+    }
+
+
+def _apply_balance_patch(ai_key: AiKey, payload: AiKeyUpdateRequest) -> bool:
+    """Применяет поля balance из PATCH; True если нужен re-sync."""
+    changed = False
+    if payload.balance_monitoring_enabled is not None:
+        enabling = payload.balance_monitoring_enabled and not ai_key.balance_monitoring_enabled
+        disabling = not payload.balance_monitoring_enabled and ai_key.balance_monitoring_enabled
+        ai_key.balance_monitoring_enabled = payload.balance_monitoring_enabled
+        changed = enabling or disabling
+        if disabling:
+            ai_key.balance_initial_usd = None
+            ai_key.balance_remaining_usd = None
+            ai_key.balance_low_threshold_usd = None
+            ai_key.balance_anchor_at = None
+            ai_key.balance_last_sync_at = None
+            ai_key.balance_sync_status = None
+            ai_key.balance_sync_error = None
+            ai_key.balance_alert_level = None
+            ai_key.balance_sync_fail_streak = 0
+            ai_key.provider_api_key_id = None
+            ai_key.billing_admin_key_encrypted = None
+
+    if not ai_key.balance_monitoring_enabled:
+        return changed
+
+    if payload.balance_low_threshold_usd is not None:
+        ai_key.balance_low_threshold_usd = payload.balance_low_threshold_usd
+        changed = True
+
+    billing_provided = payload.billing_admin_key is not None and payload.billing_admin_key != ""
+    if billing_provided:
+        assert payload.billing_admin_key is not None
+        ai_key.billing_admin_key_encrypted = encrypt_secret(payload.billing_admin_key.strip())
+        ai_key.provider_api_key_id = None
+        changed = True
+
+    if payload.balance_initial_usd is not None:
+        now = datetime.now(UTC)
+        threshold = ai_key.balance_low_threshold_usd or default_low_threshold_usd()
+        ai_key.balance_initial_usd = payload.balance_initial_usd
+        ai_key.balance_remaining_usd = payload.balance_initial_usd
+        ai_key.balance_anchor_at = now
+        ai_key.balance_last_sync_at = None
+        ai_key.balance_sync_status = BalanceSyncStatus.ok.value
+        ai_key.balance_sync_error = None
+        ai_key.balance_sync_fail_streak = 0
+        ai_key.balance_alert_level = compute_alert_level(payload.balance_initial_usd, threshold)
+        ai_key.provider_api_key_id = None
+        changed = True
+
+    if ai_key.balance_monitoring_enabled:
+        if ai_key.billing_admin_key_encrypted is None:
+            raise ai_key_bad_request("Укажите Admin API key для мониторинга баланса")
+        if ai_key.balance_initial_usd is None or ai_key.balance_anchor_at is None:
+            raise ai_key_bad_request("Укажите текущий баланс для мониторинга")
+
+    return changed
+
+
+__all__ = ["AiKeyService"]

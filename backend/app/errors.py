@@ -206,6 +206,14 @@ def ai_key_not_found() -> AppError:
     )
 
 
+def ai_key_bad_request(message: str) -> AppError:
+    return AppError(
+        status_code=status.HTTP_400_BAD_REQUEST,
+        code="ai_key_bad_request",
+        message=message,
+    )
+
+
 def proxy_not_found() -> AppError:
     return AppError(
         status_code=status.HTTP_404_NOT_FOUND,

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Response, status
 from app.api.deps import AiKeyServiceDep, Principal, require
 from app.infra.audit import log_secret_revealed
 from app.schemas.ai_key import (
+    AiKeyBalanceResetRequest,
     AiKeyCreateRequest,
     AiKeyListItem,
     AiKeyListResponse,
@@ -60,6 +61,35 @@ async def update_ai_key(
 ) -> AiKeyListItem:
     """Редактирование ключа (name/provider/key); re-check при смене provider/key (200)."""
     return await service.update_key(ai_key_id, payload)
+
+
+@router.post("/{ai_key_id}/balance/reset", response_model=AiKeyListItem)
+async def reset_ai_key_balance(
+    ai_key_id: uuid.UUID,
+    payload: AiKeyBalanceResetRequest,
+    service: AiKeyServiceDep,
+    _p: EditDep,
+) -> AiKeyListItem:
+    """Обновляет якорь оценочного остатка после пополнения (ADR-070)."""
+    return await service.reset_balance(ai_key_id, payload)
+
+
+@router.get("/{ai_key_id}/billing-admin-key", response_model=SecretRevealResponse)
+async def reveal_ai_key_billing_admin_key(
+    ai_key_id: uuid.UUID,
+    service: AiKeyServiceDep,
+    principal: EditDep,
+    response: Response,
+) -> SecretRevealResponse:
+    """Reveal Admin API key для мониторинга баланса (ADR-070, require ai-keys:edit)."""
+    value = await service.reveal_billing_admin_key(ai_key_id)
+    response.headers["Cache-Control"] = "no-store"
+    log_secret_revealed(
+        principal,
+        resource_type="ai_key_billing_admin",
+        resource_id=str(ai_key_id),
+    )
+    return SecretRevealResponse(value=value)
 
 
 @router.get("/{ai_key_id}/key", response_model=SecretRevealResponse)

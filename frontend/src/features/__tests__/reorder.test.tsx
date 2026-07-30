@@ -4,6 +4,7 @@ import type { PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { serversKey, useReorderServers } from '@/features/servers/hooks';
 import { aiKeysKey, useReorderAiKeys } from '@/features/ai-keys/hooks';
+import { makeTestAiKey } from '@/test-fixtures/aiKey';
 import type { AiKey, Server } from '@/types/api';
 
 const serversApi = vi.hoisted(() => ({
@@ -52,18 +53,13 @@ function server(id: string, position: number): Server {
 }
 
 function aiKey(id: string, provider: AiKey['provider'], position: number): AiKey {
-  return {
+  return makeTestAiKey({
     id,
     name: id,
     provider,
-    key_masked: 'sk-p…bA3T',
-    check_status: 'working',
-    error_message: null,
     position,
-    backend_count: 0,
     last_checked_at: null,
-    created_at: '2026-07-01T09:00:00Z',
-  };
+  });
 }
 
 beforeEach(() => {

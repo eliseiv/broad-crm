@@ -43,6 +43,7 @@ class FakeAiKeyService:
             created_at=now,
             updated_at=now,
             backend_count=0,
+            balance_monitoring_enabled=False,
         )
 
     async def reorder_keys(self, provider: AiProvider, ids: list[uuid.UUID]) -> None:
