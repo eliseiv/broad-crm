@@ -168,7 +168,7 @@ def build_key_balance_sync_failed(
     """🟠 Не удалось обновить оценочный остаток (ADR-070)."""
     return (
         f"{_WARNING_HEADER}\n{_key_block(name, last4)}\n"
-        f"Не удалось обновить остаток: \"{reason}\""
+        f'Не удалось обновить остаток: "{reason}"'
         f"{_backends_block(backends)}"
     )
 

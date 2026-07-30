@@ -115,7 +115,7 @@ async def _request_with_retries(
             await asyncio.sleep(_BACKOFF_DELAYS_SEC[attempt])
             continue
         return response
-    return response  # type: ignore[possibly-unbound]
+    raise RuntimeError("retry loop exhausted without response")
 
 
 def _map_admin_auth_error(status_code: int) -> BalanceSyncResult | None:

@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal
+from typing import Literal, TypedDict
 
 from app.domain.ai_keys import compute_key_fragments, mask_key
 from app.errors import ai_key_bad_request, ai_key_not_found, secret_not_set, unprocessable
@@ -221,14 +223,10 @@ class AiKeyService:
     @staticmethod
     def _to_list_item(ai_key: AiKey, backend_count: int) -> AiKeyListItem:
         sync_status = (
-            BalanceSyncStatus(ai_key.balance_sync_status)
-            if ai_key.balance_sync_status
-            else None
+            BalanceSyncStatus(ai_key.balance_sync_status) if ai_key.balance_sync_status else None
         )
         alert_level = (
-            BalanceAlertLevel(ai_key.balance_alert_level)
-            if ai_key.balance_alert_level
-            else None
+            BalanceAlertLevel(ai_key.balance_alert_level) if ai_key.balance_alert_level else None
         )
         return AiKeyListItem(
             id=ai_key.id,
@@ -254,7 +252,25 @@ class AiKeyService:
         )
 
 
-def _balance_create_fields(payload: AiKeyCreateRequest) -> dict[str, object]:
+class _BalanceCreateDisabled(TypedDict):
+    balance_monitoring_enabled: Literal[False]
+
+
+class _BalanceCreateEnabled(TypedDict):
+    balance_monitoring_enabled: Literal[True]
+    balance_initial_usd: Decimal
+    balance_remaining_usd: Decimal
+    balance_low_threshold_usd: Decimal
+    balance_anchor_at: datetime
+    balance_sync_status: str
+    balance_alert_level: str
+    billing_admin_key_encrypted: bytes
+
+
+_BalanceCreateFields = _BalanceCreateDisabled | _BalanceCreateEnabled
+
+
+def _balance_create_fields(payload: AiKeyCreateRequest) -> _BalanceCreateFields:
     if not payload.balance_monitoring_enabled:
         return {"balance_monitoring_enabled": False}
     assert payload.balance_initial_usd is not None

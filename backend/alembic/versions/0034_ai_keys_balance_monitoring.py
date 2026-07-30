@@ -55,7 +55,9 @@ def upgrade() -> None:
         ),
     )
     op.add_column("ai_keys", sa.Column("provider_api_key_id", sa.Text(), nullable=True))
-    op.add_column("ai_keys", sa.Column("billing_admin_key_encrypted", sa.LargeBinary(), nullable=True))
+    op.add_column(
+        "ai_keys", sa.Column("billing_admin_key_encrypted", sa.LargeBinary(), nullable=True)
+    )
     op.create_check_constraint(
         "ck_ai_keys_balance_sync_status",
         "ai_keys",

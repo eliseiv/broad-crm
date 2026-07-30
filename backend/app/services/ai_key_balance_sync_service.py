@@ -256,7 +256,7 @@ class AiKeyBalanceSyncService:
         if self._telegram is None:
             logger.info("ai_key_balance_alert_suppressed_no_telegram", ai_key_id=str(snapshot.id))
             return
-        backends: list[BackendRef] = ()
+        backends: list[BackendRef] = []
         if alert in ("low", "depleted", "sync_failed"):
             backends = await self._backend_refs(snapshot.id)
         if alert == "low" and remaining_usd is not None:
