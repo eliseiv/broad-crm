@@ -37,6 +37,15 @@ class _Row:
         self.last_checked_at: datetime | None = None
         self.created_at = now
         self.updated_at = now
+        self.balance_monitoring_enabled = False
+        self.balance_initial_usd = None
+        self.balance_remaining_usd = None
+        self.balance_low_threshold_usd = None
+        self.balance_anchor_at = None
+        self.balance_last_sync_at = None
+        self.balance_sync_status = None
+        self.balance_sync_error = None
+        self.balance_alert_level = None
 
 
 class _FakeSession:
@@ -65,6 +74,8 @@ class _FakeRepo:
         key_encrypted: bytes,
         key_prefix: str | None,
         key_last4: str | None,
+        balance_monitoring_enabled: bool = False,
+        **balance_kw: object,
     ) -> _Row:
         self.captured_encrypted = key_encrypted
         row = _Row(
@@ -74,6 +85,7 @@ class _FakeRepo:
             key_prefix=key_prefix,
             key_last4=key_last4,
         )
+        row.balance_monitoring_enabled = balance_monitoring_enabled
         self.rows.append(row)
         return row
 
@@ -97,11 +109,24 @@ class _FakeMonitor:
         self.checked.append(ai_key_id)
 
 
+class _FakeBalanceSync:
+    def __init__(self) -> None:
+        self.synced: list[uuid.UUID] = []
+
+    async def sync_one(self, ai_key_id: uuid.UUID) -> None:
+        self.synced.append(ai_key_id)
+
+
 def _service() -> tuple[AiKeyService, _FakeRepo, _FakeMonitor]:
     repo = _FakeRepo()
     monitor = _FakeMonitor()
     return (
-        AiKeyService(repository=repo, monitor=monitor, backends=_FakeBackends()),  # type: ignore[arg-type]
+        AiKeyService(
+            repository=repo,  # type: ignore[arg-type]
+            monitor=monitor,
+            balance_sync=_FakeBalanceSync(),  # type: ignore[arg-type]
+            backends=_FakeBackends(),  # type: ignore[arg-type]
+        ),
         repo,
         monitor,
     )

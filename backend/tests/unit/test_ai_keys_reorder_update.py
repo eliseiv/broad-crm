@@ -55,6 +55,15 @@ class FakeAiKey:
         self.last_checked_at: datetime | None = now
         self.created_at = now
         self.updated_at = now
+        self.balance_monitoring_enabled = False
+        self.balance_initial_usd = None
+        self.balance_remaining_usd = None
+        self.balance_low_threshold_usd = None
+        self.balance_anchor_at = None
+        self.balance_last_sync_at = None
+        self.balance_sync_status = None
+        self.balance_sync_error = None
+        self.balance_alert_level = None
 
 
 class FakeSession:
@@ -101,6 +110,14 @@ class FakeMonitor:
         self.checked.append(ai_key_id)
 
 
+class FakeBalanceSync:
+    def __init__(self) -> None:
+        self.synced: list[uuid.UUID] = []
+
+    async def sync_one(self, ai_key_id: uuid.UUID) -> None:
+        self.synced.append(ai_key_id)
+
+
 class _FakeBackends:
     async def count_by_ai_keys(self, ai_key_ids: Any) -> dict[Any, int]:
         return {}
@@ -111,7 +128,10 @@ class _FakeBackends:
 
 def _service(repo: FakeAiKeyRepo, monitor: FakeMonitor) -> AiKeyService:
     return AiKeyService(
-        repository=cast(Any, repo), monitor=cast(Any, monitor), backends=cast(Any, _FakeBackends())
+        repository=cast(Any, repo),
+        monitor=cast(Any, monitor),
+        balance_sync=cast(Any, FakeBalanceSync()),
+        backends=cast(Any, _FakeBackends()),
     )
 
 
