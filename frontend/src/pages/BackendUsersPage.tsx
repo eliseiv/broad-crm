@@ -32,6 +32,10 @@ function formatUsd(value: number): string {
   return `$${formatInt(value)}`;
 }
 
+function formatBackendLabel(code: string, name: string): string {
+  return `${code} — ${name}`;
+}
+
 export function BackendUsersPage() {
   // Page-level view-guard (ADR-021 §6): без `backend-users:view` — заглушка.
   const canView = useCanViewPage('backend-users');
@@ -169,7 +173,7 @@ function BackendUsersList() {
             <p className="font-medium">Часть бэков не ответила — данные неполные:</p>
             {sourceErrors.map((e) => (
               <p key={e.backend_id} className="text-text-secondary">
-                {e.backend_name} — {e.message}
+                {formatBackendLabel(e.backend_code, e.backend_name)} — {e.message}
               </p>
             ))}
           </div>
@@ -248,6 +252,7 @@ function BackendUsersList() {
                 </th>
                 <th className="px-4 py-3 font-medium">Оплаты</th>
                 <th className="px-4 py-3 font-medium">Продлений</th>
+                <th className="px-4 py-3 font-medium">Код</th>
                 <th className="px-4 py-3 font-medium">Приложение</th>
                 <th className="px-4 py-3 font-medium">Регистрация</th>
               </tr>
@@ -270,6 +275,9 @@ function BackendUsersList() {
                   </td>
                   <td className="px-4 py-3 text-text-secondary">{user.payments_count}</td>
                   <td className="px-4 py-3 text-text-secondary">{user.renewals_count}</td>
+                  <td className="px-4 py-3 font-mono text-[13px] text-text-primary">
+                    {user.backend_code}
+                  </td>
                   <td className="px-4 py-3 font-medium text-text-primary">{user.backend_name}</td>
                   <td className="px-4 py-3 text-text-secondary">
                     {formatDateTimeRu(user.registered_at)}

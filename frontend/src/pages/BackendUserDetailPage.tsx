@@ -121,6 +121,9 @@ function BackendUserDetailView() {
           <div>
             <h1 className="font-mono text-lg font-bold text-text-primary">{data.id}</h1>
             <p className="mt-1 text-[13px] text-text-secondary">
+              Код:{' '}
+              <span className="font-mono font-medium text-text-primary">{data.backend_code}</span>
+              <span className="mx-2 text-border-strong">|</span>
               Приложение: <span className="font-medium text-text-primary">{data.backend_name}</span>
               <span className="mx-2 text-border-strong">|</span>
               Регистрация: {formatDateTimeRu(data.registered_at)}

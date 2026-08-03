@@ -60,6 +60,15 @@ _MAX_WINDOW = 1000
 
 _CONTRACT_MISMATCH = "Бэк вернул данные не по контракту"
 
+
+def _backend_fields(backend: Backend) -> dict[str, Any]:
+    return {
+        "backend_id": backend.id,
+        "backend_code": backend.code,
+        "backend_name": backend.name,
+    }
+
+
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
@@ -172,9 +181,7 @@ class BackendUserService:
             raise backend_admin_unavailable(_CONTRACT_MISMATCH)
         try:
             items = [
-                BackendUserItem.model_validate(
-                    {**item, "backend_id": backend.id, "backend_name": backend.name}
-                )
+                BackendUserItem.model_validate({**item, **_backend_fields(backend)})
                 for item in raw_items
             ]
         except (ValidationError, TypeError) as exc:
@@ -193,7 +200,8 @@ class BackendUserService:
         except ValidationError:
             errors.append(
                 BackendUsersSourceError(
-                    backend_id=backend.id, backend_name=backend.name, message=_CONTRACT_MISMATCH
+                    **_backend_fields(backend),
+                    message=_CONTRACT_MISMATCH,
                 )
             )
             return
@@ -205,9 +213,7 @@ class BackendUserService:
     def _source_error(backend: Backend, exc: Exception) -> BackendUsersSourceError:
         message = exc.message if isinstance(exc, AppError) else "Бэк не ответил на admin-запрос"
         logger.info("backend_users_source_failed", backend_id=str(backend.id), message=message)
-        return BackendUsersSourceError(
-            backend_id=backend.id, backend_name=backend.name, message=message
-        )
+        return BackendUsersSourceError(**_backend_fields(backend), message=message)
 
     # --- карточка / истории / тарифы ---
 
@@ -215,9 +221,7 @@ class BackendUserService:
         backend, client = await self._require_source(backend_id)
         raw = await client.get_user(user_id)
         try:
-            return BackendUserDetailResponse.model_validate(
-                {**raw, "backend_id": backend.id, "backend_name": backend.name}
-            )
+            return BackendUserDetailResponse.model_validate({**raw, **_backend_fields(backend)})
         except (ValidationError, TypeError) as exc:
             raise backend_admin_unavailable(_CONTRACT_MISMATCH) from exc
 

@@ -22,6 +22,7 @@ class BackendUserItem(BaseModel):
     """Строка таблицы пользователей. `backend_*` добавляет CRM при агрегации."""
 
     backend_id: uuid.UUID
+    backend_code: str
     backend_name: str
     id: str
     external_id: str | None = None
@@ -48,6 +49,7 @@ class BackendUsersSourceError(BaseModel):
     """Бэк, не ответивший при агрегации «Все приложения» (partial-data warning в UI)."""
 
     backend_id: uuid.UUID
+    backend_code: str
     backend_name: str
     message: str
 
@@ -112,6 +114,7 @@ class BackendUserDetailResponse(BaseModel):
     """Ответ GET /api/backend-users/{backend_id}/users/{user_id}."""
 
     backend_id: uuid.UUID
+    backend_code: str
     backend_name: str
     id: str
     external_id: str | None = None

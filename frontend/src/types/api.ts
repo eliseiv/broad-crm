@@ -1387,6 +1387,7 @@ export interface DocumentAttachment {
  */
 export interface BackendUserItem {
   backend_id: string;
+  backend_code: string;
   backend_name: string;
   /** Стабильный id пользователя в бэке (User ID таблицы). */
   id: string;
@@ -1412,6 +1413,7 @@ export interface BackendUsersStats {
 /** Бэк, не ответивший при агрегации «Все приложения» (partial-data warning). */
 export interface BackendUsersSourceError {
   backend_id: string;
+  backend_code: string;
   backend_name: string;
   message: string;
 }
@@ -1472,6 +1474,7 @@ export interface BackendUserMediaStats {
 /** Ответ GET /api/backend-users/{backend_id}/users/{user_id}. */
 export interface BackendUserDetail {
   backend_id: string;
+  backend_code: string;
   backend_name: string;
   id: string;
   external_id: string | null;
