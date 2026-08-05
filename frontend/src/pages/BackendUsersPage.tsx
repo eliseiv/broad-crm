@@ -91,7 +91,9 @@ function BackendUsersList() {
     const items = backendsQuery.data?.items ?? [];
     return [
       { value: '', label: 'Все приложения' },
-      ...items.filter((b) => b.has_admin_api_key).map((b) => ({ value: b.id, label: b.name })),
+      ...items
+        .filter((b) => b.has_admin_api_key)
+        .map((b) => ({ value: b.id, label: formatBackendLabel(b.code, b.name) })),
     ];
   }, [backendsQuery.data?.items]);
   const showBackendFilter = !(
