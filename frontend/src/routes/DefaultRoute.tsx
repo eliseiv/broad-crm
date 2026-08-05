@@ -16,6 +16,7 @@ const NAV_ORDER: { path: string; page: string }[] = [
   { path: '/ai-keys', page: 'ai-keys' },
   { path: '/proxies', page: 'proxies' },
   { path: '/backends', page: 'backends' },
+  { path: '/backend-users', page: 'backend-users' },
   { path: '/users', page: 'users' },
   { path: '/roles', page: 'roles' },
   { path: '/teams', page: 'teams' },

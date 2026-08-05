@@ -16,6 +16,7 @@ function renderDefault() {
       <Route path="/servers" element={<div>SERVERS</div>} />
       <Route path="/users" element={<div>USERS</div>} />
       <Route path="/roles" element={<div>ROLES</div>} />
+      <Route path="/backend-users" element={<div>BACKEND_USERS</div>} />
     </Routes>,
     { wrapper },
   );
@@ -52,6 +53,17 @@ describe('DefaultRoute (permission-aware default без /dashboard, ADR-022)', (
     loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { roles: ['view'] } });
     renderDefault();
     expect(screen.getByText('ROLES')).toBeInTheDocument();
+  });
+
+  it('resolves /backend-users when only backend-users:view is granted (ADR-069)', () => {
+    loginAs({
+      isSuperadmin: false,
+      role: 'Менеджер',
+      permissions: { 'backend-users': ['view', 'edit'] },
+    });
+    renderDefault();
+    expect(screen.getByText('BACKEND_USERS')).toBeInTheDocument();
+    expect(screen.queryByText('Недостаточно прав')).not.toBeInTheDocument();
   });
 
   it('non-superadmin role=admin (no explicit perms) reaches /users via admin flag', () => {
