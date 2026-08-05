@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MailboxFormModal } from '@/components/MailboxFormModal';
@@ -399,5 +399,64 @@ describe('MailboxFormModal — поле секрета «Код приложен
     // Переименование UI-лейбла НЕ переименовывает поле DTO (§4).
     expect(payload.password).toBe('app-code');
     expect(payload).not.toHaveProperty('app_password');
+  });
+});
+
+// --- ADR-071: дефолт SMTP в режиме `add` — порт 587 + STARTTLS (нормативно) -----
+// Раньше форма предзаполняла 465/SSL (implicit TLS), но современные провайдеры (Gmail,
+// Яндекс, Mail.ru, Outlook, iCloud, Yahoo) советуют submission-порт 587 STARTTLS.
+// IMAP (993/SSL) и контракт API не менялись.
+
+describe('MailboxFormModal — дефолт SMTP 587 STARTTLS в режиме add (ADR-071)', () => {
+  beforeEach(() => {
+    perms.canCreate = true;
+    perms.seesAll = true;
+    mailScope.value = { teams: [{ id: 'team-3', name: 'Продажи' }], includesUnassigned: false };
+  });
+
+  it('add: SMTP-порт предзаполнен «587», «Шифрование» = STARTTLS', () => {
+    render(<MailboxFormModal open onOpenChange={vi.fn()} mode="add" />);
+
+    // Оба fieldset несут поле «Порт» — SMTP-порт берём строго из группы SMTP.
+    const smtp = within(screen.getByRole('group', { name: 'SMTP' }));
+    expect((smtp.getByLabelText('Порт') as HTMLInputElement).value).toBe('587');
+
+    const security = screen.getByLabelText('Шифрование') as HTMLSelectElement;
+    expect(security.value).toBe('starttls');
+  });
+
+  it('add: IMAP-дефолт не затронут — порт «993», SSL/TLS включён (регресс-гард)', () => {
+    render(<MailboxFormModal open onOpenChange={vi.fn()} mode="add" />);
+
+    const imap = within(screen.getByRole('group', { name: 'IMAP' }));
+    expect((imap.getByLabelText('Порт') as HTMLInputElement).value).toBe('993');
+    expect(imap.getByLabelText('SSL/TLS')).toBeChecked();
+  });
+
+  it('add: инлайн-подсказка Gmail несёт «smtp.gmail.com:587 STARTTLS»', () => {
+    render(<MailboxFormModal open onOpenChange={vi.fn()} mode="add" />);
+
+    // Текст живёт в свёрнутом <details> аккордеона «Как добавить почту?» — в DOM присутствует.
+    expect(screen.getByText('smtp.gmail.com:587 STARTTLS')).toBeInTheDocument();
+  });
+
+  it('add: create с дефолтами шлёт smtp_port=587, smtp_ssl=false, smtp_starttls=true', async () => {
+    render(<MailboxFormModal open onOpenChange={vi.fn()} mode="add" />);
+
+    await userEvent.type(screen.getByLabelText('Адрес почты'), 'new@example.com');
+    await userEvent.type(screen.getByLabelText('Код приложения'), 's3cr3t');
+    await userEvent.type(screen.getByLabelText('IMAP-хост'), 'imap.example.com');
+    await userEvent.type(screen.getByLabelText('SMTP-хост'), 'smtp.example.com');
+    await userEvent.click(screen.getByRole('button', { name: 'Добавить' }));
+
+    expect(mutations.create).toHaveBeenCalledTimes(1);
+    const payload = mutations.create.mock.calls[0][0] as Record<string, unknown>;
+    // Дефолт 587/STARTTLS транслируется в контракт: submission-порт без implicit TLS.
+    expect(payload.smtp_port).toBe(587);
+    expect(payload.smtp_ssl).toBe(false);
+    expect(payload.smtp_starttls).toBe(true);
+    // IMAP-дефолт неизменен (993/SSL).
+    expect(payload.imap_port).toBe(993);
+    expect(payload.imap_ssl).toBe(true);
   });
 });

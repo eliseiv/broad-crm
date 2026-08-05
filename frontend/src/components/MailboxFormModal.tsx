@@ -175,7 +175,7 @@ function MailHelpAccordion() {
           </Ext>{' '}
           → скопировать 16-символьный пароль <em>(показывается один раз)</em>. 4) В форме: адрес{' '}
           <Code>you@gmail.com</Code>, пароль — этот 16-символьный <em>(без пробелов)</em>. Хосты:{' '}
-          <Code>imap.gmail.com:993 SSL</Code>, <Code>smtp.gmail.com:465 SSL</Code>.{' '}
+          <Code>imap.gmail.com:993 SSL</Code>, <Code>smtp.gmail.com:587 STARTTLS</Code>.{' '}
           <strong className="text-text-primary">
             ⚠️ Корпоративный Workspace Gmail: app passwords часто отключены администратором домена →
             подключиться не получится (OAuth не поддерживается).
@@ -193,7 +193,7 @@ function MailHelpAccordion() {
           IMAP: <Ext href="https://mail.yandex.ru">mail.yandex.ru</Ext> → «Все настройки» →
           «Почтовые программы» → «С сервера imap.yandex.ru по протоколу IMAP». 3) «Пароли
           приложений» → «Создать» → «Почта». 4) Хосты: <Code>imap.yandex.ru:993 SSL</Code>,{' '}
-          <Code>smtp.yandex.ru:465 SSL</Code>.
+          <Code>smtp.yandex.ru:587 STARTTLS</Code>.
         </HelpItem>
 
         <HelpItem
@@ -213,7 +213,7 @@ function MailHelpAccordion() {
             account.mail.ru/user/2-step-auth/passwords
           </Ext>{' '}
           → «Добавить». 3) IMAP включён по умолчанию. 4) Хосты: <Code>imap.mail.ru:993 SSL</Code>,{' '}
-          <Code>smtp.mail.ru:465 SSL</Code>.
+          <Code>smtp.mail.ru:587 STARTTLS</Code>.
         </HelpItem>
 
         <HelpItem
@@ -261,13 +261,14 @@ function MailHelpAccordion() {
             login.yahoo.com/account/security
           </Ext>{' '}
           → «Generate and manage app passwords». 2) Хосты вручную:{' '}
-          <Code>imap.mail.yahoo.com:993 SSL</Code>, <Code>smtp.mail.yahoo.com:465 SSL</Code>.
+          <Code>imap.mail.yahoo.com:993 SSL</Code>, <Code>smtp.mail.yahoo.com:587 STARTTLS</Code>.
         </HelpItem>
 
         <HelpItem summary="Другой провайдер / свой сервер">
           Найдите настройки на сайте провайдера («IMAP settings»). Обычно: IMAP{' '}
-          <Code>imap.&lt;домен&gt;:993 SSL</Code>, SMTP <Code>smtp.&lt;домен&gt;:465 SSL</Code> либо{' '}
-          <Code>587 STARTTLS</Code>; логин — полный email (иногда нужен отдельный SMTP-логин).{' '}
+          <Code>imap.&lt;домен&gt;:993 SSL</Code>, SMTP <Code>smtp.&lt;домен&gt;:587 STARTTLS</Code>{' '}
+          (некоторые провайдеры — <Code>465 SSL</Code>); логин — полный email (иногда нужен
+          отдельный SMTP-логин).{' '}
           <strong className="text-text-primary">
             ⚠️ ProtonMail без платной подписки не работает
           </strong>{' '}
@@ -328,8 +329,8 @@ function MailboxDialog({
   const [imapPort, setImapPort] = useState(isEdit ? '' : '993');
   const [imapSsl, setImapSsl] = useState(true);
   const [smtpHost, setSmtpHost] = useState('');
-  const [smtpPort, setSmtpPort] = useState(isEdit ? '' : '465');
-  const [smtpSecurity, setSmtpSecurity] = useState<SmtpSecurity>('ssl');
+  const [smtpPort, setSmtpPort] = useState(isEdit ? '' : '587');
+  const [smtpSecurity, setSmtpSecurity] = useState<SmtpSecurity>('starttls');
   const [smtpUsername, setSmtpUsername] = useState('');
   const [password, setPassword] = useState('');
   const [smtpPassword, setSmtpPassword] = useState('');
