@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom';
 import { AddTokensModal, GrantPlanModal } from '@/components/BackendUserActionModals';
 import { InsufficientPermissions } from '@/components/InsufficientPermissions';
 import { Button } from '@/components/ui/Button';
+import { Pill } from '@/components/ui/Pill';
 import { Spinner } from '@/components/ui/Spinner';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -40,6 +41,32 @@ function formatPaymentAmount(payment: BackendUserPayment): string {
 function formatSeconds(value: number | null | undefined): string {
   if (value == null) return '—';
   return `${value.toLocaleString('ru-RU', { maximumFractionDigits: 1 })}s`;
+}
+
+/**
+ * Себестоимость генерации, USD — до **4** знаков после запятой (ADR-072 §5): локальный
+ * `formatUsd` выше округляет до 2 знаков и схлопнул бы суб-центовую себестоимость
+ * (`$0.0004`) в «$0.00» — то же искажение, что и `null → $0.00`, только с другой стороны.
+ * Хвостовые нули сверх двух знаков убираются: `0` → «$0.00», `0.0004` → «$0.0004».
+ * Вызывается ТОЛЬКО для измеренного значения — `null` рендерится «—» на уровне ячейки.
+ */
+function formatProviderCostUsd(value: number): string {
+  return `$${value.toFixed(4).replace(/(\.\d{2})0+$/, '$1')}`;
+}
+
+/** «Не измерено» — title у прочерка новых колонок истории запросов (ADR-072 §5). */
+const NOT_MEASURED_TITLE = 'Не измерено';
+
+/**
+ * Прочерк «не измерено». `null` НЕ ноль: подставлять `$0.00`/`0` (в т.ч. через
+ * `value || 0`, `?? 0`, `coalesce`) на уровне строки ЗАПРЕЩЕНО (ADR-072 §5).
+ */
+function NotMeasured() {
+  return (
+    <span className="text-text-tertiary" title={NOT_MEASURED_TITLE}>
+      —
+    </span>
+  );
 }
 
 export function BackendUserDetailPage() {
@@ -440,6 +467,12 @@ function RequestsTab({ backendId, userId }: { backendId: string; userId: string 
   );
   if (isLoading || isError || items.length === 0) return state;
 
+  // Легенда обязательна, если хоть одна строка несёт «—» в новых колонках: различие
+  // «не измерено» не должно передаваться только символом/цветом (ADR-072 §5, a11y NFR-8).
+  const hasNotMeasured = items.some(
+    (request) => request.provider_cost_usd == null || request.tokens_spent == null,
+  );
+
   return (
     <div className="border-t border-border-subtle">
       <div className="flex items-center gap-2 px-5 py-3">
@@ -449,11 +482,16 @@ function RequestsTab({ backendId, userId }: { backendId: string; userId: string 
         </span>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[720px] text-left text-sm">
+        {/* Ширина увеличена под две новые колонки (contract v1.1). Числовые значения
+            НЕ усекаются (`truncate`/`overflow-hidden` на них запрещены) — переполнение
+            решается размером таблицы, CLAUDE.md/08-design-system.md. */}
+        <table className="w-full min-w-[1040px] text-left text-sm">
           <thead>
             <tr className="border-y border-border-subtle text-[12px] uppercase tracking-wide text-text-tertiary">
               <th className="px-5 py-2.5 font-medium">Запрос</th>
               <th className="px-5 py-2.5 font-medium">Ответ от сервера</th>
+              <th className="px-5 py-2.5 font-medium">Списано токенов</th>
+              <th className="px-5 py-2.5 font-medium">Себестоимость</th>
               <th className="px-5 py-2.5 font-medium">Время обработки запроса</th>
               <th className="px-5 py-2.5 font-medium">Время отправки запроса</th>
             </tr>
@@ -482,6 +520,28 @@ function RequestsTab({ backendId, userId }: { backendId: string; userId: string 
                   <td className={cn('px-5 py-3 font-medium', style.text)}>
                     {requestStatusLabel(request)}
                   </td>
+                  <td className="whitespace-nowrap px-5 py-3 text-text-secondary">
+                    <span className="inline-flex items-center gap-2">
+                      {request.tokens_spent == null ? (
+                        <NotMeasured />
+                      ) : (
+                        formatTokens(request.tokens_spent)
+                      )}
+                      {/* Возврат фиксируется отдельно и НЕ обнуляет списание: `tokens_spent`
+                          остаётся показанным (ADR-072 §1 инв. 2). Пометка — текстом и
+                          СТРОГО при `true`: `false` и `null` («поле не отдано», `null ≠ false`)
+                          пометки не дают, отдельного индикатора «неизвестно» нет —
+                          в такой строке списание и себестоимость и так «—». */}
+                      {request.refunded === true && <Pill tone="yellow" label="Возврат" />}
+                    </span>
+                  </td>
+                  <td className="whitespace-nowrap px-5 py-3 text-text-secondary">
+                    {request.provider_cost_usd == null ? (
+                      <NotMeasured />
+                    ) : (
+                      formatProviderCostUsd(request.provider_cost_usd)
+                    )}
+                  </td>
                   <td className="px-5 py-3 text-text-secondary">
                     {formatSeconds(request.duration_sec)}
                   </td>
@@ -494,6 +554,9 @@ function RequestsTab({ backendId, userId }: { backendId: string; userId: string 
           </tbody>
         </table>
       </div>
+      {hasNotMeasured && (
+        <p className="px-5 py-3 text-[12px] text-text-secondary">— — себестоимость не измерена</p>
+      )}
     </div>
   );
 }

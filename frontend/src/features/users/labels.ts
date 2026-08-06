@@ -27,6 +27,7 @@ export const PAGE_LABEL: Record<string, string> = {
   proxies: 'Прокси',
   backends: 'Бэки',
   'backend-users': 'Пользователи бэков',
+  'backend-economics': 'Продукты и тарифы',
   mail: 'Почты',
   sms: 'СМС',
   roles: 'Роли',

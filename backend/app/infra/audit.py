@@ -42,14 +42,17 @@ def log_backend_admin_action(
     *,
     action: str,
     backend_id: str,
-    target_user_id: str,
+    target_user_id: str | None = None,
     detail: str,
 ) -> None:
-    """Аудит admin-операции над пользователем бэка (modules/backend-users, нормативно).
+    """Аудит admin-операции над бэком (modules/backend-users, modules/backend-economics).
 
-    `action` — `tokens_added` / `subscription_granted`; `detail` — публичные параметры
-    операции (сумма / product_id + дни), без секретов. Пишется ПОСЛЕ успешного ответа
-    бэка — неуспешная операция события не порождает.
+    `action` — `tokens_added` / `subscription_granted` (операция над пользователем,
+    ADR-069 §5) либо `product_tokens_updated` / `pricing_updated` (правка каталога,
+    ADR-072 §10). `target_user_id` ОПЦИОНАЛЕН: у правки каталога субъекта-пользователя
+    нет (ADR-072 §10). `detail` — публичные параметры операции (сумма / product_id +
+    дни / дельта `1000->1500`), без секретов. Пишется ПОСЛЕ успешного ответа бэка —
+    неуспешная операция события не порождает.
     """
     logger.info(
         "backend_admin_action",

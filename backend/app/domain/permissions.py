@@ -21,6 +21,10 @@ CATALOG: dict[str, tuple[str, ...]] = {
     # «Пользователи бэков»: view — просмотр списка/карточки; edit — admin-операции
     # (начисление токенов / выдача подписки) через CRM Admin API бэка.
     "backend-users": ("view", "edit"),
+    # «Продукты и тарифы» (ADR-072 §2): view — каталог продуктов/тарифов бэка;
+    # edit — правка количества токенов. НЕ алиас `backend-users:edit`: то — операция
+    # над одним пользователем, это — глобальное изменение для всех будущих покупок.
+    "backend-economics": ("view", "edit"),
     "mail": ("view", "create", "edit", "delete", "sync", "tags"),
     "sms": ("view", "edit", "transfer", "sync", "delete"),
     "roles": ("view", "create", "edit", "delete"),

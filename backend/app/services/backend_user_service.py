@@ -23,12 +23,9 @@ from pydantic import BaseModel, ValidationError
 
 from app.errors import (
     AppError,
-    backend_admin_key_not_set,
     backend_admin_unavailable,
-    backend_not_found,
 )
 from app.infra.backend_admin_client import BackendAdminClient
-from app.infra.crypto import decrypt_secret
 from app.logging import get_logger
 from app.models.service_backend import Backend
 from app.repositories.backend_repository import BackendRepository
@@ -46,6 +43,7 @@ from app.schemas.backend_user import (
     BackendUserTokensResponse,
     GrantBackendUserSubscriptionRequest,
 )
+from app.services.backend_admin_source import BackendAdminSourceResolver, BackendSource
 
 logger = get_logger(__name__)
 
@@ -83,6 +81,9 @@ class BackendUserService:
 
     def __init__(self, repository: BackendRepository) -> None:
         self._repo = repository
+        # Расшифровка admin-ключа — общий security-critical путь двух модулей
+        # (services/backend_admin_source.py, ADR-072 §Последствия).
+        self._sources = BackendAdminSourceResolver(repository)
 
     # --- список / сводка ---
 
@@ -273,33 +274,14 @@ class BackendUserService:
 
     # --- источники ---
 
-    async def _resolve_sources(
-        self, backend_id: uuid.UUID | None
-    ) -> list[tuple[Backend, BackendAdminClient]]:
+    async def _resolve_sources(self, backend_id: uuid.UUID | None) -> list[BackendSource]:
         """Источники агрегации: один бэк (обязан иметь admin-ключ) или все с ключом."""
         if backend_id is not None:
             return [await self._require_source(backend_id)]
-        backends = await self._repo.list_all()
-        return [(b, self._client(b)) for b in backends if b.admin_api_key_encrypted is not None]
+        return await self._sources.list_with_admin_key()
 
-    async def _require_source(self, backend_id: uuid.UUID) -> tuple[Backend, BackendAdminClient]:
-        backend = await self._repo.get_by_id(backend_id)
-        if backend is None:
-            raise backend_not_found()
-        if backend.admin_api_key_encrypted is None:
-            raise backend_admin_key_not_set()
-        return backend, self._client(backend)
-
-    @staticmethod
-    def _client(backend: Backend) -> BackendAdminClient:
-        encrypted = backend.admin_api_key_encrypted
-        if encrypted is None:  # защищено фильтрами _resolve_sources/_require_source
-            raise backend_admin_key_not_set()
-        return BackendAdminClient(
-            backend_id=backend.id,
-            domain=backend.domain,
-            admin_key=decrypt_secret(encrypted),
-        )
+    async def _require_source(self, backend_id: uuid.UUID) -> BackendSource:
+        return await self._sources.require(backend_id)
 
     @staticmethod
     def _validate(schema: type[_ModelT], raw: dict[str, Any]) -> _ModelT:

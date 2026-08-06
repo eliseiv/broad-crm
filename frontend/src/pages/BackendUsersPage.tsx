@@ -16,7 +16,7 @@ import { Select } from '@/components/ui/Select';
 import { Spinner } from '@/components/ui/Spinner';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { formatDateTimeRu } from '@/lib/format';
+import { formatBackendLabel, formatDateTimeRu } from '@/lib/format';
 import { useCanViewPage } from '@/features/auth/hooks';
 import { useBackendUsers } from '@/features/backend-users/hooks';
 import { useBackends } from '@/features/backends/hooks';
@@ -30,10 +30,6 @@ function formatInt(value: number): string {
 
 function formatUsd(value: number): string {
   return `$${formatInt(value)}`;
-}
-
-function formatBackendLabel(code: string, name: string): string {
-  return `${code} — ${name}`;
 }
 
 export function BackendUsersPage() {
@@ -93,7 +89,7 @@ function BackendUsersList() {
       { value: '', label: 'Все приложения' },
       ...items
         .filter((b) => b.has_admin_api_key)
-        .map((b) => ({ value: b.id, label: formatBackendLabel(b.code, b.name) })),
+        .map((b) => ({ value: b.id, label: formatBackendLabel(b.name, b.code) })),
     ];
   }, [backendsQuery.data?.items]);
   const showBackendFilter = !(
@@ -175,7 +171,7 @@ function BackendUsersList() {
             <p className="font-medium">Часть бэков не ответила — данные неполные:</p>
             {sourceErrors.map((e) => (
               <p key={e.backend_id} className="text-text-secondary">
-                {formatBackendLabel(e.backend_code, e.backend_name)} — {e.message}
+                {formatBackendLabel(e.backend_name, e.backend_code)} — {e.message}
               </p>
             ))}
           </div>

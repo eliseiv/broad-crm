@@ -63,6 +63,7 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
         "proxies",
         "backends",
         "backend-users",
+        "backend-economics",
         "mail",
         "sms",
         "roles",
@@ -80,6 +81,9 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
     assert by_page["documents"] == ["view", "create", "edit", "delete", "share"]
     # backend-users (ADR-069): edit — admin-операции над пользователями бэков.
     assert by_page["backend-users"] == ["view", "edit"]
+    # backend-economics (ADR-072 §2): НЕ алиас `backend-users:edit` — отдельная страница
+    # каталога продуктов/тарифов; edit — правка количества токенов.
+    assert by_page["backend-economics"] == ["view", "edit"]
     assert "users" not in by_page
 
 

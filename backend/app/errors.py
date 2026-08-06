@@ -300,6 +300,29 @@ def backend_admin_bad_request(message: str) -> AppError:
     )
 
 
+def backend_admin_extension_not_supported() -> AppError:
+    """404 на РАСШИРЕННОМ пути v1.1 при известном префиксе (ADR-072 §4в).
+
+    Бэк реализует контракт v1, но не расширение «экономика»: эндпоинта нет вовсе.
+    Не путать с `backend_admin_not_supported` (оба префикса 404 на v1-probe —
+    контракт не реализован вовсе) и с `backend_user_not_found` (404 на `/users/*`).
+    """
+    return AppError(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        code="backend_admin_extension_not_supported",
+        message="Бэк не поддерживает расширение контракта",
+    )
+
+
+def backend_admin_conflict() -> AppError:
+    """Бэк ответил 409 — конфликт `if_updated_at`: значение изменил другой оператор."""
+    return AppError(
+        status_code=status.HTTP_409_CONFLICT,
+        code="backend_admin_conflict",
+        message="Значение изменил другой оператор — обновите страницу",
+    )
+
+
 def sms_number_not_found() -> AppError:
     return AppError(
         status_code=status.HTTP_404_NOT_FOUND,

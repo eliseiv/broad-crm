@@ -28,6 +28,8 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/proxies', label: 'Прокси', page: 'proxies' },
   { to: '/backends', label: 'Бэки', page: 'backends' },
   { to: '/backend-users', label: 'Юзеры бэков', page: 'backend-users' },
+  // «Продукты и тарифы» — сразу после «Юзеры бэков» (ADR-072 §2), гейт backend-economics:view.
+  { to: '/backend-economics', label: 'Продукты и тарифы', page: 'backend-economics' },
   { to: '/users', label: 'Пользователи', page: 'users' },
   { to: '/roles', label: 'Роли', page: 'roles' },
   { to: '/teams', label: 'Команды', page: 'teams' },
@@ -63,6 +65,7 @@ export function AppLayout() {
     proxies: useCanViewPage('proxies'),
     backends: useCanViewPage('backends'),
     'backend-users': useCanViewPage('backend-users'),
+    'backend-economics': useCanViewPage('backend-economics'),
     roles: useCanViewPage('roles'),
     teams: useCanViewPage('teams'),
     documents: useCanViewPage('documents'),

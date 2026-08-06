@@ -3,6 +3,7 @@ import { Route, Routes } from 'react-router-dom';
 import { AppLayout } from '@/components/AppLayout';
 import { Spinner } from '@/components/ui/Spinner';
 import { AiKeysPage } from '@/pages/AiKeysPage';
+import { BackendEconomicsPage } from '@/pages/BackendEconomicsPage';
 import { BackendsPage } from '@/pages/BackendsPage';
 import { BackendUserDetailPage } from '@/pages/BackendUserDetailPage';
 import { BackendUsersPage } from '@/pages/BackendUsersPage';
@@ -65,6 +66,9 @@ export function App() {
               view-guard backend-users:view внутри страниц. */}
           <Route path="/backend-users" element={<BackendUsersPage />} />
           <Route path="/backend-users/:backendId/:userId" element={<BackendUserDetailPage />} />
+          {/* «Продукты и тарифы» — экономика бэка (ADR-072); page-level view-guard
+              `backend-economics:view` внутри страницы. */}
+          <Route path="/backend-economics" element={<BackendEconomicsPage />} />
           <Route path="/mail" element={<MailPage />} />
           {/* «СМС» — категория «Агрегатор», не-full-bleed; page-level view-guard
               `sms:view` внутри страницы (ADR-030, 08-design-system.md «Страница СМС»). */}

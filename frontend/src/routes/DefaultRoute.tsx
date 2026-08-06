@@ -17,6 +17,9 @@ const NAV_ORDER: { path: string; page: string }[] = [
   { path: '/proxies', page: 'proxies' },
   { path: '/backends', page: 'backends' },
   { path: '/backend-users', page: 'backend-users' },
+  // «Продукты и тарифы» — сразу после `backend-users` (ADR-072), существующие
+  // приоритеты не меняются.
+  { path: '/backend-economics', page: 'backend-economics' },
   { path: '/users', page: 'users' },
   { path: '/roles', page: 'roles' },
   { path: '/teams', page: 'teams' },

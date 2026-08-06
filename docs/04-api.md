@@ -855,6 +855,8 @@ RBAC: чтение — `require("backend-users","view")`; admin-операции
 
 Тарифы бэка для формы «Установить план» → `{ items: [{ product_id, name, price, period }] }`.
 
+С contract v1.1 ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md)) элемент бэка дополнительно несёт `tokens`, `avatar_tokens`, `grantable`, `updated_at`, а сам путь принимает `scope=grantable|all`. **CRM на этом эндпоинте `scope` НЕ шлёт** — у бэка действует умолчание `grantable`, то есть сегодняшнее поведение формы «Установить план» сохраняется без изменений. Полный каталог (`scope=all`) читает страница «Продукты и тарифы» — [Backend Economics](#backend-economics).
+
 ### GET /api/backend-users/{backend_id}/users/{user_id}
 
 Карточка: `{ backend_id, backend_name, id, external_id, registered_at, balance, subscription, revenue|null, media_stats|null }` — опциональные блоки контракта §4.5 при отсутствии = `null` (UI скрывает секции).
@@ -862,6 +864,14 @@ RBAC: чтение — `require("backend-users","view")`; admin-операции
 ### GET /api/backend-users/{backend_id}/users/{user_id}/payments · /requests
 
 Истории оплат/запросов (транзит, `occurred_at`/`sent_at` DESC, `limit`/`offset`).
+
+Элемент истории **запросов** с contract v1.1 ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md)) дополняется тремя **опциональными** полями (бэк уровня v1 их не отдаёт — это не ошибка):
+
+| Поле | Тип | Семантика |
+|------|-----|-----------|
+| `tokens_spent` | `number \| null` | Списано токенов за запрос. `null` = **не измерено** (не ноль) |
+| `provider_cost_usd` | `number \| null` | Себестоимость генерации у провайдера, USD. **`null` = «не измерено», НЕ ноль** — UI рендерит `—` и **никогда** `$0.00`; `value \|\| 0`/`?? 0`/`coalesce` на уровне строки **запрещены**. Измеренный `0` → `$0.00` (отличимо). Формат — до **4** знаков после запятой ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §5) |
+| `refunded` | `bool \| null` | `true` — списание возвращено (`tokens_spent` при этом **остаётся заполненным** — возврат не обнуляет стоимость); `false` — возврата не было; **`null` — поле не отдано** (бэк уровня v1). Как и у двух полей выше, CRM нормализует отсутствующее поле в `null` и `502` из-за него не отвечает ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §1.1). ⚠️ **`null` ≠ `false`:** «не отдано» — не «не возвращено» |
 
 ### POST /api/backend-users/{backend_id}/users/{user_id}/tokens
 
@@ -871,7 +881,111 @@ RBAC: чтение — `require("backend-users","view")`; admin-операции
 
 Тело `{ product_id, expires_in_days (1..3660), grant_id }` — **идемпотентен** по `grant_id` (генерирует UI при открытии формы). Response `{ id, tokens, subscription_active, subscription_expires_at, applied }`; `applied=false` — распознанный повтор.
 
-**Ошибки (все эндпоинты):** `401/403`; `404 backend_not_found`; `409 backend_admin_key_not_set` (у бэка нет admin-ключа); `404 backend_user_not_found` (транзит 404 бэка); `400 backend_admin_bad_request` (транзит 400: минус-баланс/неизвестный product); `502 backend_admin_rejected` (бэк отверг ключ), `502 backend_admin_not_supported` (оба префикса 404 — контракт не реализован), `502 backend_admin_unavailable` (сеть/таймаут/5xx/не-контрактные данные).
+**Ошибки (все эндпоинты):** `401/403`; `404 backend_not_found`; `409 backend_admin_key_not_set` (у бэка нет admin-ключа); `404 backend_user_not_found` (транзит 404 бэка — **только на путях `/users/*`**, см. ниже); **`400 backend_admin_bad_request` (транзит `400` ИЛИ `422` бэка:** минус-баланс/неизвестный product — `400`; отказ валидации тела у бэка, напр. слишком большая сумма — `422`. **Клиент общий с [Backend Economics](#backend-economics), и маппинг `422` действует и здесь** — [ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §7.3; прежде `422` давал `502` с «Ошибка бэка (HTTP 422)». Текст причины: `detail`-строка — транзитом, `detail`-список — `msg` первого элемента, иначе фолбэк «Бэк отверг значение: не прошло проверку на стороне бэка»**)**; `502 backend_admin_rejected` (бэк отверг ключ), `502 backend_admin_not_supported` (оба префикса 404 — контракт не реализован), `502 backend_admin_unavailable` (сеть/таймаут/5xx/не-контрактные данные).
+
+> **`backend_user_not_found` действует ТОЛЬКО на путях `/users/*`** ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §4): семантика 404 задаётся вызывающим явно (`CONTRACT` / `USER` / `EXTENSION`), без значения по умолчанию. На путях, где пользователя нет вовсе (`/products`, весь роутер [Backend Economics](#backend-economics)), этот код **недостижим**; его появление там = дефект, а не состояние.
+
+---
+
+## Backend Economics
+
+Страница **«Продукты и тарифы»** ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md), модуль — [modules/backend-economics](modules/backend-economics/README.md), UI — [08-design-system.md](08-design-system.md#страница-продукты-и-тарифы-нормативно-adr-072)). Каталог продуктов бэка (сколько токенов даёт продукт) и тарифы списания за генерацию (сколько токенов стоит чат/фото/видео) с правкой количества токенов из CRM.
+
+**CRM — прокси без собственного хранилища** ([ADR-069](adr/ADR-069-backend-users-page-admin-contract.md) §3 **подтверждён**, не отменён): продукты, тарифы и себестоимость **не** копируются в БД CRM, собственных таблиц и миграций модуль не добавляет. Транспорт тот же, что у [Backend Users](#backend-users): admin-ключ бэка расшифровывается в памяти и уходит заголовком `X-Admin-Key`, префикс (`/api/billing/admin` ИЛИ `/v1/admin`) определяется автоматически — **всегда по v1-пути `GET {P}/products`**; расширенные пути детекцию не выполняют.
+
+RBAC: чтение — **`require("backend-economics","view")`**; правка — **`require("backend-economics","edit")`** + аудит-событие `backend_admin_action` (действия `product_tokens_updated` / `pricing_updated`, в деталях — дельта `1000->1500`, пишется **только после успеха бэка**). **Ключ `backend-economics` — не алиас `backend-users:edit`**: роль с полным `backend-users:["view","edit"]` и без `backend-economics` получает `403` на **всех** путях ниже.
+
+На каждый `PATCH` CRM шлёт бэку заголовок **`X-Admin-Actor: crm:<user_uuid>`** (≤255) — **заявление, а не аутентификация**: значение бэком не проверяется и **непригодно** как основание отчёта «кто менял».
+
+### GET /api/backend-economics/backends
+
+Лёгкий список бэков, у которых задан Admin API Key, — для селектора приложения. Гейт **`require("backend-economics","view")`** (намеренно **не** `backends:view`: селектор страницы не должен зависеть от чужого права — режима «Все приложения» здесь нет, и без селектора страница нерабочая).
+
+**Response 200:** `{ items: [{ id, code, name }] }` (`id` — UUID бэка, ключ путей ниже). Сортировка — `name ASC`, tie-break `code`. Пагинации нет.
+
+### GET /api/backend-economics/{backend_id}/products
+
+Полный каталог продуктов бэка. CRM зовёт у бэка `GET {P}/products?**scope=all**` (в отличие от [products страницы «Юзеры бэков»](#get-apibackend-usersbackend_idproducts), где `scope` не шлётся и действует умолчание `grantable`).
+
+**Response 200** (⚠️ числа в `limits` — **иллюстративные**: заморожены только имена ключей и типы, границы каждый бэк отдаёт свои — см. буллет под примером):
+```json
+{
+  "items": [
+    { "product_id": "pro_month", "name": "Pro (месяц)", "price": null, "period": null,
+      "tokens": 1000, "avatar_tokens": 50, "grantable": true, "updated_at": null }
+  ],
+  "capabilities": {
+    "contract_version": 1,
+    "features": ["products.read", "products.write_tokens"],
+    "limits": { "product_tokens_max": 500000, "product_avatar_tokens_max": 50000,
+                "tariff_tokens_max": 1000, "tariff_decimal_places": 6 },
+    "cache_effective_after_seconds": 60
+  }
+}
+```
+
+- **Типы элемента (все поля v1.1 — nullable):** `tokens` — **int\|null**; `avatar_tokens` — **int\|null**; `grantable` — **bool\|null**; `updated_at` — **ISO\|null**; `price`/`period` — str\|null, **не редактируются**. **`null` здесь означает «бэк не отдал поле» (уровень v1) — CRM нормализует отсутствующее поле в `null` и НИКОГДА не отвечает `502` из-за его отсутствия** ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §1.1). Для `updated_at` `null` дополнительно означает «ни разу не менялось»; в обоих случаях `if_updated_at` в `PATCH` **не отправляется**.
+- **Поведение на бэке уровня v1** ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §1.1) — нормативно, не на усмотрение исполнителя: `tokens: null` ⇒ ячейка `—` и строка **read-only** (править нечего — текущее значение неизвестно); `grantable: null` ⇒ `—`, а **не** «Нет»; **`items` непуст и НИ ОДИН элемент не несёт `tokens` ⇒ таблица переходит в информационное состояние «расширение не поддерживается»** (`items: []` под это правило не подпадает — это empty state).
+- **Обязательно в `capabilities` ТОЛЬКО `features`.** `limits`, `contract_version`, `cache_effective_after_seconds` — **опциональны** ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §7.2, критерий обязательности). У `features` отсутствие не имеет безобидного смысла: запись не подтверждена ⇒ единственный безопасный исход read-only, и fail-closed здесь и требуется. У `limits` отсутствие имеет **определённое** поведение (проверки границ нет, форма работоспособна, отказ ловит бэк — `400`/`422`), поэтому требовать его значило бы сделать этот путь деградации **недостижимым**: ответ без `limits` давал бы `schema_mismatch` ⇒ `capabilities: null` ⇒ молча read-only страницу. `contract_version`/`cache_effective_after_seconds` CRM не показывает вовсе; задержку оператор видит из `effective_after_seconds` ответа `PATCH`.
+- **`capabilities`** — конверт ответа `GET {P}/capabilities` бэка. **`null` = «фич НЕ подтверждено»**, и это **любой** неуспех подзапроса: `404`, таймаут, `5xx`, `401`/`403`, невалидный JSON, ответ не по схеме ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §7.1). **Список при этом отдаётся `200`** — провалить его в `502` из-за необязательного подзапроса запрещено. Причина пишется в лог **именованным событием `backend_admin_capabilities_unavailable`** с полями `backend_id` и `reason` ∈ `not_found | timeout | transport | redirect | rejected | http_4xx | http_5xx | bad_json | schema_mismatch` (перечень **закрыт и покрывает все исходы**, включая `3xx` — клиент не следует редиректам — расшифровка и правило расширения в [ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §7.1; образец именованного события — `backend_admin_prefix_detected` в `_remember_prefix` (`backend/app/infra/backend_admin_client.py`)). Отдельного CRM-эндпоинта capabilities нет: список и его write-аффорданс приходят одним снимком.
+- **Право записи выводится ТОЛЬКО из `features`** (`products.write_tokens`), а не из наличия поля `tokens` — бэк вправе отдавать токены read-only. `capabilities: null` ⇒ модуль **read-only**: контролы правки не рендерятся ни при каком праве (fail-closed).
+- **`limits` — замороженный состав** ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §7.2): `product_tokens_max` (int), `product_avatar_tokens_max` (int), `tariff_tokens_max` (number), `tariff_decimal_places` (int). **Отсутствующий ключ ⇒ CRM по нему клиентскую валидацию НЕ выполняет** (полагается на серверный отказ бэка — **`400` или `422`**, оба → `backend_admin_bad_request`, см. таблицу кодов ниже); `limits` отсутствует целиком или `capabilities: null` ⇒ клиентской валидации границ нет вовсе, форма остаётся работоспособной. Собственная валидация CRM («число», «целое», `≥ 0`) от `limits` не зависит и действует всегда. **Незнакомый ключ CRM игнорирует** — это не contract mismatch и не `502`.
+- ⚠️ **Числа в примере выше — ИЛЛЮСТРАТИВНЫЕ.** Заморожены **только имена ключей и типы**; сами границы — **runtime-данные каждого бэка** (у разных бэков разные, меняются без изменения контракта). CRM их **не хардкодит**, тесты их **не ассертят** — ассертируются имена ключей, типы и правило обработки ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §7.2).
+- Список **не пагинируется**; ответ бэка с **> 500** элементами отвергается как contract mismatch → `502 backend_admin_unavailable`.
+
+### PATCH /api/backend-economics/{backend_id}/products/{product_id}
+
+Правка количества токенов продукта. Гейт **`backend-economics:edit`**.
+
+**Тело:** `{ tokens?: int ≥ 0, avatar_tokens?: int ≥ 0, if_updated_at?: ISO }` — **хотя бы одно** из `tokens`/`avatar_tokens`, иначе `400 validation_error`. `if_updated_at` — значение `updated_at`, которое видел оператор (защита от «двух операторов»).
+
+**Response 200:** элемент продукта (поля как выше) + `previous_tokens` (int) + `changed` (bool) + `effective_after_seconds` (int).
+
+- **Идемпотентен** — устанавливает значение, а не дельту; ключ идемпотентности не нужен. Повтор с тем же значением → `changed: false` (UI показывает нейтральное «Значение не изменилось», а не ошибку).
+- **Строк не создаёт никогда**: неизвестный `product_id` → бэк отвечает `400` → `400 backend_admin_bad_request` с текстом бэка. `404` на этом пути означает **исключительно** «эндпоинт не реализован» ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §6).
+- `effective_after_seconds` — задержка применения у бэка (его собственный кэш каталога); **показывается оператору** в тосте успеха.
+- `previous_tokens` обязателен: он даёт дельту для тоста и аудита. Подтверждающей модалки нет (решение владельца) — видимость обеспечивает дельта.
+- ⛔ **`previous_tokens` описывает ТОЛЬКО поле `tokens`. Поля `previous_avatar_tokens` в контракте НЕТ** — подставлять `previous_tokens` в дельту `avatar_tokens` **запрещено** (ложное утверждение о другой денежной величине, [ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §8). Прежнее значение аватар-токенов клиент берёт из собственного снимка (что было показано оператору), а при его отсутствии показывает результат **без** дельты; нормативные строки тостов — [08-design-system.md](08-design-system.md#локализация-страницы-продукты-и-тарифы-нормативный-словарь), долг — [TD-080](100-known-tech-debt.md).
+- **Аудит-деталь называет изменённое поле:** `tokens=<prev>-><new>` — только если `tokens` был в теле; `avatar_tokens=<new>` — если в теле был он; обе части — при правке обеих величин ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §10). Запись `tokens=1000->1000` при правке одних аватар-токенов — дефект.
+
+### GET /api/backend-economics/{backend_id}/pricing
+
+Тарифы списания за генерацию.
+
+**Response 200:** `{ items: [{ tariff_id, kind, name, tokens, updated_at }], capabilities }` — конверт `capabilities` тот же, что у `products` (признак записи — `pricing.write_tokens`; семантика `null` и правило `limits` — там же).
+
+⚠️ **Асимметрия с `products` — намеренная** ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §1.1 п.5): `GET {P}/products` — путь **v1**, поэтому его поля v1.1 nullable; `GET {P}/pricing` существует **только** в v1.1, поэтому `tariff_id`, `kind`, `tokens` в его элементе **обязательны** — `200` без них = contract mismatch → **`502 backend_admin_unavailable`** (а не `—` и не read-only). Бэк уровня v1 этого пути не имеет вовсе → `502 backend_admin_extension_not_supported`.
+
+- **`tariff_id`** (str) — **opaque для CRM**: ключ пути `PATCH`, интерпретировать его CRM не вправе.
+- **`kind`** ∈ `chat | photo | video | other` — даёт разбивку «чат/фото/видео» **без знания внутренних имён** типов конкретного бэка. Ключом остаётся `tariff_id`, потому что типов может быть больше трёх.
+- `name` — str\|null; `tokens` — number (не обязательно целое); `updated_at` — ISO\|null.
+- Лимит **500** элементов и отсутствие пагинации — как у `products`.
+
+### PATCH /api/backend-economics/{backend_id}/pricing/{tariff_id}
+
+Правка тарифа списания. Гейт **`backend-economics:edit`**.
+
+**Тело:** `{ tokens: number ≥ 0, if_updated_at?: ISO }`. **Response 200:** элемент тарифа + `previous_tokens` + `changed` + `effective_after_seconds`.
+
+Семантика — та же, что у `PATCH …/products/{product_id}` (идемпотентность, `400` на неизвестный `tariff_id`, `409` на конфликт). ⚠️ Правка тарифа меняет **не «отчётную цифру»**: тот же тариф у бэка обслуживает пользовательские пути расчёта стоимости генерации.
+
+### Коды ошибок модуля
+
+| HTTP | `code` | Когда |
+|------|--------|-------|
+| `401` / `403` | `unauthorized` / `forbidden` | Нет JWT / нет права `backend-economics:<action>` |
+| `404` | `backend_not_found` | Бэка с таким `backend_id` нет в реестре CRM |
+| `409` | `backend_admin_key_not_set` | У бэка не задан Admin API Key |
+| `400` | `backend_admin_bad_request` | Транзит **`400` ИЛИ `422`** бэка — **в том числе неизвестный `product_id`/`tariff_id`** (`400` у контрагента) и **значение вне границ/точности** (`422` у контрагента: границы задаёт схема запроса бэка). **Оба статуса дают ОДИН код CRM** — для оператора это один класс «бэк отверг введённое значение» ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §7.3). ⛔ Оставлять `422` в ветке «прочий не-2xx» нельзя — он превратится в `502` с голым «Ошибка бэка (HTTP 422)» на **штатном** пути (клиентская валидация границ отключена, когда `limits` не пришли). **Текст причины:** `detail`-строка — транзитом; `detail`-**список** (формат `422` FastAPI) — `msg` первого элемента (+ поле из `loc`); не удалось извлечь — фолбэк **«Бэк отверг значение: не прошло проверку на стороне бэка»** |
+| `409` | **`backend_admin_conflict`** | **Новый** ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §4в). Бэк ответил `409` — конфликт `if_updated_at`: значение изменил другой оператор. Сообщение: «Значение изменил другой оператор — обновите страницу». UI: тост + refetch (**не** красная ошибка страницы) |
+| `502` | **`backend_admin_extension_not_supported`** | **Новый** ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §4в). `404` на **расширенном** пути v1.1 при **известном** префиксе — бэк реализует v1, но не расширение. Сообщение: «Бэк не поддерживает расширение контракта». UI: **информационный** блок, **без** кнопки повтора |
+| `502` | `backend_admin_rejected` | Бэк отверг admin-ключ (`401`/`403`) |
+| `502` | `backend_admin_not_supported` | Оба префикса ответили `404` на **v1-probe** (`GET {P}/products`) — контракт v1 не реализован вовсе |
+| `502` | `backend_admin_unavailable` | Сеть/таймаут/`5xx`/не-контрактные данные (в т.ч. список > 500 элементов) |
+
+⚠️ **Информационное состояние «расширение не поддерживается» у таблицы «Продукты» достигается НЕ только этим кодом.** `GET …/products` на бэке уровня v1 отвечает **`200`** (это v1-путь), поэтому то же состояние UI выводит из данных: `items` непуст и ни один элемент не несёт `tokens` ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §1.1 п.4). Код `backend_admin_extension_not_supported` для этой таблицы возникает только на `PATCH`; для таблицы «Тарифы» — уже на `GET`.
+
+**`backend_user_not_found` в этом модуле недостижим** — путей с пользователем в нём нет ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §4г). Коды `backend_admin_*` не входят в общую таблицу ошибок в начале документа (как и в v1) — их единственное нормативное место — разделы модулей.
 
 ---
 
@@ -1816,7 +1930,9 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
     { "page": "ai-keys",  "actions": ["view", "create", "edit", "delete"] },
     { "page": "proxies",  "actions": ["view", "create", "edit", "delete"] },
     { "page": "backends", "actions": ["view", "create", "edit", "delete"] },
-    { "page": "mail",     "actions": ["view"] },
+    { "page": "backend-users",     "actions": ["view", "edit"] },
+    { "page": "backend-economics", "actions": ["view", "edit"] },
+    { "page": "mail",     "actions": ["view", "create", "edit", "delete", "sync", "tags"] },
     { "page": "sms",      "actions": ["view", "edit", "transfer", "sync", "delete"] },
     { "page": "roles",    "actions": ["view", "create", "edit", "delete"] },
     { "page": "teams",    "actions": ["view", "create", "edit", "delete"] },
@@ -1826,7 +1942,9 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 ```
 | Поле | Тип | Примечание |
 |------|-----|-----------|
-| `pages` | `PermissionCatalogPage[]` | Упорядоченный список страниц каталога (порядок = порядок строк матрицы в UI: dashboard, servers, ai-keys, proxies, backends, mail, sms, roles, teams, documents) |
+| `pages` | `PermissionCatalogPage[]` | Упорядоченный список страниц каталога (порядок = порядок строк матрицы в UI: dashboard, servers, ai-keys, proxies, backends, **backend-users**, **backend-economics**, mail, sms, roles, teams, documents). Порядок — тот же, что в константе `CATALOG`, и он же сверяется замороженным контракт-тестом каталога |
+
+> ⚠️ Пример выше — **полный** каталог: он обязан совпадать с прозой порядка ниже и с константой `CATALOG` **поэлементно**. Прежняя редакция примера расходилась с ними в трёх местах (`backend-users` и `backend-economics` отсутствовали, у `mail` стояло `["view"]` от отменённой read-through-модели [ADR-012](adr/ADR-012-mail-read-through-proxy.md)); при добавлении страницы в каталог правятся **оба** места — и пример, и проза.
 
 `PermissionCatalogPage = { page: string, actions: string[] }`. Страница `users` в каталог **не входит** (гейтится `require_admin`, не матрицей — [ADR-022](adr/ADR-022-teams-nav-categories.md)). Страницы `roles`/`teams` добавлены Спринтом A. Локализованные подписи страниц/действий — на стороне frontend ([08-design-system.md](08-design-system.md#страница-роли)).
 

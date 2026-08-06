@@ -143,12 +143,24 @@ class BackendUserPaymentsResponse(BaseModel):
 
 
 class BackendUserRequest(BaseModel):
+    """Строка истории запросов. Поля экономики (v1.1) — ОПЦИОНАЛЬНЫ (ADR-072 §1.1).
+
+    Бэк уровня v1 их не отдаёт, и это не ошибка: отсутствующее поле нормализуется в
+    `null`, 502 из-за него не возникает. `null` у `tokens_spent`/`provider_cost_usd`
+    означает «НЕ ИЗМЕРЕНО», а не ноль (ADR-072 §5): схлопывание в 0 на уровне строки
+    запрещено. `refunded: true` — списание возвращено, при этом `tokens_spent`
+    остаётся заполненным (возврат не обнуляет стоимость).
+    """
+
     endpoint: str
     prompt_preview: str | None = None
     status_code: int
     status: Literal["ok", "slow", "error"]
     duration_sec: float | None = None
     sent_at: datetime
+    tokens_spent: float | None = None
+    provider_cost_usd: float | None = None
+    refunded: bool | None = None
 
 
 class BackendUserRequestsResponse(BaseModel):

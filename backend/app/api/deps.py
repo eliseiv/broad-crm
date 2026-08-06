@@ -43,6 +43,7 @@ from app.services.ai_key_balance_sync_service import AiKeyBalanceSyncService
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.ai_key_service import AiKeyService
 from app.services.auth_service import AuthService
+from app.services.backend_economics_service import BackendEconomicsService
 from app.services.backend_monitor_service import BackendMonitorService
 from app.services.backend_service import BackendService
 from app.services.backend_user_service import BackendUserService
@@ -549,6 +550,11 @@ def get_backend_user_service(session: DbSession) -> BackendUserService:
     return BackendUserService(repository=BackendRepository(session))
 
 
+def get_backend_economics_service(session: DbSession) -> BackendEconomicsService:
+    """Сервис страницы «Продукты и тарифы» (расширение v1.1, modules/backend-economics)."""
+    return BackendEconomicsService(repository=BackendRepository(session))
+
+
 def get_mail_service(session: DbSession, settings: SettingsDep) -> MailService:
     """Сервис почты (ADR-044): чтение из БД CRM + транзит операций ящика/reply в агрегатор.
 
@@ -606,6 +612,9 @@ AiKeyServiceDep = Annotated[AiKeyService, Depends(get_ai_key_service)]
 ProxyServiceDep = Annotated[ProxyService, Depends(get_proxy_service)]
 BackendServiceDep = Annotated[BackendService, Depends(get_backend_service)]
 BackendUserServiceDep = Annotated[BackendUserService, Depends(get_backend_user_service)]
+BackendEconomicsServiceDep = Annotated[
+    BackendEconomicsService, Depends(get_backend_economics_service)
+]
 MailServiceDep = Annotated[MailService, Depends(get_mail_service)]
 MailIngestServiceDep = Annotated[MailIngestService, Depends(get_mail_ingest_service)]
 MailTelegramServiceDep = Annotated[MailTelegramService, Depends(get_mail_telegram_service)]

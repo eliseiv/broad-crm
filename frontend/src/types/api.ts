@@ -1506,6 +1506,26 @@ export interface BackendUserRequestItem {
   status: 'ok' | 'slow' | 'error';
   duration_sec: number | null;
   sent_at: string;
+  /**
+   * Contract v1.1 «экономика» (ADR-072 §5, 04-api.md#backend-users). Списано токенов;
+   * `null` = «НЕ измерено», а НЕ ноль — UI рендерит «—». Бэк уровня v1 поле не отдаёт
+   * (не ошибка), поэтому значение может прийти и как `undefined`.
+   */
+  tokens_spent?: number | null;
+  /**
+   * Себестоимость генерации у провайдера, USD. **`null` = «не измерено», НЕ ноль**:
+   * рендерить `$0.00` вместо «—» ЗАПРЕЩЕНО, `value || 0` / `?? 0` / `coalesce` на уровне
+   * строки запрещены (ADR-072 §5). Измеренный `0` → `$0.00`. Формат — до 4 знаков.
+   */
+  provider_cost_usd?: number | null;
+  /**
+   * `true` — списание возвращено (`tokens_spent` при этом ОСТАЁТСЯ заполненным: возврат
+   * не обнуляет стоимость); `false` — возврата не было; **`null` — поле не отдано** (бэк
+   * уровня v1; CRM нормализует отсутствующее поле в `null`). ⚠️ **`null` ≠ `false`** —
+   * «не отдано» не значит «не возвращено»; пометка возврата рендерится ТОЛЬКО при `true`
+   * (04-api.md#backend-users, 08-design-system.md §История запросов).
+   */
+  refunded?: boolean | null;
 }
 
 export interface BackendUserRequestsResponse {
@@ -1554,3 +1574,129 @@ export interface BackendUserGrantResponse {
   subscription_expires_at: string | null;
   applied: boolean;
 }
+
+/* ── Backend Economics: «Продукты и тарифы» (ADR-072, 04-api.md#backend-economics) ───── */
+
+/** Элемент селектора приложения (GET /api/backend-economics/backends). */
+export interface BackendEconomicsBackend {
+  id: string;
+  code: string;
+  name: string;
+}
+
+export interface BackendEconomicsBackendsResponse {
+  items: BackendEconomicsBackend[];
+}
+
+/**
+ * Границы клиентской валидации формы (ADR-072 §7.2). **Заморожены только имена ключей и
+ * типы** — сами числа являются runtime-данными КАЖДОГО бэка и в коде НЕ хардкодятся.
+ * Отсутствующий ключ ⇒ клиентская проверка по нему НЕ выполняется (полагаемся на `400`
+ * бэка), форма при этом остаётся работоспособной. Незнакомый ключ игнорируется.
+ *
+ * ⚠️ Тип каждого ключа — `number | null`, а НЕ просто `number | undefined`: CRM
+ * сериализует отсутствующую границу ЯВНЫМ `null` (`backend/app/schemas/
+ * backend_economics.py:56-59` — поля объявлены `… | None = None`), поэтому проверять
+ * границу обязательно через `!= null`; сравнение с `undefined` молча снимет проверку.
+ */
+export interface BackendEconomicsLimits {
+  product_tokens_max?: number | null;
+  product_avatar_tokens_max?: number | null;
+  tariff_tokens_max?: number | null;
+  tariff_decimal_places?: number | null;
+}
+
+/**
+ * Конверт `capabilities` списков (ADR-072 §7). Право записи выводится ТОЛЬКО из
+ * `features` (`products.write_tokens` / `pricing.write_tokens`), а НЕ из наличия поля
+ * `tokens`. `capabilities: null` = «фич НЕ подтверждено» (любой неуспех подзапроса:
+ * 404, таймаут, 5xx, 401/403, битый JSON) ⇒ модуль read-only при любом праве (fail-closed).
+ *
+ * ⚠️ **Обязательно ТОЛЬКО `features`** (04-api.md#backend-economics, ADR-072 §7.2 —
+ * критерий обязательности: строгость оправдана лишь там, где значение используется).
+ * `contract_version` и `cache_effective_after_seconds` CRM не показывает вовсе, `limits`
+ * имеет определённое поведение при отсутствии — поэтому все три nullable, и CRM
+ * сериализует их отсутствие явным `null` (`backend/app/schemas/backend_economics.py:82-85`
+ * — `int | None = None`). Требовать их значило бы превращать безобидное умолчание
+ * конформного бэка в `schema_mismatch` ⇒ `capabilities: null` ⇒ молча read-only страницу.
+ */
+export interface BackendEconomicsCapabilities {
+  contract_version?: number | null;
+  features: string[];
+  limits?: BackendEconomicsLimits | null;
+  cache_effective_after_seconds?: number | null;
+}
+
+/**
+ * Продукт каталога (GET /api/backend-economics/{backend_id}/products, `scope=all`).
+ * Все поля v1.1 — **nullable**: на бэке уровня v1 путь отвечает `200` без них, CRM
+ * нормализует отсутствующее поле в `null` (ADR-072 §1.1). `tokens: null` ⇒ ячейка «—» и
+ * read-only строка; `grantable: null` ⇒ «—», а НЕ «Нет».
+ */
+export interface BackendEconomicsProduct {
+  product_id: string;
+  name: string;
+  price: string | null;
+  period: string | null;
+  tokens: number | null;
+  avatar_tokens: number | null;
+  grantable: boolean | null;
+  updated_at: string | null;
+}
+
+export interface BackendEconomicsProductsResponse {
+  items: BackendEconomicsProduct[];
+  capabilities: BackendEconomicsCapabilities | null;
+}
+
+export type BackendEconomicsTariffKind = 'chat' | 'photo' | 'video' | 'other';
+
+/**
+ * Тариф списания (GET /api/backend-economics/{backend_id}/pricing). `tariff_id` —
+ * **opaque**: ключ строки и путь `PATCH`, разбирать его на части UI не вправе.
+ * Асимметрия с `products` намеренная: путь существует только в v1.1, его поля обязательны.
+ */
+export interface BackendEconomicsTariff {
+  tariff_id: string;
+  kind: BackendEconomicsTariffKind;
+  name: string | null;
+  tokens: number;
+  updated_at: string | null;
+}
+
+export interface BackendEconomicsPricingResponse {
+  items: BackendEconomicsTariff[];
+  capabilities: BackendEconomicsCapabilities | null;
+}
+
+/**
+ * Тело PATCH …/products/{product_id}: хотя бы одно из `tokens`/`avatar_tokens`.
+ * `if_updated_at` — значение `updated_at`, которое видел оператор (защита от «двух
+ * операторов»); при `updated_at === null` ключ НЕ отправляется.
+ */
+export interface UpdateBackendEconomicsProductRequest {
+  tokens?: number;
+  avatar_tokens?: number;
+  if_updated_at?: string;
+}
+
+/** Тело PATCH …/pricing/{tariff_id}. */
+export interface UpdateBackendEconomicsTariffRequest {
+  tokens: number;
+  if_updated_at?: string;
+}
+
+/** Общий хвост ответов PATCH: дельта для тоста/аудита + задержка применения у бэка. */
+interface BackendEconomicsUpdateMeta {
+  previous_tokens: number;
+  changed: boolean;
+  effective_after_seconds: number;
+}
+
+export interface BackendEconomicsProductUpdateResponse
+  extends BackendEconomicsProduct,
+    BackendEconomicsUpdateMeta {}
+
+export interface BackendEconomicsTariffUpdateResponse
+  extends BackendEconomicsTariff,
+    BackendEconomicsUpdateMeta {}

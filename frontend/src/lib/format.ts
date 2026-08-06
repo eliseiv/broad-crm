@@ -73,3 +73,16 @@ export function pluralizeCores(n: number): string {
 export function formatCores(total: number): string {
   return `${total} ${pluralizeCores(total)}`;
 }
+
+/**
+ * Подпись бэка в списках/селекторах — **`«{name} — {code}»`**, ЕДИНАЯ для страниц
+ * «Юзеры бэков» и «Продукты и тарифы» (08-design-system.md §Страница «Продукты и
+ * тарифы» → Layout, ADR-072). Одна строка обычного текста: контрол — нативный
+ * `<option>` (`ui/Select.tsx:66-70`), раздельное начертание частей в нём невозможно.
+ * Порядок `name` первым совпадает с сортировкой списка (`name ASC`, tie-break `code`):
+ * `code` уникален, `name` — нет, поэтому дубли имён стоят рядом и различаются хвостом.
+ * Формат живёт ЗДЕСЬ, а не в двух страницах — прежние копии уже разошлись порядком.
+ */
+export function formatBackendLabel(name: string, code: string): string {
+  return `${name} — ${code}`;
+}
