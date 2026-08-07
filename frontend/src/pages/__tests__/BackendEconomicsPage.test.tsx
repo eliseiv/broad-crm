@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import type { PropsWithChildren } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -134,6 +134,46 @@ const TARIFF = {
   tokens: 1.5,
   updated_at: null,
 };
+
+/* ── Архив (ADR-073). Нормативные строки — 08-design-system.md §Локализация ─────── */
+
+const TOGGLE_SHOW_ARCHIVED = 'Показать архивные';
+const PILL_ARCHIVED = 'В архиве';
+const ARIA_ARCHIVE = 'Архивировать';
+const ARIA_UNARCHIVE = 'Вернуть из архива';
+/**
+ * Архивные тосты — БЕЗ хвоста о задержке (основа строки словаря). Хвост
+ * « Применится в течение {N} с» добавляется ТОЛЬКО при наличии `effective_after_seconds`
+ * (08-design-system.md, ADR-073 §8): прежняя редакция была безусловным утверждением о
+ * состоявшемся переходе и окно применения скрывала.
+ */
+const TOAST_ARCHIVED_BASE = 'Продукт скрыт с витрины. Начисление по нему продолжает работать.';
+const TOAST_UNARCHIVED_BASE = 'Продукт возвращён на витрину.';
+/** Хвост о задержке — общий для ВСЕХ трёх тостов успеха модуля (токены, тариф, архив). */
+const tail = (n: number) => ` Применится в течение ${n} с`;
+const HINT_ALL_ARCHIVED = 'Все продукты в архиве. Включите «Показать архивные», чтобы увидеть их';
+/** Заголовки таблицы продуктов после ADR-073 §2 — «Цена»/«Период» сняты. */
+const PRODUCT_HEADERS = ['Продукт', 'Токены', 'Аватар-токены', 'Выдаётся', 'Обновлено'];
+
+const ARCHIVE_FEATURES = ['products.write_tokens', 'products.write_archived'];
+
+/**
+ * Снимает необязательное поле ответа `PATCH` (ADR-073 §8 сделал все три опциональными).
+ * Через `delete` по копии, а не rest-деструктуризацией: та оставляет неиспользуемую
+ * переменную, которую линтер репозитория отвергает.
+ */
+function omit<T extends object, K extends keyof T>(source: T, key: K): T {
+  const clone = { ...source };
+  delete clone[key];
+  return clone;
+}
+
+/** Продукт с поддержкой архива (поле присутствует ⇒ у бэка есть понятие архива). */
+function archivable(
+  overrides: Partial<typeof PRODUCT> & { archived: boolean; product_id: string },
+) {
+  return { ...PRODUCT, ...overrides };
+}
 
 /** Выбирает приложение в селекторе — до выбора таблицы не рендерятся вовсе. */
 async function selectBackend(user: ReturnType<typeof userEvent.setup>) {
@@ -470,5 +510,353 @@ describe('BackendEconomicsPage — правка, гейты и деградац�
     expect(toast).toHaveBeenCalledWith('Значение не изменилось');
     expect(toast.success).not.toHaveBeenCalled();
     expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  /* ═══ Архив продуктов (ADR-073) ══════════════════════════════════════════════ */
+
+  /* ── §2: колонки «Цена»/«Период» сняты ──────────────────────────────────────── */
+
+  it('колонок «Цена» и «Период» в DOM НЕТ — они сняты нормой, а не забыты', async () => {
+    await renderWithBackend();
+
+    const headers = screen.getAllByRole('columnheader').map((h) => h.textContent?.trim());
+    expect(headers).not.toContain('Цена');
+    expect(headers).not.toContain('Период');
+    // Заголовки таблицы продуктов — ровно по словарю (тарифы идут отдельной таблицей).
+    expect(headers.slice(0, PRODUCT_HEADERS.length)).toEqual(PRODUCT_HEADERS);
+    // Значения снятых полей тоже не рендерятся, хотя в контракте остались.
+    expect(screen.queryByText(PRODUCT.price)).not.toBeInTheDocument();
+    expect(screen.queryByText(PRODUCT.period)).not.toBeInTheDocument();
+  });
+
+  /* ── §3: переключатель «Показать архивные» ──────────────────────────────────── */
+
+  it('без поддержки архива переключателя и колонки контрола НЕТ', async () => {
+    // Ни один элемент не несёт `archived` ⇒ у бэка нет понятия архива.
+    state.products = { items: [{ ...PRODUCT }], capabilities: capabilities(ARCHIVE_FEATURES) };
+    await renderWithBackend();
+
+    expect(screen.queryByLabelText(TOGGLE_SHOW_ARCHIVED)).not.toBeInTheDocument();
+    expect(screen.queryByText(TOGGLE_SHOW_ARCHIVED)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(ARIA_ARCHIVE)).not.toBeInTheDocument();
+    // Все продукты показаны — скрывать нечего.
+    expect(screen.getByText('p-1')).toBeInTheDocument();
+  });
+
+  it('переключатель выключен по умолчанию: архивные скрыты, после включения — видны с пилюлей', async () => {
+    state.products = {
+      items: [
+        archivable({ product_id: 'p-active', archived: false }),
+        archivable({ product_id: 'p-archived', archived: true }),
+      ],
+      capabilities: capabilities(ARCHIVE_FEATURES),
+    };
+    const user = await renderWithBackend();
+
+    const toggle = screen.getByLabelText(TOGGLE_SHOW_ARCHIVED);
+    expect(toggle).not.toBeChecked();
+    expect(screen.getByText('p-active')).toBeInTheDocument();
+    expect(screen.queryByText('p-archived')).not.toBeInTheDocument();
+    expect(screen.queryByText(PILL_ARCHIVED)).not.toBeInTheDocument();
+
+    await user.click(toggle);
+
+    expect(toggle).toBeChecked();
+    expect(screen.getByText('p-archived')).toBeInTheDocument();
+    // Пометка — ТЕКСТОМ, а не только цветом (a11y), и ровно у архивной строки.
+    expect(screen.getAllByText(PILL_ARCHIVED)).toHaveLength(1);
+  });
+
+  /* ── §6: три состояния пустого экрана различимы ─────────────────────────────── */
+
+  it('все продукты архивные → своя подсказка, НЕ «Продуктов нет» и НЕ жёлтый блок', async () => {
+    state.products = {
+      items: [archivable({ product_id: 'p-archived', archived: true })],
+      capabilities: capabilities(ARCHIVE_FEATURES),
+    };
+    await renderWithBackend();
+
+    expect(screen.getByText(HINT_ALL_ARCHIVED)).toBeInTheDocument();
+    // Обе негативные строки обязательны: спутать значит назвать ЛОЖНУЮ причину пустого
+    // экрана — «продуктов нет» вместо «все скрыты вами же».
+    expect(screen.queryByText('Продуктов нет')).not.toBeInTheDocument();
+    expect(screen.queryByText(YELLOW_BLOCK)).not.toBeInTheDocument();
+    // Переключатель ВИДЕН — иначе состояние неисправимо из UI.
+    expect(screen.getByLabelText(TOGGLE_SHOW_ARCHIVED)).toBeInTheDocument();
+  });
+
+  it('после включения переключателя состояние «все архивные» сменяется таблицей', async () => {
+    state.products = {
+      items: [archivable({ product_id: 'p-archived', archived: true })],
+      capabilities: capabilities(ARCHIVE_FEATURES),
+    };
+    const user = await renderWithBackend();
+
+    await user.click(screen.getByLabelText(TOGGLE_SHOW_ARCHIVED));
+
+    expect(screen.queryByText(HINT_ALL_ARCHIVED)).not.toBeInTheDocument();
+    expect(screen.getByText('p-archived')).toBeInTheDocument();
+  });
+
+  /* ── §4: трёхсоставный гейт контрола архива ─────────────────────────────────── */
+
+  it('контрол архива есть при `edit` + `products.write_archived` + наличии поля', async () => {
+    state.products = {
+      items: [
+        archivable({ product_id: 'p-active', archived: false }),
+        archivable({ product_id: 'p-archived', archived: true }),
+      ],
+      capabilities: capabilities(ARCHIVE_FEATURES),
+    };
+    const user = await renderWithBackend();
+    await user.click(screen.getByLabelText(TOGGLE_SHOW_ARCHIVED));
+
+    // Подпись зависит от текущего состояния строки — обе по словарю.
+    expect(screen.getByLabelText(ARIA_ARCHIVE)).toBeInTheDocument();
+    expect(screen.getByLabelText(ARIA_UNARCHIVE)).toBeInTheDocument();
+  });
+
+  it('контрола архива НЕТ при одном лишь `products.write_tokens` (фичи не взаимозаменяемы)', async () => {
+    state.products = {
+      items: [archivable({ product_id: 'p-active', archived: false })],
+      capabilities: capabilities(['products.write_tokens']),
+    };
+    await renderWithBackend();
+
+    expect(screen.queryByLabelText(ARIA_ARCHIVE)).not.toBeInTheDocument();
+    // Карандаш правки токенов при этом на месте — гейты независимы.
+    expect(screen.getByLabelText('Изменить: Токены')).toBeInTheDocument();
+  });
+
+  it('контрол архива ЕСТЬ у строки с `tokens: null` — правило read-only на него не распространяется', async () => {
+    state.products = {
+      items: [
+        archivable({ product_id: 'p-active', archived: false }),
+        { ...archivable({ product_id: 'p-null', archived: false }), tokens: null },
+      ],
+      capabilities: capabilities(ARCHIVE_FEATURES),
+    };
+    await renderWithBackend();
+
+    // Правило «`tokens: null` ⇒ read-only» защищает от слепой установки НЕИЗВЕСТНОГО
+    // значения; текущее `archived` известно ⇒ строка архивируется штатно.
+    expect(screen.getAllByLabelText(ARIA_ARCHIVE)).toHaveLength(2);
+    // А карандаш токенов у неё по-прежнему не рендерится.
+    expect(screen.getAllByLabelText('Изменить: Токены')).toHaveLength(1);
+  });
+
+  it('контрола архива НЕТ при `capabilities: null` (fail-closed действует и на него)', async () => {
+    state.products = {
+      items: [archivable({ product_id: 'p-active', archived: false })],
+      capabilities: null,
+    };
+    await renderWithBackend();
+
+    expect(screen.queryByLabelText(ARIA_ARCHIVE)).not.toBeInTheDocument();
+    // Ассерт сужен до таблицы ПРОДУКТОВ: у тарифов свой конверт `capabilities`, и их
+    // карандаш обязан остаться — состояния двух таблиц независимы (08-design-system.md).
+    const products = screen.getAllByRole('table')[0];
+    expect(within(products).queryByLabelText(/^Изменить:/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Изменить: Токенов за генерацию')).toBeInTheDocument();
+  });
+
+  /* ── Раскладка: число ячеек строки = числу заголовков в ОБОИХ режимах ───────── */
+
+  it.each([
+    ['с колонкой контрола', true],
+    ['без колонки контрола', false],
+  ])('раскладка %s: число ячеек строки равно числу заголовков', async (_name, withArchive) => {
+    state.products = {
+      items: [
+        withArchive
+          ? archivable({ product_id: 'p-1', archived: false })
+          : { ...PRODUCT, product_id: 'p-1' },
+      ],
+      capabilities: capabilities(ARCHIVE_FEATURES),
+    };
+    await renderWithBackend();
+
+    // Первая таблица — «Продукты» (вторая — тарифы).
+    const table = screen.getAllByRole('table')[0];
+    const headers = within(table).getAllByRole('columnheader');
+    const cells = within(table).getAllByRole('cell');
+    expect(headers).toHaveLength(withArchive ? PRODUCT_HEADERS.length + 1 : PRODUCT_HEADERS.length);
+    expect(cells).toHaveLength(headers.length);
+  });
+
+  /* ── §5/§7: тосты архива и falsy-значение в теле запроса ────────────────────── */
+
+  it('архивирование шлёт `archived: true` и даёт тост «скрыт с витрины»', async () => {
+    state.products = {
+      items: [archivable({ product_id: 'p-1', archived: false })],
+      capabilities: capabilities(ARCHIVE_FEATURES),
+    };
+    state.productResult = { ...state.productResult!, archived: true, changed: true };
+    const user = await renderWithBackend();
+
+    await user.click(screen.getByLabelText(ARIA_ARCHIVE));
+
+    expect(state.productCalls).toEqual([
+      { productId: 'p-1', payload: { archived: true, if_updated_at: PRODUCT.updated_at } },
+    ]);
+    expect(toast.success).toHaveBeenCalledWith(TOAST_ARCHIVED_BASE + tail(30));
+  });
+
+  it('возврат из архива шлёт `archived: false` КЛЮЧОМ (falsy не выпадает) и свой тост', async () => {
+    state.products = {
+      items: [archivable({ product_id: 'p-1', archived: true })],
+      capabilities: capabilities(ARCHIVE_FEATURES),
+    };
+    state.productResult = { ...state.productResult!, archived: false, changed: true };
+    const user = await renderWithBackend();
+    await user.click(screen.getByLabelText(TOGGLE_SHOW_ARCHIVED));
+
+    await user.click(screen.getByLabelText(ARIA_UNARCHIVE));
+
+    // Ключ обязан присутствовать со значением `false`: его выпадение сделало бы возврат
+    // из архива невозможным при внешне успешном ответе.
+    const payload = (state.productCalls[0] as { payload: Record<string, unknown> }).payload;
+    expect('archived' in payload).toBe(true);
+    expect(payload.archived).toBe(false);
+    expect(toast.success).toHaveBeenCalledWith(TOAST_UNARCHIVED_BASE + tail(30));
+  });
+
+  /* ── Хвост об окне применения у АРХИВНЫХ тостов (ADR-073 §8, словарь) ───────── */
+
+  /**
+   * Пары «поле пришло / поля нет» на обеих архивных строках. Прежняя редакция была
+   * БЕЗУСЛОВНЫМ утверждением о состоявшемся переходе и окно применения скрывала: оператор
+   * архивировал, обновлял страницу, видел продукт активным (admin-чтение контрагента может
+   * идти сквозь его кэш каталога) и повторял уже состоявшуюся операцию.
+   */
+  it.each([
+    ['архивирование', false, ARIA_ARCHIVE, TOAST_ARCHIVED_BASE, true],
+    ['возврат из архива', true, ARIA_UNARCHIVE, TOAST_UNARCHIVED_BASE, false],
+  ])(
+    '%s: с `effective_after_seconds` тост оканчивается хвостом о задержке',
+    async (_name, archivedNow, aria, base, nextArchived) => {
+      state.products = {
+        items: [archivable({ product_id: 'p-1', archived: archivedNow })],
+        capabilities: capabilities(ARCHIVE_FEATURES),
+      };
+      state.productResult = {
+        ...state.productResult!,
+        archived: nextArchived,
+        changed: true,
+        effective_after_seconds: 45,
+      };
+      const user = await renderWithBackend();
+      if (archivedNow) await user.click(screen.getByLabelText(TOGGLE_SHOW_ARCHIVED));
+
+      await user.click(screen.getByLabelText(aria));
+
+      expect(toast.success).toHaveBeenCalledWith(`${base}${tail(45)}`);
+    },
+  );
+
+  it.each([
+    ['архивирование', false, ARIA_ARCHIVE, TOAST_ARCHIVED_BASE, true],
+    ['возврат из архива', true, ARIA_UNARCHIVE, TOAST_UNARCHIVED_BASE, false],
+  ])(
+    '%s: без `effective_after_seconds` — тот же тост БЕЗ хвоста, срок не назван',
+    async (_name, archivedNow, aria, base, nextArchived) => {
+      state.products = {
+        items: [archivable({ product_id: 'p-1', archived: archivedNow })],
+        capabilities: capabilities(ARCHIVE_FEATURES),
+      };
+      state.productResult = {
+        ...omit(state.productResult!, 'effective_after_seconds'),
+        archived: nextArchived,
+        changed: true,
+      };
+      const user = await renderWithBackend();
+      if (archivedNow) await user.click(screen.getByLabelText(TOGGLE_SHOW_ARCHIVED));
+
+      await user.click(screen.getByLabelText(aria));
+
+      const message = vi.mocked(toast.success).mock.calls[0][0] as string;
+      // Основа строки — та же, окончание — точка предложения (деградированный вариант).
+      expect(message).toBe(base);
+      // ⛔ Негативный ассерт: срок применения не назван ВООБЩЕ — ни числом, ни «undefined».
+      expect(message).not.toContain('Применится');
+      expect(message).not.toContain('undefined');
+      expect(message).not.toMatch(/\d+\s*с$/);
+    },
+  );
+
+  /* ── Регресс-guard на общий хелпер хвоста ───────────────────────────────────── */
+  //
+  // Хвост стал ОБЩИМ для трёх тостов успеха модуля, поэтому правка ради архива способна
+  // молча сдвинуть две другие строки. Эти два кейса фиксируют их ПОБУКВЕННО.
+
+  it('регресс: тост правки токенов при полном ответе не изменился ни на символ', async () => {
+    const user = await renderWithBackend();
+
+    await user.click(screen.getByLabelText('Изменить: Токены'));
+    const input = screen.getByLabelText('Токены');
+    await user.clear(input);
+    await user.type(input, '100{Enter}');
+
+    expect(toast.success).toHaveBeenCalledWith(
+      'Токены продукта: 1000 → 100. Применится в течение 30 с',
+    );
+  });
+
+  it('регресс: тост правки тарифа при полном ответе не изменился ни на символ', async () => {
+    const user = await renderWithBackend();
+
+    await user.click(screen.getByLabelText('Изменить: Токенов за генерацию'));
+    const input = screen.getByLabelText('Токенов за генерацию');
+    await user.clear(input);
+    await user.type(input, '0.123456{Enter}');
+
+    expect(toast.success).toHaveBeenCalledWith('Тариф: 1.5 → 0.123456. Применится в течение 30 с');
+  });
+
+  /* ── §8: неполный ответ PATCH не даёт ошибочного состояния страницы ─────────── */
+
+  it('ответ без `changed` → тост УСПЕХА, а не нейтральный «Значение не изменилось»', async () => {
+    state.products = {
+      items: [archivable({ product_id: 'p-1', archived: false })],
+      capabilities: capabilities(ARCHIVE_FEATURES),
+    };
+    state.productResult = { ...omit(state.productResult!, 'changed'), archived: true };
+    const user = await renderWithBackend();
+
+    await user.click(screen.getByLabelText(ARIA_ARCHIVE));
+
+    // Ошибиться в сторону «сообщить о состоявшемся действии» безопаснее, чем умолчать.
+    expect(toast.success).toHaveBeenCalledWith(TOAST_ARCHIVED_BASE + tail(30));
+    expect(toast).not.toHaveBeenCalledWith('Значение не изменилось');
+  });
+
+  it('ответ без `effective_after_seconds` → тост без предложения о задержке', async () => {
+    state.productResult = { ...omit(state.productResult!, 'effective_after_seconds'), tokens: 100 };
+    const user = await renderWithBackend();
+
+    await user.click(screen.getByLabelText('Изменить: Токены'));
+    const input = screen.getByLabelText('Токены');
+    await user.clear(input);
+    await user.type(input, '100{Enter}');
+
+    const message = vi.mocked(toast.success).mock.calls[0][0] as string;
+    expect(message).toContain('Токены продукта: 1000 → 100');
+    expect(message).not.toContain('Применится в течение');
+    expect(message).not.toContain('undefined');
+  });
+
+  it('ответ без `previous_tokens` → тост без дельты и без «undefined»', async () => {
+    state.productResult = { ...omit(state.productResult!, 'previous_tokens'), tokens: 100 };
+    const user = await renderWithBackend();
+
+    await user.click(screen.getByLabelText('Изменить: Токены'));
+    const input = screen.getByLabelText('Токены');
+    await user.clear(input);
+    await user.type(input, '100{Enter}');
+
+    const message = vi.mocked(toast.success).mock.calls[0][0] as string;
+    expect(message).not.toContain('undefined');
+    expect(message).not.toContain('→');
+    expect(message).toContain('100');
   });
 });

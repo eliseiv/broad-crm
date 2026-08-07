@@ -264,6 +264,30 @@ def backend_admin_unavailable(message: str = "Бэк не ответил на ad
     )
 
 
+class BackendAdminResponseUnusable(AppError):
+    """Бэк подтвердил операцию статусом `2xx`, но тело ответа негодно (не JSON / не объект).
+
+    Отличимый ТИП нужен вызывающему на пути ЗАПИСИ: `2xx` — подтверждение, что операция
+    у бэка СОСТОЯЛАСЬ, поэтому аудит обязан быть записан до того, как ошибка уйдёт
+    наверх (ADR-073 §8.3: разбор ответа не вправе поднять исключение раньше записи —
+    аудит фиксирует состоявшийся ФАКТ, а не КАЧЕСТВО ответа). Типичный источник —
+    вклинившийся прокси, отдающий `200` с HTML.
+
+    Контракт наружу НЕ меняется: это `AppError` с тем же `502 backend_admin_unavailable`
+    (04-api.md#backend-economics нового кода не заводит), поэтому читающие пути и
+    обработчик ошибок ведут себя как прежде — различие видит только Python-код.
+    """
+
+
+def backend_admin_response_unusable(message: str) -> BackendAdminResponseUnusable:
+    """`2xx` с негодным телом (ADR-073 §8.3) — тот же код контракта, отличимый тип."""
+    return BackendAdminResponseUnusable(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        code="backend_admin_unavailable",
+        message=message,
+    )
+
+
 def backend_admin_rejected() -> AppError:
     """Бэк отверг admin-ключ (401/403 от бэка) — ключ в карточке бэка неверен."""
     return AppError(

@@ -8,7 +8,7 @@
 API — [04-api.md#backend-economics](../../04-api.md#backend-economics),
 UI — [08-design-system.md](../../08-design-system.md#страница-продукты-и-тарифы-нормативно-adr-072).
 
-## Состояние (замер на замороженном дереве 2026-08-06)
+## Состояние (замер на замороженном дереве 2026-08-07)
 
 > **Единственный датированный дом фактов о реализации этого модуля.** Всё остальное в
 > документе — **предписание** («сделать X, основание — Y»), а не утверждение о дереве:
@@ -20,16 +20,17 @@ UI — [08-design-system.md](../../08-design-system.md#страница-прод
 > поэтому неверный путь бьёт по нему сильнее, чем такая же опечатка в прозе: он выглядит
 > проверяемым фактом и потому читателем не перепроверяется. Правдоподобный, но
 > несуществующий путь глазами не отличим, только командой. Готовый свип — в
-> [парном доме backend-users](../backend-users/README.md#состояние-замер-на-замороженном-дереве-2026-08-06).
+> [парном доме backend-users](../backend-users/README.md#состояние-замер-на-замороженном-дереве-2026-08-07).
 
 | Что | Состояние |
 | --- | --- |
 | Ключ каталога прав `backend-economics` (`view`/`edit`) | **в `CATALOG`**, сразу после `backend-users` (`backend/app/domain/permissions.py:27`) |
 | Backend: роутер/сервис/схемы, общий резолвер источника | файлы созданы (`backend/app/api/backend_economics.py`, `services/backend_economics_service.py`, `services/backend_admin_source.py`, `schemas/backend_economics.py`) |
 | Frontend: страница и feature-слой | созданы (`frontend/src/pages/BackendEconomicsPage.tsx`, `frontend/src/features/backend-economics/`) |
-| Тесты | заведены: `backend/tests/integration/test_backend_economics_api.py`, `frontend/src/pages/__tests__/BackendEconomicsPage.test.tsx` |
-| Прогон | **по отчёту `qa` (2026-08-06, не перепроверялось architect'ом):** backend 1660/1664 passed, coverage **85 %** при гейте 80 %; frontend 975/978. Красные — пре-существующие: Windows-only ассерты POSIX-прав (в CI на ubuntu зелёные) и устаревший мок волны [ADR-070](../../adr/ADR-070-ai-key-estimated-balance-monitor.md) |
-| Не выполнено | `previous_avatar_tokens` в контракте — [TD-080](../../100-known-tech-debt.md); инвалидация кэша префикса при смене домена — [TD-078](../../100-known-tech-debt.md); проп ошибки/числовой режим у `InlineEditField` — [TD-079](../../100-known-tech-debt.md) |
+| **Архив продуктов ([ADR-073](../../adr/ADR-073-products-archive-and-price-columns.md))** | **реализован**: `archived` в схемах (`backend/app/schemas/backend_economics.py`, `backend/app/schemas/backend_user.py`), в роутере и аудите (`backend/app/api/backend_economics.py` — действие `product_archived_updated`), на клиенте (`frontend/src/types/api.ts`, `frontend/src/pages/BackendEconomicsPage.tsx`) |
+| Тесты | заведены: `backend/tests/integration/test_backend_economics_api.py`, `frontend/src/pages/__tests__/BackendEconomicsPage.test.tsx`, **`frontend/src/components/__tests__/GrantPlanModalArchived.test.tsx`** (пометка архивной опции в форме «Установить план») |
+| Прогон | **По измерениям `qa` (2026-08-07), architect'ом НЕ перепроверялось:** backend **1732/1736** passed, coverage **85 %** при гейте 80 %; frontend **997/1000**. Красные (4 и 3) — **пре-существующие**: Windows-only ассерты POSIX-прав (в CI на ubuntu зелёные) и устаревший мок волны [ADR-070](../../adr/ADR-070-ai-key-estimated-balance-monitor.md). ⚠️ Промежуточный прогон orchestrator'а на полном CI-scope дал 1690/1694 при coverage 84.72 % — расхождение объясняется кейсами, добавленными `qa` после него. **Финальный прогон перед push делает orchestrator; при расхождении обновляется эта строка** |
+| Не выполнено | `previous_avatar_tokens` в контракте — [TD-080](../../100-known-tech-debt.md); инвалидация кэша префикса при смене домена — [TD-078](../../100-known-tech-debt.md); проп ошибки/числовой режим у `InlineEditField` — [TD-079](../../100-known-tech-debt.md); **единая точка «сначала факт, затем интерпретация» для пишущих вызовов — [TD-081](../../100-known-tech-debt.md)** (правило §8 п.3 держится повторением паттерна в двух местах). **Архив ADR-073 в этом перечне БОЛЬШЕ НЕТ — он реализован** (строка выше) |
 
 ## Принцип
 
@@ -47,7 +48,7 @@ CRM — **прокси без собственного хранилища** ([AD
 подключается и работает — модуль показывает информационное состояние
 «расширение не поддерживается» (см. [Деградация](#деградация-нормативно)).
 
-## Дельта контракта v1.1 «экономика» (только НОВОЕ относительно v1)
+## Дельта контракта v1.1 «экономика» и v1.2 «архив» (только НОВОЕ относительно v1)
 
 **Базовый контракт v1 — [modules/backend-users](../backend-users/README.md#crm-admin-api-contract-v1-сводка);
 здесь он не дублируется.** Ниже — исключительно расширение. Имена путей и полей
@@ -61,7 +62,9 @@ CRM — **прокси без собственного хранилища** ([AD
 | `PATCH /products/{product_id}` | **новый** | тело `{tokens: int≥0, avatar_tokens: int≥0?, if_updated_at: ISO?}` (хотя бы одно значимое поле); ответ = элемент продукта + **`previous_tokens`** + **`changed`** + **`effective_after_seconds`** |
 | `GET /pricing` | **новый** | `{items:[…]}`; элемент: **`tariff_id`** (str, **opaque** — ключ пути `PATCH`), **`kind`** ∈ `chat\|photo\|video\|other`, `name` (str\|null), **`tokens`** (number), `updated_at` (ISO\|null) |
 | `PATCH /pricing/{tariff_id}` | **новый** | тело `{tokens: number≥0, if_updated_at: ISO?}`; ответ = элемент тарифа + `previous_tokens` + `changed` + `effective_after_seconds` |
-| `GET /capabilities` | **новый, опциональный** | `{contract_version, features[], limits{}, cache_effective_after_seconds}`; `features` ∈ `products.read`, `products.write_tokens`, `pricing.read`, `pricing.write_tokens`, `requests.costs`. **`limits` — замороженный состав:** `product_tokens_max` (int), `product_avatar_tokens_max` (int), `tariff_tokens_max` (number), `tariff_decimal_places` (int). **404 = «расширений нет»** |
+| `GET /products` — **v1.2** ([ADR-073](../../adr/ADR-073-products-archive-and-price-columns.md)) | **расширен** | элемент += **`archived`** (bool, **опционально**). Отсутствует ⇒ у бэка нет понятия архива ⇒ все продукты активны, переключатель и контрол не рендерятся |
+| `PATCH /products/{product_id}` — **v1.2** | **расширен** | тело += **`archived`** (bool, опц., **значимое** поле). Гейт — `backend-economics:edit` **И** **`products.write_archived`** ∈ `features` (**отдельная** фича; `products.write_tokens` — про токены) |
+| `GET /capabilities` | **новый, опциональный** | `{contract_version, features[], limits{}, cache_effective_after_seconds}`; `features` ∈ `products.read`, `products.write_tokens`, **`products.write_archived`** ([ADR-073](../../adr/ADR-073-products-archive-and-price-columns.md) §4), `pricing.read`, `pricing.write_tokens`, `requests.costs`. **`limits` — замороженный состав:** `product_tokens_max` (int), `product_avatar_tokens_max` (int), `tariff_tokens_max` (number), `tariff_decimal_places` (int). **404 = «расширений нет»** |
 | `GET /users/{id}/requests` | **расширен** | элемент += **`tokens_spent`** (number\|null), **`provider_cost_usd`** (number\|null), **`refunded`** (bool — **это тип КОНТРАКТА бэка v1.1**; в схеме **ответа CRM** он **`bool \| null`**, см. примечание под таблицей) |
 
 > ⚠️ **Таблица выше описывает контракт БЭКА, а не схему ответа CRM — типы двух уровней различаются.** Реализовывать схемы CRM по этой таблице **нельзя**: единственный нормативный источник схем ответа CRM — [04-api.md#backend-economics](../../04-api.md#backend-economics) и [#backend-users](../../04-api.md#backend-users). Ключевое расхождение: **`refunded` — `bool` в контракте бэка v1.1, но `bool | null` в ответе CRM** (бэк уровня v1 поля не отдаёт, CRM нормализует отсутствие в `null`; **`null` ≠ `false`** — «не отдано» не равно «возврата не было»). Так же и поля `products`: `tokens`/`avatar_tokens`/`grantable`/`updated_at` в ответе CRM **nullable** — см. [§1.1](../../adr/ADR-072-crm-admin-api-v11-economics.md).
@@ -125,7 +128,7 @@ CRM — **прокси без собственного хранилища** ([AD
   идёт **вместе с тестами** — предписание безусловное и от текущего покрытия не
   зависит (сценарии —
   [06-testing-strategy.md](../../06-testing-strategy.md#backend-users--backend-economics-adr-069--adr-072);
-  фактическое покрытие — только в [§Состояние](#состояние-замер-на-замороженном-дереве-2026-08-06)).
+  фактическое покрытие — только в [§Состояние](#состояние-замер-на-замороженном-дереве-2026-08-07)).
 - **Сервис/роутер** `api/backend_economics.py` (`prefix="/backend-economics"`) +
   `services/backend_economics_service.py` + `schemas/backend_economics.py`. Отдельный
   роутер, а не расширение `backend_users.py`: другой RBAC-гейт, ресурсы не вложены в
@@ -192,6 +195,40 @@ CRM — **прокси без собственного хранилища** ([AD
 | `/capabilities` не реализован (`404`) | — | Таблицы читаются, **контролы правки не рендерятся ни при каком праве** (fail-closed, [ADR-072](../../adr/ADR-072-crm-admin-api-v11-economics.md) §7) |
 | `limits` пуст / ключа нет / `capabilities: null` | — | Клиентская проверка **по отсутствующему ключу не выполняется** (полагаемся на `400` бэка); форма **остаётся работоспособной**. Проверки «число / целое / `≥ 0`» действуют всегда |
 | Нет права `backend-economics:view` | `403 forbidden` | Заглушка «Недостаточно прав» |
+
+## Архив продуктов (contract v1.2, [ADR-073](../../adr/ADR-073-products-archive-and-price-columns.md))
+
+- **Архив — признак ВИТРИНЫ, а не запрет операций:** начисление и выдача работают для
+  **всех** продуктов, включая архивные; форма «Установить план» страницы «Юзеры бэков»
+  архивные **не фильтрует** (`archived` и `grantable` ортогональны).
+- **Критерий архивации CRM не знает** — его определяет сторона сервиса. CRM отображает
+  признак и позволяет его переключить. ⚠️ **Выводить критерий из косвенных признаков
+  (сумм начисления, счётчиков) ЗАПРЕЩЕНО:** карта двухвалютна и **неинъективна** —
+  разные продукты дают одинаковые пары значений, и на этом совпадении уже был построен
+  неверный вывод о составе продаж ([ADR-073](../../adr/ADR-073-products-archive-and-price-columns.md) §Контекст).
+  Состав продаж устанавливается связью **по идентификатору платежа**, а этих данных у
+  CRM нет вовсе.
+- **CRM-эндпоинт всегда отдаёт полный список, включая архивные**, фильтрация —
+  клиентская: так контракт CRM→frontend не зависит от формы `GET` у бэка
+  ([Q-ECON-1](../../99-open-questions.md)).
+- **Переключатель «Показать архивные» обязателен** — без него архивирование
+  необратимо из UI (строки, на которой стоял бы контрол возврата, больше нет).
+- **Аудит:** отдельное действие **`product_archived_updated`**, деталь `archived=<new>`.
+  **Пишется НЕЗАВИСИМО от полноты ответа бэка** — разбор ответа не вправе бросить
+  исключение раньше записи аудита ([ADR-073](../../adr/ADR-073-products-archive-and-price-columns.md) §8).
+- **Ответ `PATCH`: семантика названа, схема ТОЛЕРАНТНА — для ОБОИХ `PATCH`-эндпоинтов**
+  (`/products/{product_id}` **и** `/pricing/{tariff_id}`, симметрично; §8 п.4: side-effect
+  правки тарифа так же необратим, а довод «у тарифа одна значимая величина» покрывает
+  лишь `previous_tokens` из трёх полей). При правке одного
+  `archived` бэк обязан слать `previous_tokens` (**текущее неизменившееся** значение
+  токенов), `changed` (менялось ли что-либо фактически) и `effective_after_seconds` —
+  **но `200` без любого из трёх НЕ даёт `502`**: ответ разбирается **после необратимого
+  side-effect**, и строгость означала бы «архив переключён, оператору красная ошибка,
+  аудита нет» (прецедент — [ADR-057](../../adr/ADR-057-mail-send-contract-fix.md) §5).
+  Отсутствие: `previous_tokens` → тост без дельты; `changed` → «изменилось»;
+  `effective_after_seconds` → без предложения о задержке.
+- **Колонки «Цена»/«Период» убраны** из таблицы, поля `price`/`period` из контракта
+  **не удалены** (часть v1, универсальный контракт их не теряет) — [ADR-073](../../adr/ADR-073-products-archive-and-price-columns.md) §2.
 
 ## Ограничения
 

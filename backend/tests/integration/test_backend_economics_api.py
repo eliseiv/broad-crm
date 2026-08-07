@@ -1021,6 +1021,490 @@ async def test_audit_never_contains_admin_key(monkeypatch: pytest.MonkeyPatch) -
 # =============================================================================
 
 
+# =============================================================================
+# Архив продуктов (contract v1.2, ADR-073)
+# =============================================================================
+
+
+def patch_bodies(transport: FakeAdminTransport) -> list[Any]:
+    """Разобранные тела фактических upstream-`PATCH`-запросов (в порядке отправки)."""
+    return [json.loads(r.content) for r in transport.requests if r.method == "PATCH"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("archived", False), ("archived", True), ("tokens", 0), ("avatar_tokens", 0)],
+    ids=["archived_false", "archived_true", "tokens_zero", "avatar_tokens_zero"],
+)
+async def test_falsy_value_reaches_backend_as_present_key(
+    monkeypatch: pytest.MonkeyPatch, field: str, value: Any
+) -> None:
+    """FALSY-значение обязано ДОЙТИ до бэка ключом со значением, а не исчезнуть из тела.
+
+    Отбор значимых полей идёт по `is not None`, а не по истинности (ADR-073 §1). Тихая
+    поломка сделала бы **возврат из архива невозможным**: `archived: false` выпал бы из
+    тела, бэк не увидел бы команды, а CRM отрапортовала бы успех. `tokens: 0` /
+    `avatar_tokens: 0` — тот же класс: обнуление начисления это законная правка.
+    Ассертится тело ФАКТИЧЕСКОГО upstream-запроса, а не намерение кода.
+    """
+    transport = working_transport(monkeypatch)
+    app = build_app(make_principal())
+
+    async with client(app) as c:
+        response = await c.patch(f"{BASE}/products/p-1", json={field: value})
+
+    assert response.status_code == 200
+    body = patch_bodies(transport)[0]
+    assert field in body, f"поле {field} обязано присутствовать в теле upstream-запроса"
+    assert body[field] == value
+    assert body[field] is not None
+
+
+async def test_patch_with_only_archived_is_valid_body(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`archived` — ЗНАЧИМОЕ поле: тело с одним им валидно (не `400 validation_error`)."""
+    working_transport(monkeypatch)
+    app = build_app(make_principal())
+
+    async with client(app) as c:
+        response = await c.patch(f"{BASE}/products/p-1", json={"archived": True})
+
+    assert response.status_code == 200
+
+
+@pytest.mark.parametrize(
+    ("case", "body"),
+    [
+        ("empty", {}),
+        ("only_if_updated_at", {"if_updated_at": "2026-08-01T10:00:00Z"}),
+    ],
+    ids=["empty", "only_if_updated_at"],
+)
+async def test_patch_without_meaningful_field_is_400(
+    monkeypatch: pytest.MonkeyPatch, case: str, body: dict[str, Any]
+) -> None:
+    """Пустое тело и тело с одним `if_updated_at` → `400`: значимого поля нет.
+
+    `if_updated_at` — защита от «двух операторов», а не изменяемая величина (ADR-073 §1).
+    """
+    transport = working_transport(monkeypatch)
+    app = build_app(make_principal())
+
+    async with client(app) as c:
+        response = await c.patch(f"{BASE}/products/p-1", json=body)
+
+    assert response.status_code == 400
+    # Запрос к бэку не уходит вовсе — отказ собственный, а не транзитный.
+    assert patch_bodies(transport) == []
+
+
+async def test_products_transit_includes_archived_without_server_side_filtering(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CRM отдаёт И активные, И архивные с флагами: фильтрация КЛИЕНТСКАЯ (ADR-073 §3).
+
+    Негативные ассерты: в upstream-запрос не добавилось НИ ОДНОГО нового параметра —
+    `scope=all` как был, и никакого `archived`/`include_archived`. Серверная фильтрация
+    сделала бы переключатель «Показать архивные» неработающим.
+    """
+    transport = working_transport(
+        monkeypatch,
+        products={
+            "items": [
+                product_item(product_id="p-active", archived=False),
+                product_item(product_id="p-archived", archived=True),
+            ]
+        },
+    )
+    app = build_app(make_principal())
+
+    async with client(app) as c:
+        response = await c.get(f"{BASE}/products")
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [i["product_id"] for i in items] == ["p-active", "p-archived"]
+    assert [i["archived"] for i in items] == [False, True]
+    # Параметры запроса к бэку не менялись волной ADR-073.
+    assert transport.queries_for("GET", "/products") == ["scope=all"]
+
+
+async def test_grant_plan_products_still_send_no_scope_and_carry_archived(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Форма «Установить план» получает признак архива, а `scope` по-прежнему НЕ шлётся.
+
+    Без трансляции поля фронту нечем пометить опцию (ADR-073 §5); появление `scope` на
+    этом пути изменило бы состав каталога формы.
+    """
+    transport = working_transport(
+        monkeypatch,
+        products={
+            "items": [
+                product_item(product_id="p-active", archived=False),
+                product_item(product_id="p-archived", archived=True),
+            ]
+        },
+    )
+    app = build_app(make_principal())
+
+    async with client(app) as c:
+        response = await c.get(f"/api/backend-users/{BACKEND_ID}/products")
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert {i["product_id"]: i["archived"] for i in items} == {
+        "p-active": False,
+        "p-archived": True,
+    }
+    assert transport.queries_for("GET", "/products") == [""]
+
+
+@pytest.mark.parametrize("path", ["backend-economics", "backend-users"])
+async def test_product_without_archived_field_is_null_not_schema_mismatch(
+    monkeypatch: pytest.MonkeyPatch, path: str
+) -> None:
+    """Ответ бэка БЕЗ поля `archived` валиден: `archived: null`, статус 200, не 502.
+
+    `null` = «у бэка нет самого понятия архива» ⇒ все продукты активны. Это штатное
+    состояние совместимости, а не `schema_mismatch` (ADR-073 §1).
+    """
+    item = product_item()
+    assert "archived" not in item  # фикстура v1.1 — поля нет вовсе
+    working_transport(monkeypatch, products={"items": [item]})
+    app = build_app(make_principal())
+
+    url = (
+        f"{BASE}/products"
+        if path == "backend-economics"
+        else f"/api/backend-users/{BACKEND_ID}/products"
+    )
+    async with client(app) as c:
+        response = await c.get(url)
+
+    assert response.status_code == 200
+    assert response.status_code != 502
+    assert response.json()["items"][0]["archived"] is None
+
+
+# --- Аудит: имя действия называет ИЗМЕНЁННОЕ (ADR-073 §7) ---------------------
+
+
+async def patch_and_capture(
+    monkeypatch: pytest.MonkeyPatch, body: dict[str, Any], upstream: dict[str, Any]
+) -> tuple[httpx.Response, RecordingLogger]:
+    import app.infra.audit as audit_mod
+
+    recorder = RecordingLogger()
+    monkeypatch.setattr(audit_mod, "logger", recorder)
+
+    transport = working_transport(monkeypatch)
+    transport.on("PATCH", "/products/p-1", status=200, json_body=upstream)
+    app = build_app(make_principal())
+
+    async with client(app) as c:
+        response = await c.patch(f"{BASE}/products/p-1", json=body)
+    return response, recorder
+
+
+@pytest.mark.parametrize("archived", [True, False], ids=["archive", "unarchive"])
+async def test_archived_only_patch_writes_archive_event_and_no_tokens_event(
+    monkeypatch: pytest.MonkeyPatch, archived: bool
+) -> None:
+    """Только `archived` ⇒ РОВНО одно `product_archived_updated` и НИ ОДНОГО токенного.
+
+    Обязательный негативный ассерт (ADR-073 §7): запись «правил токены» без правки
+    токенов — та же ложь, что дельта `tokens=1000->1000` при неизменённом значении.
+    Деталь пишется в форме ПРОВОДА (`true`/`false` строчными), а не питоновской.
+    """
+    response, recorder = await patch_and_capture(
+        monkeypatch,
+        {"archived": archived},
+        product_update_body(archived=archived),
+    )
+
+    assert response.status_code == 200
+    archive_events = recorder.named("backend_admin_action")
+    assert len(archive_events) == 1
+    assert archive_events[0]["action"] == "product_archived_updated"
+    assert archive_events[0]["action"] != "product_tokens_updated"
+    detail = archive_events[0]["detail"]
+    assert detail == f"product_id=p-1 archived={'true' if archived else 'false'}"
+    assert "True" not in detail and "False" not in detail
+    assert "tokens=" not in detail
+
+
+async def test_tokens_only_patch_writes_no_archive_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Только `tokens` ⇒ РОВНО одно `product_tokens_updated` и ни одного архивного."""
+    response, recorder = await patch_and_capture(
+        monkeypatch, {"tokens": 1500}, product_update_body()
+    )
+
+    assert response.status_code == 200
+    events = recorder.named("backend_admin_action")
+    assert len(events) == 1
+    assert events[0]["action"] == "product_tokens_updated"
+    assert [e["action"] for e in events] != ["product_archived_updated"]
+    assert "archived=" not in events[0]["detail"]
+
+
+async def test_tokens_and_archived_patch_writes_two_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Тело с `tokens` И `archived` ⇒ ДВА события: каждое называет своё изменение."""
+    response, recorder = await patch_and_capture(
+        monkeypatch,
+        {"tokens": 1500, "archived": True},
+        product_update_body(archived=True),
+    )
+
+    assert response.status_code == 200
+    events = recorder.named("backend_admin_action")
+    assert [e["action"] for e in events] == ["product_tokens_updated", "product_archived_updated"]
+    assert "tokens=1000->1500" in events[0]["detail"]
+    assert events[1]["detail"] == "product_id=p-1 archived=true"
+
+
+# --- Толерантность ответа `PATCH` на archived-only правке (ADR-073 §8) --------
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        ["previous_tokens"],
+        ["changed"],
+        ["effective_after_seconds"],
+        ["previous_tokens", "changed", "effective_after_seconds"],
+    ],
+    ids=["no_previous_tokens", "no_changed", "no_effective_after", "none_of_three"],
+)
+async def test_archived_patch_tolerates_incomplete_response_and_still_audits(
+    monkeypatch: pytest.MonkeyPatch, missing: list[str]
+) -> None:
+    """Ответ `200` без `previous_tokens`/`changed`/`effective_after_seconds` ⇒ CRM `200` + аудит.
+
+    ADR-073 §8(2): схема ответа CRM ТОЛЕРАНТНА — она парсит ответ ПОСЛЕ уже состоявшегося
+    необратимого side-effect (прецедент ADR-057 §5). §8(3): аудит пишется НЕЗАВИСИМО от
+    полноты ответа. Второй ассерт обязателен: строгая схема поднимает исключение ДО записи
+    аудита, и дефект выглядит как «архив у бэка переключён, CRM показала красное, следа нет».
+    """
+    upstream = product_update_body(archived=True)
+    for field in missing:
+        del upstream[field]
+
+    response, recorder = await patch_and_capture(monkeypatch, {"archived": True}, upstream)
+
+    assert response.status_code == 200
+    assert response.status_code != 502
+    events = recorder.named("backend_admin_action")
+    assert len(events) == 1, "аудит обязан фиксировать СОСТОЯВШИЙСЯ факт у бэка"
+    assert events[0]["action"] == "product_archived_updated"
+    assert events[0]["detail"] == "product_id=p-1 archived=true"
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        ["previous_tokens"],
+        ["changed"],
+        ["effective_after_seconds"],
+        ["previous_tokens", "changed", "effective_after_seconds"],
+    ],
+    ids=["no_previous_tokens", "no_changed", "no_effective_after", "none_of_three"],
+)
+async def test_pricing_patch_tolerates_incomplete_response_and_still_audits(
+    monkeypatch: pytest.MonkeyPatch, missing: list[str]
+) -> None:
+    """Толерантность §8 действует и на ВТОРОМ пишущем пути — `PATCH …/pricing/{tariff_id}`.
+
+    Кейс обязателен ОТДЕЛЬНО от продуктовых (ADR-073 §8 п.4): реализовать толерантность
+    только у продукта — ровно то расхождение схем двух `PATCH`'ей одного контракта, из-за
+    которого норма и уточнялась. Аудит `pricing_updated` обязан быть записан: правка у
+    бэка уже состоялась, и её след не зависит от полноты ответа.
+    """
+    import app.infra.audit as audit_mod
+
+    recorder = RecordingLogger()
+    monkeypatch.setattr(audit_mod, "logger", recorder)
+
+    upstream = tariff_item(tokens=2.5) | {
+        "previous_tokens": 1.5,
+        "changed": True,
+        "effective_after_seconds": 60,
+    }
+    for field in missing:
+        del upstream[field]
+
+    transport = working_transport(monkeypatch)
+    transport.on("PATCH", "/pricing/t-1", status=200, json_body=upstream)
+    app = build_app(make_principal())
+
+    async with client(app) as c:
+        response = await c.patch(f"{BASE}/pricing/t-1", json={"tokens": 2.5})
+
+    assert response.status_code == 200
+    assert response.status_code != 502
+    events = recorder.named("backend_admin_action")
+    assert len(events) == 1
+    assert events[0]["action"] == "pricing_updated"
+
+
+# --- `2xx` с НЕГОДНЫМ телом: ошибка не вправе опередить запись аудита (§8 п.3) ---
+#
+# Последний путь потери следа: до фикса разбор тела бросал исключение В КЛИЕНТЕ — раньше,
+# чем аудит успевал записаться. Оператор получал `502` при УЖЕ переключённом у бэка
+# признаке и НОЛЬ событий в следе. Опциональность трёх полей (§8 п.2) этот путь не
+# закрывает: она про схему, а негодное тело падает в ветках РАЗБОРА до неё.
+
+# Тела, которые бэк отдаёт со статусом `2xx`, но использовать их нельзя.
+UNUSABLE_BODIES: list[tuple[str, dict[str, Any]]] = [
+    ("json_array", {"json_body": []}),
+    ("not_json_html", {"text_body": "<html><body>200 OK</body></html>"}),
+    ("json_scalar", {"json_body": "ok"}),
+]
+
+
+@pytest.mark.parametrize(("case", "body"), UNUSABLE_BODIES, ids=[c for c, _ in UNUSABLE_BODIES])
+async def test_product_2xx_with_unusable_body_is_502_but_audit_is_written(
+    monkeypatch: pytest.MonkeyPatch, case: str, body: dict[str, Any]
+) -> None:
+    """`200` с негодным телом ⇒ CRM `502`, НО след правки записан (ADR-073 §8.3).
+
+    Ассертится именно СОВМЕСТНОСТЬ «502 + событие есть»: до фикса здесь было НОЛЬ
+    событий — это и есть регресс-гейт. `2xx` означает, что операция у бэка СОСТОЯЛАСЬ,
+    поэтому аудит обязан зафиксировать ФАКТ, а не КАЧЕСТВО ответа.
+    """
+    import app.infra.audit as audit_mod
+
+    recorder = RecordingLogger()
+    monkeypatch.setattr(audit_mod, "logger", recorder)
+
+    transport = working_transport(monkeypatch)
+    transport.on("PATCH", "/products/p-1", status=200, **body)
+    app = build_app(make_principal())
+
+    async with client(app) as c:
+        response = await c.patch(f"{BASE}/products/p-1", json={"archived": True})
+
+    assert response.status_code == 502
+    # Контракт на проводе НЕ изменился — отличимый тип ошибки виден только Python-коду.
+    assert response.json()["error"]["code"] == "backend_admin_unavailable"
+
+    events = recorder.named("backend_admin_action")
+    assert events != [], "след состоявшейся правки не должен теряться из-за негодного тела"
+    assert len(events) == 1
+    assert events[0]["action"] == "product_archived_updated"
+    # Ответ не разобран ⇒ величина берётся из ОТПРАВЛЕННОГО оператором значения
+    # (`PATCH` идемпотентен — он устанавливает именно его).
+    assert events[0]["detail"] == "product_id=p-1 archived=true"
+
+
+@pytest.mark.parametrize(("case", "body"), UNUSABLE_BODIES, ids=[c for c, _ in UNUSABLE_BODIES])
+async def test_product_2xx_unusable_body_writes_both_events_when_body_had_both(
+    monkeypatch: pytest.MonkeyPatch, case: str, body: dict[str, Any]
+) -> None:
+    """Тело с `tokens` И `archived` ⇒ при негодном ответе записаны ОБА события.
+
+    Полнота следа не зависит от разбираемости ответа: сколько величин оператор изменил,
+    столько записей и обязано быть.
+    """
+    import app.infra.audit as audit_mod
+
+    recorder = RecordingLogger()
+    monkeypatch.setattr(audit_mod, "logger", recorder)
+
+    transport = working_transport(monkeypatch)
+    transport.on("PATCH", "/products/p-1", status=200, **body)
+    app = build_app(make_principal())
+
+    async with client(app) as c:
+        response = await c.patch(f"{BASE}/products/p-1", json={"tokens": 1500, "archived": False})
+
+    assert response.status_code == 502
+    events = recorder.named("backend_admin_action")
+    assert [e["action"] for e in events] == ["product_tokens_updated", "product_archived_updated"]
+    # Прежнее значение из ответа недоступно ⇒ дельта неполна, но НОВОЕ названо.
+    assert events[0]["detail"] == "product_id=p-1 tokens=n/a->1500"
+    assert events[1]["detail"] == "product_id=p-1 archived=false"
+
+
+@pytest.mark.parametrize(("case", "body"), UNUSABLE_BODIES, ids=[c for c, _ in UNUSABLE_BODIES])
+async def test_pricing_2xx_with_unusable_body_is_502_but_audit_is_written(
+    monkeypatch: pytest.MonkeyPatch, case: str, body: dict[str, Any]
+) -> None:
+    """Симметричный кейс на втором пишущем пути — тариф (ADR-073 §8.3).
+
+    Реализовать защиту только у продукта — ровно то расхождение двух `PATCH`'ей одного
+    контракта, из-за которого норма и уточнялась.
+    """
+    import app.infra.audit as audit_mod
+
+    recorder = RecordingLogger()
+    monkeypatch.setattr(audit_mod, "logger", recorder)
+
+    transport = working_transport(monkeypatch)
+    transport.on("PATCH", "/pricing/t-1", status=200, **body)
+    app = build_app(make_principal())
+
+    async with client(app) as c:
+        response = await c.patch(f"{BASE}/pricing/t-1", json={"tokens": 2.5})
+
+    assert response.status_code == 502
+    assert response.json()["error"]["code"] == "backend_admin_unavailable"
+    events = recorder.named("backend_admin_action")
+    assert len(events) == 1
+    assert events[0]["action"] == "pricing_updated"
+    assert events[0]["detail"] == "tariff_id=t-1 tokens=n/a->2.5"
+
+
+# --- ГРАНИЦА: без неё гейт выше «чинится» слишком широко ----------------------
+#
+# Аудит обязан молчать всюду, где бэк НЕ подтвердил применение. Писать след там, где
+# факт не состоялся, ХУЖЕ исходного дефекта: лог начинает утверждать об изменениях,
+# которых не было, и перестаёт быть доказательством вообще.
+
+NOT_APPLIED_OUTCOMES: list[tuple[str, dict[str, Any]]] = [
+    ("conflict_409", {"status": 409}),
+    ("unprocessable_422", {"status": 422, "json_body": {"detail": "вне границ"}}),
+    ("server_error_500", {"status": 500}),
+    ("timeout", {"exc": httpx.TimeoutException("read timeout")}),
+    ("transport", {"exc": httpx.ConnectError("getaddrinfo failed")}),
+]
+
+
+@pytest.mark.parametrize(
+    ("case", "rule"), NOT_APPLIED_OUTCOMES, ids=[c for c, _ in NOT_APPLIED_OUTCOMES]
+)
+@pytest.mark.parametrize("resource", ["products", "pricing"])
+async def test_no_audit_when_backend_did_not_confirm_application(
+    monkeypatch: pytest.MonkeyPatch, case: str, rule: dict[str, Any], resource: str
+) -> None:
+    """Бэк НЕ подтвердил применение (`409`/`422`/`5xx`/таймаут/транспорт) ⇒ аудит ПУСТ.
+
+    Обязательная пара к гейту «`2xx` с негодным телом»: там аудит пишется, потому что
+    статус `2xx` — подтверждение факта; здесь подтверждения нет, и запись была бы ложью.
+    """
+    import app.infra.audit as audit_mod
+
+    recorder = RecordingLogger()
+    monkeypatch.setattr(audit_mod, "logger", recorder)
+
+    transport = working_transport(monkeypatch)
+    if resource == "products":
+        transport.on("PATCH", "/products/p-1", **rule)
+        url, payload = f"{BASE}/products/p-1", {"archived": True}
+    else:
+        transport.on("PATCH", "/pricing/t-1", **rule)
+        url, payload = f"{BASE}/pricing/t-1", {"tokens": 2.5}
+    app = build_app(make_principal())
+
+    async with client(app) as c:
+        await c.get(f"{BASE}/products")  # прогрев префикса
+        response = await c.patch(url, json=payload)
+
+    assert response.status_code != 200
+    assert recorder.named("backend_admin_action") == []
+
+
 async def test_unknown_backend_is_404_and_backend_without_key_is_409(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

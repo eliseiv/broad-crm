@@ -56,8 +56,22 @@ def _delta(previous: float | None, current: float | None) -> str:
     return f"{_amount(previous)}->{_amount(current)}"
 
 
+def _applied(
+    from_response: float | bool | None, from_request: float | bool | None
+) -> float | bool | None:
+    """Значение для аудита: итог из ответа бэка, а при его отсутствии — отправленное.
+
+    Ответ может прийти неполным или вовсе неразобранным (ADR-073 §8), но правка при
+    этом СОСТОЯЛАСЬ, и след обязан назвать величину. Отправленное оператором значение —
+    честный второй источник: `PATCH` идемпотентен, то есть устанавливает именно его.
+    """
+    return from_response if from_response is not None else from_request
+
+
 def _product_detail(
-    product_id: str, payload: UpdateBackendProductRequest, result: BackendProductUpdateResponse
+    product_id: str,
+    payload: UpdateBackendProductRequest,
+    result: BackendProductUpdateResponse | None,
 ) -> str:
     """Деталь аудита правки продукта — называет ИМЕННО ИЗМЕНЁННОЕ поле (ADR-072 §10).
 
@@ -78,15 +92,36 @@ def _product_detail(
     """
     parts = [f"product_id={product_id}"]
     if payload.tokens is not None:
-        parts.append(f"tokens={_delta(result.previous_tokens, result.tokens)}")
+        # `previous_tokens` может отсутствовать (ADR-073 §8) — тогда дельта неполна
+        # (`n/a->1500`), но новое значение названо: аудиту важнее факт, чем красота.
+        previous = result.previous_tokens if result is not None else None
+        current = _applied(result.tokens if result is not None else None, payload.tokens)
+        parts.append(f"tokens={_delta(previous, current)}")
     if payload.avatar_tokens is not None:
-        # Новое значение — из ответа бэка (авторитетный итог); если бэк поле не вернул,
-        # берём отправленное оператором. Прежнее не подставляется ни из какого источника.
-        applied = (
-            result.avatar_tokens if result.avatar_tokens is not None else payload.avatar_tokens
+        # Прежнее значение не подставляется ни из какого источника (TD-080).
+        current = _applied(
+            result.avatar_tokens if result is not None else None, payload.avatar_tokens
         )
-        parts.append(f"avatar_tokens={_amount(applied)}")
+        parts.append(f"avatar_tokens={_amount(current)}")
     return " ".join(parts)
+
+
+def _archived_detail(
+    product_id: str,
+    payload: UpdateBackendProductRequest,
+    result: BackendProductUpdateResponse | None,
+) -> str:
+    """Деталь аудита смены признака архива — `archived=<new>` (ADR-073 §7).
+
+    Прежнее значение авторитетно не приходит (в ответе `PATCH` есть только
+    `previous_tokens`, относящийся к токенам), поэтому пишется только новое — по уже
+    принятому правилу для `avatar_tokens` (ADR-072 §10). Значение берётся из ответа
+    бэка, а при его отсутствии — отправленное оператором.
+    """
+    applied = _applied(result.archived if result is not None else None, payload.archived)
+    # Печатаем в форме провода (`true`/`false`), а не питоновской (`True`/`False`):
+    # значение пришло и ушло булевым JSON, и запись аудита обязана быть узнаваемой.
+    return f"product_id={product_id} archived={'true' if applied else 'false'}"
 
 
 @router.get("/backends", response_model=BackendEconomicsBackendsResponse)
@@ -113,17 +148,38 @@ async def update_backend_economics_product(
     service: BackendEconomicsServiceDep,
     principal: EditDep,
 ) -> BackendProductUpdateResponse:
-    """Правка токенов продукта (идемпотентно) + аудит-лог после успеха бэка."""
-    result = await service.update_product(
-        backend_id, product_id, payload, actor_id=principal.user_id
+    """Правка токенов и/или признака архива продукта (идемпотентно) + аудит после успеха.
+
+    Действий может быть ДВА: имя действия обязано называть изменённое, поэтому смена
+    `archived` пишется отдельным `product_archived_updated` (ADR-073 §7), а
+    `product_tokens_updated` — только если в теле была токенная величина. Правка одного
+    признака архива события о токенах НЕ порождает: запись «правил токены» без правки
+    токенов — та же ложь, что дельта `tokens=1000->1000`.
+
+    Аудит пишется из `on_applied` — сразу после подтверждения бэка и ДО разбора ответа
+    (ADR-073 §8.3): неполный или неразобранный ответ не вправе стереть след уже
+    состоявшейся правки.
+    """
+
+    def audit(applied: BackendProductUpdateResponse | None) -> None:
+        if payload.tokens is not None or payload.avatar_tokens is not None:
+            log_backend_admin_action(
+                principal,
+                action="product_tokens_updated",
+                backend_id=str(backend_id),
+                detail=_product_detail(product_id, payload, applied),
+            )
+        if payload.archived is not None:
+            log_backend_admin_action(
+                principal,
+                action="product_archived_updated",
+                backend_id=str(backend_id),
+                detail=_archived_detail(product_id, payload, applied),
+            )
+
+    return await service.update_product(
+        backend_id, product_id, payload, actor_id=principal.user_id, on_applied=audit
     )
-    log_backend_admin_action(
-        principal,
-        action="product_tokens_updated",
-        backend_id=str(backend_id),
-        detail=_product_detail(product_id, payload, result),
-    )
-    return result
 
 
 @router.get("/{backend_id}/pricing", response_model=BackendEconomicsPricingResponse)
@@ -142,14 +198,22 @@ async def update_backend_economics_pricing(
     service: BackendEconomicsServiceDep,
     principal: EditDep,
 ) -> BackendTariffUpdateResponse:
-    """Правка тарифа списания (идемпотентно) + аудит-лог после успеха бэка."""
-    result = await service.update_pricing(
-        backend_id, tariff_id, payload, actor_id=principal.user_id
+    """Правка тарифа списания (идемпотентно) + аудит-лог после успеха бэка.
+
+    Аудит пишется из `on_applied` — до разбора ответа (ADR-073 §8.3), симметрично
+    правке продукта.
+    """
+
+    def audit(applied: BackendTariffUpdateResponse | None) -> None:
+        previous = applied.previous_tokens if applied is not None else None
+        current = _applied(applied.tokens if applied is not None else None, payload.tokens)
+        log_backend_admin_action(
+            principal,
+            action="pricing_updated",
+            backend_id=str(backend_id),
+            detail=f"tariff_id={tariff_id} tokens={_delta(previous, current)}",
+        )
+
+    return await service.update_pricing(
+        backend_id, tariff_id, payload, actor_id=principal.user_id, on_applied=audit
     )
-    log_backend_admin_action(
-        principal,
-        action="pricing_updated",
-        backend_id=str(backend_id),
-        detail=f"tariff_id={tariff_id} tokens={_delta(result.previous_tokens, result.tokens)}",
-    )
-    return result

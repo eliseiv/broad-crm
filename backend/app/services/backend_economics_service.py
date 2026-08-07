@@ -20,11 +20,12 @@ CRM — **прокси без собственного хранилища** (ADR
 from __future__ import annotations
 
 import uuid
+from collections.abc import Callable
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from app.errors import backend_admin_unavailable
+from app.errors import BackendAdminResponseUnusable, backend_admin_unavailable
 from app.infra.backend_admin_client import (
     REASON_SCHEMA_MISMATCH,
     BackendAdminClient,
@@ -126,12 +127,28 @@ class BackendEconomicsService:
         payload: UpdateBackendProductRequest,
         *,
         actor_id: uuid.UUID,
+        on_applied: Callable[[BackendProductUpdateResponse | None], None],
     ) -> BackendProductUpdateResponse:
-        """Правка токенов продукта. Строк не создаёт: неизвестный `product_id` → 400 бэка."""
+        """Правка продукта. Строк не создаёт: неизвестный `product_id` → 400 бэка.
+
+        `on_applied` вызывается РОВНО ОДИН РАЗ сразу после подтверждения бэка и ДО
+        строгого разбора ответа (ADR-073 §8.3): аудит фиксирует СОСТОЯВШИЙСЯ факт на
+        стороне бэка, а не качество его ответа. Порядок «исключение до аудита»
+        превращал бы неполный ответ в необратимую потерю следа: признак у бэка уже
+        переключён, оператор видит красную ошибку, аудит молчит. Аргумент —
+        толерантно разобранный ответ или `None`, если он не разбирается вовсе.
+        """
         _, client = await self._sources.require(backend_id)
-        raw = await client.update_product(
-            product_id, body=self._body(payload), actor=self._actor(actor_id)
-        )
+        try:
+            raw = await client.update_product(
+                product_id, body=self._body(payload), actor=self._actor(actor_id)
+            )
+        except BackendAdminResponseUnusable:
+            # Бэк ответил 2xx — правка СОСТОЯЛАСЬ, негодно только тело. Фиксируем факт
+            # и пробрасываем ошибку дальше: оператор увидит 502, но след не потерян.
+            on_applied(None)
+            raise
+        on_applied(self._tolerant(BackendProductUpdateResponse, raw))
         return self._validate(BackendProductUpdateResponse, raw)
 
     async def update_pricing(
@@ -141,13 +158,22 @@ class BackendEconomicsService:
         payload: UpdateBackendTariffRequest,
         *,
         actor_id: uuid.UUID,
+        on_applied: Callable[[BackendTariffUpdateResponse | None], None],
     ) -> BackendTariffUpdateResponse:
         """Правка тарифа списания — НЕ «отчётная цифра»: тот же тариф обслуживает у бэка
-        пользовательские пути расчёта стоимости генерации."""
+        пользовательские пути расчёта стоимости генерации.
+
+        `on_applied` — то же, что у правки продукта (ADR-073 §8.3): аудит до разбора.
+        """
         _, client = await self._sources.require(backend_id)
-        raw = await client.update_pricing(
-            tariff_id, body=self._body(payload), actor=self._actor(actor_id)
-        )
+        try:
+            raw = await client.update_pricing(
+                tariff_id, body=self._body(payload), actor=self._actor(actor_id)
+            )
+        except BackendAdminResponseUnusable:  # 2xx с негодным телом — см. update_product
+            on_applied(None)
+            raise
+        on_applied(self._tolerant(BackendTariffUpdateResponse, raw))
         return self._validate(BackendTariffUpdateResponse, raw)
 
     # --- внутреннее ---
@@ -205,6 +231,19 @@ class BackendEconomicsService:
     @staticmethod
     def _actor(actor_id: uuid.UUID) -> str:
         return f"{_ACTOR_PREFIX}{actor_id}"
+
+    @staticmethod
+    def _tolerant(schema: type[_ModelT], raw: dict[str, Any]) -> _ModelT | None:
+        """Разбор, который НЕ бросает: `None`, если ответ не соответствует схеме.
+
+        Нужен там, где side-effect уже необратимо состоялся и решение (писать аудит)
+        не вправе зависеть от качества ответа. Строгий разбор идёт следом и по-прежнему
+        даёт `502` на не-контрактных данных — но уже ПОСЛЕ записи следа.
+        """
+        try:
+            return schema.model_validate(raw)
+        except (ValidationError, TypeError):
+            return None
 
     @staticmethod
     def _validate(schema: type[_ModelT], raw: dict[str, Any]) -> _ModelT:

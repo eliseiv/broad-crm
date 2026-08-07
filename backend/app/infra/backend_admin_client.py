@@ -48,6 +48,7 @@ from app.errors import (
     backend_admin_extension_not_supported,
     backend_admin_not_supported,
     backend_admin_rejected,
+    backend_admin_response_unusable,
     backend_admin_unavailable,
     backend_user_not_found,
 )
@@ -467,11 +468,16 @@ class BackendAdminClient:
         if status_code == 409:
             raise self._upstream(REASON_HTTP_4XX, backend_admin_conflict())
         if 200 <= status_code < 300:
+            # Ниже — исходы, где бэк УЖЕ ПОДТВЕРДИЛ операцию статусом 2xx, и негодно
+            # лишь тело. Тип ошибки отличимый (`BackendAdminResponseUnusable`), чтобы
+            # путь записи успел зафиксировать состоявшийся факт в аудите до её
+            # проброса (ADR-073 §8.3). Код контракта тот же — `502
+            # backend_admin_unavailable`, читающие пути не меняются.
             try:
                 data = response.json()
             except ValueError as exc:
                 raise self._upstream(
-                    REASON_BAD_JSON, backend_admin_unavailable("Бэк вернул невалидный JSON")
+                    REASON_BAD_JSON, backend_admin_response_unusable("Бэк вернул невалидный JSON")
                 ) from exc
             if not isinstance(data, dict):
                 # Тело РАЗОБРАЛОСЬ как JSON (`[]`, `"ok"`, `5`), но не соответствует
@@ -479,7 +485,7 @@ class BackendAdminClient:
                 # `bad_json` = «тело не разбирается как JSON»).
                 raise self._upstream(
                     REASON_SCHEMA_MISMATCH,
-                    backend_admin_unavailable("Бэк вернул неожиданный формат ответа"),
+                    backend_admin_response_unusable("Бэк вернул неожиданный формат ответа"),
                 )
             return data
         raise self._upstream(

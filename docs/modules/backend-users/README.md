@@ -7,10 +7,10 @@
 план». Решение — [ADR-069](../../adr/ADR-069-backend-users-page-admin-contract.md),
 API — [04-api.md#backend-users](../../04-api.md#backend-users).
 
-## Состояние (замер на замороженном дереве 2026-08-06)
+## Состояние (замер на замороженном дереве 2026-08-07)
 
 > **Единственный датированный дом фактов о реализации этого модуля** (та же схема, что
-> у [backend-economics](../backend-economics/README.md#состояние-замер-на-замороженном-дереве-2026-08-06)).
+> у [backend-economics](../backend-economics/README.md#состояние-замер-на-замороженном-дереве-2026-08-07)).
 > Всё остальное в документе — **предписание**, а не утверждение о дереве; факты о
 > состоянии кода, тестов и **чужих репозиториев** держим только здесь, с датой.
 >
@@ -26,9 +26,9 @@ API — [04-api.md#backend-users](../../04-api.md#backend-users).
 | --- | --- |
 | Backend / frontend модуля | реализованы (`backend/app/api/backend_users.py`, `services/backend_user_service.py`, `infra/backend_admin_client.py`; `frontend/src/pages/BackendUsersPage.tsx`, `BackendUserDetailPage.tsx`) |
 | Ключ каталога прав `backend-users` (`view`/`edit`) | в `CATALOG` (`backend/app/domain/permissions.py:23`) |
-| Тесты | **есть** (заведены волной [ADR-072](../../adr/ADR-072-crm-admin-api-v11-economics.md); прежняя запись «модуль покрыт нулём тестов» устарела): `backend/tests/unit/test_backend_admin_client.py`, `backend/tests/integration/test_backend_economics_api.py` (общий клиент и резолвер источника), `frontend/src/pages/__tests__/BackendUserDetailRequests.test.tsx`; плюс чужие — `backend/tests/integration/test_users_roles_api.py:59-83`, `frontend/src/routes/__tests__/DefaultRoute.test.tsx:58-67` |
+| Тесты | **есть** (заведены волной [ADR-072](../../adr/ADR-072-crm-admin-api-v11-economics.md); прежняя запись «модуль покрыт нулём тестов» устарела): `backend/tests/unit/test_backend_admin_client.py`, `backend/tests/integration/test_backend_economics_api.py` (общий клиент и резолвер источника), `frontend/src/pages/__tests__/BackendUserDetailRequests.test.tsx`; плюс чужие — `backend/tests/integration/test_users_roles_api.py:59-83`, `frontend/src/routes/__tests__/DefaultRoute.test.tsx:58-67` , **`frontend/src/components/__tests__/GrantPlanModalArchived.test.tsx`** (пометка архивной опции в форме «Установить план», [ADR-073](../../adr/ADR-073-products-archive-and-price-columns.md) §5) |
 | **232-claude-backend: contract v1** | **реализован** — роутер `src/app/api_gateway/routers/billing_admin_crm.py:81` (`APIRouter(prefix="/api/billing/admin")`), 8 путей: 6 `GET` + 2 `POST`; DTO — `src/app/schemas/admin_crm.py` |
-| **232-claude-backend: расширение v1.1** | **на дату замера не реализовано** ⚠️ **устареет первым:** часть A плана выполняется в том репозитории; актуальное состояние чужого репо проверять в нём, а не здесь |
+| **232-claude-backend: расширения v1.1 / v1.2** | **на дату замера не реализованы** ⚠️ **устареет первым:** часть A плана и архив ADR-073 выполняются в том репозитории; актуальное состояние чужого репо проверять в нём, а не здесь |
 
 ## Принцип
 
@@ -57,15 +57,39 @@ CRM — **прокси без собственного хранилища**: в�
 | `GET /users/{id}/payments` | история оплат, `occurred_at DESC` |
 | `GET /users/{id}/requests` | история запросов, `sent_at DESC`; не хранит — `{total:0, items:[]}`. **v1.1:** элемент += `tokens_spent` (number\|null), `provider_cost_usd` (number\|null), `refunded` (**bool в контракте бэка**) — **все три опциональны для читателя**: бэк уровня v1 их не отдаёт, CRM нормализует отсутствие в `null` ⇒ **в схеме ОТВЕТА CRM `refunded` — `bool \| null`** ([04-api.md](../../04-api.md#backend-users); `null` ≠ `false`), [ADR-072](../../adr/ADR-072-crm-admin-api-v11-economics.md) §1.1 |
 | `GET /stats` | `users_total`, `paid_users`, `payments_sum_usd` (CR% считает CRM) |
-| `GET /products` | тарифы для «Установить план»: `product_id`, `name`, `price` (str\|null), `period` (str\|null). **v1.1:** элемент += `tokens` (int), `avatar_tokens` (int\|null), `grantable` (bool), `updated_at` (ISO\|null); параметр `scope=grantable\|all` (**по умолчанию `grantable`** — сегодняшнее поведение формы «Установить план» сохраняется; `scope` эта страница **не шлёт**). Все поля v1.1 — **опциональные** ([ADR-072](../../adr/ADR-072-crm-admin-api-v11-economics.md)) |
+| `GET /products` | тарифы для «Установить план»: `product_id`, `name`, `price` (str\|null), `period` (str\|null). **v1.1:** элемент += `tokens` (int), `avatar_tokens` (int\|null), `grantable` (bool), `updated_at` (ISO\|null); параметр `scope=grantable\|all` (**по умолчанию `grantable`** — сегодняшнее поведение формы «Установить план» сохраняется; `scope` эта страница **не шлёт**). Все поля v1.1 — **опциональные** ([ADR-072](../../adr/ADR-072-crm-admin-api-v11-economics.md)). **v1.2:** элемент += **`archived`** (bool, опц. — [ADR-073](../../adr/ADR-073-products-archive-and-price-columns.md)); ⚠️ **`scope=grantable` МОЖЕТ вернуть архивные** (сервер по `archived` **не отбирает никогда** — это поле, а не фильтр; оси ортогональны: `scope` — право выдачи, `archived` — товарный вид) |
 | `POST /users/{id}/tokens` | `{amount}`; **НЕ идемпотентен**; отрицательное — списание; минус-баланс → 400 |
 | `POST /users/{id}/subscription` | `{product_id, expires_in_days, grant_id}`; **идемпотентен** по `grant_id`; продление активной подписки добавляет дни |
 
-> **Расширение v1.1 «экономика»** ([ADR-072](../../adr/ADR-072-crm-admin-api-v11-economics.md)) —
+> **Расширения v1.1 «экономика»** ([ADR-072](../../adr/ADR-072-crm-admin-api-v11-economics.md)) —
 > `PATCH /products/{id}`, `GET`/`PATCH /pricing`, `GET /capabilities` плюс новые поля
-> двух эндпоинтов выше. Дельта и инварианты — [modules/backend-economics](../backend-economics/README.md#дельта-контракта-v11-экономика-только-новое-относительно-v1);
-> здесь не дублируются. Расширение **аддитивно**: бэк уровня v1 работает без изменений,
+> двух эндпоинтов выше — **и v1.2 «архив»** ([ADR-073](../../adr/ADR-073-products-archive-and-price-columns.md)):
+> поле `archived` в элементе `GET /products` и в теле его `PATCH`. Дельта и инварианты —
+> [modules/backend-economics](../backend-economics/README.md#дельта-контракта-v11-экономика-и-v12-архив-только-новое-относительно-v1);
+> здесь не дублируются. Расширения **аддитивны**: бэк уровня v1 работает без изменений,
 > эта страница не деградирует (детекция префикса идёт по v1-пути `GET /products`).
+
+### Архивные продукты в форме «Установить план» (нормативно, [ADR-073](../../adr/ADR-073-products-archive-and-price-columns.md) §5)
+
+Правило живёт здесь, потому что **форма принадлежит этой странице**, а её UI-строка
+физически лежит в словаре секции «Продукты и тарифы» дизайн-системы (собственной секции
+у страницы «Юзеры бэков» в ДС нет). Исполнитель формы обязан найти правило в ТЗ **своего**
+модуля, а не в словаре чужой страницы.
+
+- **Форма архивные продукты НЕ фильтрует.** `archived` и `grantable` **ортогональны**:
+  архив — товарный вид витрины, `grantable` — право выдачи (env-список бэка). Выдать
+  архивный план — **законная операция**, и скрыть опцию значило бы молча лишить оператора
+  её. Начисление по архивным продуктам работает как обычно.
+- **Но архивная опция ПОМЕЧАЕТСЯ.** Подпись получает суффикс — **нормативная строка одна,
+  и она в словаре**: [08-design-system.md § Локализация страницы «Продукты и тарифы»](../../08-design-system.md#локализация-страницы-продукты-и-тарифы-нормативный-словарь),
+  строка «Пометка архивной опции в форме «Установить план»». Дословно здесь **не
+  дублируется** (одна строка — один дом).
+- **Почему обязательно и то и другое:** `scope=grantable` **может вернуть архивные**
+  (сервер по `archived` не отбирает никогда). Без пометки оператор не отличит снятую с
+  витрины позицию от активной — операция доступна, а её характер скрыт; это «честность
+  наполовину», против которой §5 и написан.
+- **Бэк без поддержки архива** поля `archived` не отдаёт ⇒ помечать нечего, форма
+  работает как прежде.
 
 ## Реализация в CRM
 
@@ -136,5 +160,5 @@ CRM — **прокси без собственного хранилища**: в�
   CRM от этого не зависит: страница обязана работать и с бэком уровня v1 (поля v1.1
   опциональны), и с бэком без контракта вовсе (`502 backend_admin_not_supported`).
   **Кто из бэков что реализовал — факт о ЧУЖОМ дереве и здесь не фиксируется**:
-  датированный срез — в [§Состояние](#состояние-замер-на-замороженном-дереве-2026-08-06),
+  датированный срез — в [§Состояние](#состояние-замер-на-замороженном-дереве-2026-08-07),
   актуальное состояние — в репозитории соответствующего бэка.

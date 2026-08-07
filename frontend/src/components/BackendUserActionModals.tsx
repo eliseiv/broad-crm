@@ -23,6 +23,13 @@ function errorMessage(err: unknown): string {
 }
 
 /**
+ * Суффикс подписи архивной опции формы «Установить план» — нормативная строка словаря
+ * 08-design-system.md §Локализация страницы «Продукты и тарифы» (ADR-073 §5).
+ * Ведущий пробел — часть строки: подпись получает вид «Pro (месяц) (в архиве)».
+ */
+const ARCHIVED_OPTION_SUFFIX = ' (в архиве)';
+
+/**
  * «Начислить токены» (contract v1 §3.1). Операция НЕ идемпотентна — повторный сабмит
  * начислит повторно, поэтому кнопка блокируется на время запроса (`loading`), а модалка
  * становится недismissible. Отрицательное значение — списание (минус-баланс бэк отвергнет 400).
@@ -121,9 +128,18 @@ export function GrantPlanModal({ open, onOpenChange, backendId, userId }: Action
     const items = productsQuery.data?.items ?? [];
     return [
       { value: '', label: items.length > 0 ? 'Выберите тариф…' : 'Тарифы недоступны' },
+      // Архивные продукты НЕ фильтруются (ADR-073 §5, modules/backend-users/README.md):
+      // `archived` (товарный вид витрины) и `grantable` (право выдачи) ортогональны, а
+      // `scope=grantable` МОЖЕТ вернуть архивные — сервер по этому полю не отбирает
+      // никогда. Выдать архивный план — законная операция, скрыть опцию значило бы молча
+      // лишить оператора её. Но опция ПОМЕЧАЕТСЯ суффиксом: без пометки снятую с витрины
+      // позицию не отличить от активной — «честность наполовину». Бэк без поддержки
+      // архива поле не отдаёт (`null`) ⇒ помечать нечего, форма работает как прежде.
       ...items.map((p) => ({
         value: p.product_id,
-        label: [p.name, p.price, p.period].filter(Boolean).join(' · '),
+        label:
+          [p.name, p.price, p.period].filter(Boolean).join(' · ') +
+          (p.archived === true ? ARCHIVED_OPTION_SUFFIX : ''),
       })),
     ];
   }, [productsQuery.data?.items]);

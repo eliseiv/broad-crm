@@ -172,10 +172,21 @@ class BackendUserRequestsResponse(BaseModel):
 
 
 class BackendProduct(BaseModel):
+    """Тариф бэка для формы «Установить план».
+
+    `archived` (contract v1.2, ADR-073 §5) транслируется, потому что форма архивные
+    продукты **НЕ фильтрует** (выдать архивный план — законная операция; `archived` и
+    `grantable` ортогональны), но обязана их **помечать**. `scope=grantable` МОЖЕТ
+    вернуть архивные: сервер по `archived` не отбирает никогда — это поле, а не фильтр.
+    Без трансляции признака пометить было бы нечем. Бэк без поддержки архива поля не
+    отдаёт ⇒ `null` ⇒ помечать нечего, форма работает как прежде.
+    """
+
     product_id: str
     name: str
     price: str | None = None
     period: str | None = None
+    archived: bool | None = None
 
 
 class BackendProductsResponse(BaseModel):

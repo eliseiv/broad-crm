@@ -1539,6 +1539,14 @@ export interface BackendProduct {
   name: string;
   price: string | null;
   period: string | null;
+  /**
+   * Contract v1.2 (ADR-073 §5): продукт снят с ВИТРИНЫ. Форма «Установить план»
+   * архивные **НЕ фильтрует** (выдать архивный план — законная операция; `archived` и
+   * `grantable` ортогональны, `scope=grantable` МОЖЕТ вернуть архивные), но **помечает**
+   * подпись опции суффиксом из словаря. `null`/отсутствует = у бэка нет понятия архива
+   * ⇒ помечать нечего (modules/backend-users/README.md §Архивные продукты).
+   */
+  archived?: boolean | null;
 }
 
 export interface BackendProductsResponse {
@@ -1641,6 +1649,15 @@ export interface BackendEconomicsProduct {
   tokens: number | null;
   avatar_tokens: number | null;
   grantable: boolean | null;
+  /**
+   * Contract v1.2 (ADR-073 §1): продукт скрыт с ВИТРИНЫ — на начисление и выдачу это НЕ
+   * влияет. **Опционально для читателя**: `null`/отсутствует = у бэка нет самого понятия
+   * архива ⇒ все продукты считаются активными, переключатель и контрол архива не
+   * рендерятся (штатное состояние, НЕ ошибка). ⚠️ Сознательное отличие от правила
+   * «`null` ≠ `false`» у `refunded`: там неизвестность — видимый оператору факт о
+   * деньгах, здесь же единственное осмысленное поведение витрины — показать всё.
+   */
+  archived?: boolean | null;
   updated_at: string | null;
 }
 
@@ -1670,13 +1687,17 @@ export interface BackendEconomicsPricingResponse {
 }
 
 /**
- * Тело PATCH …/products/{product_id}: хотя бы одно из `tokens`/`avatar_tokens`.
- * `if_updated_at` — значение `updated_at`, которое видел оператор (защита от «двух
- * операторов»); при `updated_at === null` ключ НЕ отправляется.
+ * Тело PATCH …/products/{product_id}: хотя бы одно из ТРЁХ значимых полей —
+ * `tokens` / `avatar_tokens` / `archived` (contract v1.2, ADR-073 §1).
+ * `if_updated_at` значимым не считается — это значение `updated_at`, которое видел
+ * оператор (защита от «двух операторов»); при `updated_at === null` ключ НЕ отправляется.
+ * ⚠️ `archived: false` («вернуть из архива») — значимое значение: отбор идёт по наличию
+ * ключа, а не по истинности, поэтому `false` обязано доходить до бэка.
  */
 export interface UpdateBackendEconomicsProductRequest {
   tokens?: number;
   avatar_tokens?: number;
+  archived?: boolean;
   if_updated_at?: string;
 }
 
@@ -1686,11 +1707,28 @@ export interface UpdateBackendEconomicsTariffRequest {
   if_updated_at?: string;
 }
 
-/** Общий хвост ответов PATCH: дельта для тоста/аудита + задержка применения у бэка. */
+/**
+ * Хвост ответа PATCH: дельта для тоста + задержка применения у бэка. **ОДИН тип на ОБА
+ * эндпоинта модуля** — правка продукта и правка тарифа (ADR-073 §8 п.4: правило
+ * симметрично, два правила разбора для двух почти одинаковых ответов — ловушка
+ * сопровождения).
+ *
+ * ⚠️ **Все три поля ОПЦИОНАЛЬНЫ** (04-api.md, обе секции `PATCH`): ответ разбирается
+ * ПОСЛЕ необратимого side-effect (значение у бэка уже изменено — и токены продукта, и
+ * тариф списания), поэтому строгость означала бы «действие выполнено, оператору красная
+ * ошибка, аудит молчит» (прецедент — ADR-057 §5). Обязанность бэка слать все три НЕ
+ * снята — это толерантность читателя, а не разрешение опускать.
+ *
+ * Поведение при отсутствии (одинаковое для обоих эндпоинтов): `previous_tokens` → тост
+ * БЕЗ дельты; `changed` → трактуется как «изменилось» (тост УСПЕХА, а не нейтральный —
+ * иначе оператор решит, что правка не применилась, и повторит её);
+ * `effective_after_seconds` → предложение о задержке опускается. Ни один из случаев НЕ
+ * переводит страницу в ошибочное состояние.
+ */
 interface BackendEconomicsUpdateMeta {
-  previous_tokens: number;
-  changed: boolean;
-  effective_after_seconds: number;
+  previous_tokens?: number | null;
+  changed?: boolean | null;
+  effective_after_seconds?: number | null;
 }
 
 export interface BackendEconomicsProductUpdateResponse

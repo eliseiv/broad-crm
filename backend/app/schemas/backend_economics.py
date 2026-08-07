@@ -94,6 +94,18 @@ class BackendEconomicsProduct(BaseModel):
     `tokens: null` = «бэк не отдал поле» ⇒ строка read-only (править нечего);
     `grantable: null` = «не отдано», а НЕ «не выдаётся»; `updated_at: null` = «ни разу
     не менялось» ⇒ `if_updated_at` в PATCH не отправляется.
+
+    `archived` (contract v1.2, ADR-073 §1) — продукт скрыт с ВИТРИНЫ; на начисление и
+    выдачу не влияет. `null`/отсутствует = **у бэка нет самого понятия архива** ⇒ все
+    продукты считаются активными; это штатное состояние, а НЕ `schema_mismatch`.
+    ⚠️ Здесь СОЗНАТЕЛЬНОЕ отличие от правила «`null` ≠ `false`» для `refunded`
+    (ADR-072 §1.1): там неизвестность нельзя выдавать за отрицательное значение, потому
+    что она видима оператору как факт о деньгах; здесь единственное осмысленное
+    поведение витрины — показать всё.
+
+    `price`/`period` остаются в схеме, хотя UI их колонки не рендерит (ADR-073 §2):
+    контракт универсален, другой подключаемый бэк вправе их заполнять, а удаление поля
+    было бы ломающим изменением ради нулевого выигрыша. Не удалять.
     """
 
     product_id: str
@@ -103,6 +115,7 @@ class BackendEconomicsProduct(BaseModel):
     tokens: int | None = None
     avatar_tokens: int | None = None
     grantable: bool | None = None
+    archived: bool | None = None
     updated_at: datetime | None = None
 
 
@@ -121,14 +134,23 @@ class BackendEconomicsProductsResponse(BaseModel):
 class BackendProductUpdateResponse(BackendEconomicsProduct):
     """Ответ PATCH продукта: элемент + дельта + окно применения у бэка.
 
-    `previous_tokens` обязателен — он даёт дельту для тоста и аудита (ADR-072 §8);
-    `effective_after_seconds` показывается оператору (правка применяется у бэка не
-    мгновенно, ADR-072 §3).
+    ⚠️ **Все три поля ОПЦИОНАЛЬНЫ** (ADR-073 §8) — схема, разбирающая ответ ПОСЛЕ
+    необратимого side-effect, не должна быть строже модели данных (прецедент —
+    ADR-057 §5: `200` без `smtp_message_id` перестал давать `502` после уже
+    состоявшейся отправки). При archived-only правке контрагенту естественно опустить
+    `previous_tokens` — токены не менялись; строгая схема превращала бы это в `502`
+    поверх уже переключённого признака. У отсутствия каждого есть определённое
+    безобидное поведение: нет `previous_tokens` ⇒ тост без дельты; нет `changed` ⇒
+    трактуется как «изменилось» (сообщить о состоявшемся действии безопаснее, чем
+    умолчать); нет `effective_after_seconds` ⇒ предложение о задержке опускается.
+
+    ⚠️ Толерантность CRM **не снимает** обязанности контрагента присылать все три:
+    это страховка от расхождения прочтений, а не разрешение опускать.
     """
 
-    previous_tokens: int
-    changed: bool
-    effective_after_seconds: int
+    previous_tokens: int | None = None
+    changed: bool | None = None
+    effective_after_seconds: int | None = None
 
 
 # --- Тарифы списания ---
@@ -157,11 +179,15 @@ class BackendEconomicsPricingResponse(BaseModel):
 
 
 class BackendTariffUpdateResponse(BackendEconomicsTariff):
-    """Ответ PATCH тарифа: элемент + дельта + окно применения у бэка."""
+    """Ответ PATCH тарифа: элемент + дельта + окно применения у бэка.
 
-    previous_tokens: float
-    changed: bool
-    effective_after_seconds: int
+    Три поля опциональны СИММЕТРИЧНО ответу продукта (ADR-073 §8): расхождение схем
+    двух PATCH'ей одного контракта было бы источником следующего сюрприза.
+    """
+
+    previous_tokens: float | None = None
+    changed: bool | None = None
+    effective_after_seconds: int | None = None
 
 
 # --- Тела PATCH-запросов ---
@@ -173,16 +199,25 @@ class BackendTariffUpdateResponse(BackendEconomicsTariff):
 
 
 class UpdateBackendProductRequest(BaseModel):
-    """Тело PATCH продукта: хотя бы одно значимое поле, иначе 400 validation_error."""
+    """Тело PATCH продукта: хотя бы одно значимое поле, иначе 400 validation_error.
+
+    Значимых полей ТРИ (contract v1.2, ADR-073 §1): `tokens`, `avatar_tokens` и
+    `archived`. `if_updated_at` значимым не считается — это защита от «двух
+    операторов», а не изменяемая величина.
+
+    `archived` — булево, поэтому `False` («вернуть из архива») обязано доходить до
+    бэка: отбор значимых полей идёт по `is not None`, а не по истинности.
+    """
 
     tokens: int | None = Field(default=None, ge=0)
     avatar_tokens: int | None = Field(default=None, ge=0)
+    archived: bool | None = None
     if_updated_at: datetime | None = None
 
     @model_validator(mode="after")
     def _require_meaningful_field(self) -> UpdateBackendProductRequest:
-        if self.tokens is None and self.avatar_tokens is None:
-            raise ValueError("Укажите tokens и/или avatar_tokens")
+        if self.tokens is None and self.avatar_tokens is None and self.archived is None:
+            raise ValueError("Укажите tokens, avatar_tokens и/или archived")
         return self
 
 
