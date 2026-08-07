@@ -291,6 +291,29 @@ CREATE INDEX ix_servers_position ON servers (position);
 
 > `key_prefix`/`key_last4` — осознанное раскрытие 8 plaintext-символов ради маски в UI (`key_masked`); сам секрет из них не восстанавливается. Полный ключ — только в `key_encrypted` (Fernet). Правило маски и кейс `<8` символов — [modules/ai-keys](modules/ai-keys/README.md#правило-маски-key_masked).
 
+### Колонки контура оценочного остатка ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md), миграция `0034`)
+
+Второй, **независимый** от health-check контур: остаток = введённый оператором якорь − расход по Admin Cost API провайдера. Контур опционален и по умолчанию выключен. API — [04-api.md](04-api.md#ai-keys), поведение — [modules/ai-keys](modules/ai-keys/README.md#контур-оценочного-остатка-adr-070-нормативно).
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `balance_monitoring_enabled` | `boolean` | `NOT NULL`, `DEFAULT false` | Включён ли контур остатка. `false` ⇒ все остальные колонки контура — `NULL` (кроме счётчика `= 0`), фоновый sync ключ не берёт. |
+| `balance_initial_usd` | `numeric(12,4)` | `NULL` | **Якорь**: баланс, введённый оператором из кабинета провайдера. |
+| `balance_remaining_usd` | `numeric(12,4)` | `NULL` | Последний вычисленный оценочный остаток (`якорь − расход`). Перезаписывается **только** при успешной синхронизации; может быть отрицательным. |
+| `balance_low_threshold_usd` | `numeric(12,4)` | `NULL` | Порог 🟡-алерта. При включении контура без явного значения проставляется `10.0000`. |
+| `balance_anchor_at` | `timestamptz` | `NULL` | Момент установки якоря; с него суммируется расход. |
+| `balance_last_sync_at` | `timestamptz` | `NULL` | Время последней синхронизации с конклюзивным исходом (`ok`/`error`); исход `unknown` **обнуляет** поле. |
+| `balance_sync_status` | `text` | `NULL`, CHECK | `ok` \| `error` \| `unknown` (или `NULL` — синхронизации не было). |
+| `balance_sync_error` | `text` | `NULL` | Рус. причина при `balance_sync_status='error'`. |
+| `balance_alert_level` | `text` | `NULL`, CHECK | `normal` \| `low` \| `depleted` — уровень остатка, база дедупа Telegram-алертов (переживает рестарт, как `check_status`). |
+| `balance_sync_fail_streak` | `integer` | `NOT NULL`, `DEFAULT 0` | Подряд идущие неудачи синхронизации (`error`+`unknown`). `≥ 3` → 🟠-алерт; успех обнуляет. **В API не выносится.** |
+| `provider_api_key_id` | `text` | `NULL` | Кэш идентификатора ключа в организации провайдера (резолв по `key_prefix`/`key_last4` через List API Keys). Сбрасывается при смене ключа/якоря. **В API не выносится.** |
+| `billing_admin_key_encrypted` | `bytea` | `NULL` | Fernet-ciphertext **Admin API key** (не inference-ключ). Plaintext — только in-memory при синхронизации и в reveal-эндпоинте под `ai-keys:edit` ([05-security.md](05-security.md#защита-ai-ключей)). **В API не выносится**, `has_*`-флага нет. |
+
+> **Два секрета на одной строке.** `key_encrypted` (inference, `NOT NULL`) и `billing_admin_key_encrypted` (Admin API key, `NULL`) шифруются одним `FERNET_KEY`, но принадлежат **разным** контурам и раскрываются **разными** эндпоинтами с разным `resource_type` в аудите (`ai_key` / `ai_key_billing_admin`) — [04-api.md](04-api.md#reveal-секретов-по-требованию-adr-035).
+>
+> **Целостность контура — на уровне сервиса, не БД (нормативно).** Инвариант «`balance_monitoring_enabled=true` ⇒ заданы `billing_admin_key_encrypted`, `balance_initial_usd`, `balance_anchor_at`» **не выражен табличным CHECK**: он проверяется в сервисном слое (`400 ai_key_bad_request`, [04-api.md](04-api.md#patch-apiai-keysid)), а фоновая синхронизация дополнительно пропускает строки, где данных не хватает. Прямая правка БД в обход API может оставить строку в неполном состоянии — это не сломает sync (ключ будет просто пропущен), но и не будет замечено. Ужесточение до табличного CHECK — [TD-083](100-known-tech-debt.md).
+
 ### Перечисление `check_status`
 
 Конечный автомат статуса (состояние в БД, переживает рестарт — [ADR-010](adr/ADR-010-ai-key-monitor-vnutri-backend.md)):
@@ -334,6 +357,31 @@ CREATE INDEX ix_ai_keys_provider_position ON ai_keys (provider, position);
 ```
 
 > Индекс `(provider, position)` — списки AI-ключей отдаются `ORDER BY position ASC, created_at DESC, id`, а перестановка идёт **внутри провайдер-группы** (`WHERE provider = :p`). Прежний `ix_ai_keys_created_at` заменён: `created_at` остаётся лишь тай-брейком.
+
+**Миграция `0034_ai_keys_balance` ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md), `down_revision = 0033_document_nodes_rag_excl`)** — контур остатка добавляется к существующей таблице; рабочий `downgrade()` снимает оба CHECK и все 12 колонок:
+
+```sql
+ALTER TABLE ai_keys
+    ADD COLUMN balance_monitoring_enabled boolean NOT NULL DEFAULT false,
+    ADD COLUMN balance_initial_usd        numeric(12,4),
+    ADD COLUMN balance_remaining_usd      numeric(12,4),
+    ADD COLUMN balance_low_threshold_usd  numeric(12,4),
+    ADD COLUMN balance_anchor_at          timestamptz,
+    ADD COLUMN balance_last_sync_at       timestamptz,
+    ADD COLUMN balance_sync_status        text,
+    ADD COLUMN balance_sync_error         text,
+    ADD COLUMN balance_alert_level        text,
+    ADD COLUMN balance_sync_fail_streak   integer NOT NULL DEFAULT 0,
+    ADD COLUMN provider_api_key_id        text,
+    ADD COLUMN billing_admin_key_encrypted bytea;
+
+ALTER TABLE ai_keys ADD CONSTRAINT ck_ai_keys_balance_sync_status
+    CHECK (balance_sync_status IS NULL OR balance_sync_status IN ('ok','error','unknown'));
+ALTER TABLE ai_keys ADD CONSTRAINT ck_ai_keys_balance_alert_level
+    CHECK (balance_alert_level IS NULL OR balance_alert_level IN ('normal','low','depleted'));
+```
+
+> Миграция **не трогает существующие данные**: все добавляемые колонки либо nullable, либо со `server_default` (`false`/`0`) — существующие ключи получают выключенный контур остатка.
 
 ### Шифрование `key_encrypted`
 

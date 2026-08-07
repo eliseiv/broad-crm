@@ -94,7 +94,13 @@ describe('AiKeyCard detail → edit (ADR-035)', () => {
 
     expect(hooks.updateMutate).toHaveBeenCalledTimes(1);
     const payload = hooks.updateMutate.mock.calls[0][0];
-    expect(payload).toEqual({ name: 'OpenAI Prod', provider: 'openai' });
+    // Тумблер мониторинга баланса (ADR-070) — обычное поле edit-формы: его текущее
+    // состояние уходит безусловно (AddAiKeyModal.tsx:476), у фикстуры оно `false`.
+    expect(payload).toEqual({
+      name: 'OpenAI Prod',
+      provider: 'openai',
+      balance_monitoring_enabled: false,
+    });
     expect(payload).not.toHaveProperty('key');
   });
 

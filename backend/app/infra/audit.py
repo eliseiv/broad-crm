@@ -25,7 +25,10 @@ def log_secret_revealed(principal: Principal, *, resource_type: str, resource_id
     Поля: `actor` (username принципала), `user_id` (UUID; у супер-админа — константа
     системной строки-якоря `SUPERADMIN_USER_ID`, ADR-051 §1.2 — принципала без
     идентичности больше не существует), `resource_type` (`server`/`proxy`/`ai_key`/
-    `backend`), `resource_id`, `at`. Само значение секрета НЕ передаётся и НЕ логируется.
+    `ai_key_billing_admin`/`backend`), `resource_id`, `at`. Само значение секрета НЕ
+    передаётся и НЕ логируется. У ИИ-ключа два секрета различаются в аудите (`ai_key` —
+    inference-ключ, `ai_key_billing_admin` — Admin API key контура остатка, ADR-070
+    §Амендмент); у бэка оба секрета пишутся одним `resource_type="backend"` (ADR-040).
     """
     logger.info(
         "secret_revealed",

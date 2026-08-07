@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     # Выдаётся беспарольному пользователю; принимается только POST /api/auth/set-password.
     pwd_setup_token_expires_min: int = 10
 
-    # --- Шифрование SSH-паролей (Fernet, ADR-007) ---
+    # --- Шифрование секретов at-rest (Fernet, ADR-007) ---
     fernet_key: str = ""
 
     # --- База данных ---

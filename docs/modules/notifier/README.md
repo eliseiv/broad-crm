@@ -191,6 +191,8 @@ IP <ip>
 
 Помимо серверных алертов, тот же `TelegramClient` используется **отдельным** фоновым сервисом `AiKeyMonitorService` ([modules/ai-keys](../ai-keys/README.md), [ADR-010](../../adr/ADR-010-ai-key-monitor-vnutri-backend.md)) для уведомлений о валидности AI-ключей. **Важно:** это НЕ часть state-машины серверов из этого модуля — отдельный сервис, отдельное состояние (в БД `ai_keys.check_status`, переживает рестарт), отдельный интервал (`AI_KEY_CHECK_INTERVAL_SEC`). Общее — только `TelegramClient`, гейт `notifier_enabled` и семантика доставки at-least-once.
 
+> **Третий источник алертов через тот же `TelegramClient` — `AiKeyBalanceSyncService`** ([ADR-070](../../adr/ADR-070-ai-key-estimated-balance-monitor.md)): 🟡 низкий остаток / 🔴 остаток исчерпан / 🟢 остаток восстановлен / 🟠 не удалось обновить остаток. Отдельный сервис, отдельное состояние (`ai_keys.balance_alert_level`), отдельный интервал (`AI_KEY_BALANCE_SYNC_INTERVAL_SEC`). **Тексты этих четырёх сообщений здесь НЕ дублируются** — единственное нормативное место: [modules/ai-keys §Формат сообщений Telegram остатка](../ai-keys/README.md#формат-сообщений-telegram-остатка-точно) (в отличие от health-сообщений ниже, которые дублируются побуквенно по историческому соглашению).
+
 Формат — **точно** (plain-текст, имя ключа в двойных кавычках, `<last4>` = `key_last4`; для короткого ключа, где `key_last4 = NULL`, подставляется пустая строка → `****`).
 
 > **Этот текст ПОБУКВЕННО дублируется** в [modules/notifier §Сообщения AI-ключей](../notifier/README.md#сообщения-ai-ключей) и [modules/ai-keys §Формат сообщений Telegram](../ai-keys/README.md#формат-сообщений-telegram-точно). Оба вхождения обязаны совпадать **посимвольно**; при правке — менять оба. Формат строки бэка — источник истины [modules/backends](../backends/README.md#формат-сообщений-telegram-точно-нормативно--источник-истины).
@@ -245,7 +247,7 @@ IP <ip>
 - **Поля строки:** `server_id` (сервер алерта), `kind` (`offline`/`recovered`/`warning`/`critical` — значение `AlertKind`), `message` (отправленный plain-текст — содержит имя/IP, **без секретов**: токен/`chat_id`/URL в текст не входят), `delivered`, `created_at`.
 - **Запись — в финальной короткой сессии итерации**, одним коммитом вместе с UPSERT состояния (собрать список за проход отправок → bulk-insert). Не держать сессию открытой во время отправок в Telegram.
 - **Гейт:** лог пишется только когда нотификатор активен (алерты вообще формируются лишь при `notifier_enabled`). Неуспешная доставка (`delivered=False`) **тоже логируется** — в этом и смысл (доказать попытку).
-- **Scope — только серверные алерты.** Алерты AI-ключей (`AiKeyMonitorService`) в этот лог **не** пишутся ([ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md); возможный follow-up — [TD-027](../../100-known-tech-debt.md)).
+- **Scope — только серверные алерты.** Алерты AI-ключей (`AiKeyMonitorService`, а также алерты остатка `AiKeyBalanceSyncService` — [ADR-070](../../adr/ADR-070-ai-key-estimated-balance-monitor.md)) в этот лог **не** пишутся ([ADR-018](../../adr/ADR-018-notifier-windowed-offline-recovery-alert-log.md); возможный follow-up — [TD-027](../../100-known-tech-debt.md)).
 - **Ретенция** — не реализуется на Этапе 1 ([TD-027](../../100-known-tech-debt.md)). **API-эндпоинта просмотра лога нет** ([04-api.md](../../04-api.md) не затрагивается).
 
 ## Backend — ориентиры реализации (нормативно по контракту, структура — на усмотрение)

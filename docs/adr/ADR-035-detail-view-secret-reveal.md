@@ -61,7 +61,9 @@ Reveal каждого секрета гейтится **`require("<page>", "edit
 
 ### 4. Аудит reveal (без утечки секрета)
 
-Каждый **успешный** reveal обязан порождать структурированную запись лога `secret_revealed` (structlog) с полями: `actor` (`username`/`user_id` принципала), `resource_type` (`server`/`proxy`/`ai_key`), `resource_id`, `at` (timestamp). **Само значение секрета в лог НЕ пишется** (structlog-фильтр секретов). Это лёгкий аудит через логи; персистентная аудит-таблица действий остаётся [TD-001](../100-known-tech-debt.md).
+Каждый **успешный** reveal обязан порождать структурированную запись лога `secret_revealed` (structlog) с полями: `actor` (`username`/`user_id` принципала), `resource_type` (`server`/`proxy`/`ai_key`), `resource_id`, `at` (timestamp). **Само значение секрета в лог НЕ пишется** (structlog-фильтр секретов).
+
+> **⚠️ Перечень `resource_type` с тех пор расширен — строка выше историческая.** Действующие значения: `server`/`proxy`/`ai_key`/**`ai_key_billing_admin`** ([ADR-070 §Амендмент](ADR-070-ai-key-estimated-balance-monitor.md#амендмент-2026-08-07--reveal-admin-key-tri-state-выключения-и-порог-по-умолчанию), Admin API key контура остатка)/**`backend`** ([ADR-040](ADR-040-backend-relations-secrets-reverse-lookup.md), оба секрета бэка под одним значением). Нормативный перечень читать в [04-api.md §Reveal секретов](../04-api.md#reveal-секретов-по-требованию-adr-035) и [05-security.md](../05-security.md#reveal-секретов-по-требованию-adr-035). Остальные правила этого §4 (состав полей, запрет значения в логе) действуют без изменений. Это лёгкий аудит через логи; персистентная аудит-таблица действий остаётся [TD-001](../100-known-tech-debt.md).
 
 ### 5. Frontend-поведение
 

@@ -292,13 +292,13 @@ export interface CreateAiKeyRequest {
   billing_admin_key?: string;
 }
 
-export interface CreateAiKeyResponse {
-  id: string;
-  name: string;
-  provider: AiProvider;
-  check_status: AiKeyStatus;
-  position: number;
-}
+/**
+ * Ответ 202 POST /api/ai-keys — созданный `AiKeyListItem` целиком, с `check_status:"pending"`
+ * (04-api.md §POST /api/ai-keys, «Response 202 Accepted»). Состав полей — тот же, что у
+ * элемента списка (04-api.md §«Схема `AiKeyListItem`»), включая контур остатка (ADR-070):
+ * при `balance_monitoring_enabled=true` ответ уже несёт якорь и вычисленный остаток.
+ */
+export type CreateAiKeyResponse = AiKey;
 
 /**
  * Тело PATCH /api/ai-keys/{id} (04-api.md). Все поля опциональны — передаются

@@ -149,6 +149,7 @@ node_exporter ставится Ansible'ом на целевые серверы �
 | Таймаут запроса к Prometheus | `PROM_QUERY_TIMEOUT_SEC` | `10` |
 | TTL кэша ответа `GET /api/servers` | `METRICS_CACHE_TTL_SEC` | `5` (секунд) |
 | Интервал проверки AI-ключей | `AI_KEY_CHECK_INTERVAL_SEC` | `900` (15 мин) |
+| Интервал синхронизации оценочного остатка AI-ключей ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md)) | `AI_KEY_BALANCE_SYNC_INTERVAL_SEC` | `3600` (1 ч) |
 | Таймаут запроса к AI-провайдеру | `AI_PROVIDER_TIMEOUT_SEC` | `10` (секунд) |
 | Базовый URL OpenAI API | `OPENAI_API_BASE` | `https://api.openai.com/v1` |
 | Базовый URL Anthropic API | `ANTHROPIC_API_BASE` | `https://api.anthropic.com/v1` |

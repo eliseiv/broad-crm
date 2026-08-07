@@ -28,6 +28,7 @@
 | 403 | `forbidden` | Аутентифицирован, но нет права на действие/страницу; **либо** попытка эскалации прав роли / правки встроенной роли `admin` не-админом ([RBAC](#rbac-и-enforcement-прав), [Roles](#roles), [ADR-022](adr/ADR-022-teams-nav-categories.md)) |
 | 404 | `server_not_found` | Сервера с таким `id` нет |
 | 404 | `ai_key_not_found` | AI-ключа с таким `id` нет |
+| 400 | `ai_key_bad_request` | Контур **оценочного остатка** AI-ключа: операция несовместима с текущим состоянием ключа (мониторинг не включён / не задан Admin API key / не задан якорь баланса) — [AI Keys](#ai-keys), [ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md) |
 | 404 | `proxy_not_found` | Прокси с таким `id` нет |
 | 404 | `backend_not_found` | Бэка с таким `id` нет |
 | 404 | `user_not_found` | Пользователя с таким `id` нет ([Users](#users)) |
@@ -82,7 +83,7 @@
 
 ## Reveal секретов по требованию ([ADR-035](adr/ADR-035-detail-view-secret-reveal.md))
 
-Секреты сущностей (`ssh_password` сервера, `password` прокси, полный `key` ИИ-ключа, `api_key`/`admin_api_key` бэка — [ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)) **никогда** не отдаются в общих list/detail-ответах. Раскрытие — **только** по явному действию через выделенный per-resource эндпоинт, гейт **`require("<page>", "edit")`** соответствующей страницы (супер-админ/роль `admin` — всегда). Решение и обоснование гейта/аудита — [05-security.md](05-security.md#reveal-секретов-по-требованию-adr-035), [ADR-035](adr/ADR-035-detail-view-secret-reveal.md).
+Секреты сущностей (`ssh_password` сервера, `password` прокси, полный `key` ИИ-ключа, **`billing_admin_key` ИИ-ключа** — [ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md), `api_key`/`admin_api_key` бэка — [ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)) **никогда** не отдаются в общих list/detail-ответах. Раскрытие — **только** по явному действию через выделенный per-resource эндпоинт, гейт **`require("<page>", "edit")`** соответствующей страницы (супер-админ/роль `admin` — всегда). Решение и обоснование гейта/аудита — [05-security.md](05-security.md#reveal-секретов-по-требованию-adr-035), [ADR-035](adr/ADR-035-detail-view-secret-reveal.md).
 
 Эндпоинты:
 
@@ -91,6 +92,7 @@
 | `GET /api/servers/{id}/ssh-password` | `ssh_password` (расшифровка `ssh_password_encrypted`) | `servers:edit` | **`auth_method='key'` → `404 secret_not_set`** (пароля у key-сервера нет — [ADR-067](adr/ADR-067-server-ssh-key-auth.md)) |
 | `GET /api/proxies/{id}/password` | `password` (расшифровка `password_encrypted`) | `proxies:edit` | нет пароля → `404 secret_not_set` |
 | `GET /api/ai-keys/{id}/key` | полный `key` (расшифровка `key_encrypted`) | `ai-keys:edit` | секрет всегда есть |
+| `GET /api/ai-keys/{id}/billing-admin-key` | Admin API key контура остатка (расшифровка `billing_admin_key_encrypted`) — [ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md) | `ai-keys:edit` | не задан (`balance_monitoring_enabled=false` ⇒ всегда) → `404 secret_not_set` |
 | `GET /api/backends/{id}/api-key` | `api_key` (расшифровка `api_key_encrypted`) | `backends:edit` | не задан (`has_api_key=false`) → `404 secret_not_set` |
 | `GET /api/backends/{id}/admin-api-key` | `admin_api_key` (расшифровка `admin_api_key_encrypted`) | `backends:edit` | не задан (`has_admin_api_key=false`) → `404 secret_not_set` |
 
@@ -105,8 +107,8 @@
 **Общие правила (нормативно):**
 - **Response 200** — `SecretRevealResponse`, заголовок ответа **`Cache-Control: no-store`** обязателен (секрет не кэшируется прокси/браузером).
 - HTTP-метод **GET**: секрет — в теле ответа, **не** в URL (в URL только `id`) → в access-логах секрета нет.
-- Каждый успешный reveal порождает аудит-лог `secret_revealed` (`actor`/`resource_type`/`resource_id`/`at`, **без** значения; `resource_type` ∈ `server`/`proxy`/`ai_key`/`backend`) — [05-security.md](05-security.md#reveal-секретов-по-требованию-adr-035).
-- **Ошибки (общие):** `401 unauthorized`; `403 forbidden` (нет права `<page>:edit`); `404 <resource>_not_found` (`server_not_found`/`proxy_not_found`/`ai_key_not_found`/`backend_not_found`); дополнительно `404 secret_not_set`, когда секрет не задан — для `GET /api/proxies/{id}/password` (`has_password=false`), для `GET /api/backends/{id}/api-key`/`/admin-api-key` (`has_api_key`/`has_admin_api_key`=false) и для `GET /api/servers/{id}/ssh-password` при **`auth_method='key'`**.
+- Каждый успешный reveal порождает аудит-лог `secret_revealed` (`actor`/`resource_type`/`resource_id`/`at`, **без** значения; `resource_type` ∈ `server`/`proxy`/`ai_key`/**`ai_key_billing_admin`**/`backend`) — [05-security.md](05-security.md#reveal-секретов-по-требованию-adr-035). **Два секрета ИИ-ключа различаются в аудите** (`ai_key` — inference-ключ, `ai_key_billing_admin` — Admin API key контура остатка, [ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md)); у бэка оба секрета пишутся одним `resource_type="backend"`.
+- **Ошибки (общие):** `401 unauthorized`; `403 forbidden` (нет права `<page>:edit`); `404 <resource>_not_found` (`server_not_found`/`proxy_not_found`/`ai_key_not_found`/`backend_not_found`); дополнительно `404 secret_not_set`, когда секрет не задан — для `GET /api/proxies/{id}/password` (`has_password=false`), для `GET /api/backends/{id}/api-key`/`/admin-api-key` (`has_api_key`/`has_admin_api_key`=false), для `GET /api/ai-keys/{id}/billing-admin-key` (`billing_admin_key_encrypted IS NULL`) и для `GET /api/servers/{id}/ssh-password` при **`auth_method='key'`**.
 
 **⚠️ Не всякий секрет сущности раскрываем (нормативно, [ADR-067](adr/ADR-067-server-ssh-key-auth.md) §4).** **Приватный SSH-ключ сервера (`ssh_private_key_encrypted`) и его парольная фраза — write-only:** эндпоинтов `GET /api/servers/{id}/ssh-key` / `/ssh-key-passphrase` **не существует и вводить их запрещено**. Причина — не техническая: приватный ключ **переиспользуем** (открывает весь парк хостов, включая машины вне CRM), тогда как пароль относится к одному серверу; при этом `servers:edit` правит лишь `name`, т.е. симметрии «держатель `edit` и так может перезаписать секрет» (обоснование [ADR-035](adr/ADR-035-detail-view-secret-reveal.md)) для сервера **нет**. Следствие для UI: у key-сервера строка секрета рендерится маской **без кнопки-глаза** — «не раскрываемый» секрет, а не «секрет без права».
 
@@ -420,6 +422,15 @@ Reveal SSH-пароля сервера по требованию (для detail-
 
 Реестр API-ключей AI-провайдеров с автоматической проверкой валидности. Модуль — [modules/ai-keys](modules/ai-keys/README.md), модель — [03-data-model.md](03-data-model.md#таблица-ai_keys), решение — [ADR-010](adr/ADR-010-ai-key-monitor-vnutri-backend.md). Все эндпоинты требуют JWT. **Полный ключ никогда не возвращается** — только маска `key_masked`.
 
+**Два независимых контура (нормативно, [ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md) §1).** У ключа два несвязанных набора полей и два фоновых сервиса:
+
+| Контур | Поля ответа | Секрет | Что проверяет |
+|--------|-------------|--------|----------------|
+| **Health** | `check_status`, `error_message`, `last_checked_at` | inference-ключ (`key`) | Валидность ключа (`GET /v1/models`, [ADR-010](adr/ADR-010-ai-key-monitor-vnutri-backend.md)) |
+| **Balance** (оценочный остаток) | `balance_monitoring_enabled` + прочие `balance_*` | Admin API key (`billing_admin_key`) | Оценка остатка: `balance_initial_usd − расход с якоря` по Admin Cost API провайдера |
+
+Контуры **не влияют друг на друга**: `check_status` не зависит от состояния баланса и наоборот. Контур Balance **опционален** и по умолчанию **выключен** (`balance_monitoring_enabled=false`).
+
 ### Схема `AiKeyListItem`
 
 ```json
@@ -434,7 +445,16 @@ Reveal SSH-пароля сервера по требованию (для detail-
   "backend_count": 1,
   "last_checked_at": "2026-07-01T10:15:00Z",
   "created_at": "2026-07-01T09:00:00Z",
-  "updated_at": "2026-07-01T10:15:00Z"
+  "updated_at": "2026-07-01T10:15:00Z",
+  "balance_monitoring_enabled": true,
+  "balance_initial_usd": "250.0000",
+  "balance_remaining_usd": "182.4300",
+  "balance_low_threshold_usd": "10.0000",
+  "balance_anchor_at": "2026-07-25T08:00:00Z",
+  "balance_last_sync_at": "2026-07-30T11:00:00Z",
+  "balance_sync_status": "ok",
+  "balance_sync_error": null,
+  "balance_alert_level": "normal"
 }
 ```
 
@@ -444,6 +464,22 @@ Reveal SSH-пароля сервера по требованию (для detail-
 - `key_masked` — производное: `"<первые4>…<последние4>"` (разделитель `…` U+2026), например `sk-p…bA3T`. Для ключа короче 8 символов — полная маска `"********"`. Правило — [modules/ai-keys](modules/ai-keys/README.md#правило-маски-key_masked). Backend НИКОГДА не отдаёт полный ключ или его расшифровку.
 - `check_status` ∈ {`pending`,`working`,`error`}. `error_message` — рус. причина при `error` (иначе `null`).
 
+**Поля контура Balance ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md)).** Присутствуют в ответе **всегда** (в т.ч. при выключенном мониторинге — тогда все, кроме флага, `null`). Денежные поля — **строки** (`Decimal`, БД `numeric(12,4)`, сериализация JSON — строкой, напр. `"182.4300"`), а не числа:
+
+| Поле | Тип в ответе | Значение |
+|------|--------------|----------|
+| `balance_monitoring_enabled` | `boolean` (**никогда не `null`**) | Включён ли контур остатка. `false` — контур выключен: фоновый sync ключ не берёт, алерты остатка не шлются, все остальные `balance_*` = `null` |
+| `balance_initial_usd` | `string \| null` | **Якорь**: баланс, введённый оператором из личного кабинета провайдера. От него отсчитывается расход |
+| `balance_remaining_usd` | `string \| null` | Оценочный остаток = `balance_initial_usd − расход с `balance_anchor_at``. **Оценка, а не выписка провайдера** ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md) «Ограничения»). Может быть отрицательным |
+| `balance_low_threshold_usd` | `string \| null` | Порог 🟡-алерта. При включении мониторинга без явного значения проставляется **`10.0000`** |
+| `balance_anchor_at` | `string(ISO) \| null` | Момент установки якоря; с него суммируется расход по Admin Cost API |
+| `balance_last_sync_at` | `string(ISO) \| null` | Время последней синхронизации с **конклюзивным** исходом (`ok`/`error`). Исход `unknown` (сеть/таймаут/`5xx` провайдера) **обнуляет поле в `null`** — «когда последний раз ответ был получен» теряется; UI показывает «ожидание синхронизации» |
+| `balance_sync_status` | `"ok" \| "error" \| "unknown" \| null` | Исход последней синхронизации. `balance_remaining_usd` перезаписывается **только при `ok`**: при `error`/`unknown` в ответе остаётся последнее успешно вычисленное значение |
+| `balance_sync_error` | `string \| null` | Рус. причина при `balance_sync_status="error"`: «Admin API key недействителен» / «Admin API key: доступ запрещён» / «Ключ не найден в организации провайдера» / «Ошибка billing API провайдера» |
+| `balance_alert_level` | `"normal" \| "low" \| "depleted" \| null` | Уровень остатка: `depleted` при `остаток ≤ 0`; `low` при `0 < остаток ≤ порог`; иначе `normal` |
+
+> **Внутренние поля, которых в API НЕТ (нормативно):** `billing_admin_key_encrypted` (секрет; раскрывается только через [`GET /api/ai-keys/{id}/billing-admin-key`](#get-apiai-keysidbilling-admin-key)), `provider_api_key_id` (кэш резолва идентификатора ключа у провайдера) и `balance_sync_fail_streak` (счётчик подряд идущих неудач sync) — колонки БД ([03-data-model.md](03-data-model.md#таблица-ai_keys)), в `AiKeyListItem` они **не выносятся**.
+
 ### GET `/api/ai-keys`
 Список AI-ключей. Требует JWT. Сортировка `position ASC, created_at DESC, id`. Пагинации нет.
 
@@ -451,43 +487,73 @@ Backend отдаёт **единый плоский список** (без сек
 
 **Response 200**
 ```json
-{ "items": [ { "id": "3f2a...c1", "name": "OpenAI Prod", "provider": "openai", "key_masked": "sk-p…bA3T", "check_status": "working", "error_message": null, "position": 0, "last_checked_at": "2026-07-01T10:15:00Z", "created_at": "2026-07-01T09:00:00Z", "updated_at": "2026-07-01T10:15:00Z" } ] }
+{ "items": [ { "id": "3f2a...c1", "name": "OpenAI Prod", "provider": "openai", "key_masked": "sk-p…bA3T", "check_status": "working", "error_message": null, "position": 0, "backend_count": 1, "last_checked_at": "2026-07-01T10:15:00Z", "created_at": "2026-07-01T09:00:00Z", "updated_at": "2026-07-01T10:15:00Z", "balance_monitoring_enabled": false, "balance_initial_usd": null, "balance_remaining_usd": null, "balance_low_threshold_usd": null, "balance_anchor_at": null, "balance_last_sync_at": null, "balance_sync_status": null, "balance_sync_error": null, "balance_alert_level": null } ] }
 ```
 **Ошибки:** `401 unauthorized`.
 
 ### POST `/api/ai-keys`
-Создаёт ключ и запускает **немедленную фоновую проверку** валидности. Требует JWT.
+Создаёт ключ и запускает **немедленную фоновую проверку** валидности. Требует JWT. Опционально сразу включает контур **оценочного остатка** ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md)).
 
 **Request**
 ```json
-{ "name": "OpenAI Prod", "provider": "openai", "key": "sk-proj-...bA3T" }
+{ "name": "OpenAI Prod", "provider": "openai", "key": "sk-proj-...bA3T",
+  "balance_monitoring_enabled": true, "balance_initial_usd": "250.00",
+  "balance_low_threshold_usd": "10", "billing_admin_key": "sk-admin-..." }
 ```
 | Поле | Тип | Правила |
 |------|-----|---------|
 | `name` | string | required, 1–64 |
 | `provider` | string | required, ∈ {`openai`,`anthropic`} |
 | `key` | string | required, 1–512 |
+| `balance_monitoring_enabled` | boolean | **опц., `default=false`** — отсутствие поля равнозначно `false`. `null` **не допускается** (тип не nullable) |
+| `balance_initial_usd` | decimal-string? | опц., `≥ 0`. **Обязательно при `balance_monitoring_enabled=true`** |
+| `balance_low_threshold_usd` | decimal-string? | опц., `≥ 0`. Не задано (или `null`) при включённом мониторинге → **`10.0000`** |
+| `billing_admin_key` | string? | опц., ≤ 512. **Обязательно (непустое после `strip()`) при `balance_monitoring_enabled=true`**. Шифруется Fernet, в ответах не возвращается |
+
+**Побочные эффекты при `balance_monitoring_enabled=true` (нормативно):** `balance_remaining_usd := balance_initial_usd`, `balance_anchor_at := now()`, `balance_sync_status := "ok"`, `balance_alert_level` вычисляется по порогу, и **дополнительно к health-проверке запускается немедленная фоновая синхронизация остатка**. При `false` записывается только флаг — все прочие `balance_*` остаются `NULL`.
 
 **Response 202 Accepted** — созданный `AiKeyListItem` с `check_status:"pending"`:
 ```json
-{ "id": "3f2a...c1", "name": "OpenAI Prod", "provider": "openai", "key_masked": "sk-p…bA3T", "check_status": "pending", "error_message": null, "position": 0, "last_checked_at": null, "created_at": "2026-07-01T09:00:00Z", "updated_at": "2026-07-01T09:00:00Z" }
+{ "id": "3f2a...c1", "name": "OpenAI Prod", "provider": "openai", "key_masked": "sk-p…bA3T", "check_status": "pending", "error_message": null, "position": 0, "backend_count": 0, "last_checked_at": null, "created_at": "2026-07-01T09:00:00Z", "updated_at": "2026-07-01T09:00:00Z", "balance_monitoring_enabled": true, "balance_initial_usd": "250.0000", "balance_remaining_usd": "250.0000", "balance_low_threshold_usd": "10.0000", "balance_anchor_at": "2026-07-01T09:00:00Z", "balance_last_sync_at": null, "balance_sync_status": "ok", "balance_sync_error": null, "balance_alert_level": "normal" }
 ```
 > `202`, т.к. проверка провайдера асинхронна; статус отслеживается через `GET /api/ai-keys/{id}/status`. Ключ (plaintext) в ответе не возвращается. `position` берёт `DEFAULT 0` — новая карточка вверху своей провайдер-секции.
 
-**Ошибки:** `400 validation_error`, `422 unprocessable` (невалидный `provider`).
+**Ошибки:** `400 validation_error`, `422 unprocessable` (невалидный `provider`). Нарушение условной обязательности (`balance_monitoring_enabled=true` без `balance_initial_usd` или без непустого `billing_admin_key`) — **`400 validation_error`** (проверка модельным валидатором тела, а не `422`: `422` в этом роутере зарезервирован за `provider` вне enum).
 
 ### PATCH `/api/ai-keys/{id}`
-Редактирование ключа. Требует JWT. Изменяемые поля — `name`, `provider`, `key`. **Все поля опциональны**; переданы только изменяемые.
+Редактирование ключа. Требует JWT. Изменяемые поля — `name`, `provider`, `key` и поля контура остатка. **Все поля опциональны**; переданы только изменяемые.
 
 **Request**
 ```json
-{ "name": "OpenAI Prod (rotated)", "provider": "openai", "key": "sk-proj-...NEW" }
+{ "name": "OpenAI Prod (rotated)", "provider": "openai", "key": "sk-proj-...NEW",
+  "balance_monitoring_enabled": true, "balance_initial_usd": "300.00",
+  "balance_low_threshold_usd": "25", "billing_admin_key": "sk-admin-...NEW" }
 ```
 | Поле | Тип | Правила |
 |------|-----|---------|
 | `name` | string? | опц., 1–64 |
 | `provider` | string? | опц., ∈ {`openai`,`anthropic`} |
 | `key` | string? | опц., 1–512. **Пустая строка `""` или отсутствие поля = «не менять ключ»** |
+| `balance_monitoring_enabled` | boolean? | опц., **три состояния** (см. ниже): отсутствует/`null` = не менять; `true` = включить/оставить включённым; `false` = **выключить и стереть** контур |
+| `balance_initial_usd` | decimal-string? | опц., `≥ 0`. Передано → **переякорение** (см. ниже). Учитывается только при включённом мониторинге |
+| `balance_low_threshold_usd` | decimal-string? | опц., `≥ 0`. Учитывается только при включённом мониторинге |
+| `billing_admin_key` | string? | опц., ≤ 512. **Пустая строка `""` или отсутствие = «не менять Admin API key»** (симметрично `key`). Учитывается только при включённом мониторинге |
+
+**Семантика `balance_monitoring_enabled` (нормативно, [ADR-070 §Амендмент](adr/ADR-070-ai-key-estimated-balance-monitor.md#амендмент-2026-08-07--reveal-admin-key-tri-state-выключения-и-порог-по-умолчанию)) — ТРИ разных состояния, не два:**
+
+| Значение в теле | Смысл |
+|-----------------|-------|
+| **поле отсутствует** (или `null`) | «не трогать контур»: текущее состояние мониторинга сохраняется. Прочие `balance_*` из тела применяются, только если мониторинг **уже** включён |
+| **`true`** | Включить контур (или подтвердить включённым). Требует, чтобы **после применения тела** у ключа были и Admin API key, и якорь — иначе `400 ai_key_bad_request` |
+| **`false`** | **Значащее значение, а не «пусто»:** выключить контур и **стереть все его данные** — `balance_initial_usd`, `balance_remaining_usd`, `balance_low_threshold_usd`, `balance_anchor_at`, `balance_last_sync_at`, `balance_sync_status`, `balance_sync_error`, `balance_alert_level` → `NULL`; `balance_sync_fail_streak` → `0`; `provider_api_key_id` → `NULL`; **`billing_admin_key_encrypted` → `NULL`** (Admin API key удаляется — при повторном включении его нужно ввести заново) |
+
+> **Форма редактирования отправляет `balance_monitoring_enabled` БЕЗУСЛОВНО — это нормативно, а не избыточность.** UI шлёт текущее состояние переключателя при каждом сохранении, в том числе явное `false` (`frontend/src/components/AddAiKeyModal.tsx`, ветка `mode='edit'`). Причина: при tri-state-семантике «не передавать поле» означает **не выключать**, поэтому выключить мониторинг можно **только** явным `false`. **Не «оптимизировать» это до «отправлять только при изменении»** — снятие галочки перестанет работать, а дефект будет молчаливым (форма закроется с тостом «Ключ обновлён», мониторинг останется включённым).
+
+**Семантика полей остатка (нормативно):**
+- **Переякорение.** Переданный `balance_initial_usd` (при включённом мониторинге) сбрасывает точку отсчёта: `balance_remaining_usd := balance_initial_usd`, `balance_anchor_at := now()`, `balance_last_sync_at := null`, `balance_sync_status := "ok"`, `balance_sync_error := null`, счётчик неудач `:= 0`, `balance_alert_level` пересчитывается, кэш `provider_api_key_id` сбрасывается. Тот же эффект даёт [`POST /api/ai-keys/{id}/balance/reset`](#post-apiai-keysidbalancereset).
+- **Смена inference-`key`** (непустой) дополнительно сбрасывает `provider_api_key_id` — резолв ключа у провайдера выполняется заново при следующей синхронизации.
+- **Немедленная синхронизация остатка** запускается фоново, если контур включён **и** тело изменило хотя бы одно из: флаг мониторинга, порог, Admin API key, якорь.
+- **Порог `0` неотличим от «не задан»** — хранится, но при вычислении уровня алерта подменяется на `10.0000` ([TD-082](100-known-tech-debt.md)).
 
 **Семантика секрета (нормативно):**
 - **`key` отсутствует или `""`** → текущий ключ, `key_encrypted`, `key_prefix`/`key_last4` НЕ меняются. Форма редактирования секрет не префилит (backend не хранит и не отдаёт plaintext) — поэтому пустое поле = «оставить как есть».
@@ -501,8 +567,36 @@ Backend отдаёт **единый плоский список** (без сек
 { "id": "3f2a...c1", "name": "OpenAI Prod (rotated)", "provider": "openai", "key_masked": "sk-p…9QzK", "check_status": "pending", "error_message": null, "position": 0, "last_checked_at": "2026-07-01T10:15:00Z", "created_at": "2026-07-01T09:00:00Z", "updated_at": "2026-07-01T12:00:00Z" }
 ```
 > При перезапуске проверки `check_status` в ответе = `pending`; frontend опрашивает `GET /api/ai-keys/{id}/status` до выхода из `pending` (как после создания). `last_checked_at` не сбрасывается (остаётся временем последней конклюзивной проверки до завершения новой).
+>
+> Ответ несёт **полный** `AiKeyListItem`, включая все поля контура остатка (в примере выше они опущены для краткости — состав полей см. [«Схема `AiKeyListItem`»](#схема-aikeylistitem)).
 
-**Ошибки:** `401 unauthorized`, `404 ai_key_not_found`, `422 unprocessable` (невалидный `provider`), `400 validation_error` (длина `name`/`key`).
+**Ошибки:** `401 unauthorized`, `404 ai_key_not_found`, `422 unprocessable` (невалидный `provider`), `400 validation_error` (длина `name`/`key`, отрицательные суммы), **`400 ai_key_bad_request`** — контур остатка остался бы включённым без обязательных данных:
+
+| Сообщение | Когда |
+|-----------|-------|
+| «Укажите Admin API key для мониторинга баланса» | Мониторинг включён/включается, а `billing_admin_key_encrypted` у ключа нет и в теле он не передан |
+| «Укажите текущий баланс для мониторинга» | Мониторинг включён/включается, а якоря (`balance_initial_usd`/`balance_anchor_at`) у ключа нет и в теле он не передан |
+
+> Проверка выполняется **до коммита** — при `400 ai_key_bad_request` не сохраняется **ни одно** поле запроса (включая `name`/`key`).
+
+### POST `/api/ai-keys/{id}/balance/reset`
+**Переякорение остатка после пополнения** ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md)). Оператор пополнил счёт в кабинете провайдера и вводит новый фактический баланс; CRM начинает считать расход заново с этого момента. Требует JWT.
+
+**Гейт — `require("ai-keys","edit")`**, а **не** `ai-keys:create`: это правка существующего ключа, метод `POST` выбран из-за не-идемпотентности (каждый вызов ставит новый якорь `now()`). Исключение из таблицы [«Маппинг метод→действие»](#rbac-и-enforcement-прав) — см. примечание там же.
+
+**Request**
+```json
+{ "balance_initial_usd": "300.00" }
+```
+| Поле | Тип | Правила |
+|------|-----|---------|
+| `balance_initial_usd` | decimal-string | **required**, `≥ 0` |
+
+**Эффект (нормативно):** `balance_initial_usd` и `balance_remaining_usd` := переданное значение; `balance_anchor_at := now()`; `balance_last_sync_at := null`; `balance_sync_status := "ok"`; `balance_sync_error := null`; счётчик неудач `:= 0`; `balance_alert_level` пересчитывается по действующему порогу (`10.0000`, если порог не задан); `provider_api_key_id := null`. Затем запускается **немедленная фоновая синхронизация** остатка. Порог и Admin API key **не меняются**.
+
+**Response 200** — обновлённый `AiKeyListItem`.
+
+**Ошибки:** `401 unauthorized`, `403 forbidden` (нет `ai-keys:edit`), `404 ai_key_not_found`, `400 validation_error` (отсутствует/отрицательный `balance_initial_usd`), **`400 ai_key_bad_request`**: «Мониторинг баланса не включён для этого ключа» (`balance_monitoring_enabled=false`) либо «Admin API key не задан».
 
 ### GET `/api/ai-keys/{id}/status`
 Лёгкий endpoint статуса проверки (для polling после добавления). Требует JWT.
@@ -528,6 +622,15 @@ Reveal **полного** ключа по требованию (для detail-vi
 { "value": "sk-proj-...bA3T" }
 ```
 **Ошибки:** `401 unauthorized`, `403 forbidden` (нет `ai-keys:edit`), `404 ai_key_not_found`.
+
+### GET `/api/ai-keys/{id}/billing-admin-key`
+Reveal **Admin API key** контура остатка ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md)) — второй секрет того же ресурса, отдельный от inference-`key`. Гейт **`require("ai-keys","edit")`** (супер-админ/`admin` — всегда). Расшифровка `billing_admin_key_encrypted` (`decrypt_secret`) в памяти обработчика, `Cache-Control: no-store`, аудит `secret_revealed` с `resource_type="ai_key_billing_admin"` (**отличается** от `ai_key` — по логу видно, какой из двух секретов раскрыт). Общие правила — [«Reveal секретов»](#reveal-секретов-по-требованию-adr-035).
+
+**Response 200** — `SecretRevealResponse`:
+```json
+{ "value": "sk-admin-...9QzK" }
+```
+**Ошибки:** `401 unauthorized`, `403 forbidden` (нет `ai-keys:edit`), `404 ai_key_not_found`, **`404 secret_not_set`** — Admin API key не задан (всегда при `balance_monitoring_enabled=false`: выключение контура стирает секрет).
 
 ---
 
@@ -1919,6 +2022,7 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 
 - **Супер-админ** (`.env`, `superadmin=true`) проходит любой `require(...)` и `require_admin`.
 - **Reply почты** гейтится `mail:view` (у почты в каталоге одно действие `view`).
+- **`POST /api/ai-keys/{id}/balance/reset` гейтится `ai-keys:edit`, а не `ai-keys:create`** ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md)) — исключение из колонки `POST` таблицы: это правка существующего ключа, `POST` выбран из-за не-идемпотентности (новый якорь `now()` на каждый вызов). Reveal-эндпоинты ИИ-ключа (`GET /{id}/key`, `GET /{id}/billing-admin-key`) — тоже исключение из колонки `GET`: они под `ai-keys:edit` ([Reveal секретов](#reveal-секретов-по-требованию-adr-035)).
 - **Roles/Permissions API** — со Спринта A гейтятся **матрицей** `roles:*` ([ADR-022](adr/ADR-022-teams-nav-categories.md)): `/api/roles` (методы по таблице выше), `GET /api/permissions/catalog` → `require("roles","view")` (каталог нужен редактору роли). **Teams API** — `require("teams", <action>)`.
 - **Users API** — **остаётся** `require_admin` (`is_superadmin || role=="admin"`), **не** через матрицу: создание/удаление пользователей, сброс паролей, назначение ролей — admin-only ([ADR-022](adr/ADR-022-teams-nav-categories.md) §4в, замыкает эскалацию).
 - **SMS API** ([ADR-030](adr/ADR-030-sms-module-full-merge.md)) — матрица `sms:*` (см. таблицу). `POST /api/sms/telegram/link` — **только аутентификация** (вне матрицы `sms`): доставка операторам — функция членства в команде (`user_teams`), а не права на страницу. `GET /api/teams/{id}/numbers` гейтится `teams:view`. Публичные webhook'и Twilio/Telegram и `POST /api/sms/telegram/auth` — вне JWT/RBAC (гейт — подпись/секрет/HMAC).

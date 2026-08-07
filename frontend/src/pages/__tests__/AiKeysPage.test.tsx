@@ -37,6 +37,9 @@ vi.mock('@/features/ai-keys/hooks', () => ({
   useDeleteAiKey: () => ({ mutate: vi.fn(), isPending: false }),
   useUpdateAiKey: () => ({ mutate: vi.fn(), isPending: false }),
   useCreateAiKey: () => ({ mutate: vi.fn(), isPending: false }),
+  // AiKeyDetailModal (рендерится AiKeyCard) вызывает сброс баланса (ADR-070,
+  // AiKeyDetailModal.tsx:44) — без этого экспорта vi.mock падает на рендере карточки.
+  useResetAiKeyBalance: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
