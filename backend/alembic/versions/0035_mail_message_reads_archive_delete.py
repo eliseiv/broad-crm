@@ -27,7 +27,9 @@ def upgrade() -> None:
         "mail_message_reads",
         sa.Column("deleted_at", sa.DateTime(timezone=True), nullable=True),
     )
-    op.alter_column("mail_message_reads", "read_at", existing_type=sa.DateTime(timezone=True), nullable=True)
+    op.alter_column(
+        "mail_message_reads", "read_at", existing_type=sa.DateTime(timezone=True), nullable=True
+    )
 
 
 def downgrade() -> None:

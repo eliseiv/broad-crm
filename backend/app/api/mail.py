@@ -240,9 +240,7 @@ async def batch_mark_read(
     p: ViewDep,
 ) -> Response:
     """Пометить несколько писем прочитанными (ADR-071)."""
-    await service.batch_read(
-        scope=scope, user_id=p.user_id, message_ids=payload.message_ids
-    )
+    await service.batch_read(scope=scope, user_id=p.user_id, message_ids=payload.message_ids)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -254,9 +252,7 @@ async def batch_archive(
     p: ViewDep,
 ) -> Response:
     """Архивировать письма (ADR-071)."""
-    await service.batch_archive(
-        scope=scope, user_id=p.user_id, message_ids=payload.message_ids
-    )
+    await service.batch_archive(scope=scope, user_id=p.user_id, message_ids=payload.message_ids)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -268,9 +264,7 @@ async def batch_delete(
     p: ViewDep,
 ) -> Response:
     """Удалить письма в корзину (ADR-071)."""
-    await service.batch_delete(
-        scope=scope, user_id=p.user_id, message_ids=payload.message_ids
-    )
+    await service.batch_delete(scope=scope, user_id=p.user_id, message_ids=payload.message_ids)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -282,9 +276,7 @@ async def batch_unarchive(
     p: ViewDep,
 ) -> Response:
     """Вернуть из архива (ADR-071)."""
-    await service.batch_unarchive(
-        scope=scope, user_id=p.user_id, message_ids=payload.message_ids
-    )
+    await service.batch_unarchive(scope=scope, user_id=p.user_id, message_ids=payload.message_ids)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -296,9 +288,7 @@ async def batch_restore(
     p: ViewDep,
 ) -> Response:
     """Восстановить из корзины (ADR-071)."""
-    await service.batch_restore(
-        scope=scope, user_id=p.user_id, message_ids=payload.message_ids
-    )
+    await service.batch_restore(scope=scope, user_id=p.user_id, message_ids=payload.message_ids)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 

@@ -119,16 +119,25 @@ class MailMessageReadRepository:
         """COUNT непрочитанных в inbox для видимых ящиков."""
         if mail_account_ids is not None and len(mail_account_ids) == 0:
             return 0
-        inbox_filter = ~select(MailMessageRead.message_id).where(
-            MailMessageRead.user_id == user_id,
-            MailMessageRead.message_id == MailMessage.id,
-            (MailMessageRead.archived_at.is_not(None)) | (MailMessageRead.deleted_at.is_not(None)),
-        ).exists()
-        unread_filter = ~select(MailMessageRead.message_id).where(
-            MailMessageRead.user_id == user_id,
-            MailMessageRead.message_id == MailMessage.id,
-            MailMessageRead.read_at.is_not(None),
-        ).exists()
+        inbox_filter = (
+            ~select(MailMessageRead.message_id)
+            .where(
+                MailMessageRead.user_id == user_id,
+                MailMessageRead.message_id == MailMessage.id,
+                (MailMessageRead.archived_at.is_not(None))
+                | (MailMessageRead.deleted_at.is_not(None)),
+            )
+            .exists()
+        )
+        unread_filter = (
+            ~select(MailMessageRead.message_id)
+            .where(
+                MailMessageRead.user_id == user_id,
+                MailMessageRead.message_id == MailMessage.id,
+                MailMessageRead.read_at.is_not(None),
+            )
+            .exists()
+        )
         stmt = select(func.count()).select_from(MailMessage).where(inbox_filter, unread_filter)
         if mail_account_ids is not None:
             stmt = stmt.where(MailMessage.mail_account_id.in_(mail_account_ids))
