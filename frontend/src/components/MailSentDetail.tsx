@@ -1,5 +1,4 @@
 import { ArrowLeft } from 'lucide-react';
-import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
 import type { MailSentMessage } from '@/types/api';
 
@@ -25,32 +24,31 @@ export function MailSentDetail({ message, onBack }: MailSentDetailProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
       <header className="shrink-0 border-b border-border-subtle px-4 py-3">
-        <div className="flex items-start gap-2">
+        <div className="mb-2 flex items-center gap-2">
           {onBack && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="shrink-0 md:hidden"
+            <button
+              type="button"
               onClick={onBack}
-              aria-label="Назад к списку"
+              className="inline-flex shrink-0 items-center gap-1 rounded-md text-[13px] font-medium text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
             >
-              <ArrowLeft className="h-4 w-4" />
-            </Button>
+              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+              Назад
+            </button>
           )}
-          <div className="min-w-0 flex-1">
-            <h2 className="text-base font-semibold text-text-primary">{subject}</h2>
-            <p className="mt-1 text-[13px] text-text-secondary">
-              Кому: <span className="text-text-primary">{message.to_addrs}</span>
+        </div>
+        <div className="min-w-0">
+          <h2 className="text-base font-semibold text-text-primary">{subject}</h2>
+          <p className="mt-1 text-[13px] text-text-secondary">
+            Кому: <span className="text-text-primary">{message.to_addrs}</span>
+          </p>
+          {message.cc_addrs && (
+            <p className="text-[13px] text-text-secondary">
+              Копия: <span className="text-text-primary">{message.cc_addrs}</span>
             </p>
-            {message.cc_addrs && (
-              <p className="text-[13px] text-text-secondary">
-                Копия: <span className="text-text-primary">{message.cc_addrs}</span>
-              </p>
-            )}
-            <p className="mt-1 text-[12px] text-text-tertiary">
-              Отправлено: {absoluteDate(message.sent_at)} · с {accountLabel}
-            </p>
-          </div>
+          )}
+          <p className="mt-1 text-[12px] text-text-tertiary">
+            Отправлено: {absoluteDate(message.sent_at)} · с {accountLabel}
+          </p>
         </div>
       </header>
       <pre

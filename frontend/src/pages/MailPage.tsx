@@ -149,25 +149,15 @@ function MailLayout() {
     setMobileDetail(false);
   }, [navFolder, teamFilter, tagId, adminView]);
 
-  useEffect(() => {
-    if (isSent) {
-      if (sentMessages.length === 0) {
-        if (selectedSentId !== null) setSelectedSentId(null);
-        return;
-      }
-      const stillExists =
-        selectedSentId !== null && sentMessages.some((m) => m.id === selectedSentId);
-      if (!stillExists) setSelectedSentId(sentMessages[0].id);
-      return;
-    }
-    if (visibleInboxMessages.length === 0) {
-      if (selectedInboxId !== null) setSelectedInboxId(null);
-      return;
-    }
-    const stillExists =
-      selectedInboxId !== null && visibleInboxMessages.some((m) => m.id === selectedInboxId);
-    if (!stillExists) setSelectedInboxId(visibleInboxMessages[0].id);
-  }, [isSent, sentMessages, visibleInboxMessages, selectedSentId, selectedInboxId]);
+  const showInboxDetail = selectedInboxId !== null;
+  const showSentDetail = selectedSentId !== null;
+  const showDetail = isSent ? showSentDetail : showInboxDetail;
+
+  const closeDetail = () => {
+    setMobileDetail(false);
+    setSelectedInboxId(null);
+    setSelectedSentId(null);
+  };
 
   const selectedInbox = useMemo(
     () => visibleInboxMessages.find((m) => m.id === selectedInboxId) ?? null,
@@ -178,6 +168,19 @@ function MailLayout() {
     () => sentMessages.find((m) => m.id === selectedSentId) ?? null,
     [sentMessages, selectedSentId],
   );
+
+  useEffect(() => {
+    if (isSent && selectedSentId !== null && !sentMessages.some((m) => m.id === selectedSentId)) {
+      closeDetail();
+    }
+    if (
+      !isSent &&
+      selectedInboxId !== null &&
+      !visibleInboxMessages.some((m) => m.id === selectedInboxId)
+    ) {
+      closeDetail();
+    }
+  }, [isSent, sentMessages, visibleInboxMessages, selectedSentId, selectedInboxId]);
 
   const lastMarkedIdRef = useRef<number | null>(null);
   useEffect(() => {
@@ -339,7 +342,7 @@ function MailLayout() {
   const isEmpty = isSent ? sentMessages.length === 0 : inboxMessages.length === 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden">
       <div className="flex shrink-0 items-center justify-end gap-2 border-b border-border-subtle px-3 py-2 md:hidden">
         <Button
           variant="ghost"
@@ -352,9 +355,9 @@ function MailLayout() {
         <MailNotificationsToggle />
       </div>
 
-      <div className="min-h-0 flex-1 p-3">
+      <div className="min-h-0 flex-1 overflow-hidden p-3">
         {shell(
-          <div className="flex h-full min-h-0">
+          <div className="flex h-full min-h-0 overflow-hidden">
             {mobileSidebar && (
               <button
                 type="button"
@@ -398,11 +401,12 @@ function MailLayout() {
               </Button>
             )}
 
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col md:flex-row">
+            <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden md:flex-row">
               <div
                 className={cn(
-                  'flex min-h-0 flex-col border-border-subtle md:w-[38%] md:flex-none md:border-r',
-                  mobileDetail ? 'hidden md:flex' : 'flex',
+                  'flex min-h-0 min-w-0 flex-col border-border-subtle',
+                  showDetail && mobileDetail ? 'hidden md:flex' : 'flex',
+                  showDetail ? 'md:w-[38%] md:flex-none md:border-r' : 'flex-1',
                 )}
               >
                 <MailListToolbar
@@ -470,41 +474,32 @@ function MailLayout() {
                 </div>
               </div>
 
-              <div
-                className={cn(
-                  'min-h-0 min-w-0 flex-1 md:block',
-                  mobileDetail ? 'block' : 'hidden md:block',
-                )}
-              >
-                <div className="hidden shrink-0 justify-end border-b border-border-subtle px-3 py-2 md:flex">
-                  <MailNotificationsToggle />
-                </div>
-                {isSent ? (
-                  selectedSent ? (
-                    <MailSentDetail
-                      message={selectedSent}
-                      onBack={() => setMobileDetail(false)}
-                    />
+              {showDetail && (
+                <div
+                  className={cn(
+                    'min-h-0 min-w-0 flex-1 flex-col overflow-hidden',
+                    mobileDetail ? 'flex' : 'hidden md:flex',
+                  )}
+                >
+                  <div className="hidden shrink-0 justify-end border-b border-border-subtle px-3 py-2 md:flex">
+                    <MailNotificationsToggle />
+                  </div>
+                  {isSent ? (
+                    selectedSent && (
+                      <MailSentDetail message={selectedSent} onBack={closeDetail} />
+                    )
                   ) : (
-                    <CenteredState
-                      icon={<Mail className="h-9 w-9 text-text-tertiary" aria-hidden="true" />}
-                      title={isEmpty ? 'Отправленных писем нет' : 'Выберите письмо'}
-                    />
-                  )
-                ) : selectedInbox ? (
-                  <MailDetail
-                    message={selectedInbox}
-                    onBack={() => setMobileDetail(false)}
-                    onMarkUnread={(id) => unmarkMutation.mutate(id)}
-                    markUnreadPending={unmarkMutation.isPending}
-                  />
-                ) : (
-                  <CenteredState
-                    icon={<Mail className="h-9 w-9 text-text-tertiary" aria-hidden="true" />}
-                    title={isEmpty ? 'Писем пока нет' : 'Выберите письмо'}
-                  />
-                )}
-              </div>
+                    selectedInbox && (
+                      <MailDetail
+                        message={selectedInbox}
+                        onBack={closeDetail}
+                        onMarkUnread={(id) => unmarkMutation.mutate(id)}
+                        markUnreadPending={unmarkMutation.isPending}
+                      />
+                    )
+                  )}
+                </div>
+              )}
             </div>
           </div>,
         )}

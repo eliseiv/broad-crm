@@ -96,14 +96,14 @@ export function MailDetail({
             Когда кнопки отката нет, на desktop строка пуста (Назад скрыт) и не занимает места. */}
         <div
           className={cn(
-            'flex flex-wrap items-center justify-between gap-2 md:justify-end',
-            canMarkUnread ? 'mb-3' : 'mb-3 md:mb-0',
+            'flex flex-wrap items-center justify-between gap-2',
+            canMarkUnread ? 'mb-3' : 'mb-3',
           )}
         >
           <button
             type="button"
             onClick={onBack}
-            className="inline-flex items-center gap-1 rounded-md text-[13px] font-medium text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent md:hidden"
+            className="inline-flex items-center gap-1 rounded-md text-[13px] font-medium text-text-secondary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
           >
             <ArrowLeft className="h-4 w-4" />
             Назад

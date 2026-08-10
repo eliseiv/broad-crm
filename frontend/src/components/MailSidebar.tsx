@@ -6,7 +6,6 @@ import {
   Tag,
   Trash2,
 } from 'lucide-react';
-import { MailTagChip } from '@/components/MailTagChip';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
 import type { MailTagFull } from '@/types/api';
@@ -44,7 +43,7 @@ function NavItem({
   onClick,
 }: {
   active: boolean;
-  icon: React.ReactNode;
+  icon?: React.ReactNode;
   label: string;
   badge?: number;
   onClick: () => void;
@@ -61,7 +60,7 @@ function NavItem({
           : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
       )}
     >
-      <span className="shrink-0" aria-hidden="true">{icon}</span>
+      {icon && <span className="shrink-0" aria-hidden="true">{icon}</span>}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {badge !== undefined && badge > 0 && (
         <span className="shrink-0 rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-accent">
@@ -73,7 +72,7 @@ function NavItem({
 }
 
 /**
- * Gmail-like сайдбар страницы «Почты» (ADR-071, 08-design-system.md).
+ * Gmail-like сайдбар страницы «Почты» (ADR-074, 08-design-system.md).
  */
 export function MailSidebar({
   navFolder,
@@ -99,6 +98,28 @@ export function MailSidebar({
     }
   };
 
+  const toggleTagged = () => {
+    onAdminViewChange(null);
+    if (adminView === null && navFolder === 'tagged') {
+      onNavFolderChange('inbox');
+      onTagIdChange(undefined);
+    } else {
+      onNavFolderChange('tagged');
+      onTagIdChange(undefined);
+    }
+  };
+
+  const selectTag = (id: string) => {
+    onAdminViewChange(null);
+    if (tagId === id) {
+      onTagIdChange(undefined);
+      onNavFolderChange('inbox');
+      return;
+    }
+    onNavFolderChange('inbox');
+    onTagIdChange(id);
+  };
+
   return (
     <aside
       className={cn(
@@ -118,9 +139,12 @@ export function MailSidebar({
         </Button>
       </div>
 
-      <nav aria-label="Папки почты" className="flex flex-col gap-0.5 px-2">
+      <nav
+        aria-label="Папки почты"
+        className="scrollbar-none flex min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto px-2"
+      >
         <NavItem
-          active={adminView === null && navFolder === 'inbox'}
+          active={adminView === null && navFolder === 'inbox' && !tagId}
           icon={<Inbox className="h-4 w-4" />}
           label="Входящие"
           badge={unreadCount}
@@ -142,16 +166,46 @@ export function MailSidebar({
           active={adminView === null && navFolder === 'tagged'}
           icon={<Tag className="h-4 w-4" />}
           label="С тегами"
-          onClick={() => {
-            onAdminViewChange(null);
-            onNavFolderChange('tagged');
-            onTagIdChange(undefined);
-          }}
+          onClick={toggleTagged}
         />
+        <NavItem
+          active={adminView === 'mailboxes'}
+          icon={<Mail className="h-4 w-4" />}
+          label="Почты"
+          onClick={() => onAdminViewChange('mailboxes')}
+        />
+        <NavItem
+          active={adminView === 'tags'}
+          icon={<Tag className="h-4 w-4" />}
+          label="Теги"
+          onClick={() => onAdminViewChange('tags')}
+        />
+
+        {tags.map((tag) => (
+          <button
+            key={tag.id}
+            type="button"
+            onClick={() => selectTag(tag.id)}
+            className={cn(
+              'flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors',
+              'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+              adminView === null && tagId === tag.id
+                ? 'bg-surface-2 font-medium text-text-primary'
+                : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
+            )}
+          >
+            <span
+              className="h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: tag.color }}
+              aria-hidden="true"
+            />
+            <span className="min-w-0 truncate">{tag.name}</span>
+          </button>
+        ))}
       </nav>
 
       {showTeamFilter && (
-        <div className="mt-4 px-2">
+        <div className="shrink-0 border-t border-border-subtle px-2 py-3">
           <p className="mb-1 px-3 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
             Команды
           </p>
@@ -175,76 +229,6 @@ export function MailSidebar({
           </div>
         </div>
       )}
-
-      <div className="mt-4 min-h-0 flex-1 overflow-y-auto px-2">
-        <p className="mb-1 px-3 text-[11px] font-semibold uppercase tracking-wide text-text-tertiary">
-          Теги
-        </p>
-        <button
-          type="button"
-          onClick={() => onTagIdChange(undefined)}
-          className={cn(
-            'mb-1 w-full rounded-md px-3 py-1.5 text-left text-sm transition-colors',
-            'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-            !tagId
-              ? 'bg-surface-2 font-medium text-text-primary'
-              : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
-          )}
-        >
-          Все теги
-        </button>
-        <div className="flex flex-col gap-1 px-1">
-          {tags.map((tag) => (
-            <button
-              key={tag.id}
-              type="button"
-              onClick={() => {
-                onAdminViewChange(null);
-                onNavFolderChange('inbox');
-                onTagIdChange(tag.id);
-              }}
-              className={cn(
-                'rounded-md px-2 py-1 transition-colors',
-                'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-                tagId === tag.id ? 'bg-surface-2' : 'hover:bg-surface-3',
-              )}
-            >
-              <MailTagChip name={tag.name} color={tag.color} dot />
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="shrink-0 border-t border-border-subtle p-2">
-        <button
-          type="button"
-          onClick={() => onAdminViewChange('mailboxes')}
-          className={cn(
-            'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
-            'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-            adminView === 'mailboxes'
-              ? 'bg-surface-2 font-medium text-text-primary'
-              : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
-          )}
-        >
-          <Mail className="h-4 w-4 shrink-0" aria-hidden="true" />
-          Почты
-        </button>
-        <button
-          type="button"
-          onClick={() => onAdminViewChange('tags')}
-          className={cn(
-            'flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm transition-colors',
-            'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-            adminView === 'tags'
-              ? 'bg-surface-2 font-medium text-text-primary'
-              : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
-          )}
-        >
-          <Tag className="h-4 w-4 shrink-0" aria-hidden="true" />
-          Теги
-        </button>
-      </div>
     </aside>
   );
 }

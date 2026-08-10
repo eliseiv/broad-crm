@@ -220,30 +220,26 @@ describe('MailPage master-detail', () => {
     feed.value = baseFeed({ phase: 'ready', messages: [] });
     render(<MailPage />);
 
-    // Пустая лента: подпись и в списке (левая панель), и в заглушке детали (правая).
-    expect(screen.getAllByText('Писем пока нет')).toHaveLength(2);
+    expect(screen.getByText('Писем пока нет')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Сообщение')).not.toBeInTheDocument();
   });
 
-  it('auto-selects the newest message (first in desc feed) into the detail panel', () => {
+  it('does not open detail until a list item is clicked', () => {
     feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
     render(<MailPage />);
 
-    // Деталь показывает самое свежее письмо (id=2) заголовком темы.
+    expect(screen.queryByRole('heading', { name: 'Письмо 2' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Сообщение')).not.toBeInTheDocument();
+  });
+
+  it('opens detail when a list item is clicked', async () => {
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
+    render(<MailPage />);
+
+    await userEvent.setup().click(screen.getByText('Письмо 2'));
+
     expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
-    // Inline-reply отрисован под телом (форма ответа доступна).
     expect(screen.getByLabelText('Сообщение')).toBeInTheDocument();
-  });
-
-  it('switches the detail when another list item is clicked', async () => {
-    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
-    render(<MailPage />);
-
-    expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
-
-    // Клик по элементу списка письма 1 (кликаем по его теме внутри кнопки).
-    await userEvent.setup().click(screen.getByText('Письмо 1'));
-
-    expect(screen.getByRole('heading', { name: 'Письмо 1' })).toBeInTheDocument();
   });
 
   it('does not render a "Загрузить ещё" button (infinite scroll only)', () => {
@@ -265,9 +261,12 @@ describe('MailPage master-detail', () => {
     expect(loadMore).toHaveBeenCalledTimes(1);
   });
 
-  it('renders the adaptive "Назад" button in the detail panel', () => {
+  it('renders the "Назад" button after opening a message', async () => {
+    const user = userEvent.setup();
     feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
     render(<MailPage />);
+
+    await user.click(screen.getByText('Письмо 2'));
 
     expect(screen.getByRole('button', { name: 'Назад' })).toBeInTheDocument();
   });
@@ -295,6 +294,20 @@ describe('MailPage "С тегами" navigation (ADR-071)', () => {
 
     expect(mailFeedSpy).toHaveBeenLastCalledWith(
       expect.objectContaining({ hasTags: true, folder: 'inbox' }),
+    );
+  });
+
+  it('повторный клик «С тегами» сбрасывает фильтр has_tags', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
+    render(<MailPage />);
+
+    const taggedBtn = screen.getByRole('button', { name: /С тегами/ });
+    await user.click(taggedBtn);
+    await user.click(taggedBtn);
+
+    expect(mailFeedSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ hasTags: undefined, folder: 'inbox' }),
     );
   });
 
@@ -392,7 +405,7 @@ describe('MailPage view-guard (mail:view)', () => {
     render(<MailPage />);
 
     expect(mailFeedSpy).toHaveBeenCalled();
-    expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Письмо 2' })).not.toBeInTheDocument();
     expect(screen.queryByText(INSUFFICIENT_PERMISSIONS_TITLE)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Входящие/ })).toBeInTheDocument();
     expect(screen.queryByText('Команды')).not.toBeInTheDocument();
@@ -416,23 +429,28 @@ describe('MailPage — пометка «прочитано» при открыт
     logout();
   });
 
-  it('авто-выбор самого свежего письма шлёт РОВНО ОДИН POST …/read (тело отрендерено ⇒ открыто)', () => {
+  it('открытие письма кликом шлёт РОВНО ОДИН POST …/read', async () => {
+    const user = userEvent.setup();
     feed.value = baseFeed({
       messages: [makeMessage(2, [], true), makeMessage(1, [], true)],
     });
     render(<MailPage />);
 
-    // Авто-выбранное свежее письмо тоже помечается прочитанным (нормативно, §2.6).
+    expect(markReadSpy).not.toHaveBeenCalled();
+
+    await user.click(screen.getByText('Письмо 2'));
+
     expect(markReadSpy).toHaveBeenCalledTimes(1);
     expect(markReadSpy).toHaveBeenCalledWith(2);
   });
 
-  it('повторные рендеры при неизменном выбранном письме POST повторно НЕ шлют (триггер = смена письма)', () => {
+  it('повторные рендеры при неизменном выбранном письме POST повторно НЕ шлют (триггер = смена письма)', async () => {
+    const user = userEvent.setup();
     feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], true)] });
     const { rerender } = render(<MailPage />);
+    await user.click(screen.getByText('Письмо 2'));
     expect(markReadSpy).toHaveBeenCalledTimes(1);
 
-    // Ре-рендер (напр. ре-фетч ленты) при том же selectedId — нового запроса нет.
     rerender(<MailPage />);
     rerender(<MailPage />);
 
@@ -443,7 +461,8 @@ describe('MailPage — пометка «прочитано» при открыт
     const user = userEvent.setup();
     feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], true)] });
     render(<MailPage />);
-    expect(markReadSpy).toHaveBeenCalledTimes(1); // авто-выбор id=2
+    await user.click(screen.getByText('Письмо 2'));
+    expect(markReadSpy).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByText('Письмо 1'));
 
@@ -473,16 +492,17 @@ describe('MailPage — откат «Отметить непрочитанным�
     logout();
   });
 
-  it('кнопка рендерится ТОЛЬКО когда письмо уже прочитано (is_unread === false)', () => {
+  it('кнопка рендерится ТОЛЬКО когда письмо уже прочитано (is_unread === false)', async () => {
+    const user = userEvent.setup();
     feed.value = baseFeed({ messages: [makeMessage(2, [], true)] });
     const { rerender } = render(<MailPage />);
 
-    // Открытое письмо ещё числится непрочитанным → кнопки отката нет.
+    await user.click(screen.getByText('Письмо 2'));
+
     expect(
       screen.queryByRole('button', { name: /Отметить непрочитанным/ }),
     ).not.toBeInTheDocument();
 
-    // После успешного 204 кэш ленты правится точечно: is_unread=false → кнопка появляется.
     feed.value = baseFeed({ messages: [makeMessage(2, [], false)] });
     rerender(<MailPage />);
 
@@ -492,8 +512,10 @@ describe('MailPage — откат «Отметить непрочитанным�
   it('клик шлёт DELETE …/read, НЕ закрывает деталь и НЕ ретриггерит авто-пометку', async () => {
     const user = userEvent.setup();
     feed.value = baseFeed({ messages: [makeMessage(2, [], false), makeMessage(1, [], false)] });
-    render(<MailPage />);
-    expect(markReadSpy).toHaveBeenCalledTimes(1); // авто-пометка при открытии
+    const { rerender } = render(<MailPage />);
+
+    await user.click(screen.getByText('Письмо 2'));
+    expect(markReadSpy).toHaveBeenCalledTimes(1);
 
     await user.click(screen.getByRole('button', { name: /Отметить непрочитанным/ }));
 
@@ -505,8 +527,8 @@ describe('MailPage — откат «Отметить непрочитанным�
     // Кэш ленты обновился (is_unread=true), письмо ОСТАЛОСЬ выбранным: авто-пометка повторно
     // не срабатывает — её триггер — СМЕНА письма, а не рендер (иначе откат затирался бы).
     feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], false)] });
-    render(<MailPage />);
-    expect(markReadSpy).toHaveBeenCalledTimes(2); // ровно +1 за новый монтаж, не больше
+    rerender(<MailPage />);
+    expect(markReadSpy).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -529,11 +551,15 @@ describe('MailPage — супер-админ имеет ПОЛНОЕ лично�
     logout();
   });
 
-  it('контролы прочитанности рендерятся: индикатор и кнопка отката', () => {
+  it('контролы прочитанности рендерятся: индикатор и кнопка отката', async () => {
+    const user = userEvent.setup();
     feed.value = baseFeed({ messages: [makeMessage(2, [], false), makeMessage(1, [], true)] });
     render(<MailPage />);
 
     expect(screen.getByText('Непрочитано')).toBeInTheDocument();
+
+    await user.click(screen.getByText('Письмо 2'));
+
     expect(screen.getByRole('button', { name: /Отметить непрочитанным/ })).toBeInTheDocument();
   });
 
@@ -542,7 +568,9 @@ describe('MailPage — супер-админ имеет ПОЛНОЕ лично�
     feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], true)] });
     render(<MailPage />);
 
-    // Авто-выбор первого письма помечает его прочитанным — ровно как у БД-пользователя.
+    expect(markReadSpy).not.toHaveBeenCalled();
+
+    await user.click(screen.getByText('Письмо 2'));
     expect(markReadSpy).toHaveBeenLastCalledWith(2);
 
     await user.click(screen.getByText('Письмо 1'));
@@ -555,6 +583,7 @@ describe('MailPage — супер-админ имеет ПОЛНОЕ лично�
     feed.value = baseFeed({ messages: [makeMessage(1, [], false)] });
     render(<MailPage />);
 
+    await user.click(screen.getByText('Письмо 1'));
     await user.click(screen.getByRole('button', { name: /Отметить непрочитанным/ }));
 
     expect(unmarkReadSpy).toHaveBeenLastCalledWith(1);
