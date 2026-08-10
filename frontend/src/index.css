@@ -92,6 +92,12 @@
     height: 100%;
   }
 
+  html.layout-full-bleed,
+  body.layout-full-bleed {
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
   /*
    * Скрытие полосы прокрутки ДОКУМЕНТА (08-design-system.md «Скрытие полосы прокрутки»,
    * вариант A). Servers/AI-keys скроллятся нативным скроллом body (обычный поток документа) —

@@ -1,4 +1,5 @@
 import { LogOut, Moon, ServerCog, Sun } from 'lucide-react';
+import { useEffect } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
@@ -81,6 +82,23 @@ export function AppLayout() {
   const isFullBleed =
     location.pathname.startsWith('/mail') || location.pathname.startsWith('/documents');
 
+  // Full-bleed: скролл только внутри панелей; document/body не должны прокручиваться
+  // (полоса скрыта глобально, но wheel/touch на body давал «пустое» пространство снизу).
+  useEffect(() => {
+    const lockClass = 'layout-full-bleed';
+    if (isFullBleed) {
+      document.documentElement.classList.add(lockClass);
+      document.body.classList.add(lockClass);
+    } else {
+      document.documentElement.classList.remove(lockClass);
+      document.body.classList.remove(lockClass);
+    }
+    return () => {
+      document.documentElement.classList.remove(lockClass);
+      document.body.classList.remove(lockClass);
+    };
+  }, [isFullBleed]);
+
   const handleLogout = () => {
     clearSession();
     queryClient.clear();
@@ -91,7 +109,9 @@ export function AppLayout() {
     <div
       className={cn(
         'flex flex-col bg-bg-base',
-        isFullBleed ? 'h-screen overflow-hidden' : 'min-h-screen',
+        isFullBleed
+          ? 'h-dvh max-h-dvh overflow-hidden overscroll-none'
+          : 'min-h-screen',
       )}
     >
       <header
@@ -154,7 +174,7 @@ export function AppLayout() {
       </header>
 
       {isFullBleed ? (
-        <main className="w-full min-h-0 flex-1 overflow-hidden">
+        <main className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
           <Outlet />
         </main>
       ) : (

@@ -191,7 +191,7 @@ describe('AppLayout — режимы shell по маршруту (08-design-syst
   beforeEach(() => loginSuperadmin());
   afterEach(() => logout());
 
-  it('renders /mail full-bleed: <main> w-full/overflow-hidden, Outlet direct, shell h-screen, header shrink-0', () => {
+  it('renders /mail full-bleed: <main> w-full/overflow-hidden, Outlet direct, shell h-dvh, header shrink-0', () => {
     renderAt('/mail');
     const main = document.querySelector('main');
     expect(main).not.toBeNull();
@@ -204,7 +204,9 @@ describe('AppLayout — режимы shell по маршруту (08-design-syst
     expect(main?.classList.contains('py-8')).toBe(false);
     const content = screen.getByText('Контент почт');
     expect(content.parentElement?.tagName).toBe('MAIN');
-    expect(getShell()?.classList.contains('h-screen')).toBe(true);
+    expect(getShell()?.classList.contains('h-dvh')).toBe(true);
+    expect(document.documentElement.classList.contains('layout-full-bleed')).toBe(true);
+    expect(document.body.classList.contains('layout-full-bleed')).toBe(true);
     expect(document.querySelector('header')?.classList.contains('shrink-0')).toBe(true);
   });
 
@@ -254,12 +256,14 @@ describe('AppLayout — режимы shell по маршруту (08-design-syst
     expect(keysWrapper?.className).toBe(serversWrapperCls);
   });
 
-  it('/servers and /ai-keys: shell is min-h-screen (not h-screen/overflow-hidden), header is sticky top-0', () => {
+  it('/servers and /ai-keys: shell is min-h-screen (not h-dvh/overflow-hidden), header is sticky top-0', () => {
     const { unmount } = renderAt('/servers');
     const serversShell = getShell();
     expect(serversShell?.classList.contains('min-h-screen')).toBe(true);
-    expect(serversShell?.classList.contains('h-screen')).toBe(false);
+    expect(serversShell?.classList.contains('h-dvh')).toBe(false);
     expect(serversShell?.classList.contains('overflow-hidden')).toBe(false);
+    expect(document.documentElement.classList.contains('layout-full-bleed')).toBe(false);
+    expect(document.body.classList.contains('layout-full-bleed')).toBe(false);
     const serversHeader = document.querySelector('header');
     expect(serversHeader?.classList.contains('sticky')).toBe(true);
     expect(serversHeader?.classList.contains('top-0')).toBe(true);
@@ -268,14 +272,14 @@ describe('AppLayout — режимы shell по маршруту (08-design-syst
     renderAt('/ai-keys');
     const keysShell = getShell();
     expect(keysShell?.classList.contains('min-h-screen')).toBe(true);
-    expect(keysShell?.classList.contains('h-screen')).toBe(false);
+    expect(keysShell?.classList.contains('h-dvh')).toBe(false);
   });
 
   it('/dashboard (по прямому URL) идёт по не-full-bleed ветке как /servers (ADR-022)', () => {
     renderAt('/dashboard');
     const shell = getShell();
     expect(shell?.classList.contains('min-h-screen')).toBe(true);
-    expect(shell?.classList.contains('h-screen')).toBe(false);
+    expect(shell?.classList.contains('h-dvh')).toBe(false);
 
     const header = document.querySelector('header');
     expect(header?.classList.contains('sticky')).toBe(true);

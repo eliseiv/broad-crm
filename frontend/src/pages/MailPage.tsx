@@ -38,7 +38,8 @@ import {
   useUnmarkMailRead,
 } from '@/features/mail/hooks';
 
-const PANEL_HEIGHT = 'h-full';
+const SHELL_CLASS =
+  'flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border border-border-subtle bg-surface-1 shadow-card';
 
 function ListSkeleton() {
   return (
@@ -247,19 +248,12 @@ function MailLayout() {
   };
 
   const shell = (children: React.ReactNode) => (
-    <div
-      className={cn(
-        'overflow-hidden rounded-card border border-border-subtle bg-surface-1 shadow-card',
-        PANEL_HEIGHT,
-      )}
-    >
-      {children}
-    </div>
+    <div className={SHELL_CLASS}>{children}</div>
   );
 
   if (adminView === 'mailboxes') {
     return (
-      <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border-subtle px-3 py-2">
           <Button variant="ghost" size="sm" onClick={() => setAdminView(null)}>
             ← Сообщения
@@ -275,7 +269,7 @@ function MailLayout() {
 
   if (adminView === 'tags') {
     return (
-      <div className="flex h-full min-h-0 flex-col">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden">
         <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border-subtle px-3 py-2">
           <Button variant="ghost" size="sm" onClick={() => setAdminView(null)}>
             ← Сообщения
@@ -293,7 +287,7 @@ function MailLayout() {
 
   if (phase === 'loading') {
     return (
-      <div className="flex h-full min-h-0 flex-col p-3">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden p-3">
         {shell(<ListSkeleton />)}
       </div>
     );
@@ -301,7 +295,7 @@ function MailLayout() {
 
   if (phase === 'not_configured') {
     return (
-      <div className="flex h-full min-h-0 flex-col p-3">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden p-3">
         {shell(
           <CenteredState
             icon={<Mail className="h-10 w-10 text-text-tertiary" aria-hidden="true" />}
@@ -316,13 +310,13 @@ function MailLayout() {
   if (phase === 'error') {
     if (isAuthError) {
       return (
-        <div className="flex h-full min-h-0 flex-col p-3">
+        <div className="flex h-full min-h-0 flex-col overflow-hidden p-3">
           {shell(<ListSkeleton />)}
         </div>
       );
     }
     return (
-      <div className="flex h-full min-h-0 flex-col p-3">
+      <div className="flex h-full min-h-0 flex-col overflow-hidden p-3">
         {shell(
           <CenteredState
             icon={<AlertTriangle className="h-10 w-10 text-status-red" aria-hidden="true" />}
@@ -355,9 +349,9 @@ function MailLayout() {
         <MailNotificationsToggle />
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden p-3">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden p-3">
         {shell(
-          <div className="flex h-full min-h-0 overflow-hidden">
+          <div className="flex min-h-0 flex-1 overflow-hidden">
             {mobileSidebar && (
               <button
                 type="button"
