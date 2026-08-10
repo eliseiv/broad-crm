@@ -70,6 +70,7 @@ from app.infra.mail_oauth_state import encode_crm_state
 from app.logging import get_logger
 from app.models.mail_account import MailAccount
 from app.models.mail_message import MailMessage as MailMessageModel
+from app.models.mail_sent_message import MailSentMessage as MailSentMessageRow
 from app.models.mail_tag import MailTag as MailTagModel
 from app.models.mail_tag import MailTagRule as MailTagRuleModel
 from app.repositories.mail_account_repository import MailAccountRepository
@@ -484,7 +485,7 @@ class MailService:
                 continue
         return result
 
-    async def _serialize_sent(self, rows: list) -> list[MailSentMessage]:
+    async def _serialize_sent(self, rows: list[MailSentMessageRow]) -> list[MailSentMessage]:
         if not rows:
             return []
         account_ids = {row.mail_account_id for row in rows}

@@ -13,11 +13,12 @@ CRM — система-запись: лента/ящики/теги читают
 from __future__ import annotations
 
 import uuid
-from typing import Annotated
+from typing import Annotated, cast
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from app.api.deps import MailScopeDep, MailServiceDep, Principal, require
+from app.repositories.mail_message_repository import MailFolder
 from app.schemas.mail import (
     MailComposeRequest,
     MailListResponse,
@@ -87,7 +88,10 @@ async def list_messages(
     tag_id: TagId = None,
 ) -> MailListResponse:
     """Лента писем из `mail_messages` (компаундный keyset, ADR-044 §2/§7, ADR-071)."""
-    folder_val = folder if folder in ("inbox", "archived", "deleted") else "inbox"
+    folder_val = cast(
+        MailFolder,
+        folder if folder in ("inbox", "archived", "deleted") else "inbox",
+    )
     return await service.list_messages(
         scope=scope,
         user_id=p.user_id,
