@@ -1,91 +1,114 @@
-import { MailTags } from '@/components/MailTags';
+import { MailTagChip } from '@/components/MailTagChip';
 import { cn } from '@/lib/cn';
-import { formatRelativeTime } from '@/lib/format';
 import type { MailMessage } from '@/types/api';
 
-/** Полная дата для title/подсказки на элементе списка (08-design-system.md). */
-function absoluteDate(iso: string): string {
+function mailListDate(iso: string): string {
   const ts = Date.parse(iso);
   if (Number.isNaN(ts)) return '';
-  return new Date(ts).toLocaleString('ru-RU', { dateStyle: 'medium', timeStyle: 'short' });
+  const d = new Date(ts);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function snippet(text: string | null, max = 80): string {
+  if (!text) return '';
+  const trimmed = text.replace(/\s+/g, ' ').trim();
+  if (trimmed.length <= max) return trimmed;
+  return `${trimmed.slice(0, max)}…`;
 }
 
 interface MailListItemProps {
   message: MailMessage;
   isActive: boolean;
   onSelect: (id: number) => void;
+  selected?: boolean;
+  onToggleSelect?: (id: number) => void;
+  showCheckbox?: boolean;
 }
 
 /**
- * Строка ленты писем (левая панель master-detail, 08-design-system.md «Список писем»).
- * Тема усечена (`truncate`) — усечение задизайнено; в детали видна целиком. Значимые
- * значения (адрес, аккаунт) не обрезаются.
- *
- * **Непрочитанное письмо** (08-design-system.md «Непрочитанные письма», ADR-050 §2.8):
- * тема — полужирным + точка-индикатор `--accent` в начале строки. Не полагаемся только на
- * цвет/вес (a11y, NFR-8): у элемента есть sr-only-текст «Непрочитано». Новый примитив ДС не
- * вводится (`Badge dot` НЕ переиспользуется — его тон-палитра статусная).
- *
- * Индикатор рендерится по личному `is_unread` ЛЮБОМУ носителю `mail:view`, включая
- * супер-админа из `.env` (ADR-051 §3): гейта по `me.is_superadmin` больше нет.
+ * Компактная строка ленты писем (ADR-071, 08-design-system.md).
  */
-export function MailListItem({ message, isActive, onSelect }: MailListItemProps) {
-  const accountLabel = message.mail_account.display_name || message.mail_account.email;
+export function MailListItem({
+  message,
+  isActive,
+  onSelect,
+  selected = false,
+  onToggleSelect,
+  showCheckbox = false,
+}: MailListItemProps) {
   const subject = message.subject ?? '(без темы)';
   const unread = message.is_unread;
+  const firstTag = message.tags[0];
+  const preview = snippet(message.body_text);
+  const sender = message.from_name || message.from_addr;
 
   return (
-    <button
-      type="button"
-      onClick={() => onSelect(message.id)}
-      aria-current={isActive}
+    <div
       className={cn(
-        'flex w-full flex-col gap-1.5 border-l-2 px-4 py-3 text-left transition-colors',
-        'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
+        'flex items-stretch border-l-2 transition-colors',
         isActive ? 'border-l-accent bg-surface-2' : 'border-l-transparent hover:bg-surface-1',
       )}
     >
-      <div className="flex items-start justify-between gap-3">
-        {unread && (
-          <>
-            {/* Точка-индикатор непрочитанного (заливка `--accent`); текст — для скринридера. */}
-            <span aria-hidden="true" className="mt-1.5 h-2 w-2 shrink-0 rounded-full bg-accent" />
-            <span className="sr-only">Непрочитано</span>
-          </>
-        )}
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold text-text-primary">
-          {message.from_name || message.from_addr}
-        </span>
-        <time
-          dateTime={message.internal_date}
-          title={absoluteDate(message.internal_date)}
-          className="shrink-0 text-[12px] text-text-tertiary"
-        >
-          {formatRelativeTime(message.internal_date)}
-        </time>
-      </div>
-
-      {message.from_name && (
-        <span className="truncate font-mono text-[12px] text-text-secondary">
-          {message.from_addr}
-        </span>
+      {showCheckbox && onToggleSelect && (
+        <div className="flex shrink-0 items-center px-2">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggleSelect(message.id)}
+            aria-label={`Выбрать письмо ${message.id}`}
+            className="h-4 w-4 rounded border-border-subtle accent-accent"
+          />
+        </div>
       )}
-
-      <p
+      <button
+        type="button"
+        onClick={() => onSelect(message.id)}
+        aria-current={isActive}
         className={cn(
-          'truncate text-[13px]',
-          message.subject === null ? 'text-text-secondary' : 'text-text-primary',
-          unread && 'font-semibold',
+          'flex min-w-0 flex-1 flex-col gap-1 px-3 py-2.5 text-left',
+          'focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent',
         )}
       >
-        {subject}
-      </p>
-
-      <MailTags tags={message.tags} max={3} />
-
-      <p className="truncate text-[12px] text-text-secondary">
-        Получено на: <span className="text-text-primary">{accountLabel}</span>
-      </p>
-    </button>
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 font-mono text-[11px] text-text-tertiary">#{message.id}</span>
+          {unread && (
+            <>
+              <span aria-hidden="true" className="h-2 w-2 shrink-0 rounded-full bg-accent" />
+              <span className="sr-only">Непрочитано</span>
+            </>
+          )}
+          <span
+            className={cn(
+              'min-w-0 truncate text-sm text-text-primary',
+              unread && 'font-semibold',
+            )}
+          >
+            {sender}
+          </span>
+          {firstTag && (
+            <MailTagChip name={firstTag.name} color={firstTag.color} className="shrink-0" />
+          )}
+          <time
+            dateTime={message.internal_date}
+            className="ml-auto shrink-0 text-[12px] text-text-tertiary"
+          >
+            {mailListDate(message.internal_date)}
+          </time>
+        </div>
+        <p
+          className={cn(
+            'truncate text-[13px]',
+            message.subject === null ? 'text-text-secondary' : 'text-text-primary',
+            unread && 'font-semibold',
+          )}
+        >
+          {subject}
+          {preview && (
+            <span className="font-normal text-text-secondary"> — {preview}</span>
+          )}
+        </p>
+      </button>
+    </div>
   );
 }

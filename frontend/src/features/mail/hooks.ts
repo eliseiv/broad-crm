@@ -11,13 +11,21 @@ import {
   deleteTag,
   deleteTagRule,
   getMailSettings,
+  batchArchiveMail,
+  batchDeleteMail,
+  batchMarkMailRead,
+  batchRestoreMail,
+  batchUnarchiveMail,
+  getMailUnreadCount,
   listMail,
+  listMailSent,
   listMailboxes,
   listTags,
   listTeamMailboxes,
   mailboxOAuthAuthorize,
   markMailRead,
   MAIL_PAGE_LIMIT,
+  composeMail,
   replyMail,
   syncMailbox,
   testMailbox,
@@ -38,8 +46,10 @@ import type {
   MailMailboxUpdateRequest,
   MailMessage,
   MailOauthAuthorizeResponse,
+  MailComposeRequest,
   MailReplyRequest,
   MailReplyResponse,
+  MailSentMessage,
   MailTagApplyResponse,
   MailTagCreateRequest,
   MailTagFull,
@@ -50,6 +60,8 @@ import type {
 } from '@/types/api';
 
 export const mailFeedKey = ['mail', 'feed'] as const;
+export const mailSentFeedKey = ['mail', 'sent'] as const;
+export const mailUnreadCountKey = ['mail', 'unread-count'] as const;
 export const mailMailboxesKey = ['mail', 'mailboxes'] as const;
 export const mailTagsKey = ['mail', 'tags'] as const;
 export const mailSettingsKey = ['mail', 'settings'] as const;
@@ -74,6 +86,12 @@ export interface MailFeedFilter {
    * фильтрация непрочитанных ЗАПРЕЩЕНА (сломала бы курсорную догрузку).
    */
   unread?: boolean;
+  /** Папка ленты (ADR-071): inbox | archived | deleted */
+  folder?: 'inbox' | 'archived' | 'deleted';
+  /** Серверный фильтр «с тегами». */
+  hasTags?: boolean;
+  /** Серверный фильтр по тегу. */
+  tagId?: string;
 }
 
 /**
@@ -121,10 +139,9 @@ function flattenPages(pages: { messages: MailMessage[] }[] | undefined): MailMes
  * `useInfiniteQuery`. Первая страница — без `before` → новейшие 20; догрузка старых —
  * `before=<next_cursor>`, пока `next_cursor` не `null`.
  */
-export function useMailFeed(filter: MailFeedFilter = {}): MailFeedResult {
-  const { mailAccountId, teamId, noTeam, unread } = filter;
+export function useMailFeed(filter: MailFeedFilter = {}, enabled = true): MailFeedResult {
+  const { mailAccountId, teamId, noTeam, unread, folder, hasTags, tagId } = filter;
   const query = useInfiniteQuery({
-    // Фильтр входит в queryKey → его смена запускает новый запрос ленты (сброс пагинации).
     queryKey: [
       ...mailFeedKey,
       {
@@ -132,24 +149,39 @@ export function useMailFeed(filter: MailFeedFilter = {}): MailFeedResult {
         team_id: teamId ?? null,
         no_team: noTeam ?? false,
         unread: unread ?? false,
+        folder: folder ?? 'inbox',
+        has_tags: hasTags ?? false,
+        tag_id: tagId ?? null,
       },
     ] as const,
     queryFn: ({ pageParam, signal }) =>
       listMail(
-        { before: pageParam, limit: MAIL_PAGE_LIMIT, mailAccountId, teamId, noTeam, unread },
+        {
+          before: pageParam,
+          limit: MAIL_PAGE_LIMIT,
+          mailAccountId,
+          teamId,
+          noTeam,
+          unread,
+          folder,
+          hasTags,
+          tagId,
+        },
         signal,
       ),
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
-    // Один заход: 502/503/401 отдаём сразу в UI, без ретрай-задержек.
     retry: false,
     refetchOnWindowFocus: false,
+    enabled,
   });
 
   const messages = useMemo<MailMessage[]>(() => flattenPages(query.data?.pages), [query.data]);
 
   let phase: MailPhase = 'ready';
-  if (query.status === 'pending') {
+  if (!enabled) {
+    phase = 'ready';
+  } else if (query.status === 'pending') {
     phase = 'loading';
   } else if (query.status === 'error') {
     phase =
@@ -170,6 +202,162 @@ export function useMailFeed(filter: MailFeedFilter = {}): MailFeedResult {
       void query.refetch();
     },
   };
+}
+
+export interface MailSentFeedResult {
+  messages: MailSentMessage[];
+  phase: MailPhase;
+  error: unknown;
+  hasMore: boolean;
+  isFetchingMore: boolean;
+  isReloading: boolean;
+  loadMore: () => void;
+  reload: () => void;
+}
+
+function flattenSentPages(
+  pages: { messages: MailSentMessage[] }[] | undefined,
+): MailSentMessage[] {
+  const byId = new Map<string, MailSentMessage>();
+  for (const page of pages ?? []) {
+    for (const m of page.messages) {
+      if (!byId.has(m.id)) byId.set(m.id, m);
+    }
+  }
+  return [...byId.values()];
+}
+
+export function useMailSentFeed(
+  filter: Pick<MailFeedFilter, 'mailAccountId' | 'teamId' | 'noTeam'> = {},
+  enabled = true,
+): MailSentFeedResult {
+  const { mailAccountId, teamId, noTeam } = filter;
+  const query = useInfiniteQuery({
+    queryKey: [
+      ...mailSentFeedKey,
+      {
+        mail_account_id: mailAccountId ?? null,
+        team_id: teamId ?? null,
+        no_team: noTeam ?? false,
+      },
+    ] as const,
+    queryFn: ({ pageParam, signal }) =>
+      listMailSent(
+        { before: pageParam, limit: MAIL_PAGE_LIMIT, mailAccountId, teamId, noTeam },
+        signal,
+      ),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.next_cursor ?? undefined,
+    retry: false,
+    refetchOnWindowFocus: false,
+    enabled,
+  });
+
+  const messages = useMemo(() => flattenSentPages(query.data?.pages), [query.data]);
+
+  let phase: MailPhase = 'ready';
+  if (!enabled) {
+    phase = 'ready';
+  } else if (query.status === 'pending') {
+    phase = 'loading';
+  } else if (query.status === 'error') {
+    phase =
+      query.error instanceof ApiError && query.error.status === 503 ? 'not_configured' : 'error';
+  }
+
+  return {
+    messages,
+    phase,
+    error: query.error,
+    hasMore: query.hasNextPage,
+    isFetchingMore: query.isFetchingNextPage,
+    isReloading: query.isRefetching,
+    loadMore: () => {
+      if (query.hasNextPage && !query.isFetchingNextPage) void query.fetchNextPage();
+    },
+    reload: () => {
+      void query.refetch();
+    },
+  };
+}
+
+export function useMailUnreadCount(
+  filter: Pick<MailFeedFilter, 'mailAccountId' | 'teamId' | 'noTeam'> = {},
+) {
+  const { mailAccountId, teamId, noTeam } = filter;
+  return useQuery({
+    queryKey: [
+      ...mailUnreadCountKey,
+      {
+        mail_account_id: mailAccountId ?? null,
+        team_id: teamId ?? null,
+        no_team: noTeam ?? false,
+      },
+    ] as const,
+    queryFn: ({ signal }) => getMailUnreadCount({ mailAccountId, teamId, noTeam }, signal),
+    retry: false,
+    refetchOnWindowFocus: false,
+  });
+}
+
+function invalidateMailFeeds(queryClient: ReturnType<typeof useQueryClient>): void {
+  void queryClient.invalidateQueries({ queryKey: mailFeedKey });
+  void queryClient.invalidateQueries({ queryKey: mailUnreadCountKey });
+}
+
+export function useBatchMarkMailRead() {
+  const queryClient = useQueryClient();
+  return useMutation<void, unknown, number[]>({
+    mutationFn: (messageIds) => batchMarkMailRead(messageIds),
+    onSuccess: () => invalidateMailFeeds(queryClient),
+    onError: (err) => {
+      toast.error(err instanceof ApiError ? err.message : 'Не удалось отметить письма прочитанными');
+    },
+  });
+}
+
+export function useBatchArchiveMail() {
+  const queryClient = useQueryClient();
+  return useMutation<void, unknown, number[]>({
+    mutationFn: (messageIds) => batchArchiveMail(messageIds),
+    onSuccess: () => invalidateMailFeeds(queryClient),
+    onError: (err) => {
+      toast.error(err instanceof ApiError ? err.message : 'Не удалось архивировать письма');
+    },
+  });
+}
+
+export function useBatchDeleteMail() {
+  const queryClient = useQueryClient();
+  return useMutation<void, unknown, number[]>({
+    mutationFn: (messageIds) => batchDeleteMail(messageIds),
+    onSuccess: () => invalidateMailFeeds(queryClient),
+    onError: (err) => {
+      toast.error(err instanceof ApiError ? err.message : 'Не удалось удалить письма');
+    },
+  });
+}
+
+export function useBatchUnarchiveMail() {
+  const queryClient = useQueryClient();
+  return useMutation<void, unknown, number[]>({
+    mutationFn: (messageIds) => batchUnarchiveMail(messageIds),
+    onSuccess: () => invalidateMailFeeds(queryClient),
+    onError: (err) => {
+      toast.error(err instanceof ApiError ? err.message : 'Не удалось вернуть письма из архива');
+    },
+  });
+}
+
+export function useBatchRestoreMail() {
+  const queryClient = useQueryClient();
+  return useMutation<void, unknown, number[]>({
+    mutationFn: (messageIds) => batchRestoreMail(messageIds),
+    onSuccess: () => invalidateMailFeeds(queryClient),
+    onError: (err) => {
+      toast.error(err instanceof ApiError ? err.message : 'Не удалось восстановить письма');
+    },
+  });
 }
 
 // --- Личная прочитанность писем (ADR-050 §2; гейт `mail:view`) ---
@@ -248,6 +436,23 @@ export function useUnmarkMailRead() {
 export function useReplyMail(messageId: number) {
   return useMutation<MailReplyResponse, unknown, MailReplyRequest>({
     mutationFn: (payload) => replyMail(messageId, payload),
+  });
+}
+
+/**
+ * Отправка нового письма с ящика (compose). После успеха инвалидирует ленту «Отправленные».
+ */
+export function useComposeMail() {
+  const queryClient = useQueryClient();
+  return useMutation<
+    MailReplyResponse,
+    unknown,
+    { mailboxId: number; payload: MailComposeRequest }
+  >({
+    mutationFn: ({ mailboxId, payload }) => composeMail(mailboxId, payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: mailSentFeedKey });
+    },
   });
 }
 

@@ -1,8 +1,9 @@
-"""Модель таблицы `mail_message_reads` — ЛИЧНАЯ прочитанность писем (ADR-050 §2.1).
+"""Модель таблицы `mail_message_reads` — личное состояние письма (ADR-050, ADR-071).
 
-Таблица связи «пользователь × письмо»: **существование строки = «прочитано» ЭТИМ
-пользователем**, отсутствие = «не прочитано» (отдельного булева поля нет). Прочитанность
-личная — один и тот же `id` письма у разных пользователей даёт разные `is_unread`.
+Таблица «пользователь × письмо»: прочитанность (`read_at`), архив (`archived_at`),
+корзина (`deleted_at`). **Прочитано** ⇔ `read_at IS NOT NULL`. **Непрочитано** ⇔ нет строки
+ИЛИ `read_at IS NULL`. Прочитанность личная — один `id` письма у разных пользователей даёт
+разные `is_unread`.
 
 PK `(user_id, message_id)` обслуживает оба горячих пути ленты (батч-лукап `is_unread` и
 анти-джойн фильтра `unread=true`). `ix_mail_message_reads_message_id` обязателен: без него
@@ -16,7 +17,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
-from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, PrimaryKeyConstraint, func
+from sqlalchemy import BigInteger, DateTime, ForeignKey, Index, PrimaryKeyConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -39,9 +40,9 @@ class MailMessageRead(Base):
         ForeignKey("mail_messages.id", ondelete="CASCADE", name="fk_mail_message_reads_message_id"),
         nullable=False,
     )
-    read_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=func.now()
-    )
+    read_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 # Обязателен (ADR-050 §2.1): PK ведёт с `user_id`, поиск по `message_id` его не использует,

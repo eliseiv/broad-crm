@@ -1,4 +1,4 @@
-import { render, screen, act, within } from '@testing-library/react';
+import { render, screen, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MailPage } from '@/pages/MailPage';
@@ -23,7 +23,7 @@ import type { MailMessage } from '@/types/api';
 
 const feed = vi.hoisted(() => ({ value: null as unknown }));
 // Spy для проверки, что лента НЕ запрашивается за page-level view-guard (ADR-021 §6).
-const useMailFeedSpy = vi.hoisted(() => vi.fn());
+const mailFeedSpy = vi.hoisted(() => vi.fn());
 // Справочники фильтров «Почта» (`ui/Combobox`, ADR-052 §2) / «Команда» (`ui/Select`) —
 // управляемы из тестов. Два ящика: у второго заполнены `number`/`app_name` — на нём
 // проверяется фильтрация ВЫПАДАЮЩЕГО СПИСКА вводом (лента при этом не трогается).
@@ -70,14 +70,31 @@ const teamsSpy = vi.hoisted(() => vi.fn(() => ({ data: { items: [] } })));
 // `DELETE …/read` — по кнопке «Отметить непрочитанным».
 const markReadSpy = vi.hoisted(() => vi.fn());
 const unmarkReadSpy = vi.hoisted(() => vi.fn());
+const batchReadSpy = vi.hoisted(() => vi.fn());
+const sentFeed = vi.hoisted(() => ({ value: null as unknown }));
+const mailSentFeedSpy = vi.hoisted(() => vi.fn());
 
 vi.mock('@/features/mail/hooks', () => ({
-  useMailFeed: (args: unknown) => {
-    useMailFeedSpy(args);
+  useMailFeed: (args: unknown, enabled?: boolean) => {
+    if (enabled !== false) mailFeedSpy(args);
     return feed.value;
   },
+  useMailSentFeed: (args: unknown, enabled?: boolean) => {
+    if (enabled !== false) mailSentFeedSpy(args);
+    return sentFeed.value ?? feed.value;
+  },
+  useMailTags: () => ({
+    data: { tags: [{ id: 'tag-1', name: 'важное', color: '#EF4444', rules: [] }] },
+    isLoading: false,
+  }),
+  useMailUnreadCount: () => ({ data: { count: 5 } }),
+  useBatchMarkMailRead: () => ({ mutate: batchReadSpy, isPending: false }),
+  useBatchArchiveMail: () => ({ mutate: vi.fn(), isPending: false }),
+  useBatchDeleteMail: () => ({ mutate: vi.fn(), isPending: false }),
+  useBatchRestoreMail: () => ({ mutate: vi.fn(), isPending: false }),
   // MailDetail → MailReplyForm использует useReplyMail — мокаем как no-op мутацию.
   useReplyMail: () => ({ mutate: vi.fn(), isPending: false }),
+  useComposeMail: () => ({ mutate: vi.fn(), isPending: false }),
   // Дропдаун «Почта» тянет справочник ящиков.
   useMailMailboxes: () => mailboxes.value,
   // Шапка вкладок рендерит MailNotificationsToggle → useMailSettings/useUpdateMailSettings.
@@ -147,12 +164,6 @@ function makeMessage(id: number, tags: MailMessage['tags'] = [], isUnread = fals
     tags,
   };
 }
-
-const tag: MailMessage['tags'][number] = {
-  id: '5a1f0c2e-0000-4000-8000-000000000005',
-  name: 'важное',
-  color: '#EF4444',
-};
 
 function baseFeed(overrides: Partial<MailFeedResult> = {}): MailFeedResult {
   return {
@@ -262,13 +273,11 @@ describe('MailPage master-detail', () => {
   });
 });
 
-describe('MailPage "С тегами" filter', () => {
+describe('MailPage "С тегами" navigation (ADR-071)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     ioCallback = null;
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
-    // Контент почты доступен только с `mail:view` (page-level view-guard, ADR-021 §6).
-    // Существующие кейсы контента прогоняем как супер-админ.
     loginSuperadmin();
   });
 
@@ -277,300 +286,30 @@ describe('MailPage "С тегами" filter', () => {
     logout();
   });
 
-  it('toggles aria-pressed on the filter button', async () => {
+  it('клик «С тегами» в сайдбаре шлёт серверный has_tags=true', async () => {
     const user = userEvent.setup();
     feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
     render(<MailPage />);
 
-    const toggle = screen.getByRole('button', { name: /С тегами/ });
-    expect(toggle).toHaveAttribute('aria-pressed', 'false');
-
-    await user.click(toggle);
-    expect(toggle).toHaveAttribute('aria-pressed', 'true');
-  });
-
-  it('client-side filters the list to messages with non-empty tags', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2, [tag]), makeMessage(1)] });
-    render(<MailPage />);
-
-    // До фильтра оба письма в списке.
-    expect(screen.getByText('Письмо 1')).toBeInTheDocument();
-
     await user.click(screen.getByRole('button', { name: /С тегами/ }));
 
-    // Письмо без тегов (id=1) скрыто; тегированное (id=2) остаётся видимым в детали.
-    expect(screen.queryByText('Письмо 1')).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
+    expect(mailFeedSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ hasTags: true, folder: 'inbox' }),
+    );
   });
 
-  it('shows the empty-filter notice when no loaded message has tags and nothing more to load', async () => {
+  it('bulk «Прочитано» вызывает batch read для выбранных писем', async () => {
     const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)], hasMore: false });
+    feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], true)] });
     render(<MailPage />);
 
-    await user.click(screen.getByRole('button', { name: /С тегами/ }));
+    await user.click(screen.getByRole('checkbox', { name: /Выбрать письмо 2/ }));
+    await user.click(screen.getByRole('button', { name: /Прочитано/ }));
 
-    expect(screen.getByText('Нет писем с тегами среди загруженных')).toBeInTheDocument();
-  });
-
-  it('re-selects the first VISIBLE message when the filter hides the current selection (ADR-044 §7)', async () => {
-    const user = userEvent.setup();
-    // id=2 — самое свежее (авто-выбор), без тегов; id=1 — тегированное.
-    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1, [tag])] });
-    render(<MailPage />);
-
-    // Авто-выбор — самое свежее письмо (id=2).
-    expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: /С тегами/ }));
-
-    // Фильтр скрыл id=2 из видимого списка → в detail НЕ должно остаться письмо без тегов,
-    // отсутствующее в ленте: авто-выбор переезжает на первый ВИДИМЫЙ (id=1).
-    expect(screen.queryByRole('heading', { name: 'Письмо 2' })).not.toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Письмо 1' })).toBeInTheDocument();
-  });
-
-  it('keeps loading older messages while the filter is active and hasMore is true', async () => {
-    const user = userEvent.setup();
-    const loadMore = vi.fn();
-    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)], hasMore: true, loadMore });
-    render(<MailPage />);
-
-    await user.click(screen.getByRole('button', { name: /С тегами/ }));
-
-    // Финальная заглушка НЕ показывается, пока есть ещё старые письма.
-    expect(screen.queryByText('Нет писем с тегами среди загруженных')).not.toBeInTheDocument();
-    // Sentinel продолжает догрузку старых батчей даже при активном фильтре.
-    triggerIntersection();
-    expect(loadMore).toHaveBeenCalled();
+    expect(batchReadSpy).toHaveBeenCalledWith([2], expect.anything());
   });
 });
 
-// Серверные фильтры ленты: «Почта» — `ui/Combobox` `mode='select'` (ADR-052 §2; норма
-// «`ui/Select`» из ADR-044 §7 / 08 §Дропдауны ОТМЕНЕНА), «Команда» — по-прежнему `ui/Select`.
-// Семантика фильтра НЕ менялась: выбор → серверный `mail_account_id` в запросе ленты;
-// фильтры комбинируемы (AND, ADR-038): выбор одного не сбрасывает другой. ВВОД текста ленту
-// НЕ фильтрует — только выпадающий список (§2).
-describe('MailPage server filters («Почта» combobox + «Команда» select)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    ioCallback = null;
-    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
-    // Контент почты доступен только с `mail:view` (page-level view-guard, ADR-021 §6).
-    // Существующие кейсы контента прогоняем как супер-админ.
-    loginSuperadmin();
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    logout();
-  });
-
-  function getMailboxCombobox(): HTMLInputElement {
-    return screen.getByRole('combobox', { name: 'Почта' }) as HTMLInputElement;
-  }
-  function getTeamSelect(): HTMLSelectElement {
-    return screen.getByLabelText('Команда') as HTMLSelectElement;
-  }
-  function mailboxOptionLabels(): string[] {
-    return within(screen.getByRole('listbox'))
-      .getAllByRole('option')
-      .map((o) => o.textContent ?? '');
-  }
-  /** Выбор почты: открыть панель → клик по опции (клик по опции ≡ Enter на ней). */
-  async function pickMailbox(user: ReturnType<typeof userEvent.setup>, label: string) {
-    await user.click(getMailboxCombobox());
-    await user.click(within(screen.getByRole('listbox')).getByRole('option', { name: label }));
-  }
-
-  it('при монтировании «нет фильтра» = ОДНО состояние: текст «Все почты», `X` не отрисован (§1.1а)', () => {
-    feed.value = baseFeed({ messages: [makeMessage(2)] });
-    render(<MailPage />);
-
-    // Плейсхолдера на этой вкладке нет — поле никогда не пусто (в нём лейбл опции сброса).
-    expect(getMailboxCombobox().value).toBe('Все почты');
-    expect(screen.queryByRole('button', { name: 'Очистить' })).not.toBeInTheDocument();
-    expect(useMailFeedSpy).toHaveBeenLastCalledWith(
-      expect.objectContaining({ mailAccountId: undefined }),
-    );
-  });
-
-  it('открытие показывает ВСЕ опции: `pinned` «Все почты» первой + ящики справочника', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2)] });
-    render(<MailPage />);
-
-    await user.click(getMailboxCombobox());
-
-    expect(mailboxOptionLabels()).toEqual([
-      'Все почты',
-      'Входящие inbox@postapp.store',
-      '7011 Nova Ledger beta@postapp.store',
-    ]);
-    // Фильтр «Команда» остался нативным `ui/Select` со своим сбросом первой опцией.
-    // Порядок опций нормативен (ADR-055 §6.2): «Все команды» → команды `me.mail_teams` →
-    // «Без команды» (последней; у admin-уровня `includes_unassigned = true`).
-    expect(Array.from(getTeamSelect().options).map((o) => o.textContent)).toEqual([
-      'Все команды',
-      'Продажи',
-      'Без команды',
-    ]);
-  });
-
-  it('ВВОД фильтрует ТОЛЬКО выпадающий список — серверный запрос ленты не меняется (§2)', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2)] });
-    render(<MailPage />);
-
-    const before = useMailFeedSpy.mock.calls.length;
-    // Поле не пусто (в нём лейбл опции сброса) — пользователь стирает его и печатает запрос.
-    await user.clear(getMailboxCombobox());
-    await user.type(getMailboxCombobox(), 'nova'); // ищет по `app_name` (единый предикат §3.3)
-
-    // Список сузился (плюс всегда видимая `pinned`-опция сброса).
-    expect(mailboxOptionLabels()).toEqual(['Все почты', '7011 Nova Ledger beta@postapp.store']);
-    // Лента НЕ перезапрашивалась с новым фильтром: `mail_account_id` не менялся.
-    expect(useMailFeedSpy.mock.calls.length).toBeGreaterThanOrEqual(before);
-    expect(useMailFeedSpy).toHaveBeenLastCalledWith(
-      expect.objectContaining({ mailAccountId: undefined }),
-    );
-  });
-
-  it('ВЫБОР опции меняет серверный `mail_account_id` (семантика фильтра не изменилась)', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2)] });
-    render(<MailPage />);
-
-    await pickMailbox(user, 'Входящие inbox@postapp.store');
-
-    expect(useMailFeedSpy).toHaveBeenLastCalledWith(expect.objectContaining({ mailAccountId: 7 }));
-    expect(getMailboxCombobox().value).toBe('Входящие inbox@postapp.store');
-    // Выбрана не-`pinned` опция ⇒ есть что сбрасывать ⇒ `X` отрисован (§1.1а).
-    expect(screen.getByRole('button', { name: 'Очистить' })).toBeInTheDocument();
-  });
-
-  it('нет совпадений: в панели видны И «Все почты», И строка «Ничего не найдено» (§2)', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2)] });
-    render(<MailPage />);
-
-    await user.clear(getMailboxCombobox());
-    await user.type(getMailboxCombobox(), 'zzz-nomatch');
-
-    // `pinned`-опция сброса в предикате не участвует ⇒ видна ВМЕСТЕ со строкой «Ничего не найдено».
-    expect(mailboxOptionLabels()).toEqual(['Все почты']);
-    expect(screen.getByText('Ничего не найдено')).toBeInTheDocument();
-  });
-
-  it('`dirty` сбрасывается на закрытии: напечатал → закрыл без выбора → текст «Все почты», `X` нет (§1.1)', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2)] });
-    render(<MailPage />);
-
-    await user.clear(getMailboxCombobox());
-    await user.type(getMailboxCombobox(), 'nova');
-    // Поле `dirty` ⇒ есть что сбрасывать ⇒ `X` отрисован (пока панель открыта).
-    expect(screen.getByRole('button', { name: 'Очистить' })).toBeInTheDocument();
-
-    await user.keyboard('{Escape}'); // закрытие панели без выбора
-
-    expect(getMailboxCombobox().value).toBe('Все почты');
-    expect(screen.queryByRole('button', { name: 'Очистить' })).not.toBeInTheDocument();
-    expect(useMailFeedSpy).toHaveBeenLastCalledWith(
-      expect.objectContaining({ mailAccountId: undefined }),
-    );
-  });
-
-  it('shows the filter toolbar even when the server-filtered feed is empty', () => {
-    // Пустой результат серверного фильтра — тулбар остаётся, чтобы фильтр можно сбросить.
-    feed.value = baseFeed({ phase: 'ready', messages: [] });
-    render(<MailPage />);
-
-    expect(screen.getAllByText('Писем пока нет').length).toBeGreaterThan(0);
-    expect(screen.getByRole('button', { name: /С тегами/ })).toBeInTheDocument();
-    expect(getMailboxCombobox()).toBeInTheDocument();
-    expect(getTeamSelect()).toBeInTheDocument();
-  });
-
-  it('selecting a mailbox after a team keeps both (AND-combinable, ADR-038)', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2)] });
-    render(<MailPage />);
-
-    // Сначала выбираем команду.
-    await user.selectOptions(getTeamSelect(), 'team-3');
-    expect(getTeamSelect().value).toBe('team-3');
-
-    // Затем выбираем ящик — команда НЕ сбрасывается (фильтры комбинируемы, AND).
-    await pickMailbox(user, 'Входящие inbox@postapp.store');
-    expect(getTeamSelect().value).toBe('team-3');
-    expect(useMailFeedSpy).toHaveBeenLastCalledWith(
-      expect.objectContaining({ mailAccountId: 7, teamId: 'team-3' }),
-    );
-  });
-
-  it('selecting a team after a mailbox keeps both (AND-combinable, ADR-038)', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2)] });
-    render(<MailPage />);
-
-    await pickMailbox(user, 'Входящие inbox@postapp.store');
-    expect(getMailboxCombobox().value).toBe('Входящие inbox@postapp.store');
-
-    // Команда добавляется к уже выбранному ящику — ящик остаётся (и в поле, и в запросе).
-    await user.selectOptions(getTeamSelect(), 'team-3');
-    expect(getMailboxCombobox().value).toBe('Входящие inbox@postapp.store');
-    expect(useMailFeedSpy).toHaveBeenLastCalledWith(
-      expect.objectContaining({ mailAccountId: 7, teamId: 'team-3' }),
-    );
-  });
-
-  it('выбор «Все почты» сбрасывает серверный фильтр; фильтр «Команда» при этом НЕ сбрасывается', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2)] });
-    render(<MailPage />);
-
-    await user.selectOptions(getTeamSelect(), 'team-3');
-    await pickMailbox(user, 'Входящие inbox@postapp.store');
-    expect(useMailFeedSpy).toHaveBeenLastCalledWith(expect.objectContaining({ mailAccountId: 7 }));
-
-    await pickMailbox(user, 'Все почты');
-
-    expect(getMailboxCombobox().value).toBe('Все почты');
-    expect(useMailFeedSpy).toHaveBeenLastCalledWith(
-      expect.objectContaining({ mailAccountId: undefined, teamId: 'team-3' }),
-    );
-    expect(getTeamSelect().value).toBe('team-3');
-  });
-
-  it('`X` / Escape ≡ выбор «Все почты»: идентичное состояние поля и ленты (§1.1а)', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2)] });
-    const { unmount } = render(<MailPage />);
-
-    // Ветка 1 — очистка кнопкой `X`.
-    await pickMailbox(user, 'Входящие inbox@postapp.store');
-    await user.click(screen.getByRole('button', { name: 'Очистить' }));
-    const afterClear = {
-      text: getMailboxCombobox().value,
-      feedArgs: useMailFeedSpy.mock.lastCall?.[0],
-      hasClear: screen.queryByRole('button', { name: 'Очистить' }) !== null,
-    };
-    unmount();
-
-    // Ветка 2 — явный выбор опции сброса.
-    render(<MailPage />);
-    await pickMailbox(user, 'Входящие inbox@postapp.store');
-    await pickMailbox(user, 'Все почты');
-
-    expect(afterClear.text).toBe('Все почты');
-    expect(afterClear.hasClear).toBe(false);
-    expect(getMailboxCombobox().value).toBe(afterClear.text);
-    expect(useMailFeedSpy.mock.lastCall?.[0]).toEqual(afterClear.feedArgs);
-    expect(screen.queryByRole('button', { name: 'Очистить' })).not.toBeInTheDocument();
-  });
-});
 
 // Скрытие полосы прокрутки (08-design-system.md «Скрытие полосы прокрутки», раздел «Где
 // применяется» → MAIL — список писем). jsdom НЕ вычисляет computed scrollbar-width — проверяем
@@ -593,7 +332,7 @@ describe('MailPage scrollbar hiding (scrollbar-none on the list scroll container
   // Скролл-контейнер списка — единственный div с overflow-y-auto (у <pre> тела — overflow-auto,
   // у карточки-обёртки — overflow-hidden). Так он однозначно отделяется от прочих scrollbar-none.
   function getListScrollContainer(): HTMLElement | null {
-    return document.querySelector<HTMLElement>('.overflow-y-auto');
+    return document.querySelector<HTMLElement>('.scrollbar-none.overflow-y-auto');
   }
 
   it('applies scrollbar-none to the list scroll container', () => {
@@ -642,10 +381,9 @@ describe('MailPage view-guard (mail:view)', () => {
     expect(screen.getByText(INSUFFICIENT_PERMISSIONS_TITLE)).toBeInTheDocument();
     expect(screen.getByText(NO_SECTION_ACCESS_HINT)).toBeInTheDocument();
     // Лента не запрашивается — useMailFeed не вызывается за guard'ом.
-    expect(useMailFeedSpy).not.toHaveBeenCalled();
+    expect(mailFeedSpy).not.toHaveBeenCalled();
     // Тулбар фильтров и master-detail скрыты (контента нет).
     expect(screen.queryByRole('button', { name: /С тегами/ })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Почта')).not.toBeInTheDocument();
   });
 
   it('renders the mail content for a user holding mail:view', () => {
@@ -653,14 +391,11 @@ describe('MailPage view-guard (mail:view)', () => {
     feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
     render(<MailPage />);
 
-    // Guard пропускает — лента запрашивается, контент виден.
-    expect(useMailFeedSpy).toHaveBeenCalled();
+    expect(mailFeedSpy).toHaveBeenCalled();
     expect(screen.getByRole('heading', { name: 'Письмо 2' })).toBeInTheDocument();
     expect(screen.queryByText(INSUFFICIENT_PERMISSIONS_TITLE)).not.toBeInTheDocument();
-    // Дропдаун «Почта» доступен под mail:view; «Команда» — только admin-уровню
-    // (`sees_all_mail_teams`, ADR-038 §3): у роли mail:view он скрыт (анти-энумерация).
-    expect(screen.getByLabelText('Почта')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Команда')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Входящие/ })).toBeInTheDocument();
+    expect(screen.queryByText('Команды')).not.toBeInTheDocument();
   });
 });
 
@@ -775,106 +510,6 @@ describe('MailPage — откат «Отметить непрочитанным�
   });
 });
 
-describe('MailPage — серверный фильтр «Непрочитанные» (ADR-050 §2.8)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    ioCallback = null;
-    vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
-  });
-
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    logout();
-  });
-
-  it('тумблер уходит в ЗАПРОС ленты (unread=true) — фильтрация серверная, не клиентская', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2, [], true)] });
-    render(<MailPage />);
-
-    const toggle = screen.getByRole('button', { name: /Непрочитанные/ });
-    expect(toggle).toHaveAttribute('aria-pressed', 'false');
-    expect(useMailFeedSpy).toHaveBeenLastCalledWith(expect.objectContaining({ unread: false }));
-
-    await user.click(toggle);
-
-    expect(screen.getByRole('button', { name: /Непрочитанные/ })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    expect(useMailFeedSpy).toHaveBeenLastCalledWith(expect.objectContaining({ unread: true }));
-  });
-
-  it('AND-комбинируется с дропдаунами «Почта»/«Команда» (ни один не сбрасывает другой)', async () => {
-    const user = userEvent.setup();
-    loginAs({
-      isSuperadmin: false,
-      role: 'Менеджер',
-      seesAllMailTeams: true,
-      // Опции фильтра — из `me.mail_teams` (ADR-055 §6.3), НЕ из `GET /api/teams`.
-      mailTeams: MAIL_TEAMS,
-      permissions: { mail: ['view'], teams: ['view'] },
-    });
-    feed.value = baseFeed({ messages: [makeMessage(2, [], true)] });
-    render(<MailPage />);
-
-    await user.click(screen.getByRole('button', { name: /Непрочитанные/ }));
-    // «Почта» — `ui/Combobox` (ADR-052 §2): выбор = открыть панель + клик по опции.
-    const mailbox = screen.getByRole('combobox', { name: 'Почта' });
-    await user.click(mailbox);
-    await user.click(
-      within(screen.getByRole('listbox')).getByRole('option', {
-        name: 'Входящие inbox@postapp.store',
-      }),
-    );
-    await user.selectOptions(screen.getByLabelText('Команда') as HTMLSelectElement, 'team-3');
-
-    // Все три фильтра уходят в ОДИН запрос ленты — ни один не сбросил другие.
-    expect(useMailFeedSpy).toHaveBeenLastCalledWith({
-      mailAccountId: 7,
-      teamId: 'team-3',
-      unread: true,
-    });
-  });
-
-  it('открытое письмо при активном фильтре ОСТАЁТСЯ в списке (ленту не инвалидируем)', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], true)] });
-    const { rerender } = render(<MailPage />);
-
-    await user.click(screen.getByRole('button', { name: /Непрочитанные/ }));
-    await user.click(screen.getByText('Письмо 1'));
-    expect(markReadSpy).toHaveBeenLastCalledWith(1);
-
-    // Точечная правка кэша ленты (is_unread=false) вместо инвалидэйта — набор писем тот же.
-    feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], false)] });
-    rerender(<MailPage />);
-
-    // Строка НЕ исчезает из-под курсора (в списке — элемент, в детали — заголовок), а
-    // индикатор непрочитанного гаснет только у неё (§2.8).
-    const listItem = screen
-      .getAllByRole('button')
-      .find((el) => el.getAttribute('aria-current') === 'true');
-    expect(listItem?.textContent).toContain('Письмо 1');
-    expect(screen.getByRole('heading', { name: 'Письмо 1' })).toBeInTheDocument();
-    expect(screen.getAllByText('Непрочитано')).toHaveLength(1);
-  });
-
-  it('пустой результат фильтра → нормативная строка «Непрочитанных писем нет»', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2, [], true)] });
-    const { rerender } = render(<MailPage />);
-
-    await user.click(screen.getByRole('button', { name: /Непрочитанные/ }));
-    feed.value = baseFeed({ messages: [] });
-    rerender(<MailPage />);
-
-    // И в списке, и в заглушке детали — своя строка (не «Писем пока нет»).
-    expect(screen.getAllByText('Непрочитанных писем нет')).toHaveLength(2);
-    expect(screen.queryByText('Писем пока нет')).not.toBeInTheDocument();
-  });
-});
 
 // ADR-051 §2/§3 ОТМЕНИЛ норму ADR-050 §2.5 («у супер-админа личного состояния нет»).
 // Теперь супер-админ из `.env` — полноценный субъект личной прочитанности: его идентичность
@@ -894,14 +529,10 @@ describe('MailPage — супер-админ имеет ПОЛНОЕ лично�
     logout();
   });
 
-  it('контролы прочитанности рендерятся: фильтр, индикатор, кнопка отката', () => {
-    // Авто-выбирается ПЕРВОЕ письмо (id=2) — делаем его прочитанным, чтобы в шапке детали
-    // была кнопка отката; второе (id=1) оставляем непрочитанным — для индикатора в списке.
+  it('контролы прочитанности рендерятся: индикатор и кнопка отката', () => {
     feed.value = baseFeed({ messages: [makeMessage(2, [], false), makeMessage(1, [], true)] });
     render(<MailPage />);
 
-    // Разворот §2.5: фильтр-тумблер и индикатор непрочитанного супер-админу ВИДНЫ.
-    expect(screen.getByRole('button', { name: /Непрочитанные/ })).toBeInTheDocument();
     expect(screen.getByText('Непрочитано')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Отметить непрочитанным/ })).toBeInTheDocument();
   });
@@ -929,37 +560,17 @@ describe('MailPage — супер-админ имеет ПОЛНОЕ лично�
     expect(unmarkReadSpy).toHaveBeenLastCalledWith(1);
   });
 
-  it('фильтр «Непрочитанные» уходит в запрос ленты (не пустая страница, §2)', async () => {
-    const user = userEvent.setup();
-    feed.value = baseFeed({ messages: [makeMessage(2, [], true)] });
-    render(<MailPage />);
-
-    await user.click(screen.getByRole('button', { name: /Непрочитанные/ }));
-
-    expect(screen.getByRole('button', { name: /Непрочитанные/ })).toHaveAttribute(
-      'aria-pressed',
-      'true',
-    );
-    expect(useMailFeedSpy).toHaveBeenLastCalledWith(expect.objectContaining({ unread: true }));
-  });
-
   it('РЕГРЕСС: контрол «Уведомления» супер-админу по-прежнему НЕ рендерится (ADR-051 §1.6)', () => {
     feed.value = baseFeed({ messages: [makeMessage(1, [], true)] });
     render(<MailPage />);
 
-    // Прочитанность разблокирована, но Telegram-привязка супер-админу запрещена (403
-    // на `/api/mail/me/settings` СОХРАНЁН по security-основанию) ⇒ тумблер скрыт.
     expect(screen.queryByRole('button', { name: /Уведомления/ })).not.toBeInTheDocument();
-    // Контроль: сами контролы прочитанности при этом на месте — скрыт именно тумблер.
-    expect(screen.getByRole('button', { name: /Непрочитанные/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Прочитано/ })).toBeInTheDocument();
   });
 });
 
-// ============================================================================
-// Экран 1 из пяти: `/mail` вкладка «Сообщения» — фильтр «Команда», порог 2 (ADR-055 §6.2)
-// ============================================================================
-
-describe('MailPage «Сообщения» — фильтр «Команда»: порог 2 (ADR-055 §6.2, экран 1 из пяти)', () => {
+// Экран 1 из пяти: `/mail` — блок «Команды» в сайдбаре, порог 2 (ADR-055 §6.2)
+describe('MailPage — блок «Команды» в сайдбаре: порог 2 (ADR-055 §6.2)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     ioCallback = null;
@@ -971,7 +582,7 @@ describe('MailPage «Сообщения» — фильтр «Команда»: �
 
   const SUPPORT = { id: 'team-9', name: 'Поддержка' };
 
-  it('0 вариантов канала → контрола «Команда» НЕТ вовсе (не пустой, не disabled)', () => {
+  it('0 вариантов канала → блока «Команды» НЕТ', () => {
     loginAs({
       isSuperadmin: false,
       role: 'Оператор',
@@ -981,10 +592,10 @@ describe('MailPage «Сообщения» — фильтр «Команда»: �
     });
     render(<MailPage />);
 
-    expect(screen.queryByLabelText('Команда')).not.toBeInTheDocument();
+    expect(screen.queryByText('Команды')).not.toBeInTheDocument();
   });
 
-  it('1 вариант (одна команда, без «Без команды») → контрола НЕТ', () => {
+  it('1 вариант (одна команда, без «Без команды») → блока НЕТ', () => {
     loginAs({
       isSuperadmin: false,
       role: 'Оператор',
@@ -994,11 +605,10 @@ describe('MailPage «Сообщения» — фильтр «Команда»: �
     });
     render(<MailPage />);
 
-    expect(screen.queryByLabelText('Команда')).not.toBeInTheDocument();
+    expect(screen.queryByText('Команды')).not.toBeInTheDocument();
   });
 
-  it('2 команды у НЕ-АДМИНА → контрол ЕСТЬ (гейт `sees_all_mail_teams` ОТМЕНЁН, TD-058 закрыт)', () => {
-    // Прежняя норма (ADR-050 §1.2 / ADR-036) рендерила фильтр ТОЛЬКО admin-уровню — отменена.
+  it('2 команды у НЕ-АДМИНА → блок ЕСТЬ', () => {
     loginAs({
       isSuperadmin: false,
       role: 'Оператор',
@@ -1008,14 +618,14 @@ describe('MailPage «Сообщения» — фильтр «Команда»: �
     });
     render(<MailPage />);
 
-    const select = screen.getByLabelText('Команда') as HTMLSelectElement;
-    const labels = Array.from(select.options).map((o) => o.textContent);
-    expect(labels).toEqual(['Все команды', 'Продажи', 'Поддержка']);
-    // Опция, которую нельзя выбрать, не предлагается: «Без команды» — только под флагом.
-    expect(labels).not.toContain('Без команды');
+    expect(screen.getByText('Команды')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Все команды' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Продажи' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Поддержка' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Без команды' })).not.toBeInTheDocument();
   });
 
-  it('1 команда + «Без команды» = 2 варианта → контрол ЕСТЬ', () => {
+  it('1 команда + «Без команды» = 2 варианта → блок ЕСТЬ', () => {
     loginAs({
       isSuperadmin: false,
       role: 'Оператор',
@@ -1025,32 +635,28 @@ describe('MailPage «Сообщения» — фильтр «Команда»: �
     });
     render(<MailPage />);
 
-    const select = screen.getByLabelText('Команда') as HTMLSelectElement;
-    expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
-      'Все команды',
-      'Продажи',
-      'Без команды',
-    ]);
+    expect(screen.getByText('Команды')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Все команды' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Продажи' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Без команды' })).toBeInTheDocument();
   });
 
-  it('НЕТ ветки «админу показывать всегда»: admin-уровень с 1 вариантом → контрола НЕТ', () => {
-    // При НУЛЕ команд в системе форсированный рендер дал бы контрол с единственной опцией
-    // «Без команды» — мусорный контрол (ADR-055 §6.2, правка редакции 2).
+  it('admin-уровень с 1 вариантом → блока НЕТ', () => {
     loginAs({ isSuperadmin: true, mailTeams: [], mailIncludesUnassigned: true });
     render(<MailPage />);
 
-    expect(screen.queryByLabelText('Команда')).not.toBeInTheDocument();
+    expect(screen.queryByText('Команды')).not.toBeInTheDocument();
   });
 
-  it('опции — из `/api/auth/me`; `GET /api/teams` не вызывается даже под admin-уровнем (§6.3)', () => {
+  it('опции — из `/api/auth/me`; `GET /api/teams` не вызывается (§6.3)', () => {
     loginAs({ isSuperadmin: true, mailTeams: [...MAIL_TEAMS, SUPPORT] });
     render(<MailPage />);
 
-    expect(screen.getByLabelText('Команда')).toBeInTheDocument();
+    expect(screen.getByText('Команды')).toBeInTheDocument();
     expect(teamsSpy).not.toHaveBeenCalled();
   });
 
-  it('выбор «Без команды» → серверный `no_team=true` (а `team_id` НЕ отправляется, §5.3)', async () => {
+  it('выбор «Без команды» → серверный `no_team=true` (§5.3)', async () => {
     const user = userEvent.setup();
     loginAs({
       isSuperadmin: false,
@@ -1061,11 +667,21 @@ describe('MailPage «Сообщения» — фильтр «Команда»: �
     });
     render(<MailPage />);
 
-    await user.selectOptions(screen.getByLabelText('Команда'), '__no_team__');
+    await user.click(screen.getByRole('button', { name: 'Без команды' }));
 
-    const args = useMailFeedSpy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    const args = mailFeedSpy.mock.calls.at(-1)?.[0] as Record<string, unknown>;
     expect(args.noTeam).toBe(true);
-    // Оба параметра вместе → 400 validation_error на сервере, поэтому `teamId` не уходит.
     expect(args.teamId).toBeUndefined();
+  });
+
+  it('кнопка «Написать» открывает модалку нового письма', async () => {
+    const user = userEvent.setup();
+    loginSuperadmin();
+    render(<MailPage />);
+
+    await user.click(screen.getByRole('button', { name: 'Написать новое письмо' }));
+
+    expect(screen.getByRole('dialog', { name: 'Новое письмо' })).toBeInTheDocument();
+    expect(screen.getByLabelText('Кому')).toBeInTheDocument();
   });
 });

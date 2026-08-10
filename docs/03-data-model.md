@@ -1578,13 +1578,15 @@ ALTER TABLE servers DROP COLUMN position;
 
 ### Таблица `mail_message_reads` (миграция `0025`, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md))
 
-**Личная прочитанность писем** — таблица связи «пользователь × письмо». **Существование строки = «прочитано» ЭТИМ пользователем**; отсутствие = «не прочитано». Отдельного булева поля нет (оно было бы избыточным).
+**Личная прочитанность и папки писем** — таблица связи «пользователь × письмо» ([ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md), расширение [ADR-071](adr/ADR-074-mail-gmail-layout-folders-batch.md)): `read_at` nullable (`NULL` = непрочитано при существующей строке); `archived_at`, `deleted_at` — личный архив/корзина. **`is_unread`** = нет строки **ИЛИ** `read_at IS NULL`.
 
 | Колонка | Тип | Ограничения | Смысл |
 |---------|-----|-------------|-------|
-| `user_id` | `uuid` | `NOT NULL`, FK → `users(id)` **`ON DELETE CASCADE`** | Пользователь CRM. Удалили пользователя — его отметки уходят |
-| `message_id` | `bigint` | `NOT NULL`, FK → `mail_messages(id)` **`ON DELETE CASCADE`** | Письмо (`mail_messages.id` — `BIGSERIAL`). Удалили письмо/ящик — отметки уходят |
-| `read_at` | `timestamptz` | `NOT NULL DEFAULT now()` | Когда пользователь открыл письмо. **В контракт не отдаётся** (диагностика). При повторной пометке **не обновляется** (`ON CONFLICT DO NOTHING`) |
+| `user_id` | `uuid` | `NOT NULL`, FK → `users(id)` **`ON DELETE CASCADE`** | Пользователь CRM |
+| `message_id` | `bigint` | `NOT NULL`, FK → `mail_messages(id)` **`ON DELETE CASCADE`** | Письмо |
+| `read_at` | `timestamptz` | **nullable** (миграция `0035`) | Прочитано: `NOT NULL`; непрочитано при строке: `NULL` |
+| `archived_at` | `timestamptz` | nullable (`0035`) | Личный архив |
+| `deleted_at` | `timestamptz` | nullable (`0035`) | Личная корзина |
 
 - **PK — составной `(user_id, message_id)`** (`pk_mail_message_reads`). Он же обслуживает **оба** горячих пути: батч-лукап `WHERE user_id = :uid AND message_id = ANY(:page_ids)` (вычисление `is_unread` для страницы ленты) и анти-джойн `NOT EXISTS (…)` (фильтр `unread=true`). Отдельный индекс по `(user_id)` **не нужен** — PK ведёт с `user_id`.
 - **`ix_mail_message_reads_message_id (message_id)` — ОБЯЗАТЕЛЕН.** PK ведёт с `user_id`, поэтому поиск по `message_id` его **не использует**, а `ON DELETE CASCADE` со стороны `mail_messages` (каскад `mail_accounts` → `mail_messages` → `mail_message_reads` при удалении ящика) без этого индекса выполнял бы **seq scan** по всей таблице отметок **на каждое удаляемое письмо** — удаление ящика со 100k писем стало бы неприемлемо долгим.
@@ -1611,6 +1613,10 @@ CREATE INDEX ix_mail_message_reads_message_id ON mail_message_reads (message_id)
 - **Backfill не требуется:** пустая таблица = «все письма непрочитаны для всех» — корректное начальное состояние.
 - **`downgrade()`** — рабочий: `DROP TABLE mail_message_reads;`.
 - Миграция чисто **аддитивная**: существующие таблицы не меняются, данные не теряются.
+
+### Миграция `0035_mail_message_reads_archive_delete` ([ADR-071](adr/ADR-074-mail-gmail-layout-folders-batch.md))
+
+`down_revision = "0034_ai_keys_balance"`. Добавляет `archived_at`, `deleted_at`; делает `read_at` nullable. Существующие строки с `read_at` остаются прочитанными.
 
 ### Миграция `0023_mail_tags_drop_is_builtin` (концепт, [ADR-047](adr/ADR-047-mail-fix-pack.md) §1)
 

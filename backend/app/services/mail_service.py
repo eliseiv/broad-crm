@@ -37,7 +37,9 @@ from app.domain.mail import (
     MailScope,
     build_display_name,
     decode_mail_cursor,
+    decode_sent_cursor,
     encode_mail_cursor,
+    encode_sent_cursor,
     validate_reply_addresses,
 )
 from app.errors import (
@@ -72,7 +74,7 @@ from app.models.mail_tag import MailTag as MailTagModel
 from app.models.mail_tag import MailTagRule as MailTagRuleModel
 from app.repositories.mail_account_repository import MailAccountRepository
 from app.repositories.mail_message_read_repository import MailMessageReadRepository
-from app.repositories.mail_message_repository import MailMessageRepository
+from app.repositories.mail_message_repository import MailFolder, MailMessageRepository
 from app.repositories.mail_sent_message_repository import MailSentMessageRepository
 from app.repositories.mail_tag_repository import MailTagRepository
 from app.repositories.team_repository import TeamRepository
@@ -87,10 +89,14 @@ from app.schemas.mail import (
     MailMailboxTestResponse,
     MailMailboxUpdateRequest,
     MailMessage,
+    MailMessageBatchRequest,
     MailOauthAuthorizeRequest,
     MailOauthAuthorizeResponse,
+    MailComposeRequest,
     MailReplyRequest,
     MailReplyResponse,
+    MailSentListResponse,
+    MailSentMessage,
     MailServerSendResult,
     MailTag,
     MailTagApplyResponse,
@@ -103,6 +109,7 @@ from app.schemas.mail import (
     MailTagsResponse,
     MailTagUpdateRequest,
     MailTeamRef,
+    MailUnreadCountResponse,
     TeamMailboxesResponse,
     TeamMailboxItem,
 )
@@ -226,6 +233,9 @@ class MailService:
         team_id: uuid.UUID | None,
         no_team: bool | None = None,
         unread: bool | None = None,
+        folder: MailFolder = "inbox",
+        has_tags: bool | None = None,
+        tag_id: uuid.UUID | None = None,
     ) -> MailListResponse:
         """Лента писем из `mail_messages` (компаундный keyset, ADR-044 §2/§7, ADR-055 §3).
 
@@ -275,6 +285,10 @@ class MailService:
             cursor=cursor,
             limit=limit + 1,
             unread_for_user_id=user_id if unread else None,
+            folder_for_user_id=user_id,
+            folder=folder,
+            has_tags=bool(has_tags),
+            tag_id=tag_id,
         )
         has_more = len(rows) > limit
         page = rows[:limit]
@@ -319,6 +333,192 @@ class MailService:
         """
         await self._load_message_in_scope(scope, message_id)
         await self._reads.unmark_read(user_id=user_id, message_id=message_id)
+
+    async def unread_count(
+        self,
+        *,
+        scope: MailScope,
+        user_id: uuid.UUID,
+        mail_account_ids: list[int] | None,
+        team_id: uuid.UUID | None,
+        no_team: bool | None = None,
+    ) -> MailUnreadCountResponse:
+        """Счётчик непрочитанных во входящих (ADR-071)."""
+        if team_id is not None and no_team:
+            raise validation_error(
+                "Фильтры «Команда» и «Без команды» взаимоисключающи",
+                details=[{"field": "no_team", "message": "Задан одновременно с team_id"}],
+            )
+        visible = await self._resolve_visible_accounts(
+            scope=scope,
+            mail_account_ids=mail_account_ids,
+            team_id=team_id,
+            no_team=bool(no_team),
+        )
+        count = await self._reads.count_unread_inbox(
+            user_id=user_id,
+            mail_account_ids=visible,
+        )
+        return MailUnreadCountResponse(count=count)
+
+    async def batch_read(
+        self,
+        *,
+        scope: MailScope,
+        user_id: uuid.UUID,
+        message_ids: list[int],
+    ) -> None:
+        ids = await self._filter_message_ids_in_scope(scope, message_ids)
+        await self._reads.batch_mark_read(user_id=user_id, message_ids=ids)
+
+    async def batch_archive(
+        self,
+        *,
+        scope: MailScope,
+        user_id: uuid.UUID,
+        message_ids: list[int],
+    ) -> None:
+        ids = await self._filter_message_ids_in_scope(scope, message_ids)
+        await self._reads.mark_archived(user_id=user_id, message_ids=ids)
+
+    async def batch_delete(
+        self,
+        *,
+        scope: MailScope,
+        user_id: uuid.UUID,
+        message_ids: list[int],
+    ) -> None:
+        ids = await self._filter_message_ids_in_scope(scope, message_ids)
+        await self._reads.mark_deleted(user_id=user_id, message_ids=ids)
+
+    async def batch_unarchive(
+        self,
+        *,
+        scope: MailScope,
+        user_id: uuid.UUID,
+        message_ids: list[int],
+    ) -> None:
+        ids = await self._filter_message_ids_in_scope(scope, message_ids)
+        await self._reads.mark_unarchived(user_id=user_id, message_ids=ids)
+
+    async def batch_restore(
+        self,
+        *,
+        scope: MailScope,
+        user_id: uuid.UUID,
+        message_ids: list[int],
+    ) -> None:
+        ids = await self._filter_message_ids_in_scope(scope, message_ids)
+        await self._reads.mark_restored(user_id=user_id, message_ids=ids)
+
+    async def list_sent(
+        self,
+        *,
+        scope: MailScope,
+        before: str | None,
+        limit: int,
+        mail_account_ids: list[int] | None,
+        team_id: uuid.UUID | None,
+        no_team: bool | None = None,
+    ) -> MailSentListResponse:
+        if team_id is not None and no_team:
+            raise validation_error(
+                "Фильтры «Команда» и «Без команды» взаимоисключающи",
+                details=[{"field": "no_team", "message": "Задан одновременно с team_id"}],
+            )
+        if limit < _LIMIT_MIN or limit > _LIMIT_MAX:
+            raise invalid_limit()
+        cursor: tuple[datetime, uuid.UUID] | None = None
+        if before:
+            try:
+                cursor = decode_sent_cursor(before)
+            except MailCursorError as exc:
+                raise invalid_cursor() from exc
+        visible = await self._resolve_visible_accounts(
+            scope=scope,
+            mail_account_ids=mail_account_ids,
+            team_id=team_id,
+            no_team=bool(no_team),
+        )
+        if visible is not None and not visible:
+            return MailSentListResponse(messages=[], next_cursor=None)
+        rows = await self._sent.list_feed(
+            mail_account_ids=visible,
+            cursor=cursor,
+            limit=limit + 1,
+        )
+        has_more = len(rows) > limit
+        page = rows[:limit]
+        next_cursor: str | None = None
+        if has_more and page:
+            last = page[-1]
+            next_cursor = encode_sent_cursor(last.sent_at, last.id)
+        messages = await self._serialize_sent(page)
+        return MailSentListResponse(messages=messages, next_cursor=next_cursor)
+
+    async def get_sent(
+        self,
+        *,
+        scope: MailScope,
+        sent_id: uuid.UUID,
+    ) -> MailSentMessage:
+        row = await self._sent.get(sent_id)
+        if row is None:
+            raise mail_message_not_found()
+        account = await self._accounts.get(row.mail_account_id)
+        if account is None or not scope.matches(account.team_id):
+            raise mail_message_not_found()
+        serialized = await self._serialize_sent([row])
+        return serialized[0]
+
+    async def _filter_message_ids_in_scope(
+        self, scope: MailScope, message_ids: list[int]
+    ) -> list[int]:
+        if not message_ids:
+            return []
+        result: list[int] = []
+        for message_id in message_ids:
+            try:
+                await self._load_message_in_scope(scope, message_id)
+                result.append(message_id)
+            except AppError:
+                continue
+        return result
+
+    async def _serialize_sent(self, rows: list) -> list[MailSentMessage]:
+        if not rows:
+            return []
+        account_ids = {row.mail_account_id for row in rows}
+        accounts = await self._accounts.get_many_with_team(account_ids)
+        out: list[MailSentMessage] = []
+        for row in rows:
+            entry = accounts.get(row.mail_account_id)
+            account = entry[0] if entry is not None else None
+            team_name = entry[1] if entry is not None else None
+            team_ref: MailTeamRef | None = None
+            if account is not None and account.team_id is not None and team_name is not None:
+                team_ref = MailTeamRef(id=account.team_id, name=team_name)
+            account_ref = MailAccountRef(
+                id=row.mail_account_id,
+                email=account.email if account is not None else "",
+                display_name=account.display_name if account is not None else None,
+                number=account.number if account is not None else None,
+                app_name=account.app_name if account is not None else None,
+                team=team_ref,
+            )
+            out.append(
+                MailSentMessage(
+                    id=row.id,
+                    subject=row.subject,
+                    sent_at=row.sent_at,
+                    to_addrs=row.to_addrs,
+                    cc_addrs=row.cc_addrs,
+                    body_text=row.body_text,
+                    mail_account=account_ref,
+                    smtp_message_id=row.smtp_message_id,
+                )
+            )
+        return out
 
     @staticmethod
     def _is_message_fk_violation(exc: IntegrityError) -> bool:
@@ -813,6 +1013,87 @@ class MailService:
                 sent_id=str(sent.id),
             )
         return MailReplyResponse(sent_id=sent.id, smtp_message_id=result.smtp_message_id)
+
+    async def compose(
+        self,
+        *,
+        scope: MailScope,
+        user_id: uuid.UUID | None,
+        mailbox_id: int,
+        payload: MailComposeRequest,
+    ) -> MailReplyResponse:
+        """Новое письмо с ящика (ADR-044 §8). Гейт mail:view; ящик ∈ scope."""
+        self._ensure_configured()
+        account = await self._load_account_in_scope(scope, mailbox_id)
+
+        to_addrs, cc_addrs, subject, body = self._prepare_compose(payload)
+
+        send_payload: dict[str, object] = {
+            "to": to_addrs,
+            "cc": cc_addrs,
+            "subject": subject,
+            "body_text": body,
+        }
+
+        try:
+            raw = await self._mail_server_client.send_message(account.id, send_payload)
+        except MailTimeout as exc:
+            raise self._mailserver_timeout(exc, MAIL_TIMEOUT_REPLY_MESSAGE) from exc
+        except MailUnavailable as exc:
+            raise self._map_reply_unavailable(exc) from exc
+        except MailRejected as exc:
+            raise self._map_reply_rejected(
+                exc,
+                mail_account_id=account.id,
+                message_id=0,
+            ) from exc
+
+        result = self._parse(MailServerSendResult, raw)
+        sent = await self._sent.create(
+            mail_account_id=account.id,
+            user_id=user_id,
+            to_addrs=", ".join(to_addrs),
+            cc_addrs=", ".join(cc_addrs) if cc_addrs else None,
+            subject=subject,
+            body_text=body,
+            in_reply_to=None,
+            refs_header=None,
+            smtp_message_id=result.smtp_message_id,
+        )
+        if result.smtp_message_id is None:
+            logger.warning(
+                "mail_send_missing_smtp_message_id",
+                mail_account_id=account.id,
+                message_id=None,
+                sent_id=str(sent.id),
+            )
+        return MailReplyResponse(sent_id=sent.id, smtp_message_id=result.smtp_message_id)
+
+    @staticmethod
+    def _prepare_compose(payload: MailComposeRequest) -> tuple[list[str], list[str], str, str]:
+        """Нормы compose (ADR-044 §8); нарушение → 422 unprocessable."""
+        body = payload.body
+        if not body.strip():
+            raise unprocessable("Тело письма не может быть пустым")
+        if len(body.encode("utf-8")) > MAX_REPLY_BODY_BYTES:
+            raise unprocessable("Тело письма превышает 1 MiB")
+
+        to_addrs = [a.strip() for a in payload.to if a and a.strip()]
+        cc_addrs = [a.strip() for a in (payload.cc or []) if a and a.strip()]
+        if not to_addrs and not cc_addrs:
+            raise unprocessable("Нужен хотя бы один получатель")
+        try:
+            validate_reply_addresses(to_addrs)
+            validate_reply_addresses(cc_addrs)
+        except MailReplyError as exc:
+            raise unprocessable(str(exc)) from exc
+        if len(to_addrs) + len(cc_addrs) > MAX_REPLY_RECIPIENTS:
+            raise unprocessable(f"Слишком много адресов (>{MAX_REPLY_RECIPIENTS})")
+
+        subject = (payload.subject or "").strip()
+        if len(subject) > MAX_REPLY_SUBJECT_LEN:
+            raise unprocessable(f"Тема превышает {MAX_REPLY_SUBJECT_LEN} символов")
+        return to_addrs, cc_addrs, subject, body
 
     @staticmethod
     def _prepare_reply(

@@ -97,6 +97,32 @@ def decode_mail_cursor(cursor: str) -> tuple[datetime, int]:
     return internal_date, row_id
 
 
+# --- Keyset-курсор ленты отправленных (ADR-071) ------------------------------
+
+
+def encode_sent_cursor(sent_at: datetime, row_id: uuid.UUID) -> str:
+    """Кодирует позицию `(sent_at, id)` отправленного письма."""
+    raw = f"{sent_at.isoformat()}{_CURSOR_SEP}{row_id}".encode()
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def decode_sent_cursor(cursor: str) -> tuple[datetime, uuid.UUID]:
+    """Декодирует opaque-курсор отправленного письма."""
+    if not cursor:
+        raise MailCursorError("Пустой курсор")
+    padding = "=" * (-len(cursor) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(cursor + padding).decode("utf-8")
+        iso, id_str = raw.rsplit(_CURSOR_SEP, 1)
+        sent_at = datetime.fromisoformat(iso)
+        row_id = uuid.UUID(id_str)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise MailCursorError("Битый курсор пагинации") from exc
+    if sent_at.tzinfo is None:
+        raise MailCursorError("Курсор без таймзоны")
+    return sent_at, row_id
+
+
 # --- Нормы валидации reply (ADR-044 §8, перенос из снятого ADR-0035) ---------
 
 # Прагматичный e-mail-формат (одна пара до/после `@`, домен с точкой). Не RFC 5322 —
@@ -172,7 +198,9 @@ __all__ = [
     "MailScope",
     "build_display_name",
     "decode_mail_cursor",
+    "decode_sent_cursor",
     "encode_mail_cursor",
+    "encode_sent_cursor",
     "parse_display_name",
     "validate_reply_addresses",
 ]

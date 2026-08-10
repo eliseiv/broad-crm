@@ -1282,12 +1282,17 @@ Read-бюджет применяется **явным `httpx.Timeout` по фа�
 | `team_id` | string(uuid)? | Фильтр по команде-владельцу ящика. AND-комбинируется с `mail_account_id`. **Взаимоисключающ с `no_team`** |
 | `no_team` | boolean? | **Только письма ящиков БЕЗ команды** (`mail_accounts.team_id IS NULL`) — [ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §5.3. Отсутствует/`false` → фильтр **не применяется** (`false` ≠ «только с командой»). **Оба (`team_id` и `no_team=true`) заданы → `400 validation_error`.** Пересекается со `MailScope`: `no_team=true` у не-admin **без** `includes_unassigned` → **пустая страница** (анти-энумерация, не `403`). Нужен потому, что «Без команды» — легитимное значение фильтра UI, а UUID его выразить не может |
 | `unread` | boolean? | **Только непрочитанные ТЕКУЩИМ принципалом** ([ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md)). `true` → фильтр применён; отсутствует / `false` → **фильтр НЕ применяется** (`false` ≠ «только прочитанные» — такого режима нет). AND-комбинируется с `mail_account_id`/`team_id` и пересекается со `MailScope`. **Супер-админ из `.env` — не исключение:** обычный фильтр (прежнее «пустая страница» отменено — [ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md)) |
+| `folder` | string? | Личная папка ([ADR-071](adr/ADR-074-mail-gmail-layout-folders-batch.md)): `inbox` (default) / `archived` / `deleted`. AND с остальными фильтрами |
+| `has_tags` | boolean? | `true` → только письма с непустым `tags[]` (серверный фильтр «С тегами») |
+| `tag_id` | string(uuid)? | Фильтр по тегу (`mail_message_tags`) |
 
 > **Компаундный keyset (нормативно).** `internal_date` **не уникален** (массовая рассылка приходит одной секундой) → пагинация по одному полю даёт пропуски/дубли на границах страниц. Предикат следующей страницы: `WHERE (internal_date, id) < (:cursor_internal_date, :cursor_id) ORDER BY internal_date DESC, id DESC`.
 >
-> **Фильтр `unread=true` применяется ВНУТРИ keyset-запроса (нормативно, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) §2.4)** — анти-джойном `NOT EXISTS (SELECT 1 FROM mail_message_reads r WHERE r.message_id = mail_messages.id AND r.user_id = :uid)` (резолвится по PK `(user_id, message_id)`). Порядок и формат курсора **не меняются**. **Клиентская фильтрация непрочитанных ЗАПРЕЩЕНА** — лента курсорная, фильтр над загруженным набором ломает догрузку.
+> **Фильтр `unread=true` применяется ВНУТРИ keyset-запроса (нормативно, [ADR-050](adr/ADR-050-mail-search-team-filter-personal-read-state.md) §2.4)** — `read_at IS NULL` или отсутствие строки в `mail_message_reads` ([ADR-071](adr/ADR-074-mail-gmail-layout-folders-batch.md) §1). Порядок и формат курсора **не меняются**. **Клиентская фильтрация непрочитанных ЗАПРЕЩЕНА** — лента курсорная, фильтр над загруженным набором ломает догрузку.
 >
-> **Поле `is_unread` вычисляется ВТОРЫМ батч-запросом по уже отобранной странице** (`SELECT message_id FROM mail_message_reads WHERE user_id = :uid AND message_id = ANY(:page_ids)`), **не** JOIN'ом в keyset-запрос: один запрос на батч по PK, **не** N+1. **Badge-счётчик непрочитанных не вводится** (потребовал бы `COUNT` по всей ленте на каждый рендер).
+> **Папки `folder` (ADR-071):** per-user `archived_at`/`deleted_at` в `mail_message_reads`. `inbox` — нет архива и удаления; `archived` — `archived_at IS NOT NULL`, `deleted_at IS NULL`; `deleted` — `deleted_at IS NOT NULL`.
+>
+> **Поле `is_unread` вычисляется ВТОРЫМ батч-запросом по уже отобранной странице** (`SELECT message_id FROM mail_message_reads WHERE user_id = :uid AND message_id = ANY(:page_ids) AND read_at IS NOT NULL`), **не** JOIN'ом в keyset-запрос: один запрос на батч по PK, **не** N+1. **Badge-счётчик непрочитанных** — отдельный `GET /api/mail/unread-count` (разворачивает прежнюю норму «badge не вводится», ADR-071).
 >
 > **Фильтры и scope.** Эффективное множество ящиков = `MailScope` ∩ (`mail_account_id`, если задан) ∩ (ящики `team_id`, если задан) ∩ (ящики с `team_id IS NULL`, если `no_team=true`). Несуществующий/чужой id → просто не попадает в пересечение → **пустая страница** (`messages: []`), не `404`.
 
@@ -1303,6 +1308,26 @@ Read-бюджет применяется **явным `httpx.Timeout` по фа�
 | `next_cursor` | string \| null | Курсор следующей (более старой) страницы; **`null` — старее нет** (конец ленты) |
 
 **Ошибки:** `401 unauthorized`, `403 forbidden` (нет `mail:view`), `400 invalid_limit`, `400 invalid_cursor`.
+
+### GET `/api/mail/unread-count`
+
+Счётчик непрочитанных во **входящих** (`folder=inbox`) для текущего пользователя ([ADR-071](adr/ADR-074-mail-gmail-layout-folders-batch.md)). Требует JWT (`mail:view`). Query: `mail_account_id[]`, `team_id`, `no_team` — те же scope-фильтры, что у ленты (AND).
+
+**Response 200** — `{ "count": number }`.
+
+### GET `/api/mail/sent`
+
+Лента **отправленных reply из CRM** (`mail_sent_messages`), не IMAP Sent ([ADR-071](adr/ADR-074-mail-gmail-layout-folders-batch.md)). Keyset `(sent_at DESC, id DESC)`. Query: `before`, `limit`, `mail_account_id[]`, `team_id`, `no_team`.
+
+**Response 200** — `MailSentListResponse`: `{ messages: MailSentMessage[], next_cursor }`.
+
+### GET `/api/mail/sent/{id}`
+
+Деталь отправленного письма. Вне scope → `404 mail_message_not_found`.
+
+### POST `/api/mail/messages/batch/read` · `/batch/archive` · `/batch/delete` · `/batch/unarchive` · `/batch/restore`
+
+Batch-мутации личного состояния ([ADR-071](adr/ADR-074-mail-gmail-layout-folders-batch.md)). Требует JWT (`mail:view`). Body: `{ "message_ids": [int] }`. Scope как у `POST …/read`. **Response `204`**. Идемпотентны.
 
 ### POST `/api/mail/messages/{id}/reply`
 
@@ -1335,6 +1360,29 @@ Read-бюджет применяется **явным `httpx.Timeout` по фа�
 > **⚠️ Статус на проде (2026-07-14): эндпоинт НЕ РАБОТАЕТ.** CRM зовёт `POST /api/external/mailboxes/{id}/send` (`backend/app/infra/mail_client.py:225`), которого в агрегаторе ещё нет ⇒ внешний `404` ⇒ пользователь видит ошибку. Норма восстановления — [ADR-057](adr/ADR-057-mail-send-contract-fix.md); долг — [TD-062](100-known-tech-debt.md). Раздел описывает **целевой** контракт (после парного релиза).
 
 > **Rate-limit.** Прежний per-IP лимит анонимного external-reply не применяется: reply — **JWT/RBAC-эндпоинт CRM** (`mail:view`), abuse-поверхность закрыта аутентификацией пользователя ([ADR-044](adr/ADR-044-mail-full-merge-into-crm.md) §8).
+
+### POST `/api/mail/mailboxes/{mailbox_id}/compose`
+
+Новое письмо с ящика (не reply). Требует JWT (`mail:view`). Ящик ∈ `MailScope`; SMTP-отправка — агрегатор (`POST /api/external/mailboxes/{id}/send` без `in_reply_to`/`refs`); факт отправки — `mail_sent_messages`.
+
+**Request** — `MailComposeRequest`:
+
+```json
+{ "to": ["recipient@example.com"], "cc": null, "subject": "Отчёт", "body": "Текст письма." }
+```
+
+| Поле | Тип | Правила |
+|------|-----|---------|
+| `to` | string[] | required, непустой список валидных e-mail |
+| `cc` | string[] \| null? | опц., копия |
+| `subject` | string? | опц.; **≤ 998** символов |
+| `body` | string | required, **непустой**, **≤ 1 MiB** |
+
+Нормы (нарушение → **`422 unprocessable`**): `to`+`cc` суммарно **≤ 100** адресов.
+
+**Response 201** — `MailReplyResponse` (как у reply): `{ "sent_id": "…", "smtp_message_id": "…" }`.
+
+**Ошибки:** как у reply (`404 mail_mailbox_not_found` при рассинхроне каталога, `502 mail_send_failed`, `504 mail_timeout`, …).
 
 ### POST `/api/mail/messages/{message_id}/read`
 

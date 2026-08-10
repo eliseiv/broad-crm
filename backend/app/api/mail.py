@@ -27,10 +27,14 @@ from app.schemas.mail import (
     MailMailboxTestRequest,
     MailMailboxTestResponse,
     MailMailboxUpdateRequest,
+    MailComposeRequest,
+    MailMessageBatchRequest,
     MailOauthAuthorizeRequest,
     MailOauthAuthorizeResponse,
     MailReplyRequest,
     MailReplyResponse,
+    MailSentListResponse,
+    MailSentMessage,
     MailTagApplyResponse,
     MailTagCreateRequest,
     MailTagFull,
@@ -38,6 +42,7 @@ from app.schemas.mail import (
     MailTagRuleCreateRequest,
     MailTagsResponse,
     MailTagUpdateRequest,
+    MailUnreadCountResponse,
 )
 
 router = APIRouter(prefix="/mail", tags=["mail"])
@@ -58,6 +63,9 @@ Unread = Annotated[bool | None, Query()]
 # Фильтр «Без команды» ленты (ADR-055 §5.3): true → только письма ящиков с
 # `team_id IS NULL`. Взаимоисключающ с `team_id` (оба → 400 validation_error).
 NoTeam = Annotated[bool | None, Query()]
+Folder = Annotated[str | None, Query()]
+HasTags = Annotated[bool | None, Query()]
+TagId = Annotated[uuid.UUID | None, Query()]
 
 
 # --- Чтение (из БД CRM) -----------------------------------------------------
@@ -74,22 +82,12 @@ async def list_messages(
     team_id: TeamId = None,
     no_team: NoTeam = None,
     unread: Unread = None,
+    folder: Folder = None,
+    has_tags: HasTags = None,
+    tag_id: TagId = None,
 ) -> MailListResponse:
-    """Лента писем из `mail_messages` (компаундный keyset, ADR-044 §2/§7, ADR-055 §5.3).
-
-    Порядок `internal_date DESC, id DESC`. Фильтры `mail_account_id` (повторяемый),
-    `team_id`/`no_team` и `unread` AND-комбинируемы; для не-админа пересекаются со scope
-    канала — единым предикатом (`team_id ∈ team_ids` OR (`includes_unassigned` AND ящик
-    без команды)); вне scope → пустая страница (анти-энумерация). `before` —
-    opaque-курсор пары `(internal_date, id)`; `limit` в диапазоне 1..200.
-
-    `no_team=true` — только письма ящиков **без команды**; отсутствие / `false` → фильтр
-    не применяется. **Взаимоисключающ с `team_id`** (оба → 400 validation_error).
-
-    `unread=true` (ADR-050 §2.2) — только непрочитанные текущим принципалом (анти-джойн
-    внутри keyset-запроса); отсутствие / `false` → фильтр не применяется. Поле `is_unread`
-    каждого письма — личное производное для текущего принципала.
-    """
+    """Лента писем из `mail_messages` (компаундный keyset, ADR-044 §2/§7, ADR-071)."""
+    folder_val = folder if folder in ("inbox", "archived", "deleted") else "inbox"
     return await service.list_messages(
         scope=scope,
         user_id=p.user_id,
@@ -99,7 +97,62 @@ async def list_messages(
         team_id=team_id,
         no_team=no_team,
         unread=unread,
+        folder=folder_val,
+        has_tags=has_tags,
+        tag_id=tag_id,
     )
+
+
+@router.get("/unread-count", response_model=MailUnreadCountResponse)
+async def unread_count(
+    service: MailServiceDep,
+    scope: MailScopeDep,
+    p: ViewDep,
+    mail_account_id: MailAccountIds = None,
+    team_id: TeamId = None,
+    no_team: NoTeam = None,
+) -> MailUnreadCountResponse:
+    """Счётчик непрочитанных во входящих (ADR-071)."""
+    return await service.unread_count(
+        scope=scope,
+        user_id=p.user_id,
+        mail_account_ids=mail_account_id,
+        team_id=team_id,
+        no_team=no_team,
+    )
+
+
+@router.get("/sent", response_model=MailSentListResponse)
+async def list_sent(
+    service: MailServiceDep,
+    scope: MailScopeDep,
+    _p: ViewDep,
+    before: Before = None,
+    limit: Limit = 50,
+    mail_account_id: MailAccountIds = None,
+    team_id: TeamId = None,
+    no_team: NoTeam = None,
+) -> MailSentListResponse:
+    """Лента отправленных reply из CRM (ADR-071)."""
+    return await service.list_sent(
+        scope=scope,
+        before=before,
+        limit=limit,
+        mail_account_ids=mail_account_id,
+        team_id=team_id,
+        no_team=no_team,
+    )
+
+
+@router.get("/sent/{sent_id}", response_model=MailSentMessage)
+async def get_sent(
+    sent_id: uuid.UUID,
+    service: MailServiceDep,
+    scope: MailScopeDep,
+    _p: ViewDep,
+) -> MailSentMessage:
+    """Деталь отправленного письма (ADR-071)."""
+    return await service.get_sent(scope=scope, sent_id=sent_id)
 
 
 @router.get("/mailboxes", response_model=MailMailboxesResponse)
@@ -176,6 +229,76 @@ async def unmark_message_read(
     Гейт mail:view. Идемпотентен (отметки не было → тоже 204). Те же 403/404, что у POST.
     """
     await service.unmark_read(scope=scope, user_id=p.user_id, message_id=message_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/messages/batch/read", status_code=status.HTTP_204_NO_CONTENT)
+async def batch_mark_read(
+    payload: MailMessageBatchRequest,
+    service: MailServiceDep,
+    scope: MailScopeDep,
+    p: ViewDep,
+) -> Response:
+    """Пометить несколько писем прочитанными (ADR-071)."""
+    await service.batch_read(
+        scope=scope, user_id=p.user_id, message_ids=payload.message_ids
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/messages/batch/archive", status_code=status.HTTP_204_NO_CONTENT)
+async def batch_archive(
+    payload: MailMessageBatchRequest,
+    service: MailServiceDep,
+    scope: MailScopeDep,
+    p: ViewDep,
+) -> Response:
+    """Архивировать письма (ADR-071)."""
+    await service.batch_archive(
+        scope=scope, user_id=p.user_id, message_ids=payload.message_ids
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/messages/batch/delete", status_code=status.HTTP_204_NO_CONTENT)
+async def batch_delete(
+    payload: MailMessageBatchRequest,
+    service: MailServiceDep,
+    scope: MailScopeDep,
+    p: ViewDep,
+) -> Response:
+    """Удалить письма в корзину (ADR-071)."""
+    await service.batch_delete(
+        scope=scope, user_id=p.user_id, message_ids=payload.message_ids
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/messages/batch/unarchive", status_code=status.HTTP_204_NO_CONTENT)
+async def batch_unarchive(
+    payload: MailMessageBatchRequest,
+    service: MailServiceDep,
+    scope: MailScopeDep,
+    p: ViewDep,
+) -> Response:
+    """Вернуть из архива (ADR-071)."""
+    await service.batch_unarchive(
+        scope=scope, user_id=p.user_id, message_ids=payload.message_ids
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/messages/batch/restore", status_code=status.HTTP_204_NO_CONTENT)
+async def batch_restore(
+    payload: MailMessageBatchRequest,
+    service: MailServiceDep,
+    scope: MailScopeDep,
+    p: ViewDep,
+) -> Response:
+    """Восстановить из корзины (ADR-071)."""
+    await service.batch_restore(
+        scope=scope, user_id=p.user_id, message_ids=payload.message_ids
+    )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -268,6 +391,27 @@ async def sync_mailbox(
 ) -> MailMailboxSyncResponse:
     """Форс-синк ящика (ADR-044 §4). Гейт mail:sync; ящик ∈ scope."""
     return await service.sync_mailbox(scope=scope, mailbox_id=mailbox_id)
+
+
+@router.post(
+    "/mailboxes/{mailbox_id}/compose",
+    response_model=MailReplyResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def compose_mail(
+    mailbox_id: int,
+    payload: MailComposeRequest,
+    service: MailServiceDep,
+    scope: MailScopeDep,
+    p: ViewDep,
+) -> MailReplyResponse:
+    """Новое письмо с ящика (ADR-044 §8). Гейт mail:view; ящик ∈ scope."""
+    return await service.compose(
+        scope=scope,
+        user_id=p.user_id,
+        mailbox_id=mailbox_id,
+        payload=payload,
+    )
 
 
 # --- Запись: теги (глобальный каталог, гейт mail:tags) ----------------------

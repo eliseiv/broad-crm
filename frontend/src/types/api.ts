@@ -405,12 +405,48 @@ export interface MailListResponse {
   next_cursor: string | null;
 }
 
+/** Отправленное письмо (ADR-071). */
+export interface MailSentMessage {
+  id: string;
+  subject: string | null;
+  sent_at: string;
+  to_addrs: string;
+  cc_addrs: string | null;
+  body_text: string;
+  mail_account: MailAccount;
+  smtp_message_id: string | null;
+}
+
+export interface MailSentListResponse {
+  messages: MailSentMessage[];
+  next_cursor: string | null;
+}
+
+export interface MailUnreadCountResponse {
+  count: number;
+}
+
+export interface MailMessageBatchRequest {
+  message_ids: number[];
+}
+
 /**
  * Тело POST /api/mail/messages/{id}/reply (04-api.md, MailReplyRequest).
  * `body` обязательный непустой; `to`/`cc`/`subject` опциональны.
  */
 export interface MailReplyRequest {
   to?: string[];
+  cc?: string[] | null;
+  subject?: string;
+  body: string;
+}
+
+/**
+ * Тело POST /api/mail/mailboxes/{id}/compose — новое письмо (не reply).
+ * `to` обязательный непустой список; `body` обязательный непустой.
+ */
+export interface MailComposeRequest {
+  to: string[];
   cc?: string[] | null;
   subject?: string;
   body: string;

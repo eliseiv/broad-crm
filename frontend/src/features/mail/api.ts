@@ -8,10 +8,13 @@ import type {
   MailMailboxTestRequest,
   MailMailboxTestResponse,
   MailMailboxUpdateRequest,
+  MailMessageBatchRequest,
   MailOauthAuthorizeRequest,
   MailOauthAuthorizeResponse,
+  MailComposeRequest,
   MailReplyRequest,
   MailReplyResponse,
+  MailSentListResponse,
   MailTagApplyResponse,
   MailTagCreateRequest,
   MailTagFull,
@@ -20,6 +23,7 @@ import type {
   MailTagsResponse,
   MailTagUpdateRequest,
   MailTelegramAuthResponse,
+  MailUnreadCountResponse,
   MailUserSettings,
   MailUserSettingsUpdateRequest,
   TeamMailboxesResponse,
@@ -50,6 +54,12 @@ export interface ListMailParams {
    * Клиентская фильтрация непрочитанных ЗАПРЕЩЕНА — лента курсорная (сломала бы догрузку).
    */
   unread?: boolean;
+  /** Папка ленты (ADR-071): inbox | archived | deleted */
+  folder?: 'inbox' | 'archived' | 'deleted';
+  /** Серверный фильтр «с тегами». */
+  hasTags?: boolean;
+  /** Серверный фильтр по тегу. */
+  tagId?: string;
 }
 
 /**
@@ -66,16 +76,17 @@ export function listMail(
   authToken?: string,
   skipAuthReset?: boolean,
 ): Promise<MailListResponse> {
-  const { before, limit = MAIL_PAGE_LIMIT, mailAccountId, teamId, noTeam, unread } = params;
+  const { before, limit = MAIL_PAGE_LIMIT, mailAccountId, teamId, noTeam, unread, folder, hasTags, tagId } = params;
   const qs = new URLSearchParams();
   qs.set('limit', String(limit));
   if (before !== undefined) qs.set('before', before);
   if (mailAccountId !== undefined) qs.set('mail_account_id', String(mailAccountId));
-  // `team_id` и `no_team` взаимоисключающи (04-api.md; оба → 400): «Без команды» побеждает,
-  // а `team_id` в этом случае не отправляется вовсе.
   if (noTeam) qs.set('no_team', 'true');
   else if (teamId !== undefined) qs.set('team_id', teamId);
   if (unread) qs.set('unread', 'true');
+  if (folder && folder !== 'inbox') qs.set('folder', folder);
+  if (hasTags) qs.set('has_tags', 'true');
+  if (tagId) qs.set('tag_id', tagId);
   return apiRequest<MailListResponse>(`/mail/messages?${qs.toString()}`, {
     signal,
     authToken,
@@ -111,6 +122,79 @@ export function unmarkMailRead(id: number): Promise<void> {
   return apiRequest<void>(`/mail/messages/${id}/read`, { method: 'DELETE' });
 }
 
+export function getMailUnreadCount(
+  params: Pick<ListMailParams, 'mailAccountId' | 'teamId' | 'noTeam'> = {},
+  signal?: AbortSignal,
+): Promise<MailUnreadCountResponse> {
+  const qs = new URLSearchParams();
+  const { mailAccountId, teamId, noTeam } = params;
+  if (mailAccountId !== undefined) qs.set('mail_account_id', String(mailAccountId));
+  if (noTeam) qs.set('no_team', 'true');
+  else if (teamId !== undefined) qs.set('team_id', teamId);
+  const suffix = qs.toString();
+  return apiRequest<MailUnreadCountResponse>(
+    `/mail/unread-count${suffix ? `?${suffix}` : ''}`,
+    { signal },
+  );
+}
+
+export interface ListMailSentParams {
+  before?: string;
+  limit?: number;
+  mailAccountId?: number;
+  teamId?: string;
+  noTeam?: boolean;
+}
+
+export function listMailSent(
+  params: ListMailSentParams = {},
+  signal?: AbortSignal,
+): Promise<MailSentListResponse> {
+  const { before, limit = MAIL_PAGE_LIMIT, mailAccountId, teamId, noTeam } = params;
+  const qs = new URLSearchParams();
+  qs.set('limit', String(limit));
+  if (before !== undefined) qs.set('before', before);
+  if (mailAccountId !== undefined) qs.set('mail_account_id', String(mailAccountId));
+  if (noTeam) qs.set('no_team', 'true');
+  else if (teamId !== undefined) qs.set('team_id', teamId);
+  return apiRequest<MailSentListResponse>(`/mail/sent?${qs.toString()}`, { signal });
+}
+
+export function batchMarkMailRead(messageIds: number[]): Promise<void> {
+  return apiRequest<void>('/mail/messages/batch/read', {
+    method: 'POST',
+    body: { message_ids: messageIds } satisfies MailMessageBatchRequest,
+  });
+}
+
+export function batchArchiveMail(messageIds: number[]): Promise<void> {
+  return apiRequest<void>('/mail/messages/batch/archive', {
+    method: 'POST',
+    body: { message_ids: messageIds } satisfies MailMessageBatchRequest,
+  });
+}
+
+export function batchDeleteMail(messageIds: number[]): Promise<void> {
+  return apiRequest<void>('/mail/messages/batch/delete', {
+    method: 'POST',
+    body: { message_ids: messageIds } satisfies MailMessageBatchRequest,
+  });
+}
+
+export function batchUnarchiveMail(messageIds: number[]): Promise<void> {
+  return apiRequest<void>('/mail/messages/batch/unarchive', {
+    method: 'POST',
+    body: { message_ids: messageIds } satisfies MailMessageBatchRequest,
+  });
+}
+
+export function batchRestoreMail(messageIds: number[]): Promise<void> {
+  return apiRequest<void>('/mail/messages/batch/restore', {
+    method: 'POST',
+    body: { message_ids: messageIds } satisfies MailMessageBatchRequest,
+  });
+}
+
 export interface ListMailboxesParams {
   /** Фильтр активности: `true` — активные, `false` — неактивные, не задан — все (ADR-044 §4). */
   isActive?: boolean;
@@ -133,6 +217,17 @@ export function listMailboxes(
 /** POST /api/mail/messages/{id}/reply — ответ на письмо (SMTP-отправка транзитом в агрегатор). */
 export function replyMail(id: number, payload: MailReplyRequest): Promise<MailReplyResponse> {
   return apiRequest<MailReplyResponse>(`/mail/messages/${id}/reply`, {
+    method: 'POST',
+    body: payload,
+  });
+}
+
+/** POST /api/mail/mailboxes/{id}/compose — новое письмо с ящика. */
+export function composeMail(
+  mailboxId: number,
+  payload: MailComposeRequest,
+): Promise<MailReplyResponse> {
+  return apiRequest<MailReplyResponse>(`/mail/mailboxes/${mailboxId}/compose`, {
     method: 'POST',
     body: payload,
   });

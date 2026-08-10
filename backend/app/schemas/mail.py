@@ -93,14 +93,41 @@ class MailMessage(BaseModel):
 
 
 class MailListResponse(BaseModel):
-    """Ответ 200 GET /api/mail/messages (компаундный keyset, ADR-044 §2).
-
-    Порядок — `internal_date DESC, id DESC` (истинная дата письма, а не порядок push'а).
-    `next_cursor` — opaque-токен пары `(internal_date, id)` последнего элемента страницы
-    для догрузки более старых (передаётся обратно как `before`); `null` — старее нет.
-    """
+    """Ответ 200 GET /api/mail/messages (компаундный keyset, ADR-044 §2)."""
 
     messages: list[MailMessage]
+    next_cursor: str | None
+
+
+class MailUnreadCountResponse(BaseModel):
+    """Ответ 200 GET /api/mail/unread-count (ADR-071)."""
+
+    count: int
+
+
+class MailMessageBatchRequest(BaseModel):
+    """Тело batch-мутаций писем (ADR-071)."""
+
+    message_ids: list[int] = Field(min_length=1, max_length=200)
+
+
+class MailSentMessage(BaseModel):
+    """Отправленное письмо из `mail_sent_messages` (ADR-071)."""
+
+    id: uuid.UUID
+    subject: str | None
+    sent_at: datetime
+    to_addrs: str
+    cc_addrs: str | None
+    body_text: str
+    mail_account: MailAccountRef
+    smtp_message_id: str | None
+
+
+class MailSentListResponse(BaseModel):
+    """Ответ 200 GET /api/mail/sent (keyset по sent_at, id)."""
+
+    messages: list[MailSentMessage]
     next_cursor: str | None
 
 
@@ -117,6 +144,19 @@ class MailReplyRequest(BaseModel):
     """
 
     to: list[str] | None = None
+    cc: list[str] | None = None
+    subject: str | None = None
+    body: str
+
+
+class MailComposeRequest(BaseModel):
+    """Тело POST /api/mail/mailboxes/{id}/compose — новое письмо (не reply).
+
+    Нормы отправки — те же, что у reply (ADR-044 §8): непустой body ≤1 MiB, валидные
+    адреса, ≤100 получателей to+cc, subject ≤998.
+    """
+
+    to: list[str]
     cc: list[str] | None = None
     subject: str | None = None
     body: str
@@ -395,8 +435,12 @@ __all__ = [
     "MailMailboxUpdateRequest",
     "MailMailboxesResponse",
     "MailMessage",
+    "MailMessageBatchRequest",
+    "MailComposeRequest",
     "MailReplyRequest",
     "MailReplyResponse",
+    "MailSentListResponse",
+    "MailSentMessage",
     "MailServerSendResult",
     "MailTag",
     "MailTagApplyResponse",
@@ -408,6 +452,7 @@ __all__ = [
     "MailTagRuleType",
     "MailTagUpdateRequest",
     "MailTagsResponse",
+    "MailUnreadCountResponse",
     "TeamMailboxItem",
     "TeamMailboxesResponse",
 ]
