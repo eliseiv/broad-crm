@@ -80,6 +80,7 @@ from app.repositories.mail_tag_repository import MailTagRepository
 from app.repositories.team_repository import TeamRepository
 from app.schemas.mail import (
     MailAccountRef,
+    MailComposeRequest,
     MailListResponse,
     MailMailbox,
     MailMailboxCreateRequest,
@@ -89,10 +90,8 @@ from app.schemas.mail import (
     MailMailboxTestResponse,
     MailMailboxUpdateRequest,
     MailMessage,
-    MailMessageBatchRequest,
     MailOauthAuthorizeRequest,
     MailOauthAuthorizeResponse,
-    MailComposeRequest,
     MailReplyRequest,
     MailReplyResponse,
     MailSentListResponse,

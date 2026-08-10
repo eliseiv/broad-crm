@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 
 from app.api.deps import MailScopeDep, MailServiceDep, Principal, require
 from app.schemas.mail import (
+    MailComposeRequest,
     MailListResponse,
     MailMailbox,
     MailMailboxCreateRequest,
@@ -27,7 +28,6 @@ from app.schemas.mail import (
     MailMailboxTestRequest,
     MailMailboxTestResponse,
     MailMailboxUpdateRequest,
-    MailComposeRequest,
     MailMessageBatchRequest,
     MailOauthAuthorizeRequest,
     MailOauthAuthorizeResponse,
