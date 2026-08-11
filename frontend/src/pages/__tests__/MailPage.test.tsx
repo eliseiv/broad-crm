@@ -311,6 +311,20 @@ describe('MailPage "С тегами" navigation (ADR-071)', () => {
     );
   });
 
+  it('выбор ящика в «Почта» шлёт mailAccountId в ленту (ADR-052 §2)', async () => {
+    const user = userEvent.setup();
+    feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
+    render(<MailPage />);
+
+    const combobox = screen.getByRole('combobox', { name: 'Почта' });
+    await user.click(combobox);
+    await user.click(screen.getByRole('option', { name: /7011 Nova Ledger beta@postapp.store/ }));
+
+    expect(mailFeedSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ mailAccountId: 9, folder: 'inbox' }),
+    );
+  });
+
   it('bulk «Прочитано» вызывает batch read для выбранных писем', async () => {
     const user = userEvent.setup();
     feed.value = baseFeed({ messages: [makeMessage(2, [], true), makeMessage(1, [], true)] });

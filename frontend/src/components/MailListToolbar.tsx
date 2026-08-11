@@ -1,5 +1,6 @@
 import { Archive, MailOpen, RefreshCw, Trash2, Undo2 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
+import { Combobox, type ComboboxOption } from '@/components/ui/Combobox';
 import type { MailNavFolder } from '@/components/MailSidebar';
 
 interface MailListToolbarProps {
@@ -15,10 +16,17 @@ interface MailListToolbarProps {
   archivePending?: boolean;
   deletePending?: boolean;
   restorePending?: boolean;
+  showMailboxFilter?: boolean;
+  mailboxOptions?: ComboboxOption[];
+  mailboxValue?: string;
+  mailboxQuery?: string;
+  onMailboxChange?: (value: string | null) => void;
+  onMailboxQueryChange?: (query: string) => void;
+  mailboxesLoading?: boolean;
 }
 
 /**
- * Тулбар bulk-действий над списком писем (ADR-071).
+ * Тулбар списка писем: фильтр по ящику (ADR-052 §2) и bulk-действия (ADR-074).
  */
 export function MailListToolbar({
   navFolder,
@@ -33,6 +41,13 @@ export function MailListToolbar({
   archivePending,
   deletePending,
   restorePending,
+  showMailboxFilter = false,
+  mailboxOptions = [],
+  mailboxValue = '',
+  mailboxQuery = 'Все почты',
+  onMailboxChange,
+  onMailboxQueryChange,
+  mailboxesLoading = false,
 }: MailListToolbarProps) {
   const disabled = selectedCount === 0;
   const isSent = navFolder === 'sent';
@@ -40,6 +55,20 @@ export function MailListToolbar({
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border-subtle px-2 py-2">
+      {showMailboxFilter && (
+        <div className="min-w-[12rem] w-56 max-w-full shrink-0">
+          <Combobox
+            aria-label="Почта"
+            mode="select"
+            options={mailboxOptions}
+            value={mailboxValue}
+            onChange={onMailboxChange ?? (() => undefined)}
+            query={mailboxQuery}
+            onQueryChange={onMailboxQueryChange ?? (() => undefined)}
+            disabled={mailboxesLoading}
+          />
+        </div>
+      )}
       {!isSent && (
         <>
           <Button

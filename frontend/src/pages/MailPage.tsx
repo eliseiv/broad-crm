@@ -31,12 +31,15 @@ import {
   useBatchMarkMailRead,
   useBatchRestoreMail,
   useMailFeed,
+  useMailMailboxes,
   useMailSentFeed,
   useMailTags,
   useMailUnreadCount,
   useMarkMailRead,
   useUnmarkMailRead,
 } from '@/features/mail/hooks';
+import { mailboxSearchKeywords } from '@/features/mail/mailboxSearch';
+import type { ComboboxOption } from '@/components/ui/Combobox';
 
 const SHELL_CLASS =
   'flex min-h-0 flex-1 flex-col overflow-hidden rounded-card border border-border-subtle bg-surface-1 shadow-card';
@@ -88,24 +91,43 @@ export function MailPage() {
 function MailLayout() {
   const [navFolder, setNavFolder] = useState<MailNavFolder>('inbox');
   const [teamFilter, setTeamFilter] = useState('');
+  const [mailAccountId, setMailAccountId] = useState<number | undefined>(undefined);
+  const [mailboxQuery, setMailboxQuery] = useState('Все почты');
   const [tagId, setTagId] = useState<string | undefined>(undefined);
   const [adminView, setAdminView] = useState<MailAdminView>(null);
   const [mobileSidebar, setMobileSidebar] = useState(false);
   const [composeOpen, setComposeOpen] = useState(false);
 
   const teamParams = teamFilterParams(teamFilter);
+  const scopeFilter = useMemo(
+    () => ({ ...teamParams, mailAccountId }),
+    [teamParams, mailAccountId],
+  );
   const mailScope = useChannelTeamScope('mail');
   const showTeamFilter = shouldRenderTeamFilter(mailScope);
   const teamOptions = useMemo(() => teamFilterOptions(mailScope), [mailScope]);
+  const mailboxesQuery = useMailMailboxes();
+  const mailboxOptions = useMemo<ComboboxOption[]>(() => {
+    const mailboxes = mailboxesQuery.data?.mailboxes ?? [];
+    return [
+      { value: '', label: 'Все почты', pinned: true },
+      ...mailboxes.map((mb) => ({
+        value: String(mb.id),
+        label: mb.display_name ? `${mb.display_name} ${mb.email}` : mb.email,
+        keywords: mailboxSearchKeywords(mb),
+      })),
+    ];
+  }, [mailboxesQuery.data]);
+  const showMailboxFilter = (mailboxesQuery.data?.mailboxes?.length ?? 0) > 1;
   const tagsQuery = useMailTags();
   const tags = tagsQuery.data?.tags ?? [];
 
-  const unreadQuery = useMailUnreadCount(teamParams);
+  const unreadQuery = useMailUnreadCount(scopeFilter);
   const unreadCount = unreadQuery.data?.count ?? 0;
 
   const feedFilter = useMemo(
     () => ({
-      ...teamParams,
+      ...scopeFilter,
       folder:
         navFolder === 'deleted'
           ? ('deleted' as const)
@@ -115,11 +137,11 @@ function MailLayout() {
       hasTags: navFolder === 'tagged' ? true : undefined,
       tagId,
     }),
-    [teamParams, navFolder, tagId],
+    [scopeFilter, navFolder, tagId],
   );
 
   const inboxFeed = useMailFeed(feedFilter, navFolder !== 'sent');
-  const sentFeed = useMailSentFeed(teamParams, navFolder === 'sent');
+  const sentFeed = useMailSentFeed(scopeFilter, navFolder === 'sent');
 
   const batchRead = useBatchMarkMailRead();
   const batchArchive = useBatchArchiveMail();
@@ -148,7 +170,7 @@ function MailLayout() {
     setSelectedInboxId(null);
     setSelectedSentId(null);
     setMobileDetail(false);
-  }, [navFolder, teamFilter, tagId, adminView]);
+  }, [navFolder, teamFilter, mailAccountId, tagId, adminView]);
 
   const showInboxDetail = selectedInboxId !== null;
   const showSentDetail = selectedSentId !== null;
@@ -416,6 +438,16 @@ function MailLayout() {
                   archivePending={batchArchive.isPending}
                   deletePending={batchDelete.isPending}
                   restorePending={batchRestore.isPending}
+                  showMailboxFilter={showMailboxFilter}
+                  mailboxOptions={mailboxOptions}
+                  mailboxValue={mailAccountId != null ? String(mailAccountId) : ''}
+                  mailboxQuery={mailboxQuery}
+                  onMailboxChange={(v) => {
+                    const next = v ?? '';
+                    setMailAccountId(next ? Number(next) : undefined);
+                  }}
+                  onMailboxQueryChange={setMailboxQuery}
+                  mailboxesLoading={mailboxesQuery.isLoading}
                 />
 
                 <div className="scrollbar-none flex min-h-0 flex-1 flex-col overflow-y-auto">
