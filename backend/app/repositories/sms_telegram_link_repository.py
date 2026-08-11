@@ -1,9 +1,12 @@
-"""Репозиторий привязок Telegram ↔ CRM-пользователь (modules/sms, ADR-030).
+"""Репозиторий привязок Telegram ↔ CRM-пользователь (modules/sms, ADR-030/055).
 
 Порт донорского `TelegramLinkRepository` на CRM-модели (UUID `user_id`, M2M
 `user_teams`). `upsert` атомарен (`ON CONFLICT (telegram_user_id) DO UPDATE`).
-`recipients_for_team` = JOIN `user_teams` → `users` → `sms_telegram_links`
-(`dead_at IS NULL`) — получатели fan-out команды.
+
+Fan-out получателей (амендмент ADR-055 §7): по **явному SMS-доступу**, а не по
+admin-видимости «видит всё»:
+- команда → `user_teams` ∪ `user_channel_teams[sms]` + живой линк;
+- без команды → `users.sms_includes_unassigned=true` + живой линк.
 """
 
 from __future__ import annotations
@@ -16,9 +19,11 @@ from sqlalchemy import select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.channels import CHANNEL_SMS
 from app.models.sms_telegram_link import SmsTelegramLink
 from app.models.team import user_teams
 from app.models.user import User
+from app.models.user_channel_team import user_channel_teams
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,7 +35,7 @@ class Recipient:
 
 
 class SmsTelegramLinkRepository:
-    """Upsert/статус привязок + резолв получателей команды."""
+    """Upsert/статус привязок + резолв получателей SMS-доступа."""
 
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -91,22 +96,51 @@ class SmsTelegramLinkRepository:
         )
 
     async def recipients_for_team(self, team_id: uuid.UUID) -> list[Recipient]:
-        """Получатели fan-out команды: участники `user_teams` с живой привязкой.
+        """Получатели fan-out команды по явному SMS-доступу + живой привязке.
 
-        JOIN `user_teams` → `users` → `sms_telegram_links` (`dead_at IS NULL`).
+        Доступ = базовое членство (`user_teams`) **∪** доп-команда канала СМС
+        (`user_channel_teams[sms]`). Admin-роль / полный каталог прав сами по себе
+        получателя **не** делают: рассылка зеркалит отмеченные команды в блоке
+        «СМС» карточки пользователя, а не UI-видимость «видит все команды».
+
         Один пользователь с несколькими живыми привязками → несколько получателей.
+        Системный якорь супер-админа исключён явно (`NOT is_system`, ADR-051 §1.4(в)).
+        """
+        access_user_ids = (
+            select(user_teams.c.user_id.label("user_id"))
+            .where(user_teams.c.team_id == team_id)
+            .union(
+                select(user_channel_teams.c.user_id.label("user_id")).where(
+                    user_channel_teams.c.team_id == team_id,
+                    user_channel_teams.c.channel == CHANNEL_SMS,
+                )
+            )
+            .subquery()
+        )
+        stmt = (
+            select(User.id, SmsTelegramLink.telegram_user_id)
+            .join(access_user_ids, access_user_ids.c.user_id == User.id)
+            .join(SmsTelegramLink, SmsTelegramLink.user_id == User.id)
+            .where(
+                User.is_system.is_(False),
+                SmsTelegramLink.dead_at.is_(None),
+            )
+        )
+        rows = (await self._session.execute(stmt)).all()
+        return [Recipient(user_id=uid, telegram_user_id=int(tg)) for uid, tg in rows]
 
-        **Системная строка-якорь супер-админа исключена ЯВНО** (`NOT is_system`, ADR-051
-        §1.4(в)): выборка читает `users` в обход `UserRepository`; неявно якорь отсекали
-        бы лишь INNER JOIN'ы (у него нет строк ни в `user_teams`, ни в
-        `sms_telegram_links`). Явный фильтр — defense-in-depth.
+    async def recipients_for_unassigned(self) -> list[Recipient]:
+        """Получатели fan-out для номеров без команды (`team_id IS NULL`).
+
+        Только носители флага `users.sms_includes_unassigned=true` с живой привязкой.
+        Admin-видимость «видит всё» / полный каталог прав сами по себе флаг не
+        подставляют — смотрим колонку на `users` (то, что отмечено в блоке «СМС»).
         """
         stmt = (
             select(User.id, SmsTelegramLink.telegram_user_id)
-            .join(user_teams, user_teams.c.user_id == User.id)
             .join(SmsTelegramLink, SmsTelegramLink.user_id == User.id)
             .where(
-                user_teams.c.team_id == team_id,
+                User.sms_includes_unassigned.is_(True),
                 User.is_system.is_(False),
                 SmsTelegramLink.dead_at.is_(None),
             )

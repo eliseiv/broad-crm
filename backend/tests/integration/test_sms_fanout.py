@@ -18,6 +18,7 @@ from app.models.sms_telegram_link import SmsTelegramLink
 from app.services.sms_ingest_service import SmsIngestService
 from sms_helpers import (
     FakeBot,
+    add_extra_team,
     add_membership,
     seed_delivery,
     seed_inbound,
@@ -157,7 +158,8 @@ async def test_api_error_marks_delivery_failed() -> None:
     assert [d.status for d in deliveries] == ["failed"]
 
 
-async def test_unknown_number_saves_without_deliveries() -> None:
+async def test_unknown_number_without_unassigned_flag_saves_without_deliveries() -> None:
+    """Номер вне реестра / без команды: без sms_includes_unassigned доставок нет."""
     async with sms_db() as sm:
         bot = FakeBot()
         async with sm() as s:
@@ -171,6 +173,92 @@ async def test_unknown_number_saves_without_deliveries() -> None:
         assert sms.team_id is None
     assert bot.sent == []
     assert await _deliveries(sm) == []
+
+
+async def test_fanout_includes_sms_channel_extra_team() -> None:
+    """Доп-команда канала СМС (не user_teams) получает fan-out — амендмент ADR-055 §7."""
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s)
+            member = await seed_user(s, role)
+            extra = await seed_user(s, role)
+            outsider = await seed_user(s, role)
+            team = await seed_team(s)
+            await add_membership(s, member.id, team.id)
+            await add_extra_team(s, extra.id, "sms", team.id)
+            # outsider: живой линк, но без доступа к команде — не должен получить
+            await seed_link(s, telegram_user_id=6101, user_id=member.id)
+            await seed_link(s, telegram_user_id=6102, user_id=extra.id)
+            await seed_link(s, telegram_user_id=6103, user_id=outsider.id)
+            await seed_number(s, phone_number="+13105556111", team_id=team.id)
+            await s.commit()
+
+        bot = FakeBot()
+        async with sm() as s:
+            await SmsIngestService(s, bot).handle_incoming_sms(
+                twilio_message_sid="SMextra",
+                from_number="+79161234567",
+                to_number="+13105556111",
+                body="hi",
+                raw_payload={},
+            )
+
+    assert {chat for chat, _ in bot.sent} == {6101, 6102}
+    deliveries = await _deliveries(sm)
+    assert len(deliveries) == 2
+    assert all(d.status == "sent" for d in deliveries)
+
+
+async def test_fanout_unassigned_to_sms_includes_unassigned_flag() -> None:
+    """Номер без команды → только носители sms_includes_unassigned (не «все админы»)."""
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s)
+            flagged = await seed_user(s, role, sms_includes_unassigned=True)
+            plain = await seed_user(s, role, sms_includes_unassigned=False)
+            await seed_link(s, telegram_user_id=6201, user_id=flagged.id)
+            await seed_link(s, telegram_user_id=6202, user_id=plain.id)
+            await seed_number(s, phone_number="+13105556222", team_id=None)
+            await s.commit()
+
+        bot = FakeBot()
+        async with sm() as s:
+            await SmsIngestService(s, bot).handle_incoming_sms(
+                twilio_message_sid="SMunassigned",
+                from_number="+79161234567",
+                to_number="+13105556222",
+                body="code",
+                raw_payload={},
+            )
+
+    assert {chat for chat, _ in bot.sent} == {6201}
+    deliveries = await _deliveries(sm)
+    assert len(deliveries) == 1
+    assert deliveries[0].status == "sent"
+    assert deliveries[0].telegram_user_id == 6201
+
+
+async def test_unknown_number_delivers_to_unassigned_flag_holders() -> None:
+    """Номер не в реестре (team_id снимка NULL) → тот же путь, что unassigned."""
+    async with sms_db() as sm:
+        async with sm() as s:
+            role = await seed_role(s)
+            flagged = await seed_user(s, role, sms_includes_unassigned=True)
+            await seed_link(s, telegram_user_id=6301, user_id=flagged.id)
+            await s.commit()
+
+        bot = FakeBot()
+        async with sm() as s:
+            sms = await SmsIngestService(s, bot).handle_incoming_sms(
+                twilio_message_sid="SMunknown2",
+                from_number="+79161234567",
+                to_number="+13105556333",
+                body="hi",
+                raw_payload={},
+            )
+        assert sms.team_id is None
+
+    assert {chat for chat, _ in bot.sent} == {6301}
 
 
 async def test_bot_not_configured_marks_failed() -> None:

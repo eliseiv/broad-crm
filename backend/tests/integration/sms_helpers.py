@@ -175,6 +175,7 @@ async def seed_user(
     telegram: str | None = None,
     is_active: bool = True,
     first_login_at: datetime | None = None,
+    sms_includes_unassigned: bool = False,
 ) -> User:
     user = User(
         username=username or f"user-{uuid.uuid4().hex[:10]}",
@@ -183,6 +184,7 @@ async def seed_user(
         is_active=is_active,
         telegram=telegram,
         first_login_at=first_login_at,
+        sms_includes_unassigned=sms_includes_unassigned,
     )
     session.add(user)
     await session.flush()

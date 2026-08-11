@@ -142,14 +142,20 @@ class SmsIngestService:
         sms_id = sms.id
         sms_team_id = sms.team_id
 
+        links = SmsTelegramLinkRepository(session)
+        # Fan-out по явному SMS-доступу (амендмент ADR-055 §7): команда → базовые ∪
+        # доп-команды канала sms; без команды → носители sms_includes_unassigned.
+        # Admin-роль сама по себе получателей не добавляет.
         if sms_team_id is None:
-            logger.warning("sms_unknown_number", to_number=normalized_to)
-            return sms
-
-        recipients = await SmsTelegramLinkRepository(session).recipients_for_team(sms_team_id)
-        if not recipients:
-            logger.warning("sms_no_recipients", team_id=str(sms_team_id))
-            return sms
+            recipients = await links.recipients_for_unassigned()
+            if not recipients:
+                logger.warning("sms_unknown_number", to_number=normalized_to)
+                return sms
+        else:
+            recipients = await links.recipients_for_team(sms_team_id)
+            if not recipients:
+                logger.warning("sms_no_recipients", team_id=str(sms_team_id))
+                return sms
 
         # Закрыть autobegun read-tx перед write-транзакциями fan-out.
         await session.commit()
