@@ -416,6 +416,17 @@ describe('Combobox — очистка и состояние «нет выбор�
     expect(clearButton()).not.toBeInTheDocument();
   });
 
+  it('открытие при `pinned`-сбросе очищает поле для ввода (не нужно стирать «Все почты»)', async () => {
+    const user = userEvent.setup();
+    render(<Harness initialValue="" initialQuery="Все почты" />);
+
+    await user.click(input());
+
+    expect(onQueryChange).toHaveBeenLastCalledWith('');
+    expect(input().value).toBe('');
+    expect(screen.getByRole('listbox')).toBeInTheDocument();
+  });
+
   it('выбрана не-`pinned` опция → `X` рендерится', () => {
     render(<Harness initialValue="1" initialQuery="5108 Klyro Forge alpha@postapp.store" />);
 

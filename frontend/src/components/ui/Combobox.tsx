@@ -143,7 +143,14 @@ export function Combobox({
     if (disabled) return;
     setOpen(true);
     setDirty(false); // точка сброса (1): открытие кликом/фокусом/шевроном/↓/↑/Home/End
-  }, [disabled]);
+    // mode='select': при открытии поле пустое — ввод сразу фильтрует список, без удаления
+    // лейбла pinned-опции («Все почты» / «Все номера»). При закрытии без выбора текст
+    // возвращается к лейблу выбранной опции (closePanel). Если выбранной опции нет в наборе
+    // (застывший лейбл) — текст НЕ очищаем.
+    if (mode === 'select' && query !== '' && (value === null || selectedOption !== undefined)) {
+      onQueryChange('');
+    }
+  }, [disabled, mode, query, value, selectedOption, onQueryChange]);
 
   /** Закрытие БЕЗ выбора (Escape при открытом / Tab / клик вне / шеврон). */
   const closePanel = useCallback(() => {
