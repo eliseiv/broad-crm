@@ -180,17 +180,80 @@ describe('SmsPage', () => {
     feed.value = baseFeed({ messages: [makeMessage(1)] });
     render(<SmsPage />);
 
-    const numberSelect = screen.getByLabelText('Фильтр по номеру') as HTMLSelectElement;
+    // Фильтр номера — `ui/Combobox` `mode='select'` (не нативный <select>).
+    const numberFilter = screen.getByRole('combobox', { name: 'Фильтр по номеру' });
     const teamSelect = screen.getByLabelText('Фильтр по команде') as HTMLSelectElement;
 
-    await user.selectOptions(numberSelect, '5');
+    await user.click(numberFilter);
+    await user.click(screen.getByRole('option', { name: '+15551234567' }));
     await user.selectOptions(teamSelect, 't1');
 
-    // Оба контрола сохранили значение — второй выбор не сбросил первый.
-    expect(numberSelect.value).toBe('5');
+    // Combobox показывает лейбл выбранной опции; team Select сохранил значение.
+    expect(numberFilter).toHaveValue('+15551234567');
     expect(teamSelect.value).toBe('t1');
     // Хук ленты получил оба фильтра одновременно (комбинируемость AND).
     expect(useSmsMessagesSpy).toHaveBeenLastCalledWith({ numberId: 5, teamId: 't1' });
+  });
+
+  it('фильтр номера: ввод сужает выпадающий список, ленту меняет только выбор', async () => {
+    const user = userEvent.setup();
+    numbersQuery.value = numbersData([
+      makeNumber(1, { phone_number: '+15551110001', label: 'Alpha' }),
+      makeNumber(2, { phone_number: '+15552220002', label: 'Beta' }),
+      makeNumber(3, { phone_number: '+19993330003' }),
+    ]);
+    feed.value = baseFeed({ messages: [makeMessage(1)] });
+    render(<SmsPage />);
+
+    const numberFilter = screen.getByRole('combobox', { name: 'Фильтр по номеру' });
+    // До ввода/выбора лента без numberId.
+    expect(useSmsMessagesSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ numberId: undefined }),
+    );
+
+    await user.click(numberFilter);
+    // Открытие показывает ВСЕ опции (включая pinned «Все номера»).
+    expect(
+      within(screen.getByRole('listbox'))
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['Все номера', '+15551110001 · Alpha', '+15552220002 · Beta', '+19993330003']);
+
+    await user.clear(numberFilter);
+    await user.type(numberFilter, '222');
+    // Ввод сузил список; лента ещё НЕ сменила фильтр (mode=select — текст эфемерен).
+    expect(
+      within(screen.getByRole('listbox'))
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['Все номера', '+15552220002 · Beta']);
+    expect(useSmsMessagesSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ numberId: undefined }),
+    );
+
+    await user.click(screen.getByRole('option', { name: '+15552220002 · Beta' }));
+    expect(useSmsMessagesSpy).toHaveBeenLastCalledWith(
+      expect.objectContaining({ numberId: 2 }),
+    );
+  });
+
+  it('фильтр номера: опции отсортированы по phone_number (не по id)', async () => {
+    const user = userEvent.setup();
+    // Намеренно отдаём в порядке id desc / не по номеру.
+    numbersQuery.value = numbersData([
+      makeNumber(30, { phone_number: '+19990000030' }),
+      makeNumber(10, { phone_number: '+15550000010' }),
+      makeNumber(20, { phone_number: '+17770000020' }),
+    ]);
+    feed.value = baseFeed({ messages: [makeMessage(1)] });
+    render(<SmsPage />);
+
+    await user.click(screen.getByRole('combobox', { name: 'Фильтр по номеру' }));
+    expect(
+      within(screen.getByRole('listbox'))
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['Все номера', '+15550000010', '+17770000020', '+19990000030']);
   });
 
   it('догрузка по курсору: пересечение sentinel вызывает loadMore', () => {

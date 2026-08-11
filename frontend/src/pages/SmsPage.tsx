@@ -6,6 +6,8 @@ import { InsufficientPermissions } from '@/components/InsufficientPermissions';
 import { SmsMessageCard } from '@/components/SmsMessageCard';
 import { SmsNumberRow } from '@/components/SmsNumberRow';
 import { Button } from '@/components/ui/Button';
+import { Combobox } from '@/components/ui/Combobox';
+import type { ComboboxOption } from '@/components/ui/Combobox';
 import { Input } from '@/components/ui/Input';
 import { Select } from '@/components/ui/Select';
 import type { SelectOption } from '@/components/ui/Select';
@@ -133,6 +135,10 @@ function SmsContent() {
 
 function MessagesTab({ numbers, scope }: { numbers: SmsNumber[]; scope: ChannelTeamScope }) {
   const [numberId, setNumberId] = useState<number | undefined>(undefined);
+  // Текст `ui/Combobox` `mode='select'` (ADR-052 §2 по аналогии с «Почта»): эфемерен —
+  // фильтрует только выпадающий список; ленту меняет ТОЛЬКО выбор. «Нет фильтра» =
+  // одно состояние: value='' + query «Все номера» (pinned-сброс).
+  const [numberQuery, setNumberQuery] = useState('Все номера');
   // '' (все) · UUID команды · '__no_team__' → серверный `no_team=true` (ADR-055 §5.3).
   const [teamFilter, setTeamFilter] = useState('');
   // Единое правило пяти экранов (ADR-055 §6.2): фильтр рендерится при ≥ 2 доступных вариантах
@@ -142,22 +148,28 @@ function MessagesTab({ numbers, scope }: { numbers: SmsNumber[]; scope: ChannelT
   const { messages, phase, isFetchingMore, isReloading, hasMore, loadMore, reload } =
     useSmsMessages({ numberId, ...teamFilterParams(teamFilter) });
 
-  const numberOptions: SelectOption[] = useMemo(
-    () => [
-      { value: '', label: 'Все номера' },
-      ...numbers.map((n) => ({
+  // Опции: pinned «Все номера» → номера, отсортированные по `phone_number` (localeCompare).
+  // `keywords` = номер + label — ввод сужает список (ленту не трогает до выбора).
+  const numberOptions: ComboboxOption[] = useMemo(() => {
+    const sorted = [...numbers].sort((a, b) =>
+      a.phone_number.localeCompare(b.phone_number, undefined, { numeric: true }),
+    );
+    return [
+      { value: '', label: 'Все номера', pinned: true },
+      ...sorted.map((n) => ({
         value: String(n.id),
         label: n.label ? `${n.phone_number} · ${n.label}` : n.phone_number,
+        keywords: [n.phone_number, n.label ?? ''].filter((k) => k !== ''),
       })),
-    ],
-    [numbers],
-  );
+    ];
+  }, [numbers]);
   const teamOptions: SelectOption[] = useMemo(() => teamFilterOptions(scope), [scope]);
 
-  // Фильтры комбинируемы (AND): выбор одного НЕ сбрасывает другой (в отличие от «Почты»).
-  const handleNumberChange = (e: ChangeEvent<HTMLSelectElement>) => {
-    const v = e.target.value;
-    setNumberId(v ? Number(v) : undefined);
+  // Фильтры комбинируемы (AND): выбор одного НЕ сбрасывает другой.
+  const handleNumberChange = (v: string | null) => {
+    // С `pinned`-сбросом примитив шлёт '' (не null); null трактуем как сброс оборонительно.
+    const next = v ?? '';
+    setNumberId(next ? Number(next) : undefined);
   };
   const handleTeamChange = (e: ChangeEvent<HTMLSelectElement>) => {
     setTeamFilter(e.target.value);
@@ -180,12 +192,15 @@ function MessagesTab({ numbers, scope }: { numbers: SmsNumber[]; scope: ChannelT
 
   const toolbar = (
     <div className="flex flex-wrap items-center gap-2">
-      <div className="w-56">
-        <Select
+      <div className="w-64">
+        <Combobox
           aria-label="Фильтр по номеру"
+          mode="select"
           options={numberOptions}
           value={numberId != null ? String(numberId) : ''}
           onChange={handleNumberChange}
+          query={numberQuery}
+          onQueryChange={setNumberQuery}
         />
       </div>
       {showTeamFilter && (
