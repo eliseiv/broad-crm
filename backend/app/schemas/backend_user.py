@@ -160,6 +160,10 @@ class BackendUserRequest(BaseModel):
     sent_at: datetime
     tokens_spent: float | None = None
     provider_cost_usd: float | None = None
+    # `true` — себестоимость выведена из тарифной пачки (оценка сверху); `false` — точное
+    # значение; `null` — поле не отдано или себестоимости нет. Бэк уровня v1 поле не знает —
+    # отсутствующее нормализуется в `null`, 502 из-за него не возникает.
+    provider_cost_estimated: bool | None = None
     refunded: bool | None = None
 
 

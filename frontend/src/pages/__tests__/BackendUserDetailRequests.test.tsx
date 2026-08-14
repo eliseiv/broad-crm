@@ -144,6 +144,16 @@ describe('История запросов — «не измерено» ≠ но
     expect(cells()[3]).toHaveTextContent('$0.0004');
   });
 
+  it('`provider_cost_estimated: true` → «≈$…» и легенда оценки', async () => {
+    state.requests = [request({ provider_cost_usd: 1.6, provider_cost_estimated: true })];
+    await renderRequestsTab();
+
+    expect(cells()[3]).toHaveTextContent('≈$1.60');
+    expect(
+      screen.getByText('≈ — оценка сверху (точную цену провайдера восстановить нельзя)'),
+    ).toBeInTheDocument();
+  });
+
   it('легенда «— — себестоимость не измерена» есть при хотя бы одном прочерке', async () => {
     state.requests = [
       request({ provider_cost_usd: 0.5, tokens_spent: 10 }),

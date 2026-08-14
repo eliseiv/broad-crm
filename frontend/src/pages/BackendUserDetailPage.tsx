@@ -49,9 +49,12 @@ function formatSeconds(value: number | null | undefined): string {
  * (`$0.0004`) в «$0.00» — то же искажение, что и `null → $0.00`, только с другой стороны.
  * Хвостовые нули сверх двух знаков убираются: `0` → «$0.00», `0.0004` → «$0.0004».
  * Вызывается ТОЛЬКО для измеренного значения — `null` рендерится «—» на уровне ячейки.
+ * `estimated` добавляет «≈» перед знаком доллара: это оценка сверху (тарифная пачка
+ * крупнее фактической поштучной цены провайдера), а не точный счёт.
  */
-function formatProviderCostUsd(value: number): string {
-  return `$${value.toFixed(4).replace(/(\.\d{2})0+$/, '$1')}`;
+function formatProviderCostUsd(value: number, estimated = false): string {
+  const amount = `$${value.toFixed(4).replace(/(\.\d{2})0+$/, '$1')}`;
+  return estimated ? `≈${amount}` : amount;
 }
 
 /** «Не измерено» — title у прочерка новых колонок истории запросов (ADR-072 §5). */
@@ -472,6 +475,9 @@ function RequestsTab({ backendId, userId }: { backendId: string; userId: string 
   const hasNotMeasured = items.some(
     (request) => request.provider_cost_usd == null || request.tokens_spent == null,
   );
+  const hasEstimated = items.some(
+    (request) => request.provider_cost_usd != null && request.provider_cost_estimated === true,
+  );
 
   return (
     <div className="border-t border-border-subtle">
@@ -539,7 +545,10 @@ function RequestsTab({ backendId, userId }: { backendId: string; userId: string 
                     {request.provider_cost_usd == null ? (
                       <NotMeasured />
                     ) : (
-                      formatProviderCostUsd(request.provider_cost_usd)
+                      formatProviderCostUsd(
+                        request.provider_cost_usd,
+                        request.provider_cost_estimated === true,
+                      )
                     )}
                   </td>
                   <td className="px-5 py-3 text-text-secondary">
@@ -554,8 +563,11 @@ function RequestsTab({ backendId, userId }: { backendId: string; userId: string 
           </tbody>
         </table>
       </div>
-      {hasNotMeasured && (
-        <p className="px-5 py-3 text-[12px] text-text-secondary">— — себестоимость не измерена</p>
+      {(hasNotMeasured || hasEstimated) && (
+        <div className="space-y-1 px-5 py-3 text-[12px] text-text-secondary">
+          {hasNotMeasured && <p>— — себестоимость не измерена</p>}
+          {hasEstimated && <p>≈ — оценка сверху (точную цену провайдера восстановить нельзя)</p>}
+        </div>
       )}
     </div>
   );
