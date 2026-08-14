@@ -952,7 +952,7 @@ RBAC: чтение — `require("backend-users","view")`; admin-операции
 
 Объединённый список пользователей + сводка. Query: `backend_id?` (UUID; нет — «Все приложения»: fan-out по всем бэкам с admin-ключом), `search?`, `date_from?`/`date_to?` (ISO-дата, фильтр по регистрации), `is_paid?`, `limit` (1–100, def 50), `offset`.
 
-**Response 200** — `BackendUsersListResponse`: `{ total, items: BackendUserItem[], stats: { users_total, paid_users, payments_sum_usd, cr_percent }, errors: [{ backend_id, backend_name, message }] }`. `items` — merge источников по `registered_at DESC` (глубина окна ≤ 1000); `cr_percent` считает CRM; `errors[]` — не ответившие при fan-out бэки (partial data, UI показывает предупреждение). Упавший единственный источник (`backend_id` задан) → транзит его ошибки.
+**Response 200** — `BackendUsersListResponse`: `{ total, items: BackendUserItem[], stats: { users_total, paid_users, payments_sum_usd, cr_percent }, errors: [{ backend_id, backend_name, message }] }`. `items` — merge источников по `registered_at DESC` (глубина окна ≤ 1000); `cr_percent` считает CRM; `errors[]` — бэки, чьих данных в выборке нет (partial data, UI показывает предупреждение): **не ответившие** при fan-out **и не опрошенные** — те, у которых в CRM не задан Admin API Key (`Admin API Key не задан в CRM — бэк НЕ опрошен`). Второй случай обязателен: без него «Ничего не найдено» неотличимо от «пользователя нет», хотя его бэк в fan-out не входил (прод-инцидент `selquro`). Упавший единственный источник (`backend_id` задан) → транзит его ошибки; отсутствие ключа у единственного источника → `409 backend_admin_key_not_set`.
 
 ### GET /api/backend-users/{backend_id}/products
 

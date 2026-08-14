@@ -138,6 +138,14 @@ CRM — **прокси без собственного хранилища**: в�
   суммирование stats; упавший источник → `errors[]` ответа (partial data), при
   единственном источнике ошибка пробрасывается. Ответы бэка валидируются
   Pydantic-схемами (`schemas/backend_user.py`): не по контракту → 502.
+  > **Бэк реестра БЕЗ admin-ключа тоже попадает в `errors[]`**
+  > (`Admin API Key не задан в CRM — бэк НЕ опрошен`). Прод-инцидент `selquro`:
+  > инстанс был в реестре и под мониторингом, но без ключа, поэтому
+  > `list_with_admin_key()` убирал его из fan-out **без следа** — поиск
+  > существующего пользователя (и по `user_id`, и по `apphud_id`) давал
+  > «Ничего не найдено», неотличимое от «такого пользователя нет», хотя сам бэк
+  > находил его за 0.15 с. Разделение реестра — `BackendAdminSourceResolver.list_split()`;
+  > регресс-гейт — `tests/integration/test_backend_users_unqueried_sources.py`.
 - `api/backend_users.py` — RBAC `backend-users:view` / `backend-users:edit`
   (каталог прав, [ADR-021](../../adr/ADR-021-rbac-users-roles.md)); admin-операции
   пишут аудит-событие `backend_admin_action` (`infra/audit.py`, без секретов).

@@ -9,7 +9,10 @@ CRM — прокси к CRM Admin API бэков (contract v1): собствен
 DESC` списков и срез [offset, offset+limit). Контракт ограничивает страницу
 источника 100 записями, поэтому окно добирается постраничным дочитыванием;
 глубина окна ограничена `_MAX_WINDOW` (глубже UI не листает). Упавший источник
-не роняет ответ — он попадает в `errors[]` (partial-data warning в UI).
+не роняет ответ — он попадает в `errors[]` (partial-data warning в UI). Туда же
+попадает бэк реестра БЕЗ admin-ключа: опросить его нельзя, но и молчать нельзя —
+иначе «Ничего не найдено» неотличимо от «пользователя нет» (прод-инцидент
+`selquro`, ADR-069).
 """
 
 from __future__ import annotations
@@ -57,6 +60,7 @@ _SOURCE_PAGE_LIMIT = 100
 _MAX_WINDOW = 1000
 
 _CONTRACT_MISMATCH = "Бэк вернул данные не по контракту"
+_ADMIN_KEY_NOT_SET = "Admin API Key не задан в CRM — бэк НЕ опрошен"
 
 
 def _backend_fields(backend: Backend) -> dict[str, Any]:
@@ -103,9 +107,17 @@ class BackendUserService:
         `backend_id=None` — режим «Все приложения». Окно merge ограничено
         `_MAX_WINDOW` (422 не бросаем — глубже UI не запрашивает, срез вернётся пустым).
         """
-        sources = await self._resolve_sources(backend_id)
+        sources, unqueried = await self._resolve_sources(backend_id)
+        # Бэк без admin-ключа попадает в `errors[]`, а не выпадает молча: иначе «Ничего не
+        # найдено» неотличимо от «пользователя нет», хотя его бэк просто не опрашивался.
+        errors: list[BackendUsersSourceError] = [
+            BackendUsersSourceError(**_backend_fields(b), message=_ADMIN_KEY_NOT_SET)
+            for b in unqueried
+        ]
         if not sources:
-            return BackendUsersListResponse(total=0, items=[], stats=BackendUsersStats())
+            return BackendUsersListResponse(
+                total=0, items=[], stats=BackendUsersStats(), errors=errors
+            )
 
         window = min(offset + limit, _MAX_WINDOW)
         filters = {
@@ -129,7 +141,6 @@ class BackendUserService:
         merged: list[BackendUserItem] = []
         total = 0
         stats = BackendUsersStats()
-        errors: list[BackendUsersSourceError] = []
         for (backend, _client), result in zip(sources, results, strict=True):
             if isinstance(result, BaseException):
                 # Единственный источник — пробрасываем точную ошибку (404/502 и т.п.).
@@ -274,11 +285,17 @@ class BackendUserService:
 
     # --- источники ---
 
-    async def _resolve_sources(self, backend_id: uuid.UUID | None) -> list[BackendSource]:
-        """Источники агрегации: один бэк (обязан иметь admin-ключ) или все с ключом."""
+    async def _resolve_sources(
+        self, backend_id: uuid.UUID | None
+    ) -> tuple[list[BackendSource], list[Backend]]:
+        """Источники агрегации + бэки, которые опросить нельзя (нет admin-ключа).
+
+        Для одного бэка список «не опрошенных» всегда пуст: отсутствие ключа там —
+        явная ошибка `409 backend_admin_key_not_set`, а не тихая деградация.
+        """
         if backend_id is not None:
-            return [await self._require_source(backend_id)]
-        return await self._sources.list_with_admin_key()
+            return [await self._require_source(backend_id)], []
+        return await self._sources.list_split()
 
     async def _require_source(self, backend_id: uuid.UUID) -> BackendSource:
         return await self._sources.require(backend_id)

@@ -160,7 +160,9 @@ function BackendUsersList() {
         {isFetching && !isLoading && <Spinner className="ml-auto text-text-tertiary" />}
       </div>
 
-      {/* Partial-data warning: часть бэков не ответила (агрегация продолжена без них). */}
+      {/* Partial-data warning: бэк не ответил ИЛИ не опрашивался (нет Admin API Key) —
+          агрегация продолжена без него. Молчать нельзя: «Ничего не найдено» иначе
+          неотличимо от «пользователя нет», хотя его бэк в выборку не входил. */}
       {sourceErrors.length > 0 && (
         <div className="mb-4 flex items-start gap-3 rounded-card border border-status-yellow/40 bg-status-yellow/10 px-4 py-3">
           <AlertTriangle
@@ -168,7 +170,7 @@ function BackendUsersList() {
             aria-hidden="true"
           />
           <div className="text-[13px] text-text-primary">
-            <p className="font-medium">Часть бэков не ответила — данные неполные:</p>
+            <p className="font-medium">Часть бэков не попала в выборку — данные неполные:</p>
             {sourceErrors.map((e) => (
               <p key={e.backend_id} className="text-text-secondary">
                 {formatBackendLabel(e.backend_name, e.backend_code)} — {e.message}
