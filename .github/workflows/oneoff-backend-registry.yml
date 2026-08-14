@@ -1,21 +1,22 @@
-# ОДНОРАЗОВЫЙ диагностический workflow — удаляется сразу после использования.
+# ОДНОРАЗОВЫЙ workflow — удаляется сразу после использования.
 #
 # Зачем: инцидент `selquro` — поиск существующего пользователя на странице «Юзеры бэков»
-# давал «Ничего не найдено», потому что бэк не входил в fan-out. Нужно увидеть РЕЕСТР
-# бэков прода: какие подключены, у кого задан Admin API Key. Локального доступа к
-# прод-серверу нет — единственный путь к нему проходит через SSH-секреты этого репозитория.
+# давал «Ничего не найдено», потому что бэк не входил в fan-out: он есть в реестре, но
+# Admin API Key ему не задан. Локального доступа к прод-серверу нет — единственный путь к
+# нему проходит через SSH-секреты этого репозитория.
 #
-# Секреты НЕ печатаются: выводятся только `code`, `name`, `domain` и БУЛЕВ флаг наличия
-# ключа (`admin_api_key_encrypted IS NOT NULL`), сами значения ключей не читаются.
-name: oneoff — backend registry (read-only)
+# Секреты НЕ печатаются: в лог идут только `code`, `name`, `domain` и БУЛЕВ флаг наличия
+# ключа. Значения ключей приходят одним секретом `BACKEND_ADMIN_KEYS` (JSON `{code: key}`)
+# и уходят на сервер переменной окружения.
+name: oneoff — backend registry
 
 on:
   workflow_dispatch:
     inputs:
-      set_admin_key_for_code:
-        description: "Код бэка, которому задать Admin API Key из секрета SELQURO_ADMIN_KEY (пусто = только чтение)"
+      apply_keys:
+        description: "true = записать ключи из секрета BACKEND_ADMIN_KEYS (иначе только чтение)"
         required: false
-        default: ""
+        default: "false"
 
 jobs:
   registry:
@@ -31,6 +32,49 @@ jobs:
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
 
+      - name: Apply Admin API Keys from secret
+        if: ${{ inputs.apply_keys == 'true' }}
+        env:
+          KEYS_JSON: ${{ secrets.BACKEND_ADMIN_KEYS }}
+        run: |
+          if [ -z "${KEYS_JSON}" ]; then
+            echo "::error::secret BACKEND_ADMIN_KEYS is empty"; exit 1
+          fi
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "KEYS_JSON='${KEYS_JSON}' bash -s" <<'EOS'
+          set -uo pipefail
+          cd /opt/crm
+          # Ключ шифруется тем же Fernet-ключом, которым пользуется backend
+          # (`app.infra.crypto.encrypt_secret`) — иначе CRM не сможет его расшифровать.
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T \
+            -e KEYS_JSON="$KEYS_JSON" backend python - <<'PY'
+          import asyncio, json, os
+
+          from sqlalchemy import text
+
+          from app.db import get_engine
+          from app.infra.crypto import encrypt_secret
+
+
+          async def main() -> None:
+              keys = json.loads(os.environ["KEYS_JSON"])
+              async with get_engine().begin() as conn:
+                  for code, plain in keys.items():
+                      updated = (
+                          await conn.execute(
+                              text(
+                                  "UPDATE backends SET admin_api_key_encrypted = :enc, "
+                                  "updated_at = now() WHERE code = :code RETURNING code"
+                              ),
+                              {"enc": encrypt_secret(plain), "code": code},
+                          )
+                      ).scalars().all()
+                      print(f"code={code}: updated={len(updated)}")
+
+
+          asyncio.run(main())
+          PY
+          EOS
+
       - name: Dump registry (no secrets)
         run: |
           ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
@@ -39,47 +83,5 @@ jobs:
           docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
             psql -U "$(grep -E '^POSTGRES_USER=' .env | cut -d= -f2-)" \
                  -d "$(grep -E '^POSTGRES_DB=' .env | cut -d= -f2-)" \
-                 -c "SELECT code, name, domain, (admin_api_key_encrypted IS NOT NULL) AS has_admin_key, check_status FROM backends ORDER BY code;"
-          EOS
-
-      - name: Set Admin API Key for one backend (optional)
-        if: ${{ inputs.set_admin_key_for_code != '' }}
-        env:
-          TARGET_CODE: ${{ inputs.set_admin_key_for_code }}
-          ADMIN_KEY: ${{ secrets.SELQURO_ADMIN_KEY }}
-        run: |
-          if [ -z "${ADMIN_KEY}" ]; then
-            echo "::error::secret SELQURO_ADMIN_KEY is empty"; exit 1
-          fi
-          # Ключ уходит на сервер переменной окружения SSH-сессии и шифруется тем же
-          # Fernet-ключом, которым пользуется backend (`app.infra.crypto.encrypt_secret`),
-          # — иначе CRM не сможет его расшифровать. В stdout попадает только результат.
-          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
-            "TARGET_CODE='${TARGET_CODE}' ADMIN_KEY='${ADMIN_KEY}' bash -s" <<'EOS'
-          set -uo pipefail
-          cd /opt/crm
-          docker compose --env-file .env -f infra/docker-compose.yml exec -T \
-            -e TARGET_CODE="$TARGET_CODE" -e ADMIN_KEY="$ADMIN_KEY" backend python - <<'PY'
-          import asyncio, os
-          from sqlalchemy import text
-          from app.db import get_engine
-          from app.infra.crypto import encrypt_secret
-
-          async def main() -> None:
-              code = os.environ["TARGET_CODE"]
-              encrypted = encrypt_secret(os.environ["ADMIN_KEY"])
-              async with get_engine().begin() as conn:
-                  updated = (
-                      await conn.execute(
-                          text(
-                              "UPDATE backends SET admin_api_key_encrypted = :enc, updated_at = now() "
-                              "WHERE code = :code RETURNING code"
-                          ),
-                          {"enc": encrypted, "code": code},
-                      )
-                  ).scalars().all()
-              print("updated:", updated)
-
-          asyncio.run(main())
-          PY
+                 -c "SELECT code, name, domain, (admin_api_key_encrypted IS NOT NULL) AS has_admin_key, check_status FROM backends ORDER BY has_admin_key, code;"
           EOS
