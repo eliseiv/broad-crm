@@ -17,6 +17,10 @@ on:
         description: "true = записать ключи из секрета BACKEND_ADMIN_KEYS (иначе только чтение)"
         required: false
         default: "false"
+      search:
+        description: "Строка поиска для проверки fan-out (user_id или apphud_id)"
+        required: false
+        default: ""
 
 jobs:
   registry:
@@ -69,6 +73,47 @@ jobs:
                           )
                       ).scalars().all()
                       print(f"code={code}: updated={len(updated)}")
+
+
+          asyncio.run(main())
+          PY
+          EOS
+
+      - name: Verify fan-out search
+        if: ${{ inputs.search != '' }}
+        env:
+          SEARCH: ${{ inputs.search }}
+        run: |
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "SEARCH='${SEARCH}' bash -s" <<'EOS'
+          set -uo pipefail
+          cd /opt/crm
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T \
+            -e SEARCH="$SEARCH" backend python - <<'PY'
+          import asyncio, os
+
+          from app.db import get_sessionmaker
+          from app.repositories.backend_repository import BackendRepository
+          from app.services.backend_user_service import BackendUserService
+
+
+          async def main() -> None:
+              search = os.environ["SEARCH"]
+              async with get_sessionmaker()() as session:
+                  service = BackendUserService(repository=BackendRepository(session))
+                  result = await service.list_users(
+                      backend_id=None,
+                      search=search,
+                      date_from=None,
+                      date_to=None,
+                      is_paid=None,
+                      limit=20,
+                      offset=0,
+                  )
+              print("total:", result.total)
+              for item in result.items:
+                  print(f"  {item.backend_code}: id={item.id} external_id={item.external_id}")
+              for error in result.errors:
+                  print(f"  ERROR {error.backend_code}: {error.message}")
 
 
           asyncio.run(main())
