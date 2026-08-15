@@ -19,6 +19,7 @@ from app.infra.telegram import TelegramClient
 from app.logging import configure_logging, get_logger
 from app.repositories.user_repository import ensure_superadmin_anchor
 from app.services.ai_key_balance_sync_service import AiKeyBalanceSyncService
+from app.services.ai_key_credit_probe_service import AiKeyCreditProbeService
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.backend_monitor_service import BackendMonitorService
 from app.services.mail_dispatcher_service import MailDispatcherService
@@ -117,6 +118,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     )
     ai_key_balance_sync_task = asyncio.create_task(ai_key_balance_sync.run())
 
+    ai_key_credit_telegram = (
+        TelegramClient(settings.telegram_bot_token, settings.telegram_chat_id)
+        if settings.notifier_enabled
+        else None
+    )
+    ai_key_credit_probe = AiKeyCreditProbeService(
+        sessionmaker=get_sessionmaker(),
+        telegram=ai_key_credit_telegram,
+        settings=settings,
+    )
+    ai_key_credit_probe_task = asyncio.create_task(ai_key_credit_probe.run())
+
     # Монитор доступности прокси (modules/proxies, ADR-019): стартует ВСЕГДА
     # (не гейтится Telegram) — check_status для UI работает независимо от бота.
     # Telegram-клиент передаётся только при notifier_enabled.
@@ -188,6 +201,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     ai_key_balance_sync_task.cancel()
     with suppress(asyncio.CancelledError):
         await ai_key_balance_sync_task
+
+    ai_key_credit_probe_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await ai_key_credit_probe_task
 
     proxy_monitor_task.cancel()
     with suppress(asyncio.CancelledError):

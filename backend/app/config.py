@@ -119,6 +119,11 @@ class Settings(BaseSettings):
     ai_key_check_interval_sec: int = 900
     # Интервал синхронизации оценочного остатка (Admin Cost API, ADR-070).
     ai_key_balance_sync_interval_sec: int = 3600
+    # Интервал credit-probe (минимальный платный inference, ADR-075).
+    ai_key_credit_probe_interval_sec: int = 3600
+    # Модели для минимального probe (override через env).
+    ai_key_credit_probe_openai_model: str = "gpt-4o-mini"
+    ai_key_credit_probe_anthropic_model: str = "claude-haiku-4-5-20251001"
     # Таймаут HTTP-запроса к провайдеру при проверке ключа (GET /v1/models).
     ai_provider_timeout_sec: float = 10.0
     openai_api_base: str = "https://api.openai.com/v1"

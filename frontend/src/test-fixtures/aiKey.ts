@@ -19,6 +19,9 @@ export const AI_KEY_TEST_DEFAULTS: Omit<AiKey, 'id' | 'name' | 'provider'> = {
   balance_sync_status: null,
   balance_sync_error: null,
   balance_alert_level: null,
+  credit_status: null,
+  credit_last_probed_at: null,
+  credit_probe_error: null,
 };
 
 export function makeTestAiKey(

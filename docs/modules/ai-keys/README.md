@@ -6,7 +6,7 @@
 
 Управление API-ключами AI-провайдеров (**OpenAI**, **Anthropic**): добавление, список, **редактирование (`name`/`provider`/`key` + поля контура остатка)**, удаление, **перестановка порядка внутри провайдер-группы (drag-and-drop)**, безопасное хранение (Fernet), маскирование в UI/API и **периодическая автоматическая проверка валидности** ключа с уведомлением администратора в Telegram при поломке (🔴) и восстановлении (🟢). Дополнительно — **опциональный контур оценочного остатка** ([ADR-070](../../adr/ADR-070-ai-key-estimated-balance-monitor.md)): якорь баланса + расход по Admin Cost API провайдера, прогресс на карточке и Telegram-алерты 🟡/🔴/🟢/🟠. На UI ключи **сгруппированы по провайдерам** (секции OpenAI / Anthropic). Модель — [03-data-model.md](../../03-data-model.md#таблица-ai_keys), API-контракт — [04-api.md](../../04-api.md#ai-keys), решения — [ADR-010](../../adr/ADR-010-ai-key-monitor-vnutri-backend.md), [ADR-011](../../adr/ADR-011-poryadok-blokov-server-side-dnd-kit.md), [ADR-070](../../adr/ADR-070-ai-key-estimated-balance-monitor.md).
 
-**Два контура — не смешивать (нормативно).** `check_status` (health, inference-ключ, `GET /v1/models`) и `balance_*` (остаток, Admin API key, Cost API) — независимые наборы полей, независимые фоновые сервисы, независимые состояния и алерты. Сломанный ключ может иметь актуальный остаток, исправный — устаревший; ни одно состояние не выводится из другого.
+**Три контура — не смешивать (нормативно).** `check_status` (health, `GET /v1/models`), `balance_*` (оценочный остаток, Admin Cost API, [ADR-070](../../adr/ADR-070-ai-key-estimated-balance-monitor.md)) и `credit_*` (бинарный credit-probe платным минимальным inference, [ADR-075](../../adr/ADR-075-ai-key-credit-probe.md)) — независимые наборы полей и сервисов. Health ≠ кредиты ≠ оценочный USD-остаток.
 
 ## Out of scope (Этап 1)
 
@@ -14,7 +14,7 @@
 - Перемещение ключа между провайдер-группами перетаскиванием (провайдер меняется только через `PATCH /api/ai-keys/{id}`, не drag-and-drop).
 - **Точный** баланс/остаток средств по ключу: провайдеры не отдают выписку по ключу, поэтому CRM показывает **оценку** (`якорь − расход по Admin Cost API`), а не баланс провайдера ([ADR-070](../../adr/ADR-070-ai-key-estimated-balance-monitor.md), [TD-020](../../100-known-tech-debt.md) сужен). ⚠️ Прежняя формулировка «детектируем только валидность/квоту» **устарела** — оценочный остаток со Спринта [ADR-070](../../adr/ADR-070-ai-key-estimated-balance-monitor.md) **в scope**, см. [«Контур оценочного остатка»](#контур-оценочного-остатка-adr-070-нормативно).
 - Автоматическое переякорение после пополнения: пополнение в кабинете провайдера CRM не видит — оператор обновляет баланс вручную (`POST /api/ai-keys/{id}/balance/reset`).
-- Проверка через платные эндпоинты (тратящие токены).
+- ~~Проверка через платные эндпоинты (тратящие токены).~~ **Снято [ADR-075](../../adr/ADR-075-ai-key-credit-probe.md):** hourly credit-probe минимальным inference — in scope (бинарно «есть/нет кредитов», без Admin key).
 - Провайдеры кроме OpenAI/Anthropic (расширяются добавлением в enum + адаптер).
 - Использование ключей приложением для реальных вызовов моделей (только реестр + мониторинг живости).
 
@@ -168,6 +168,17 @@
 ```
 
 `<reason>` — причина `error` (см. маппинг выше) либо «Провайдер временно недоступен» для серии `unknown`.
+
+### Контур credit-probe ([ADR-075](../../adr/ADR-075-ai-key-credit-probe.md), нормативно)
+
+Четвёртая фоновая задача модуля (после health и balance-sync). **Всегда** для ключей с `check_status=working`. Без Admin API key.
+
+- **Цикл:** `poll_once()` → `asyncio.sleep(AI_KEY_CREDIT_PROBE_INTERVAL_SEC)` (default **3600 с**).
+- **Запрос:** минимальный inference (`max_tokens=1`, prompt `ping`):
+  - OpenAI `POST …/chat/completions`, модель `AI_KEY_CREDIT_PROBE_OPENAI_MODEL` (default `gpt-4o-mini`);
+  - Anthropic `POST …/messages`, модель `AI_KEY_CREDIT_PROBE_ANTHROPIC_MODEL` (default `claude-haiku-4-5-20251001`).
+- **Исходы:** `ok` / `depleted` пишутся в `credit_status`; `unknown` (таймаут/`5xx`/rate-limit/auth) — **не меняет** статус.
+- **Telegram:** `≠ depleted → depleted` → 🔴 «Нет кредитов» (+ бэки); `depleted → ok` → 🟢 «Кредиты на ключе восстановлены».
 
 ### Группировка по провайдерам и перестановка (нормативно)
 

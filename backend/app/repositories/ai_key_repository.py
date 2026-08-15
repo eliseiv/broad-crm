@@ -163,3 +163,24 @@ class AiKeyRepository:
             values["provider_api_key_id"] = provider_api_key_id
         stmt = update(AiKey).where(AiKey.id == ai_key_id).values(**values)
         await self._session.execute(stmt)
+
+    async def update_credit_probe(
+        self,
+        ai_key_id: uuid.UUID,
+        *,
+        credit_status: str,
+        credit_probe_error: str | None,
+        credit_last_probed_at: datetime,
+    ) -> None:
+        """Обновляет поля credit-probe (ADR-075)."""
+        stmt = (
+            update(AiKey)
+            .where(AiKey.id == ai_key_id)
+            .values(
+                credit_status=credit_status,
+                credit_probe_error=credit_probe_error,
+                credit_last_probed_at=credit_last_probed_at,
+                updated_at=func.now(),
+            )
+        )
+        await self._session.execute(stmt)

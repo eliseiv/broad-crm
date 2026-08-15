@@ -173,6 +173,22 @@ def build_key_balance_sync_failed(
     )
 
 
+def build_key_credit_depleted(
+    name: str, last4: str | None, backends: Sequence[BackendRef] = ()
+) -> str:
+    """🔴 Нет кредитов на ключе (ADR-075 credit-probe)."""
+    return (
+        f"{_CRITICAL_HEADER}\n{_key_block(name, last4)}\n"
+        f"Нет кредитов на ключе"
+        f"{_backends_block(backends)}"
+    )
+
+
+def build_key_credit_recovered(name: str, last4: str | None) -> str:
+    """🟢 Кредиты на ключе восстановлены (ADR-075)."""
+    return f"{_RECOVERY_HEADER}\n{_key_block(name, last4)}\nКредиты на ключе восстановлены"
+
+
 def _proxy_block(name: str, host: str, port: int) -> str:
     """Блок идентификации прокси: имя в кавычках + `<host>:<port>`."""
     return f'Прокси "{name}" {host}:{port}'
@@ -210,6 +226,8 @@ __all__ = [
     "build_key_balance_low",
     "build_key_balance_recovered",
     "build_key_balance_sync_failed",
+    "build_key_credit_depleted",
+    "build_key_credit_recovered",
     "build_key_error",
     "build_key_recovery",
     "build_offline",

@@ -48,6 +48,13 @@ class BalanceAlertLevel(str, enum.Enum):
     depleted = "depleted"
 
 
+class CreditStatus(str, enum.Enum):
+    """Бинарный исход credit-probe (ADR-075): есть кредиты / нет."""
+
+    ok = "ok"
+    depleted = "depleted"
+
+
 class AiKeyStatus(str, enum.Enum):
     """Конечный автомат статуса проверки ключа (03-data-model.md).
 
@@ -77,6 +84,10 @@ class AiKey(Base):
         CheckConstraint(
             "balance_alert_level IS NULL OR balance_alert_level IN ('normal','low','depleted')",
             name="ck_ai_keys_balance_alert_level",
+        ),
+        CheckConstraint(
+            "credit_status IS NULL OR credit_status IN ('ok','depleted')",
+            name="ck_ai_keys_credit_status",
         ),
     )
 
@@ -125,3 +136,8 @@ class AiKey(Base):
     )
     provider_api_key_id: Mapped[str | None] = mapped_column(Text, nullable=True)
     billing_admin_key_encrypted: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)
+    credit_status: Mapped[str | None] = mapped_column(Text, nullable=True)
+    credit_last_probed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    credit_probe_error: Mapped[str | None] = mapped_column(Text, nullable=True)

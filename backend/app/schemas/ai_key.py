@@ -18,6 +18,7 @@ from app.models.ai_key import (
     AiProvider,
     BalanceAlertLevel,
     BalanceSyncStatus,
+    CreditStatus,
 )
 
 
@@ -97,6 +98,9 @@ class AiKeyListItem(BaseModel):
     balance_sync_status: BalanceSyncStatus | None = None
     balance_sync_error: str | None = None
     balance_alert_level: BalanceAlertLevel | None = None
+    credit_status: CreditStatus | None = None
+    credit_last_probed_at: datetime | None = None
+    credit_probe_error: str | None = None
 
 
 class AiKeyListResponse(BaseModel):

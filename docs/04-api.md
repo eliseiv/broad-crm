@@ -422,14 +422,15 @@ Reveal SSH-пароля сервера по требованию (для detail-
 
 Реестр API-ключей AI-провайдеров с автоматической проверкой валидности. Модуль — [modules/ai-keys](modules/ai-keys/README.md), модель — [03-data-model.md](03-data-model.md#таблица-ai_keys), решение — [ADR-010](adr/ADR-010-ai-key-monitor-vnutri-backend.md). Все эндпоинты требуют JWT. **Полный ключ никогда не возвращается** — только маска `key_masked`.
 
-**Два независимых контура (нормативно, [ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md) §1).** У ключа два несвязанных набора полей и два фоновых сервиса:
+**Три независимых контура (нормативно).** У ключа три несвязанных набора полей и фоновых сервисов:
 
 | Контур | Поля ответа | Секрет | Что проверяет |
 |--------|-------------|--------|----------------|
 | **Health** | `check_status`, `error_message`, `last_checked_at` | inference-ключ (`key`) | Валидность ключа (`GET /v1/models`, [ADR-010](adr/ADR-010-ai-key-monitor-vnutri-backend.md)) |
-| **Balance** (оценочный остаток) | `balance_monitoring_enabled` + прочие `balance_*` | Admin API key (`billing_admin_key`) | Оценка остатка: `balance_initial_usd − расход с якоря` по Admin Cost API провайдера |
+| **Balance** (оценочный остаток) | `balance_monitoring_enabled` + прочие `balance_*` | Admin API key (`billing_admin_key`) | Оценка остатка: `balance_initial_usd − расход с якоря` по Admin Cost API ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md)) |
+| **Credit** (бинарный probe) | `credit_status`, `credit_last_probed_at`, `credit_probe_error` | inference-ключ | Есть ли кредиты: hourly минимальный inference ([ADR-075](adr/ADR-075-ai-key-credit-probe.md)) |
 
-Контуры **не влияют друг на друга**: `check_status` не зависит от состояния баланса и наоборот. Контур Balance **опционален** и по умолчанию **выключен** (`balance_monitoring_enabled=false`).
+Контуры **не влияют друг на друга**. Balance **опционален** (`balance_monitoring_enabled=false` по умолчанию). Credit-probe **всегда** для ключей с `check_status=working`.
 
 ### Схема `AiKeyListItem`
 
@@ -454,7 +455,10 @@ Reveal SSH-пароля сервера по требованию (для detail-
   "balance_last_sync_at": "2026-07-30T11:00:00Z",
   "balance_sync_status": "ok",
   "balance_sync_error": null,
-  "balance_alert_level": "normal"
+  "balance_alert_level": "normal",
+  "credit_status": "ok",
+  "credit_last_probed_at": "2026-08-15T12:00:00Z",
+  "credit_probe_error": null
 }
 ```
 
@@ -463,6 +467,7 @@ Reveal SSH-пароля сервера по требованию (для detail-
 - `backend_count` — `integer` ([ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)); число бэков, использующих ключ (`COUNT` по `backends.ai_key_id`). Для свёрнутой секции «Бэки» в detail-view ИИ-ключа («Бэков: N») без вызова `GET /api/ai-keys/{id}/backends`.
 - `key_masked` — производное: `"<первые4>…<последние4>"` (разделитель `…` U+2026), например `sk-p…bA3T`. Для ключа короче 8 символов — полная маска `"********"`. Правило — [modules/ai-keys](modules/ai-keys/README.md#правило-маски-key_masked). Backend НИКОГДА не отдаёт полный ключ или его расшифровку.
 - `check_status` ∈ {`pending`,`working`,`error`}. `error_message` — рус. причина при `error` (иначе `null`).
+- `credit_status` ∈ {`ok`,`depleted`} или `null` (ещё не было probe). `credit_probe_error` — рус. причина при `depleted` (иначе `null`). `credit_last_probed_at` — время последнего конклюзивного probe.
 
 **Поля контура Balance ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md)).** Присутствуют в ответе **всегда** (в т.ч. при выключенном мониторинге — тогда все, кроме флага, `null`). Денежные поля — **строки** (`Decimal`, БД `numeric(12,4)`, сериализация JSON — строкой, напр. `"182.4300"`), а не числа:
 

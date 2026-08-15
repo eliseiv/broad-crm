@@ -243,6 +243,9 @@ export type BalanceSyncStatus = 'ok' | 'error' | 'unknown';
 /** Уровень алерта по остатку (ADR-070). */
 export type BalanceAlertLevel = 'normal' | 'low' | 'depleted';
 
+/** Бинарный credit-probe (ADR-075): есть кредиты / нет. */
+export type CreditStatus = 'ok' | 'depleted';
+
 /** Элемент списка AI-ключей. Полный ключ не возвращается — только маска. */
 export interface AiKey {
   id: string;
@@ -272,6 +275,9 @@ export interface AiKey {
   balance_sync_status: BalanceSyncStatus | null;
   balance_sync_error: string | null;
   balance_alert_level: BalanceAlertLevel | null;
+  credit_status: CreditStatus | null;
+  credit_last_probed_at: string | null;
+  credit_probe_error: string | null;
 }
 
 export interface AiKeysListResponse {

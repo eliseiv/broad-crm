@@ -314,6 +314,16 @@ CREATE INDEX ix_servers_position ON servers (position);
 >
 > **Целостность контура — на уровне сервиса, не БД (нормативно).** Инвариант «`balance_monitoring_enabled=true` ⇒ заданы `billing_admin_key_encrypted`, `balance_initial_usd`, `balance_anchor_at`» **не выражен табличным CHECK**: он проверяется в сервисном слое (`400 ai_key_bad_request`, [04-api.md](04-api.md#patch-apiai-keysid)), а фоновая синхронизация дополнительно пропускает строки, где данных не хватает. Прямая правка БД в обход API может оставить строку в неполном состоянии — это не сломает sync (ключ будет просто пропущен), но и не будет замечено. Ужесточение до табличного CHECK — [TD-083](100-known-tech-debt.md).
 
+### Колонки credit-probe ([ADR-075](adr/ADR-075-ai-key-credit-probe.md), миграция `0036`)
+
+Третий контур: бинарная проверка «есть кредиты» минимальным платным inference раз в час. Без Admin API key. Probe только при `check_status='working'`.
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `credit_status` | `text` | `NULL`, CHECK | `ok` \| `depleted` (или `NULL` — probe ещё не было). |
+| `credit_last_probed_at` | `timestamptz` | `NULL` | Время последнего конклюзивного probe (`ok`/`depleted`). |
+| `credit_probe_error` | `text` | `NULL` | Рус. причина при `depleted` (обычно «Недостаточно средств»). |
+
 ### Перечисление `check_status`
 
 Конечный автомат статуса (состояние в БД, переживает рестарт — [ADR-010](adr/ADR-010-ai-key-monitor-vnutri-backend.md)):

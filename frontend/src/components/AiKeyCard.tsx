@@ -85,7 +85,7 @@ export function AiKeyCard({ aiKey, canEdit = true, canDelete = true }: AiKeyCard
         onKeyDown={onCardKeyDown}
         className={cn(
           'flex h-full cursor-pointer flex-col gap-4 p-4 sm:p-5',
-          isError && 'border-status-red/70',
+          (isError || aiKey.credit_status === 'depleted') && 'border-status-red/70',
         )}
       >
         {/* Шапка: иконка + имя + статус-бейдж */}
@@ -99,7 +99,12 @@ export function AiKeyCard({ aiKey, canEdit = true, canDelete = true }: AiKeyCard
                 <h3 className="truncate text-lg font-bold leading-tight text-text-primary">
                   {aiKey.name}
                 </h3>
-                {status === 'working' && <Badge tone="green">Работает</Badge>}
+                {status === 'working' && aiKey.credit_status !== 'depleted' && (
+                  <Badge tone="green">Работает</Badge>
+                )}
+                {status === 'working' && aiKey.credit_status === 'depleted' && (
+                  <Badge tone="red">Нет кредитов</Badge>
+                )}
                 {isError && <Badge tone="red">Не работает</Badge>}
                 {isPending && (
                   <span className="inline-flex items-center gap-1.5 text-[13px] font-medium text-text-secondary">
@@ -139,8 +144,13 @@ export function AiKeyCard({ aiKey, canEdit = true, canDelete = true }: AiKeyCard
 
         <AiKeyBalanceDisplay aiKey={aiKey} />
 
-        {/* Причина ошибки при error */}
+        {/* Причина ошибки при error / нет кредитов */}
         {isError && errorMessage && <p className="text-[13px] text-status-red">{errorMessage}</p>}
+        {!isError && aiKey.credit_status === 'depleted' && (
+          <p className="text-[13px] text-status-red">
+            {aiKey.credit_probe_error ?? 'Недостаточно средств'}
+          </p>
+        )}
 
         {/* Обновлено + действие */}
         <div className="flex items-center justify-between gap-2">

@@ -19,6 +19,7 @@ from app.models.ai_key import (
     AiProvider,
     BalanceAlertLevel,
     BalanceSyncStatus,
+    CreditStatus,
 )
 from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.backend_repository import BackendRepository
@@ -228,6 +229,7 @@ class AiKeyService:
         alert_level = (
             BalanceAlertLevel(ai_key.balance_alert_level) if ai_key.balance_alert_level else None
         )
+        credit_status = CreditStatus(ai_key.credit_status) if ai_key.credit_status else None
         return AiKeyListItem(
             id=ai_key.id,
             name=ai_key.name,
@@ -249,6 +251,9 @@ class AiKeyService:
             balance_sync_status=sync_status,
             balance_sync_error=ai_key.balance_sync_error,
             balance_alert_level=alert_level,
+            credit_status=credit_status,
+            credit_last_probed_at=ai_key.credit_last_probed_at,
+            credit_probe_error=ai_key.credit_probe_error,
         )
 
 

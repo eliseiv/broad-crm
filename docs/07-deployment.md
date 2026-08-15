@@ -293,6 +293,10 @@ ufw allow from <crm-net-subnet> to any port 9100 proto tcp
 | `NOTIFIER_OFFLINE_CONSECUTIVE_SCRAPES` | `5` | Offline-алерт только после N **подряд** неуспешных scrape Prometheus (`max_over_time(up[W])==0`, `W = N × PROMETHEUS_SCRAPE_INTERVAL_SEC`) |
 | `PROMETHEUS_SCRAPE_INTERVAL_SEC` | `15` | Должен совпадать с `global.scrape_interval` в `infra/prometheus/prometheus.yml` |
 | `AI_KEY_CHECK_INTERVAL_SEC` | `900` | Интервал проверки AI-ключей (с). Монитор стартует всегда; Telegram-алерты гейтятся `TELEGRAM_*` ([modules/ai-keys](modules/ai-keys/README.md)) |
+| `AI_KEY_BALANCE_SYNC_INTERVAL_SEC` | `3600` | Интервал синхронизации оценочного остатка (Admin Cost API, [ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md)) |
+| `AI_KEY_CREDIT_PROBE_INTERVAL_SEC` | `3600` | Интервал credit-probe (минимальный платный inference, [ADR-075](adr/ADR-075-ai-key-credit-probe.md)) |
+| `AI_KEY_CREDIT_PROBE_OPENAI_MODEL` | `gpt-4o-mini` | Модель OpenAI для credit-probe |
+| `AI_KEY_CREDIT_PROBE_ANTHROPIC_MODEL` | `claude-haiku-4-5-20251001` | Модель Anthropic для credit-probe |
 | `AI_PROVIDER_TIMEOUT_SEC` | `10` | Таймаут HTTP-запроса к AI-провайдеру (`GET /v1/models`) |
 | `OPENAI_API_BASE` | `https://api.openai.com/v1` | Базовый URL OpenAI API (проверка ключа) |
 | `ANTHROPIC_API_BASE` | `https://api.anthropic.com/v1` | Базовый URL Anthropic API (проверка ключа) |
