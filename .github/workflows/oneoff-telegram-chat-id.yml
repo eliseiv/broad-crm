@@ -1,0 +1,44 @@
+# ОДНОРАЗОВЫЙ workflow — удаляется сразу после использования.
+# Меняет TELEGRAM_CHAT_ID в /opt/crm/.env и пересоздаёт backend.
+name: oneoff — set TELEGRAM_CHAT_ID
+
+on:
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Update TELEGRAM_CHAT_ID and recreate backend
+        run: |
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
+          set -euo pipefail
+          cd /opt/crm
+          NEW_CHAT_ID='-1004367395012'
+          test -f .env
+          echo "=== before ==="
+          grep -E '^TELEGRAM_CHAT_ID=' .env || echo '(missing)'
+          if grep -qE '^TELEGRAM_CHAT_ID=' .env; then
+            sed -i.bak -E "s|^TELEGRAM_CHAT_ID=.*|TELEGRAM_CHAT_ID=${NEW_CHAT_ID}|" .env
+          else
+            printf '\nTELEGRAM_CHAT_ID=%s\n' "$NEW_CHAT_ID" >> .env
+          fi
+          echo "=== after ==="
+          grep -E '^TELEGRAM_CHAT_ID=' .env
+          # Settings читаются при старте процесса — нужен recreate, не restart.
+          docker compose --env-file .env -f infra/docker-compose.yml up -d --force-recreate --no-deps backend
+          docker compose --env-file .env -f infra/docker-compose.yml ps backend
+          echo "=== runtime check (chat_id only) ==="
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+            python -c "from app.config import get_settings; s=get_settings(); print('telegram_chat_id=', s.telegram_chat_id); print('notifier_enabled=', s.notifier_enabled)"
+          EOS
