@@ -1,0 +1,111 @@
+# ОДНОРАЗОВЫЙ диагностический workflow — удаляется сразу после использования.
+#
+# Зачем: проверить на проде 5 AI-ключей (health + оценочный остаток ADR-070)
+# без локального SSH. Секреты НЕ печатаются: только id/name/provider/masked
+# и статусы; live-probe идёт внутри backend-контейнера.
+name: oneoff — ai-keys health/balance (read-only)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Dump ai_keys registry + live health probe (no secrets)
+        run: |
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
+          set -euo pipefail
+          cd /opt/crm
+          echo "=== host ==="
+          hostname
+          echo
+          echo "=== DB snapshot (no secrets) ==="
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
+            psql -U "$(grep -E '^POSTGRES_USER=' .env | cut -d= -f2-)" \
+                 -d "$(grep -E '^POSTGRES_DB=' .env | cut -d= -f2-)" \
+                 -v ON_ERROR_STOP=1 <<'SQL'
+          \pset pager off
+          SELECT
+            id,
+            name,
+            provider,
+            CASE
+              WHEN key_prefix IS NOT NULL AND key_last4 IS NOT NULL
+                THEN key_prefix || '…' || key_last4
+              ELSE '********'
+            END AS key_masked,
+            check_status,
+            left(coalesce(error_message, ''), 80) AS error_message,
+            last_checked_at,
+            balance_monitoring_enabled,
+            balance_remaining_usd,
+            balance_initial_usd,
+            balance_low_threshold_usd,
+            balance_alert_level,
+            balance_sync_status,
+            left(coalesce(balance_sync_error, ''), 80) AS balance_sync_error,
+            balance_last_sync_at,
+            balance_sync_fail_streak,
+            (billing_admin_key_encrypted IS NOT NULL) AS has_billing_admin_key
+          FROM ai_keys
+          ORDER BY provider, position ASC, created_at DESC, id;
+          SQL
+          echo
+          echo "=== live health probe via GET /v1/models (inside backend; keys not printed) ==="
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend python - <<'PY'
+          import asyncio
+          from sqlalchemy import select
+          from app.db import get_sessionmaker
+          from app.infra.ai_provider import check_key
+          from app.infra.crypto import decrypt_secret
+          from app.models.ai_key import AiKey, AiProvider
+
+          async def main() -> None:
+              factory = get_sessionmaker()
+              async with factory() as session:
+                  rows = (
+                      await session.execute(
+                          select(AiKey).order_by(AiKey.provider, AiKey.position, AiKey.created_at.desc(), AiKey.id)
+                      )
+                  ).scalars().all()
+              print(f"total={len(rows)}")
+              for row in rows:
+                  masked = (
+                      f"{row.key_prefix}…{row.key_last4}"
+                      if row.key_prefix and row.key_last4
+                      else "********"
+                  )
+                  try:
+                      plaintext = decrypt_secret(row.key_encrypted)
+                  except Exception as exc:  # noqa: BLE001 — diag only
+                      print(
+                          f"id={row.id} name={row.name!r} provider={row.provider} "
+                          f"masked={masked} live=decrypt_failed class={type(exc).__name__}"
+                      )
+                      continue
+                  provider = AiProvider(row.provider) if not isinstance(row.provider, AiProvider) else row.provider
+                  result = await check_key(provider, plaintext)
+                  print(
+                      f"id={row.id} name={row.name!r} provider={provider.value} "
+                      f"masked={masked} db_status={row.check_status} "
+                      f"live_outcome={result.outcome} live_reason={result.reason!r} "
+                      f"balance_enabled={row.balance_monitoring_enabled} "
+                      f"balance_remaining={row.balance_remaining_usd} "
+                      f"balance_level={row.balance_alert_level} "
+                      f"balance_sync={row.balance_sync_status}"
+                  )
+
+          asyncio.run(main())
+          PY
+          EOS
