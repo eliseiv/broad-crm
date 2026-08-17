@@ -1,0 +1,63 @@
+# ОДНОРАЗОВЫЙ workflow — удаляется сразу после использования.
+# Синхронизирует KNOWLEDGE_BOT_TOKEN на CRM с BOT_TOKEN knowledge-bot.
+name: oneoff — set KNOWLEDGE_BOT_TOKEN
+
+on:
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Update KNOWLEDGE_BOT_TOKEN and recreate backend
+        env:
+          KNOWLEDGE_BOT_TOKEN: ${{ secrets.KNOWLEDGE_BOT_TOKEN }}
+        run: |
+          test -n "${KNOWLEDGE_BOT_TOKEN}"
+          printf '%s\n' "$KNOWLEDGE_BOT_TOKEN" > /tmp/kbt.value
+          chmod 600 /tmp/kbt.value
+          scp /tmp/kbt.value "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/kbt.value"
+          shred -u /tmp/kbt.value || rm -f /tmp/kbt.value
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
+          set -euo pipefail
+          cd /opt/crm
+          test -f .env
+          test -f /tmp/kbt.value
+          python3 - <<'PY'
+          from pathlib import Path
+          env_path = Path(".env")
+          token = Path("/tmp/kbt.value").read_text().rstrip("\n")
+          if not token:
+              raise SystemExit("empty token")
+          lines = env_path.read_text().splitlines()
+          out = []
+          found = False
+          for line in lines:
+              if line.startswith("KNOWLEDGE_BOT_TOKEN="):
+                  out.append(f"KNOWLEDGE_BOT_TOKEN={token}")
+                  found = True
+              else:
+                  out.append(line)
+          if not found:
+              if out and out[-1] != "":
+                  out.append("")
+              out.append(f"KNOWLEDGE_BOT_TOKEN={token}")
+          env_path.write_text("\n".join(out) + "\n")
+          print("KNOWLEDGE_BOT_TOKEN updated, len=", len(token))
+          PY
+          shred -u /tmp/kbt.value || rm -f /tmp/kbt.value
+          docker compose --env-file .env -f infra/docker-compose.yml up -d --force-recreate --no-deps backend
+          docker compose --env-file .env -f infra/docker-compose.yml ps backend
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+            python -c "from app.config import get_settings; s=get_settings(); print('knowledge_bot_enabled=', bool(s.knowledge_bot_token)); print('token_len=', len(s.knowledge_bot_token or ''))"
+          EOS
