@@ -1,0 +1,89 @@
+# ОДНОРАЗОВЫЙ workflow — удаляется сразу после использования.
+# Ставит KNOWLEDGE_BOT_TOKEN в /opt/crm/.env (значение = BOT_TOKEN бота)
+# и пересоздаёт только backend. Секрет приходит из GitHub repository secret,
+# в YAML его нет.
+name: oneoff — set KNOWLEDGE_BOT_TOKEN
+
+on:
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Upsert KNOWLEDGE_BOT_TOKEN and recreate backend
+        env:
+          KNOWLEDGE_BOT_TOKEN: ${{ secrets.KNOWLEDGE_BOT_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${KNOWLEDGE_BOT_TOKEN}" ]; then
+            echo "::error::repository secret KNOWLEDGE_BOT_TOKEN is empty"
+            exit 1
+          fi
+          python3 <<'PY' | ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s'
+          import os
+          import sys
+
+          token = os.environ["KNOWLEDGE_BOT_TOKEN"]
+          remote = r"""
+          set -euo pipefail
+          IFS= read -r NEW_TOKEN
+          test -n "${NEW_TOKEN}"
+          cd /opt/crm
+          test -f .env
+          export NEW_TOKEN
+          python3 - <<'PY2'
+          import os
+          import pathlib
+          import re
+
+          token = os.environ["NEW_TOKEN"]
+          p = pathlib.Path(".env")
+          text = p.read_text(encoding="utf-8")
+          line = "KNOWLEDGE_BOT_TOKEN=" + token
+          if re.search(r"^KNOWLEDGE_BOT_TOKEN=", text, flags=re.M):
+              text = re.sub(r"^KNOWLEDGE_BOT_TOKEN=.*$", line, text, count=1, flags=re.M)
+              action = "replaced"
+          else:
+              if text and not text.endswith("\n"):
+                  text += "\n"
+              text += line + "\n"
+              action = "appended"
+          p.write_text(text, encoding="utf-8")
+          os.chmod(p, 0o600)
+          print("KNOWLEDGE_BOT_TOKEN_UPSERT=" + action)
+          print("TOKEN_LEN=%d" % len(token))
+          PY2
+          unset NEW_TOKEN
+          docker compose --env-file .env -f infra/docker-compose.yml up -d --force-recreate --no-deps backend
+          echo "waiting for backend healthy..."
+          ok=0
+          for i in $(seq 1 36); do
+            health=$(docker compose --env-file .env -f infra/docker-compose.yml ps --format '{{.Health}}' backend 2>/dev/null || true)
+            if [ "$health" = "healthy" ]; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          docker compose --env-file .env -f infra/docker-compose.yml ps backend
+          if [ "$ok" != "1" ]; then
+            echo "::error::backend did not become healthy"
+            exit 1
+          fi
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+            python -c "from app.config import get_settings; s=get_settings(); print('knowledge_bot_enabled=', s.knowledge_bot_enabled); print('token_len=', len(s.knowledge_bot_token or '')); assert s.knowledge_bot_enabled is True, 'knowledge_bot_enabled is false'"
+          """
+          sys.stdout.write(token + "\n")
+          sys.stdout.write(remote)
+          PY
