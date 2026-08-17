@@ -1,0 +1,34 @@
+# ОДНОРАЗОВЫЙ workflow — удаляется сразу после использования.
+name: oneoff — verify knowledge-bot migration
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Setup SSH deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_KEY }}
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+      - name: Verify migration and env
+        run: |
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
+          set -euo pipefail
+          cd /opt/crm
+          echo "=== alembic current ==="
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend alembic current
+          echo "=== knowledge_bot_links exists ==="
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
+            psql -U "$(grep -E '^POSTGRES_USER=' .env | cut -d= -f2-)" \
+                 -d "$(grep -E '^POSTGRES_DB=' .env | cut -d= -f2-)" \
+                 -c "SELECT to_regclass('public.knowledge_bot_links') AS table_name; SELECT COUNT(*) AS links FROM knowledge_bot_links;"
+          echo "=== settings ==="
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+            python -c "from app.config import get_settings; s=get_settings(); print('knowledge_bot_enabled=', bool(s.knowledge_bot_token)); print('documents_api_enabled=', bool(s.documents_api_key)); print('token_len=', len(s.knowledge_bot_token or ''))"
+          EOS
