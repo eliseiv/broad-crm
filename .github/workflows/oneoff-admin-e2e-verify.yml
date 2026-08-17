@@ -1,0 +1,97 @@
+# ОДНОРАЗОВЫЙ — e2e/prod verify роли Админ после ADR-078
+name: oneoff — admin e2e verify ADR-078
+on:
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_KEY }}
+      - run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+      - name: Verify backend /me flag and frontend bundle
+        run: |
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
+          set -euo pipefail
+          cd /opt/crm
+          echo "=== backend: is_admin_level for users with role Админ ==="
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend python - <<'PY'
+          import asyncio
+          from sqlalchemy import select
+          from sqlalchemy.orm import selectinload
+          from app.db import get_sessionmaker
+          from app.domain.permissions import is_admin_level, full_catalog_permissions
+          from app.models.user import User
+          from app.api.deps import Principal
+          from app.schemas.auth import MeResponse
+
+          async def main() -> None:
+              sm = get_sessionmaker()
+              async with sm() as s:
+                  rows = (
+                      await s.execute(
+                          select(User)
+                          .options(selectinload(User.role))
+                          .where(User.is_active.is_(True))
+                          .limit(50)
+                      )
+                  ).scalars().all()
+              checked = 0
+              for u in rows:
+                  if u.role is None or u.role.name != "Админ":
+                      continue
+                  p = Principal(
+                      username=u.username,
+                      role=u.role.name,
+                      permissions=dict(u.role.permissions or {}),
+                      is_superadmin=False,
+                      user_id=u.id,
+                      mail_includes_unassigned=bool(getattr(u, "mail_includes_unassigned", False)),
+                      sms_includes_unassigned=bool(getattr(u, "sms_includes_unassigned", False)),
+                      role_id=u.role_id,
+                  )
+                  flag = is_admin_level(p)
+                  share = "share" in p.permissions.get("documents", [])
+                  me = MeResponse(
+                      username=p.username,
+                      role=p.role,
+                      is_superadmin=False,
+                      permissions=p.permissions,
+                      sees_all_sms_teams=flag,
+                      sees_all_mail_teams=flag,
+                      mail_teams=[],
+                      sms_teams=[],
+                      mail_includes_unassigned=False,
+                      sms_includes_unassigned=False,
+                      is_admin_level=flag,
+                  )
+                  print(
+                      f"user={u.username!r} is_admin_level={me.is_admin_level} "
+                      f"documents_share={share} me_field_present={hasattr(me, 'is_admin_level')}"
+                  )
+                  assert me.is_admin_level is True, u.username
+                  assert share is True, u.username
+                  checked += 1
+              print("checked_admin_users", checked)
+              assert checked >= 1
+
+          asyncio.run(main())
+          print("BACKEND_OK")
+          PY
+
+          echo "=== frontend bundle markers ==="
+          # index.html + hashed assets under frontend dist served by nginx/proxy
+          ROOT=$(docker compose --env-file .env -f infra/docker-compose.yml exec -T proxy sh -c 'ls /usr/share/nginx/html 2>/dev/null | head' || true)
+          echo "proxy_html_listing_hint=${ROOT:-none}"
+          # Search in backend-built static if present, else container volumes
+          FOUND=$(docker compose --env-file .env -f infra/docker-compose.yml exec -T proxy sh -c 'grep -R -l "is_admin_level" /usr/share/nginx/html/assets 2>/dev/null | head -3' || true)
+          echo "assets_with_is_admin_level=${FOUND:-none}"
+          OLD=$(docker compose --env-file .env -f infra/docker-compose.yml exec -T proxy sh -c 'grep -R -l "catalogPending\|coversFullCatalog\|needsPermissionsCatalog" /usr/share/nginx/html/assets 2>/dev/null | head -3' || true)
+          echo "assets_with_old_catalog_gate=${OLD:-none}"
+          test -n "$FOUND"
+          test -z "$OLD"
+          echo "FRONTEND_OK"
+          EOS
