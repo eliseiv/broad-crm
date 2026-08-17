@@ -14,11 +14,11 @@ from broadcast_helpers import (
     seed_knowledge_link,
     seed_mail_link,
     seed_role,
-    seed_sms_link,
     seed_user,
     sms_db,
 )
 from documents_helpers import build_app, build_principal, client
+from sms_helpers import seed_link
 from sqlalchemy import text as sa_text
 
 _KEY = "secret-external-key-123"
@@ -32,14 +32,18 @@ def _app(sm: object) -> object:
 async def _link_row(sm: object, telegram_user_id: int) -> dict[str, object] | None:
     async with sm() as s:  # type: ignore[union-attr]
         row = (
-            await s.execute(
-                sa_text(
-                    "SELECT telegram_user_id, user_id, username, started_at, dead_at "
-                    "FROM knowledge_bot_links WHERE telegram_user_id = :tid"
-                ),
-                {"tid": telegram_user_id},
+            (
+                await s.execute(
+                    sa_text(
+                        "SELECT telegram_user_id, user_id, username, started_at, dead_at "
+                        "FROM knowledge_bot_links WHERE telegram_user_id = :tid"
+                    ),
+                    {"tid": telegram_user_id},
+                )
             )
-        ).mappings().first()
+            .mappings()
+            .first()
+        )
     return dict(row) if row is not None else None
 
 
@@ -203,7 +207,7 @@ async def test_user_access_knowledge_link_wins_over_sms_mail(
             kb_user = await seed_user(s, role_kb, username="kb_user")
             sms_user = await seed_user(s, role_sms, username="sms_user")
             await seed_knowledge_link(s, telegram_user_id=8100, user_id=kb_user.id)
-            await seed_sms_link(s, telegram_user_id=8100, user_id=sms_user.id)
+            await seed_link(s, telegram_user_id=8100, user_id=sms_user.id)
             await seed_mail_link(s, telegram_user_id=8100, user_id=sms_user.id, username="x")
             await s.commit()
             kb_id = kb_user.id

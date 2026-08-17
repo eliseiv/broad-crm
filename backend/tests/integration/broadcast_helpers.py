@@ -13,17 +13,15 @@ from typing import Any
 from app.infra.knowledge_bot_telegram import TelegramApiError, TelegramForbiddenError
 from app.models.knowledge_bot_link import KnowledgeBotLink
 from app.models.mail_telegram import MailTelegramLink
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from sms_helpers import (  # noqa: F401  (реэкспорт)
+from sms_helpers import (  # noqa: F401
     build_app,
     build_principal,
     client,
-    seed_link as seed_sms_link,
     seed_role,
     seed_user,
     sms_db,
 )
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class FakeKnowledgeBot:

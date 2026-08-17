@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -23,10 +24,8 @@ def _alembic_config() -> Config:
 def test_upgrade_0037_creates_knowledge_bot_links(capsys: pytest.CaptureFixture[str]) -> None:
     # Backfill jsonb делает SELECT по roles — в offline SQL (`sql=True`) bind=None,
     # поэтому upgrade падает после печати DDL. DDL всё равно попадает в stdout.
-    try:
+    with contextlib.suppress(AttributeError):
         command.upgrade(_alembic_config(), _UP_STEP, sql=True)
-    except AttributeError:
-        pass
     sql = capsys.readouterr().out
     lower = sql.lower()
 

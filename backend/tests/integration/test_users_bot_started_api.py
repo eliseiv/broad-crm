@@ -4,8 +4,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from broadcast_helpers import seed_knowledge_link, seed_mail_link, seed_sms_link, seed_role, seed_user, sms_db
-from sms_helpers import build_app, build_principal, client
+from broadcast_helpers import (
+    seed_knowledge_link,
+    seed_mail_link,
+    seed_role,
+    seed_user,
+    sms_db,
+)
+from sms_helpers import build_app, build_principal, client, seed_link
 
 
 async def test_users_bot_started_true_only_for_active_knowledge_link() -> None:
@@ -16,9 +22,9 @@ async def test_users_bot_started_true_only_for_active_knowledge_link() -> None:
             with_sms = await seed_user(s, role, username="СмсЛинк")
             with_mail = await seed_user(s, role, username="ПочтаЛинк")
             dead_kb = await seed_user(s, role, username="МёртвыйЛинк")
-            none = await seed_user(s, role, username="БезЛинка")
+            await seed_user(s, role, username="БезЛинка")
             await seed_knowledge_link(s, telegram_user_id=9601, user_id=with_kb.id)
-            await seed_sms_link(s, telegram_user_id=9602, user_id=with_sms.id)
+            await seed_link(s, telegram_user_id=9602, user_id=with_sms.id)
             await seed_mail_link(s, telegram_user_id=9603, user_id=with_mail.id, username="m")
             await seed_knowledge_link(
                 s,

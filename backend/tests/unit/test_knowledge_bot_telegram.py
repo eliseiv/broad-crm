@@ -52,7 +52,10 @@ async def test_http_403_raises_telegram_forbidden(monkeypatch: pytest.MonkeyPatc
     _install_transport(
         monkeypatch,
         httpx.MockTransport(
-            lambda _r: httpx.Response(403, json={"ok": False, "description": "Forbidden: bot was blocked by the user"})
+            lambda _r: httpx.Response(
+                403,
+                json={"ok": False, "description": "Forbidden: bot was blocked by the user"},
+            )
         ),
     )
     client = KnowledgeBotClient(TOKEN)
@@ -67,7 +70,10 @@ async def test_forbidden_marker_without_403_raises_forbidden(
     _install_transport(
         monkeypatch,
         httpx.MockTransport(
-            lambda _r: httpx.Response(400, json={"ok": False, "description": "Bad Request: chat not found"})
+            lambda _r: httpx.Response(
+                400,
+                json={"ok": False, "description": "Bad Request: chat not found"},
+            )
         ),
     )
     client = KnowledgeBotClient(TOKEN)

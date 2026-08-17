@@ -165,7 +165,7 @@ async def test_fanout_dedup_same_chat_id_one_message(monkeypatch: pytest.MonkeyP
             )
     assert resp.status_code == 200
     assert resp.json()["sent"] == 2
-    assert [chat for chat, _ in bot.sent] == [9201, 9202] or set(c for c, _ in bot.sent) == {
+    assert [chat for chat, _ in bot.sent] == [9201, 9202] or {c for c, _ in bot.sent} == {
         9201,
         9202,
     }
