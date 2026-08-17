@@ -3,16 +3,9 @@ import { useEffect } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
-import { Spinner } from '@/components/ui/Spinner';
 import { cn } from '@/lib/cn';
 import { useTheme } from '@/lib/theme';
-import {
-  AdminLevelContext,
-  needsPermissionsCatalog,
-  resolveAdminLevel,
-} from '@/features/auth/adminLevel';
-import { useCanViewPage, useMe } from '@/features/auth/hooks';
-import { usePermissionsCatalog } from '@/features/users/hooks';
+import { useCanViewPage, useIsAdmin, useMe } from '@/features/auth/hooks';
 import { useAuthStore } from '@/store/auth';
 
 /**
@@ -61,26 +54,13 @@ export function AppLayout() {
 
   // Обновляем права принципала при входе на защищённые страницы (ADR-021:
   // права могут меняться без пере-логина). Наполняет стор → гейтинг реактивен.
+  // Каталог прав здесь НЕ запрашивается: admin-уровень — только me.is_admin_level (ADR-078).
   useMe();
 
-  // Каталог для is_admin_level: pages из query.data в ЭТОМ рендере (не useEffect-снимок).
-  // Пока каталог грузится — catalogPending: не считаем «не admin».
-  const isSuperadmin = useAuthStore((s) => s.isSuperadmin);
-  const role = useAuthStore((s) => s.role);
-  const permissions = useAuthStore((s) => s.permissions);
-  const needsCatalog = needsPermissionsCatalog(isSuperadmin, role, permissions);
-  const catalogQuery = usePermissionsCatalog({ enabled: needsCatalog });
-  const adminLevel = resolveAdminLevel({
-    isSuperadmin,
-    role,
-    permissions,
-    catalog: catalogQuery.data?.pages,
-    needsCatalog,
-    catalogReady: catalogQuery.isFetched || catalogQuery.isError,
-  });
+  const isAdmin = useIsAdmin();
 
   // Доступ по страницам (общий useCanViewPage, без инлайн-canView). Пункт `users`
-  // гейтится is_admin_level (вне матрицы, ADR-076); остальные — <page>:view.
+  // гейтится me.is_admin_level из стора (вне матрицы, ADR-078); остальные — <page>:view.
   const access: Record<string, boolean> = {
     mail: useCanViewPage('mail'),
     sms: useCanViewPage('sms'),
@@ -90,6 +70,7 @@ export function AppLayout() {
     backends: useCanViewPage('backends'),
     'backend-users': useCanViewPage('backend-users'),
     'backend-economics': useCanViewPage('backend-economics'),
+    users: isAdmin,
     roles: useCanViewPage('roles'),
     teams: useCanViewPage('teams'),
     documents: useCanViewPage('documents'),
@@ -126,103 +107,87 @@ export function AppLayout() {
   };
 
   return (
-    <AdminLevelContext.Provider value={adminLevel}>
-      <div
+    <div
+      className={cn(
+        'flex flex-col bg-bg-base',
+        isFullBleed ? 'h-dvh max-h-dvh overflow-hidden overscroll-none' : 'min-h-screen',
+      )}
+    >
+      <header
         className={cn(
-          'flex flex-col bg-bg-base',
-          isFullBleed ? 'h-dvh max-h-dvh overflow-hidden overscroll-none' : 'min-h-screen',
+          'border-b border-border-subtle bg-bg-base/80 backdrop-blur-md',
+          isFullBleed ? 'shrink-0' : 'sticky top-0 z-30',
         )}
       >
-        <header
-          className={cn(
-            'border-b border-border-subtle bg-bg-base/80 backdrop-blur-md',
-            isFullBleed ? 'shrink-0' : 'sticky top-0 z-30',
-          )}
-        >
-          <div className="flex w-full items-center gap-4 px-6 py-3">
-            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
-              <ServerCog className="h-[18px] w-[18px]" aria-hidden="true" />
-            </span>
-            {/* Плоский ряд пунктов; на узких вьюпортах — горизонтальный скролл ряда
+        <div className="flex w-full items-center gap-4 px-6 py-3">
+          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
+            <ServerCog className="h-[18px] w-[18px]" aria-hidden="true" />
+          </span>
+          {/* Плоский ряд пунктов; на узких вьюпортах — горизонтальный скролл ряда
               (scrollbar-none), высота хэдера фиксирована (flex-nowrap), sticky/
               full-bleed не ломаются (ADR-033 §Деградация хэдера). */}
-            <nav
-              aria-label="Основная навигация"
-              className="scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto"
-            >
-              {NAV_ITEMS.map((item) => {
-                if (item.page === 'users') {
-                  if (adminLevel.catalogPending) {
-                    return (
-                      <span
-                        key="users-catalog-pending"
-                        className="inline-flex shrink-0 items-center px-3 py-2"
-                      >
-                        <Spinner className="text-text-secondary" label="Загрузка" />
-                      </span>
-                    );
+          <nav
+            aria-label="Основная навигация"
+            className="scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto"
+          >
+            {NAV_ITEMS.map((item) => {
+              if (!access[item.page]) return null;
+              return (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={({ isActive }) =>
+                    cn(
+                      'shrink-0 whitespace-nowrap rounded-md px-3 py-2 text-[14px] font-medium transition-colors',
+                      'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                      isActive ? 'text-accent' : 'text-text-secondary hover:text-text-primary',
+                    )
                   }
-                  if (!adminLevel.isAdmin) return null;
-                } else if (!access[item.page]) {
-                  return null;
-                }
-                return (
-                  <NavLink
-                    key={item.to}
-                    to={item.to}
-                    className={({ isActive }) =>
-                      cn(
-                        'shrink-0 whitespace-nowrap rounded-md px-3 py-2 text-[14px] font-medium transition-colors',
-                        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-                        isActive ? 'text-accent' : 'text-text-secondary hover:text-text-primary',
-                      )
-                    }
-                  >
-                    {item.label}
-                  </NavLink>
-                );
-              })}
-            </nav>
-            <div className="flex shrink-0 items-center gap-3">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={toggle}
-                aria-label={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
-              >
-                {theme === 'dark' ? (
-                  <Sun className="h-4 w-4" aria-hidden="true" />
-                ) : (
-                  <Moon className="h-4 w-4" aria-hidden="true" />
-                )}
-              </Button>
-              {username && (
-                <span className="hidden text-[13px] text-text-secondary sm:inline">
-                  <span className="font-mono text-text-primary">{username}</span>
-                </span>
+                >
+                  {item.label}
+                </NavLink>
+              );
+            })}
+          </nav>
+          <div className="flex shrink-0 items-center gap-3">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={toggle}
+              aria-label={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
+            >
+              {theme === 'dark' ? (
+                <Sun className="h-4 w-4" aria-hidden="true" />
+              ) : (
+                <Moon className="h-4 w-4" aria-hidden="true" />
               )}
-              <Button variant="ghost" size="sm" onClick={handleLogout}>
-                <LogOut className="h-4 w-4" />
-                Выйти
-              </Button>
-            </div>
+            </Button>
+            {username && (
+              <span className="hidden text-[13px] text-text-secondary sm:inline">
+                <span className="font-mono text-text-primary">{username}</span>
+              </span>
+            )}
+            <Button variant="ghost" size="sm" onClick={handleLogout}>
+              <LogOut className="h-4 w-4" />
+              Выйти
+            </Button>
           </div>
-        </header>
+        </div>
+      </header>
 
-        {isFullBleed ? (
-          <main className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
-            <Outlet />
-          </main>
-        ) : (
-          <main>
-            {/* Контент — на всю ширину вьюпорта (решение владельца, 2026-07-23): прежний
+      {isFullBleed ? (
+        <main className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
+          <Outlet />
+        </main>
+      ) : (
+        <main>
+          {/* Контент — на всю ширину вьюпорта (решение владельца, 2026-07-23): прежний
               контейнер max-w-[1400px] упразднён, отступы по краям сохранены. */}
-            <div className="w-full px-6 py-8">
-              <Outlet />
-            </div>
-          </main>
-        )}
-      </div>
-    </AdminLevelContext.Provider>
+          <div className="w-full px-6 py-8">
+            <Outlet />
+          </div>
+        </main>
+      )}
+    </div>
   );
 }

@@ -13,12 +13,14 @@ const TOKEN_KEY = 'crm.auth.token';
 const USER_KEY = 'crm.auth.username';
 const ROLE_KEY = 'crm.auth.role';
 const SUPERADMIN_KEY = 'crm.auth.superadmin';
+const IS_ADMIN_LEVEL_KEY = 'crm.auth.isAdminLevel';
 const PERMISSIONS_KEY = 'crm.auth.permissions';
 
 const me: MeResponse = {
   username: 'ivan',
   role: 'Оператор',
   is_superadmin: false,
+  is_admin_level: false,
   sees_all_sms_teams: false,
   sees_all_mail_teams: false,
   // ADR-055 §5.1: `/me` — ЕДИНСТВЕННЫЙ источник команд канала и флагов «Без команды».
@@ -64,6 +66,7 @@ describe('auth store — сессия в localStorage (ADR-041)', () => {
     localStorage.setItem(USER_KEY, 'ivan');
     localStorage.setItem(ROLE_KEY, 'Оператор');
     localStorage.setItem(SUPERADMIN_KEY, '0');
+    localStorage.setItem(IS_ADMIN_LEVEL_KEY, '1');
     localStorage.setItem(PERMISSIONS_KEY, JSON.stringify({ servers: ['view'] }));
 
     // Вкладка B монтирует приложение заново → стор наполнен ДО первого рендера.
@@ -74,6 +77,7 @@ describe('auth store — сессия в localStorage (ADR-041)', () => {
     expect(state.username).toBe('ivan');
     expect(state.role).toBe('Оператор');
     expect(state.isSuperadmin).toBe(false);
+    expect(state.isAdminLevel).toBe(true);
     expect(state.permissions).toEqual({ servers: ['view'] });
   });
 
@@ -83,30 +87,51 @@ describe('auth store — сессия в localStorage (ADR-041)', () => {
     expect(useAuthStore.getState().token).toBeNull();
   });
 
-  it('setPrincipal персистит роль/права/superadmin в localStorage', async () => {
+  it('setPrincipal персистит роль/права/superadmin/isAdminLevel в localStorage', async () => {
     const { useAuthStore } = await freshStore();
     useAuthStore.getState().setPrincipal(me);
 
     expect(localStorage.getItem(ROLE_KEY)).toBe('Оператор');
     expect(localStorage.getItem(SUPERADMIN_KEY)).toBe('0');
+    expect(localStorage.getItem(IS_ADMIN_LEVEL_KEY)).toBe('0');
+    expect(useAuthStore.getState().isAdminLevel).toBe(false);
     expect(JSON.parse(localStorage.getItem(PERMISSIONS_KEY) as string)).toEqual({
       servers: ['view', 'edit'],
     });
   });
 
-  it('clearSession стирает все crm.auth.* и сбрасывает состояние (logout во всех вкладках)', async () => {
+  it('setPrincipal персистит isAdminLevel=true; регидрация читает crm.auth.isAdminLevel (ADR-078)', async () => {
+    const { useAuthStore } = await freshStore();
+    useAuthStore.getState().setPrincipal({ ...me, is_admin_level: true });
+
+    expect(localStorage.getItem(IS_ADMIN_LEVEL_KEY)).toBe('1');
+    expect(useAuthStore.getState().isAdminLevel).toBe(true);
+
+    const { useAuthStore: nextStore } = await freshStore();
+    expect(nextStore.getState().isAdminLevel).toBe(true);
+  });
+
+  it('clearSession стирает все crm.auth.* включая isAdminLevel (logout во всех вкладках)', async () => {
     const { useAuthStore, clearSession } = await freshStore();
     useAuthStore.getState().setSession('jwt-abc', 'ivan');
-    useAuthStore.getState().setPrincipal(me);
+    useAuthStore.getState().setPrincipal({ ...me, is_admin_level: true });
 
     clearSession();
 
-    for (const key of [TOKEN_KEY, USER_KEY, ROLE_KEY, SUPERADMIN_KEY, PERMISSIONS_KEY]) {
+    for (const key of [
+      TOKEN_KEY,
+      USER_KEY,
+      ROLE_KEY,
+      SUPERADMIN_KEY,
+      IS_ADMIN_LEVEL_KEY,
+      PERMISSIONS_KEY,
+    ]) {
       expect(localStorage.getItem(key)).toBeNull();
     }
     const state = useAuthStore.getState();
     expect(state.isAuthenticated).toBe(false);
     expect(state.token).toBeNull();
     expect(state.permissions).toBeNull();
+    expect(state.isAdminLevel).toBe(false);
   });
 });

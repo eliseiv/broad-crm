@@ -32,9 +32,10 @@ export function setPassword(
 }
 
 /**
- * GET /api/auth/me — профиль + права принципала + ЭФФЕКТИВНЫЙ scope команд каналов
- * (`mail_teams`/`sms_teams`, `*_includes_unassigned` — ADR-055 §5.1). Единственный источник
- * опций команд канала на клиенте (§6.3), включая обе Mini App: там `GET /api/teams` запрещён.
+ * GET /api/auth/me — профиль + права принципала + `is_admin_level` (ADR-078)
+ * + ЭФФЕКТИВНЫЙ scope команд каналов (`mail_teams`/`sms_teams`,
+ * `*_includes_unassigned` — ADR-055 §5.1). Единственный источник опций команд
+ * канала на клиенте (§6.3), включая обе Mini App: там `GET /api/teams` запрещён.
  * `authToken`/`skipAuthReset` — для Mini App (изолированный SSO-JWT; 401 не роняет админ-стор).
  */
 export function getMe(

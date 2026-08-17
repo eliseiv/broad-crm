@@ -33,6 +33,24 @@ describe('useCan / useIsAdmin (UI-гейтинг RBAC, ADR-021)', () => {
     expect(renderHook(() => useIsAdmin()).result.current).toBe(true);
   });
 
+  it('роль «Админ»: useIsAdmin ⇔ isAdminLevel из стора, не имя роли (ADR-078)', () => {
+    loginAs({
+      isSuperadmin: false,
+      role: 'Админ',
+      isAdminLevel: true,
+      permissions: {},
+    });
+    expect(renderHook(() => useIsAdmin()).result.current).toBe(true);
+
+    loginAs({
+      isSuperadmin: false,
+      role: 'Админ',
+      isAdminLevel: false,
+      permissions: { documents: ['view', 'share'] },
+    });
+    expect(renderHook(() => useIsAdmin()).result.current).toBe(false);
+  });
+
   it('a user without loaded permissions can do nothing', () => {
     loginAs({ isSuperadmin: false, role: 'Оператор', permissions: {} });
 

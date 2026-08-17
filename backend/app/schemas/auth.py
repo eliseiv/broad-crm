@@ -57,13 +57,16 @@ class TokenResponse(BaseModel):
 
 
 class MeResponse(BaseModel):
-    """Ответ 200 GET /api/auth/me (профиль + права + scope каналов, ADR-021, ADR-055 §5.1).
+    """Ответ 200 GET /api/auth/me (профиль + права + scope каналов, ADR-021, ADR-055 §5.1, ADR-078).
 
     `permissions` — производное для UI-гейтинга (для супер-админа — полный каталог).
     Безопасность обеспечивается сервером (403), UI-гейтинг — только UX.
+    `is_admin_level` — тот же предикат, что `require_admin` (ADR-076 §4 / ADR-078):
+    `is_superadmin OR role=="admin" OR permissions_subset(full_catalog, permissions)`.
     `sees_all_sms_teams` — производный admin-уровень видимости SMS (ADR-032/036):
     `is_superadmin OR permissions_subset(full_catalog_permissions(), permissions)`;
     backend — единственный источник (фронт не дублирует `permissions_subset`).
+    `sees_all_*` не заменяются `is_admin_level` и не выводятся одно из другого.
 
     `mail_teams`/`sms_teams` (ADR-055 §5.1) — **ЭФФЕКТИВНЫЙ** scope канала: у не-админа
     `user_teams` ∪ доп-команды канала (объединение, НЕ только добавка), у **admin-уровня —
@@ -77,6 +80,7 @@ class MeResponse(BaseModel):
     username: str
     role: str
     is_superadmin: bool
+    is_admin_level: bool
     permissions: dict[str, list[str]]
     sees_all_sms_teams: bool
     # Производный admin-уровень видимости почты (ADR-038 §3): тот же предикат, что

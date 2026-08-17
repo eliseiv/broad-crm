@@ -12,6 +12,11 @@ export function loginAs(options?: {
   role?: string;
   isSuperadmin?: boolean;
   /**
+   * Admin-уровень (ADR-078, MeResponse.is_admin_level). По умолчанию —
+   * `isSuperadmin || role === "admin"` (два первых дизъюнкта предиката).
+   */
+  isAdminLevel?: boolean;
+  /**
    * Admin-уровень видимости SMS (ADR-036, MeResponse.sees_all_sms_teams). По
    * умолчанию совпадает с `isSuperadmin` (backend: `is_superadmin OR полный
    * каталог`): супер-админ видит все SMS-команды, ограниченная роль — нет.
@@ -45,6 +50,7 @@ export function loginAs(options?: {
     username = 'admin',
     role = 'admin',
     isSuperadmin = true,
+    isAdminLevel = isSuperadmin || role === 'admin',
     seesAllSmsTeams = isSuperadmin,
     seesAllMailTeams = isSuperadmin,
     mailTeams = [],
@@ -59,6 +65,7 @@ export function loginAs(options?: {
     username,
     role,
     is_superadmin: isSuperadmin,
+    is_admin_level: isAdminLevel,
     sees_all_sms_teams: seesAllSmsTeams,
     sees_all_mail_teams: seesAllMailTeams,
     mail_teams: mailTeams,

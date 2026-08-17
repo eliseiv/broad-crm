@@ -1,7 +1,6 @@
 import { useEffect, useMemo } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { getMe, login, setPassword } from '@/features/auth/api';
-import { useAdminLevel } from '@/features/auth/adminLevel';
 import type { Channel, ChannelTeamScope } from '@/features/auth/channelTeams';
 import { useAuthStore } from '@/store/auth';
 import type { LoginRequest, LoginSuccessResponse, SetPasswordRequest } from '@/types/api';
@@ -78,6 +77,8 @@ export function useMe() {
     if (query.data) setPrincipal(query.data);
   }, [query.data, setPrincipal]);
 
+  // 401 обрабатывает api-client (`clearSession`). Иная ошибка /me — персист
+  // isAdminLevel / seesAll* не трогаем (ADR-078, как sees_all_*).
   return query;
 }
 
@@ -148,22 +149,19 @@ export function useIsSuperadmin(): boolean {
   return useAuthStore((s) => s.isSuperadmin);
 }
 
-export { useAdminLevel } from '@/features/auth/adminLevel';
-
 /**
- * Доступ к странице «Пользователи» (RBAC-администрирование): `is_admin_level`
- * (ADR-076) — супер-админ, роль `admin` или полное покрытие серверного каталога.
- * Пока каталог грузится, `useAdminLevel().catalogPending` — не считать «не admin».
+ * Доступ к странице «Пользователи» (RBAC-администрирование): только
+ * `me.is_admin_level` из стора (ADR-078).
  */
 export function useIsAdmin(): boolean {
-  return useAdminLevel().isAdmin;
+  return useAuthStore((s) => s.isAdminLevel);
 }
 
 /**
  * Page-level view-guard для permission-gated страницы (UI-гейтинг, только UX).
- * Супер-админ и `role=="admin"` видят все страницы; иначе доступ ⇔ `view` ∈
+ * `me.is_admin_level` видит все страницы; иначе доступ ⇔ `view` ∈
  * `permissions[page]`. Единый источник безопасности — серверный `403`
- * (ADR-021 §6, 08-design-system.md «Page-level view-guard»).
+ * (ADR-021 §6, ADR-078, 08-design-system.md «Page-level view-guard»).
  */
 export function useCanViewPage(page: string): boolean {
   const isAdmin = useIsAdmin();

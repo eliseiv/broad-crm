@@ -22,7 +22,7 @@ import { DocumentVisibilityModal } from '@/components/DocumentVisibilityModal';
 import { UploadMdModal } from '@/components/UploadMdModal';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
-import { useCan, useCanViewPage } from '@/features/auth/hooks';
+import { useCan, useCanViewPage, useIsAdmin } from '@/features/auth/hooks';
 import { useCopyNode, useDocumentNode, useDocumentTree } from '@/features/documents/hooks';
 import { buildTree, flattenVisible } from '@/features/documents/tree';
 import type { DocumentNode } from '@/types/api';
@@ -72,7 +72,9 @@ function DocumentsWorkspace() {
   const canCreate = useCan('documents', 'create');
   const canEdit = useCan('documents', 'edit');
   const canDelete = useCan('documents', 'delete');
-  const canShare = useCan('documents', 'share');
+  const canShareByPermission = useCan('documents', 'share');
+  const isAdmin = useIsAdmin();
+  const canShare = canShareByPermission || isAdmin;
 
   const [expanded, setExpanded] = useState<ReadonlySet<string>>(new Set());
   const [selectedId, setSelectedId] = useState<string | null>(null);

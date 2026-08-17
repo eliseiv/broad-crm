@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
 vi.mock('@/features/auth/hooks', () => ({
   useCanViewPage: () => true,
   useCan: () => true,
+  useIsAdmin: () => false,
 }));
 
 // Мокаем слой хуков документов (границы страницы). Логика самой страницы (fallback justCreated,

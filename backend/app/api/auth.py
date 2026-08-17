@@ -15,6 +15,7 @@ from app.api.deps import (
     resolve_channel_scope,
 )
 from app.domain.channels import CHANNEL_MAIL, CHANNEL_SMS
+from app.domain.permissions import is_admin_level
 from app.schemas.auth import LoginRequest, LoginResponse, MeResponse, SetPasswordRequest
 
 router = APIRouter(prefix="/auth", tags=["auth"])
@@ -46,8 +47,9 @@ async def set_password(
 
 @router.get("/me", response_model=MeResponse)
 async def me(principal: PrincipalDep, session: DbSession) -> MeResponse:
-    """Профиль сессии + права + **scope каналов** для UI-гейтинга (ADR-021, ADR-055 §5.1).
+    """Профиль сессии + права + **scope каналов** для UI-гейтинга (ADR-021, ADR-055 §5.1, ADR-078).
 
+    `is_admin_level` — тот же предикат, что `require_admin` (`is_admin_level(principal)`).
     `mail_teams`/`sms_teams` — ЭФФЕКТИВНЫЙ scope канала (не-админ: базовые ∪ добавка;
     admin-уровень: ВСЕ команды системы), `*_includes_unassigned` — «Без команды» канала
     (при admin-уровне → `true`). `/me` — ЕДИНСТВЕННЫЙ источник опций команд канала на
@@ -63,6 +65,7 @@ async def me(principal: PrincipalDep, session: DbSession) -> MeResponse:
         username=principal.username,
         role=principal.role,
         is_superadmin=principal.is_superadmin,
+        is_admin_level=is_admin_level(principal),
         permissions=principal.permissions,
         sees_all_sms_teams=principal_sees_all_sms_teams(principal),
         sees_all_mail_teams=principal_sees_all_mail_teams(principal),

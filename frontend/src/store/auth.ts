@@ -5,6 +5,7 @@ const STORAGE_KEY = 'crm.auth.token';
 const USER_KEY = 'crm.auth.username';
 const ROLE_KEY = 'crm.auth.role';
 const SUPERADMIN_KEY = 'crm.auth.superadmin';
+const IS_ADMIN_LEVEL_KEY = 'crm.auth.isAdminLevel';
 const SEES_ALL_SMS_KEY = 'crm.auth.seesAllSmsTeams';
 const SEES_ALL_MAIL_KEY = 'crm.auth.seesAllMailTeams';
 const PERMISSIONS_KEY = 'crm.auth.permissions';
@@ -22,7 +23,7 @@ const SMS_UNASSIGNED_KEY = 'crm.auth.smsIncludesUnassigned';
  * прежний sessionStorage стирался при закрытии браузера и был изолирован по вкладке
  * (новая вкладка → редирект на /login). Токен живёт до истечения TTL JWT (24 ч);
  * 401/logout полностью очищают crm.auth.* во всех вкладках. Права принципала
- * (role/permissions/is_superadmin/seesAll*) из GET /api/auth/me тоже персистятся
+ * (role/permissions/is_superadmin/isAdminLevel/seesAll*) из GET /api/auth/me тоже персистятся
  * в localStorage (crm.auth.*) → синхронная регидрация в `create()` наполняет стор ДО
  * резолва guard (ProtectedRoute видит сессию на первом рендере, в т.ч. в новой вкладке).
  */
@@ -80,6 +81,7 @@ function persistPrincipal(me: MeResponse): void {
     if (me.role) localStorage.setItem(ROLE_KEY, me.role);
     else localStorage.removeItem(ROLE_KEY);
     localStorage.setItem(SUPERADMIN_KEY, me.is_superadmin ? '1' : '0');
+    localStorage.setItem(IS_ADMIN_LEVEL_KEY, me.is_admin_level ? '1' : '0');
     localStorage.setItem(SEES_ALL_SMS_KEY, me.sees_all_sms_teams ? '1' : '0');
     localStorage.setItem(SEES_ALL_MAIL_KEY, me.sees_all_mail_teams ? '1' : '0');
     localStorage.setItem(MAIL_TEAMS_KEY, JSON.stringify(me.mail_teams));
@@ -100,6 +102,7 @@ function clearStorage(): void {
       USER_KEY,
       ROLE_KEY,
       SUPERADMIN_KEY,
+      IS_ADMIN_LEVEL_KEY,
       SEES_ALL_SMS_KEY,
       SEES_ALL_MAIL_KEY,
       MAIL_TEAMS_KEY,
@@ -122,6 +125,12 @@ interface AuthState {
   role: string | null;
   /** true — .env-супер-админ (полный доступ). */
   isSuperadmin: boolean;
+  /**
+   * Производный admin-уровень (ADR-078): видна ли страница «Пользователи».
+   * Источник — `me.is_admin_level` (backend); фронт не пересчитывает каталог.
+   * Ошибка `/me` ≠ 401 не сбрасывает персист (как `seesAll*`).
+   */
+  isAdminLevel: boolean;
   /**
    * Производный admin-уровень видимости SMS (ADR-036): виден ли фильтр «Все команды»
    * на /sms. Источник — `me.sees_all_sms_teams` (backend); фронт не вычисляет сам.
@@ -159,6 +168,7 @@ export const useAuthStore = create<AuthState>((set) => {
   const initialUser = readString(USER_KEY);
   const initialRole = readString(ROLE_KEY);
   const initialSuperadmin = readString(SUPERADMIN_KEY) === '1';
+  const initialIsAdminLevel = readString(IS_ADMIN_LEVEL_KEY) === '1';
   const initialSeesAllSms = readString(SEES_ALL_SMS_KEY) === '1';
   const initialSeesAllMail = readString(SEES_ALL_MAIL_KEY) === '1';
   const initialPermissions = readPermissions();
@@ -167,6 +177,7 @@ export const useAuthStore = create<AuthState>((set) => {
     username: initialUser,
     role: initialRole,
     isSuperadmin: initialSuperadmin,
+    isAdminLevel: initialIsAdminLevel,
     seesAllSmsTeams: initialSeesAllSms,
     seesAllMailTeams: initialSeesAllMail,
     mailTeams: readTeams(MAIL_TEAMS_KEY),
@@ -185,6 +196,7 @@ export const useAuthStore = create<AuthState>((set) => {
         username: me.username,
         role: me.role,
         isSuperadmin: me.is_superadmin,
+        isAdminLevel: me.is_admin_level,
         seesAllSmsTeams: me.sees_all_sms_teams,
         seesAllMailTeams: me.sees_all_mail_teams,
         mailTeams: me.mail_teams,
@@ -201,6 +213,7 @@ export const useAuthStore = create<AuthState>((set) => {
         username: null,
         role: null,
         isSuperadmin: false,
+        isAdminLevel: false,
         seesAllSmsTeams: false,
         seesAllMailTeams: false,
         mailTeams: [],

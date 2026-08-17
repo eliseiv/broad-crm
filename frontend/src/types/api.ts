@@ -102,6 +102,7 @@ export interface SetPasswordRequest {
 /**
  * Ответ GET /api/auth/me (04-api.md, схема `MeResponse`). Профиль + права
  * текущего принципала для UI-гейтинга. `role` для супер-админа — "admin".
+ * `is_admin_level` — производный admin-уровень (ADR-078); гейт `/users`.
  * `permissions` — `{ "<page>": ["<action>", ...] }` (для супер-админа — полный каталог).
  * Безопасность обеспечивает сервер (403); гейтинг — только UX.
  */
@@ -109,6 +110,13 @@ export interface MeResponse {
   username: string;
   role: string;
   is_superadmin: boolean;
+  /**
+   * Производный admin-уровень (04-api.md, ADR-078): тот же предикат, что
+   * `require_admin` — `is_superadmin OR role=="admin" OR полный каталог`.
+   * `true` ⇔ актор видит страницу «Пользователи». Backend — единственный
+   * источник; фронт не пересчитывает покрытие каталога.
+   */
+  is_admin_level: boolean;
   /**
    * Производный admin-уровень видимости SMS (04-api.md, ADR-032/ADR-036):
    * `is_superadmin OR полный каталог прав`. `true` ⇔ актор видит все SMS-команды.

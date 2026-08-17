@@ -58,6 +58,8 @@ async def test_login_me_and_auth_error_contracts() -> None:
     assert me_body["username"] == "admin"
     assert me_body["role"] == "admin"
     assert me_body["is_superadmin"] is True
+    assert "is_admin_level" in me_body
+    assert me_body["is_admin_level"] is True
     assert me_body["permissions"]["servers"] == ["view", "create", "edit", "delete"]
     assert "password" not in me.text
     assert no_token.status_code == 401

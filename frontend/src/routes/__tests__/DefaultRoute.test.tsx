@@ -79,9 +79,32 @@ describe('DefaultRoute (permission-aware default без /dashboard, ADR-022)', (
 
   it('non-superadmin role=admin (no explicit perms) reaches /users via admin flag', () => {
     // `users` гейтится admin-признаком, не матрицей (04-api.md, ADR-021/022).
-    loginAs({ isSuperadmin: false, role: 'admin', permissions: {} });
+    loginAs({ isSuperadmin: false, role: 'admin', isAdminLevel: true, permissions: {} });
     renderDefault();
     expect(screen.getByText('USERS')).toBeInTheDocument();
+  });
+
+  it('роль «Админ» с isAdminLevel=true → /users (закрытие бага, ADR-078)', () => {
+    loginAs({
+      isSuperadmin: false,
+      role: 'Админ',
+      isAdminLevel: true,
+      permissions: {},
+    });
+    renderDefault();
+    expect(screen.getByText('USERS')).toBeInTheDocument();
+  });
+
+  it('isAdminLevel=false не ведёт на /users даже при широких правах без admin-уровня', () => {
+    loginAs({
+      isSuperadmin: false,
+      role: 'Админ',
+      isAdminLevel: false,
+      permissions: { servers: ['view'], documents: ['view', 'share'] },
+    });
+    renderDefault();
+    expect(screen.getByText('SERVERS')).toBeInTheDocument();
+    expect(screen.queryByText('USERS')).not.toBeInTheDocument();
   });
 
   it('shows the «Недостаточно прав» stub when the user has no view anywhere', () => {

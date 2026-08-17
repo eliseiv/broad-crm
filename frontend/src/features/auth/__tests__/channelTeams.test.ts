@@ -119,6 +119,7 @@ describe('channelScopeFromMe — scope канала из `/api/auth/me` (ADR-055
     username: 'ivan',
     role: 'Оператор',
     is_superadmin: false,
+    is_admin_level: false,
     sees_all_sms_teams: false,
     sees_all_mail_teams: false,
     mail_teams: [T1, T2],

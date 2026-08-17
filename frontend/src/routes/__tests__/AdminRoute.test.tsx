@@ -1,8 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import type { PropsWithChildren } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { afterEach, describe, expect, it } from 'vitest';
-import { AdminLevelContext } from '@/features/auth/adminLevel';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AdminRoute } from '@/routes/AdminRoute';
 import {
   INSUFFICIENT_PERMISSIONS_TITLE,
@@ -10,6 +9,12 @@ import {
 } from '@/components/InsufficientPermissions';
 import { useAuthStore } from '@/store/auth';
 import { loginAs, logout } from '@/test/authTestUtils';
+
+const getPermissionsCatalog = vi.fn();
+vi.mock('@/features/users/api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/features/users/api')>();
+  return { ...actual, getPermissionsCatalog: (...args: unknown[]) => getPermissionsCatalog(...args) };
+});
 
 function renderAdmin() {
   function wrapper({ children }: PropsWithChildren) {
@@ -26,69 +31,48 @@ function renderAdmin() {
   );
 }
 
-describe('AdminRoute (admin-only guard, ADR-021)', () => {
-  afterEach(() => logout());
+describe('AdminRoute (admin-only guard, ADR-078)', () => {
+  afterEach(() => {
+    logout();
+    getPermissionsCatalog.mockClear();
+  });
 
-  it('renders the guarded page for a superadmin', () => {
-    loginAs({ isSuperadmin: true });
+  it('renders the guarded page when isAdminLevel is true (superadmin)', () => {
+    loginAs({ isSuperadmin: true, isAdminLevel: true });
+    renderAdmin();
+    expect(screen.getByText('USERS PAGE')).toBeInTheDocument();
+    expect(screen.queryByText('Загрузка…')).not.toBeInTheDocument();
+  });
+
+  it('renders the guarded page when isAdminLevel is true (role admin)', () => {
+    loginAs({ isSuperadmin: false, role: 'admin', isAdminLevel: true, permissions: {} });
     renderAdmin();
     expect(screen.getByText('USERS PAGE')).toBeInTheDocument();
   });
 
-  it('renders the guarded page for a DB user with role admin', () => {
-    loginAs({ isSuperadmin: false, role: 'admin', permissions: {} });
+  it('роль «Админ» с isAdminLevel открывает /users без Spinner каталога', () => {
+    loginAs({ isSuperadmin: false, role: 'Админ', isAdminLevel: true, permissions: {} });
     renderAdmin();
-    expect(screen.getByText('USERS PAGE')).toBeInTheDocument();
-  });
-
-  it('пока catalogPending — спиннер «Загрузка…», не заглушка (ADR-076)', () => {
-    loginAs({ isSuperadmin: false, role: 'Админ', permissions: { roles: ['view'] } });
-    render(
-      <AdminLevelContext.Provider value={{ isAdmin: false, catalogPending: true }}>
-        <MemoryRouter initialEntries={['/users']}>
-          <Routes>
-            <Route element={<AdminRoute />}>
-              <Route path="/users" element={<div>USERS PAGE</div>} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
-      </AdminLevelContext.Provider>,
-    );
-    expect(screen.getByText('Загрузка…')).toBeInTheDocument();
-    expect(screen.queryByText(INSUFFICIENT_PERMISSIONS_TITLE)).not.toBeInTheDocument();
-    expect(screen.queryByText('USERS PAGE')).not.toBeInTheDocument();
-  });
-
-  it('полный каталог (isAdmin из контекста) открывает /users без заглушки', () => {
-    loginAs({ isSuperadmin: false, role: 'Админ', permissions: {} });
-    render(
-      <AdminLevelContext.Provider value={{ isAdmin: true, catalogPending: false }}>
-        <MemoryRouter initialEntries={['/users']}>
-          <Routes>
-            <Route element={<AdminRoute />}>
-              <Route path="/users" element={<div>USERS PAGE</div>} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
-      </AdminLevelContext.Provider>,
-    );
     expect(screen.getByText('USERS PAGE')).toBeInTheDocument();
     expect(screen.queryByText(INSUFFICIENT_PERMISSIONS_TITLE)).not.toBeInTheDocument();
+    expect(screen.queryByText('Загрузка…')).not.toBeInTheDocument();
+    expect(getPermissionsCatalog).not.toHaveBeenCalled();
   });
 
-  it('shows the page-scoped «Недостаточно прав» stub for a non-admin (no redirect, session kept)', () => {
-    // ADR-021 §6: AdminRoute для /users показывает page-scoped заглушку, а НЕ
-    // редиректит на /dashboard и НЕ сбрасывает сессию.
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { servers: ['view'] } });
+  it('shows the page-scoped «Недостаточно прав» stub when isAdminLevel is false (no redirect, session kept)', () => {
+    loginAs({
+      isSuperadmin: false,
+      role: 'Оператор',
+      isAdminLevel: false,
+      permissions: { servers: ['view'] },
+    });
     renderAdmin();
 
-    // Page-scoped заглушка «нет доступа к разделу» (доступ к другим разделам может быть).
     expect(screen.getByText(INSUFFICIENT_PERMISSIONS_TITLE)).toBeInTheDocument();
     expect(screen.getByText(NO_SECTION_ACCESS_HINT)).toBeInTheDocument();
-    // Контент /users скрыт; редиректа на /dashboard нет.
     expect(screen.queryByText('USERS PAGE')).not.toBeInTheDocument();
     expect(screen.queryByText('DASHBOARD')).not.toBeInTheDocument();
-    // Сессия НЕ сброшена (403 ≠ 401).
+    expect(screen.queryByText('Загрузка…')).not.toBeInTheDocument();
     expect(useAuthStore.getState().isAuthenticated).toBe(true);
   });
 });

@@ -473,6 +473,7 @@ function meResponse(over: Partial<MeResponse> = {}): MeResponse {
     username: 'ivan',
     role: 'Оператор',
     is_superadmin: false,
+    is_admin_level: false,
     sees_all_sms_teams: false,
     sees_all_mail_teams: false,
     mail_teams: [],
