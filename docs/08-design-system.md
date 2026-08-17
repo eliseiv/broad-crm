@@ -1916,19 +1916,59 @@ interface ComboboxProps {
 
 ## Страница «Рассылка»
 
-Пункт **«Рассылка»** плоской навигации (`/broadcast`, #13), гейт **`broadcast:view`**. API — [04-api.md](04-api.md#broadcast), решение — [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md). Layout — **не-full-bleed** (`w-full px-6 py-8`).
+Пункт **«Рассылка»** плоской навигации (`/broadcast`, #13), гейт **`broadcast:view`**. API — [04-api.md](04-api.md#broadcast), решение — [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md), визуальная композиция — [ADR-077](adr/ADR-077-broadcast-page-visual-redesign.md) (статус **implemented**, сверка `BroadcastPage.tsx` 2026-08-17). Layout — **не-full-bleed** (`w-full px-6 py-8`).
 
-> **Без заголовка страницы (нормативно, [ADR-029](adr/ADR-029-ui-login-password-nav-team-form.md)).** Как Users/Roles: H1 не рендерится. Контент начинается сразу.
+> **Без заголовка страницы (нормативно, [ADR-029](adr/ADR-029-ui-login-password-nav-team-form.md)).** Как Users/Roles: H1 не рендерится. Контент начинается сразу с композера (или с карточки loading/error/empty).
 
-- **`Textarea` текста** — 1…4096 символов (лимит Telegram). HTML/Markdown не обещаются (сервер шлёт без `parse_mode`).
-- **Чекбоксы ролей** — из `GET /api/broadcasts/audience`. Лейбл: **`{name} (получат: {started_count}, без бота: {not_started_count})`**. Не из admin-gated `/api/roles`. Пустой список → **«Ролей для выбора нет.»**
-- **Чекбокс «Всем»** — отмечен → чекбоксы ролей `disabled` и в тело не входят (`all=true`, `role_ids=[]`). Снят → нужен хотя бы один роль-чекбокс.
-- **Сводка** под чекбоксами: **«Получат: N · Без бота: M»** — при «Всем» из `all_started_count` / `all_not_started_count`; иначе сумма выбранных ролей. Пользователь в нескольких выбранных ролях в сводке может считаться дважды (UX-оценка); сервер дедупит по `telegram_user_id`.
-- **Кнопка «Отправить»** — видна при `broadcast:send`; иначе скрыта. `disabled`, пока текст пуст после `strip()` или не выбрана аудитория.
-- Успех (`200`) → toast **«Отправлено: N. Не доставлено: K. Без бота: M»**.
-- `GET /api/broadcasts/audience` токен **не** проверяет (ошибки 401/403). Форма показывается и при пустом `KNOWLEDGE_BOT_TOKEN`. Empty-state **«ИИ-бот не настроен»** (подзаголовок: **«Обратитесь к администратору для настройки ИИ-бота базы знаний.»**) — после `503 knowledge_bot_not_configured` на **POST**. Страница защитно обрабатывает тот же код и на GET, сервер его на GET не отдаёт.
-- Загрузка audience → «Загрузка…»; 403 на audience → page-level заглушка; прочая ошибка audience → **«Не удалось загрузить аудиторию»** + «Повторить»; 422 на POST → toast **«Проверьте текст и аудиторию»**.
-- Page-level view-guard — как у остальных (`broadcast:view` → иначе заглушка «нет доступа к разделу»).
+> **Амендмент (ADR-077, 2026-08-17):** утверждение «Лейбл: `{name} (получат: {started_count}, без бота: {not_started_count})`» более не действует как **видимая** строка. Видимы имя + бейджи; формула — **accessible name** чекбокса. Плоская колонка без `ui/Card` более не норма.
+
+Функциональные инварианты (не менять): 1…4096 символов после `trim` на submit; HTML/Markdown не обещаются (сервер без `parse_mode`); роли **не** из `/api/roles`; «Всем» → роли `disabled`, тело `all=true`, `role_ids=[]`; иначе нужен ≥1 роль-чекбокс; сводка при «Всем» из `all_*`, иначе сумма выбранных (двойной счёт при пересечении ролей — UX-оценка); кнопка «Отправить» только при `broadcast:send`; toast / 503 / 422 / view-guard — строки ниже.
+
+### Композиция композера (нормативно, ADR-077)
+
+Норматив — **одна** внешняя карточка на существующих примитивах. Новых зависимостей и новых `ui/*` **нет**.
+
+```mermaid
+flowchart TB
+  form["form: w-full max-w-3xl flex-col gap-6"]
+  card["ui/Card: p-5 sm:p-6 gap-6"]
+  msg["Textarea Сообщение + hint n / 4096"]
+  aud["fieldset: legend Аудитория"]
+  allRow["строка Всем + Badge all_*"]
+  roleRows["строки ролей surface-2"]
+  footer["footer: flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"]
+  sum["полоса сводки"]
+  cta["Button Отправить"]
+  form --> card
+  card --> msg
+  card --> aud
+  aud --> allRow
+  aud --> roleRows
+  card --> footer
+  footer --> sum
+  footer --> cta
+```
+
+- **Карточка:** `ui/Card` — `rounded-card border border-border-subtle bg-surface-1 shadow-card`. Ширина формы `w-full max-w-3xl` (не на всю ширину контентной колонки). `interactive` / hover-lift **не** включать — это не навигационная карточка списка.
+- **Сообщение:** `ui/Textarea` `label="Сообщение"`, `rows={8}`, `maxLength={4096}`. Счётчик — проп `hint` примитива (**не** соседний `<p>`): **`{n} / 4096`**, `n = value.length`. Placeholder не задаётся.
+- **Аудитория:** `<fieldset>` с **видимым** `<legend>` **«Аудитория»** (`text-[13px] font-medium text-text-secondary` — тот же класс, что label полей). `sr-only` на legend **запрещён**.
+- **Строка «Всем»:** под-карточка `rounded-sub border border-border-subtle bg-surface-2 px-3 py-2.5` (или `p-3`), `flex-wrap`. Слева чип `h-10 w-10 rounded-chip bg-surface-3` с `Megaphone` (`h-5 w-5`, `aria-hidden`) + `Checkbox` с видимым лейблом **«Всем»**. Справа два `Badge` **вне** `label`: **«Получат: {all_started_count}»** `tone="green"`, **«Без бота: {all_not_started_count}»** `tone="red"`. Отмечена → дополнительно `border-accent` (базовая `border-border-subtle` остаётся в разметке). Accessible name чекбокса — **«Всем»**.
+- **Строка роли:** та же под-карточка (`flex-wrap`). Видимый `Checkbox.label` = **только имя** (`text-sm font-medium text-text-primary`, `break-words`, `min-w-0`, **без** `truncate`). Два `Badge` — **соседи вне `label`** (как у «Всем»). На `input` — `aria-label="{name} (получат: {started_count}, без бота: {not_started_count})"`. Выбрана → дополнительно `border-accent`. При «Всем» — только штатный `disabled` чекбокса; **`opacity-60` на wrapper запрещён**. Строка **не** `role="button"`. Пустой `roles` → **«Ролей для выбора нет.»** (`text-[13px] text-text-secondary`).
+- **Сводка:** полоса `rounded-sub border border-border-subtle bg-surface-2 px-4 py-3`. Две видимые ячейки — `aria-hidden="true"`: подпись `text-[13px] text-text-secondary` (**«Получат»** / **«Без бота»**); число — `font-mono font-semibold text-text-primary`. Live-region (`aria-live="polite"`): единственный text content — **sr-only** **«Получат: N · Без бота: M»**. **`aria-label` на сводке запрещён** (QA ассертит text content live-region).
+- **Footer:** DOM-порядок **`[сводка, CTA]`**, классы **`flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between`**. **`flex-col-reverse` запрещён.** CTA — `Button type="submit"` + `Send` (`h-4 w-4`, `aria-hidden`), `w-full sm:w-auto`. Видна ⇔ `broadcast:send`. `disabled={!canSubmit}`, `loading={isPending}`.
+- **Переполнение:** имена ролей и числа бейджей не клипать (`truncate`/`overflow-hidden` запрещены). Узкий вьюпорт — `flex-wrap`, бейджи под именем.
+- **Тема:** только токены (`surface-*`, `border-*`, `text-*`, `accent`, `status-*`). Hex в JSX запрещён. Светлая/тёмная — теми же классами.
+- **a11y:** штатные `focus-visible` примитивов; `prefers-reduced-motion` не нарушать (новых анимаций не вводить). Подсказка счётчика — только через `hint` у `Textarea`.
+
+### Состояния вне композера (без изменений ADR-076)
+
+- Загрузка audience → карточка «Загрузка…» + `Spinner` (как `/teams`).
+- 403 на audience → `InsufficientPermissions`.
+- Прочая ошибка audience → **«Не удалось загрузить аудиторию»** + «Повторить».
+- `503 knowledge_bot_not_configured` (POST; защитно и на GET) → dashed empty **«ИИ-бот не настроен»** + подзаголовок **«Обратитесь к администратору для настройки ИИ-бота базы знаний.»** + иконка `Megaphone`.
+- Успех `200` → только toast **«Отправлено: N. Не доставлено: K. Без бота: M»**. Инлайн-баннера успеха нет.
+- 422 на POST → toast **«Проверьте текст и аудиторию»**.
+- Page-level view-guard `broadcast:view` → иначе заглушка «нет доступа к разделу».
 
 ## Страница «Команды»
 
@@ -2251,10 +2291,14 @@ Feature-слой `features/sms` (`api.ts`, `hooks.ts`) на TanStack Query по 
 | Ключ | Русский |
 |------|---------|
 | Пункт навигации / `PAGE_LABEL.broadcast` | **Рассылка** |
+| Legend fieldset аудитории ([ADR-077](adr/ADR-077-broadcast-page-visual-redesign.md)) | **Аудитория** |
 | Чекбокс всех | **Всем** |
 | Кнопка отправки | **Отправить** |
-| Сводка аудитории | **Получат: N · Без бота: M** |
-| Лейбл чекбокса роли | **`{name} (получат: N, без бота: M)`** |
+| Сводка аудитории (sr-only text content live-region; не `aria-label`) | **Получат: N · Без бота: M** |
+| Подписи ячеек сводки ([ADR-077](adr/ADR-077-broadcast-page-visual-redesign.md)) | **Получат** / **Без бота** |
+| Видимый бейдж счётчика | **Получат: N** (`Badge tone="green"`) · **Без бота: M** (`Badge tone="red"`) |
+| Accessible name чекбокса роли | **`{name} (получат: N, без бота: M)`** |
+| Счётчик символов (`Textarea.hint`) | **`{n} / 4096`** |
 | Пустой список ролей | **Ролей для выбора нет.** |
 | Toast успеха | **Отправлено: N. Не доставлено: K. Без бота: M** |
 | Токен не задан (`503` на POST) | **ИИ-бот не настроен** |

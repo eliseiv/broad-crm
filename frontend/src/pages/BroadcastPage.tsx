@@ -2,7 +2,9 @@ import { useMemo, useState, type FormEvent } from 'react';
 import { AlertTriangle, Megaphone, RefreshCw, Send } from 'lucide-react';
 import { toast } from 'sonner';
 import { InsufficientPermissions } from '@/components/InsufficientPermissions';
+import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
+import { Card } from '@/components/ui/Card';
 import { Checkbox } from '@/components/ui/Checkbox';
 import { Spinner } from '@/components/ui/Spinner';
 import { Textarea } from '@/components/ui/Textarea';
@@ -31,8 +33,21 @@ function audienceSummary(
   return { started, notStarted };
 }
 
+function roleCheckboxAriaLabel(role: BroadcastAudienceRole): string {
+  return `${role.name} (получат: ${role.started_count}, без бота: ${role.not_started_count})`;
+}
+
+function audienceRowClass(selected: boolean): string {
+  return [
+    'flex min-w-0 flex-wrap items-center justify-between gap-3 rounded-sub border border-border-subtle bg-surface-2 px-3 py-2.5',
+    selected ? 'border-accent' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
 /**
- * Страница «Рассылка» (08-design-system.md «Страница Рассылка», ADR-076).
+ * Страница «Рассылка» (08-design-system.md «Страница Рассылка», ADR-076 / ADR-077).
  * Без H1. Page-level view-guard `broadcast:view`; кнопка «Отправить» — `broadcast:send`.
  */
 export function BroadcastPage() {
@@ -169,47 +184,96 @@ function BroadcastForm() {
   }
 
   return (
-    <form className="flex max-w-2xl flex-col gap-6" onSubmit={handleSubmit} noValidate>
-      <Textarea
-        label="Сообщение"
-        value={text}
-        maxLength={TEXT_MAX}
-        rows={8}
-        onChange={(e) => setText(e.target.value)}
-      />
+    <form className="flex w-full max-w-3xl flex-col gap-6" onSubmit={handleSubmit} noValidate>
+      <Card className="flex flex-col gap-6 p-5 sm:p-6">
+        <Textarea
+          label="Сообщение"
+          value={text}
+          maxLength={TEXT_MAX}
+          rows={8}
+          hint={`${text.length} / ${TEXT_MAX}`}
+          onChange={(e) => setText(e.target.value)}
+        />
 
-      <fieldset className="flex flex-col gap-3">
-        <legend className="sr-only">Аудитория</legend>
-        <Checkbox label="Всем" checked={sendAll} onChange={(e) => setSendAll(e.target.checked)} />
-        {!roles || roles.length === 0 ? (
-          <p className="text-[13px] text-text-secondary">Ролей для выбора нет.</p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {roles.map((role) => (
-              <li key={role.id}>
-                <Checkbox
-                  label={`${role.name} (получат: ${role.started_count}, без бота: ${role.not_started_count})`}
-                  checked={selectedIds.has(role.id)}
-                  disabled={sendAll}
-                  onChange={() => toggleRole(role.id)}
-                />
-              </li>
-            ))}
-          </ul>
-        )}
-        <p className="text-[13px] text-text-secondary" aria-live="polite">
-          Получат: {summary.started} · Без бота: {summary.notStarted}
-        </p>
-      </fieldset>
+        <fieldset className="flex min-w-0 flex-col gap-3">
+          <legend className="text-[13px] font-medium text-text-secondary">Аудитория</legend>
+          <div className={audienceRowClass(sendAll)}>
+            <div className="flex min-w-0 items-center gap-3">
+              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-chip bg-surface-3 text-text-secondary">
+                <Megaphone className="h-5 w-5" aria-hidden="true" />
+              </span>
+              <Checkbox
+                label="Всем"
+                checked={sendAll}
+                onChange={(e) => setSendAll(e.target.checked)}
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
+              <Badge tone="green">Получат: {allStarted}</Badge>
+              <Badge tone="red">Без бота: {allNotStarted}</Badge>
+            </div>
+          </div>
+          {!roles || roles.length === 0 ? (
+            <p className="text-[13px] text-text-secondary">Ролей для выбора нет.</p>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {roles.map((role) => {
+                const selected = selectedIds.has(role.id);
+                return (
+                  <li key={role.id} className={audienceRowClass(selected)}>
+                    <Checkbox
+                      label={
+                        <span className="min-w-0 break-words text-sm font-medium text-text-primary">
+                          {role.name}
+                        </span>
+                      }
+                      aria-label={roleCheckboxAriaLabel(role)}
+                      checked={selected}
+                      disabled={sendAll}
+                      onChange={() => toggleRole(role.id)}
+                    />
+                    <div className="flex flex-wrap items-center gap-3">
+                      <Badge tone="green">Получат: {role.started_count}</Badge>
+                      <Badge tone="red">Без бота: {role.not_started_count}</Badge>
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </fieldset>
 
-      {canSend && (
-        <div>
-          <Button type="submit" loading={sendMutation.isPending} disabled={!canSubmit}>
-            <Send className="h-4 w-4" aria-hidden="true" />
-            Отправить
-          </Button>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="rounded-sub border border-border-subtle bg-surface-2 px-4 py-3">
+            <div className="flex flex-wrap gap-6">
+              <div aria-hidden="true" className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-[13px] text-text-secondary">Получат</span>
+                <span className="font-mono font-semibold text-text-primary">{summary.started}</span>
+              </div>
+              <div aria-hidden="true" className="flex min-w-0 flex-col gap-0.5">
+                <span className="text-[13px] text-text-secondary">Без бота</span>
+                <span className="font-mono font-semibold text-text-primary">
+                  {summary.notStarted}
+                </span>
+              </div>
+            </div>
+            <p className="sr-only" aria-live="polite">
+              Получат: {summary.started} · Без бота: {summary.notStarted}
+            </p>
+          </div>
+          {canSend && (
+            <Button
+              type="submit"
+              loading={sendMutation.isPending}
+              disabled={!canSubmit}
+              className="w-full sm:w-auto"
+            >
+              <Send className="h-4 w-4" aria-hidden="true" />
+              Отправить
+            </Button>
+          )}
         </div>
-      )}
+      </Card>
     </form>
   );
 }
