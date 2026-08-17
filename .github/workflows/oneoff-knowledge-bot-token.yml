@@ -30,24 +30,22 @@ jobs:
             echo "::error::repository secret KNOWLEDGE_BOT_TOKEN is empty"
             exit 1
           fi
-          python3 <<'PY' | ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s'
-          import os
-          import sys
-
-          token = os.environ["KNOWLEDGE_BOT_TOKEN"]
-          remote = r"""
+          # Токен подставляется на runner'е в скрипт (GHA маскирует secret в логах).
+          # Формат Telegram-токена (\d+:[A-Za-z0-9_-]+) безопасен в одинарных кавычках.
+          # Не смешиваем данные с stdin bash -s — иначе read съест строку скрипта.
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" "bash -s" << EOS
           set -euo pipefail
-          IFS= read -r NEW_TOKEN
-          test -n "${NEW_TOKEN}"
+          export NEW_TOKEN='${KNOWLEDGE_BOT_TOKEN}'
           cd /opt/crm
           test -f .env
-          export NEW_TOKEN
-          python3 - <<'PY2'
+          python3 - << 'PY'
           import os
           import pathlib
           import re
 
           token = os.environ["NEW_TOKEN"]
+          if not re.fullmatch(r"\d+:[A-Za-z0-9_-]+", token):
+              raise SystemExit("token format unexpected")
           p = pathlib.Path(".env")
           text = p.read_text(encoding="utf-8")
           line = "KNOWLEDGE_BOT_TOKEN=" + token
@@ -63,27 +61,24 @@ jobs:
           os.chmod(p, 0o600)
           print("KNOWLEDGE_BOT_TOKEN_UPSERT=" + action)
           print("TOKEN_LEN=%d" % len(token))
-          PY2
+          PY
           unset NEW_TOKEN
           docker compose --env-file .env -f infra/docker-compose.yml up -d --force-recreate --no-deps backend
           echo "waiting for backend healthy..."
           ok=0
-          for i in $(seq 1 36); do
-            health=$(docker compose --env-file .env -f infra/docker-compose.yml ps --format '{{.Health}}' backend 2>/dev/null || true)
-            if [ "$health" = "healthy" ]; then
+          for i in \$(seq 1 36); do
+            health=\$(docker compose --env-file .env -f infra/docker-compose.yml ps --format '{{.Health}}' backend 2>/dev/null || true)
+            if [ "\$health" = "healthy" ]; then
               ok=1
               break
             fi
             sleep 5
           done
           docker compose --env-file .env -f infra/docker-compose.yml ps backend
-          if [ "$ok" != "1" ]; then
+          if [ "\$ok" != "1" ]; then
             echo "::error::backend did not become healthy"
             exit 1
           fi
           docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
-            python -c "from app.config import get_settings; s=get_settings(); print('knowledge_bot_enabled=', s.knowledge_bot_enabled); print('token_len=', len(s.knowledge_bot_token or '')); assert s.knowledge_bot_enabled is True, 'knowledge_bot_enabled is false'"
-          """
-          sys.stdout.write(token + "\n")
-          sys.stdout.write(remote)
-          PY
+            python -c "from app.config import get_settings; s=get_settings(); print('knowledge_bot_enabled=', s.knowledge_bot_enabled); print('token_len=', len(s.knowledge_bot_token or '')); assert s.knowledge_bot_enabled is True, 'knowledge_bot_enabled is false'; assert len(s.knowledge_bot_token or '') >= 40, 'token_len too short'"
+          EOS
