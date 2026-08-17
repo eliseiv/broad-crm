@@ -1,0 +1,52 @@
+# ОДНОРАЗОВЫЙ — полная сверка покрытия каталога роли Админ
+name: oneoff — admin full catalog cover
+on:
+  workflow_dispatch:
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_KEY }}
+      - run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+      - run: |
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
+          set -euo pipefail
+          cd /opt/crm
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend python - <<'PY'
+          import asyncio, json
+          from sqlalchemy import text
+          from app.db import get_sessionmaker
+          from app.domain.permissions import CATALOG, full_catalog_permissions, permissions_subset
+
+          async def main() -> None:
+              sm = get_sessionmaker()
+              async with sm() as s:
+                  rows = (await s.execute(text(
+                      "SELECT id::text, name, permissions FROM roles WHERE name ILIKE '%admin%' OR name ILIKE '%админ%'"
+                  ))).mappings().all()
+              full = full_catalog_permissions()
+              print("CATALOG_PAGES", list(CATALOG.keys()))
+              for row in rows:
+                  perms = dict(row["permissions"] or {})
+                  ok = permissions_subset(full, perms)
+                  missing = []
+                  for page, acts in CATALOG.items():
+                      have = set(perms.get(page, []))
+                      for a in acts:
+                          if a not in have:
+                              missing.append(f"{page}:{a}")
+                  extra_pages = sorted(set(perms) - set(CATALOG))
+                  print("---")
+                  print("role", row["name"], "id", row["id"])
+                  print("is_admin_level_by_catalog", ok)
+                  print("missing", missing or "[]")
+                  print("extra_pages", extra_pages or "[]")
+                  print("pages", sorted(perms.keys()))
+
+          asyncio.run(main())
+          PY
+          EOS
