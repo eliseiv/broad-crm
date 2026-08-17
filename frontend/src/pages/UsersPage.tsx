@@ -158,6 +158,11 @@ export function UsersPage() {
                       вход» (ADR-025 §5) — единственный визуальный признак учётки. */}
                   {!user.has_password && <Badge tone="yellow">Без пароля</Badge>}
                   <StatusBadge status={user.status} />
+                  {user.bot_started ? (
+                    <Badge tone="green">Бот</Badge>
+                  ) : (
+                    <Badge tone="red">Бот не запущен</Badge>
+                  )}
                 </div>
               </Card>
             </li>

@@ -104,10 +104,11 @@ export function useDeleteRole() {
 // --- Permissions catalog ---
 
 /** Каталог прав для матрицы (страница×действия). Стабилен — большой staleTime. */
-export function usePermissionsCatalog() {
+export function usePermissionsCatalog(options?: { enabled?: boolean }) {
   return useQuery({
     queryKey: permissionsCatalogKey,
     queryFn: ({ signal }) => getPermissionsCatalog(signal),
     staleTime: 5 * 60_000,
+    enabled: options?.enabled ?? true,
   });
 }

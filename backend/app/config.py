@@ -413,6 +413,17 @@ class Settings(BaseSettings):
         """
         return bool(self.documents_api_key)
 
+    # --- Рассылка через Telegram ИИ-бота (modules/broadcast, ADR-076) ---
+    # Токен ИИ-бота базы знаний (значение = BOT_TOKEN соседнего ba-knowledge-base).
+    # Класс SMS_TELEGRAM_BOT_TOKEN: только env, не в БД/логах/ответах/SPA/URL.
+    # Пусто → knowledge_bot_enabled=false; POST /api/broadcasts → 503.
+    knowledge_bot_token: str = ""
+
+    @property
+    def knowledge_bot_enabled(self) -> bool:
+        """ИИ-бот рассылки активен только при заданном KNOWLEDGE_BOT_TOKEN (ADR-076)."""
+        return bool(self.knowledge_bot_token)
+
     # --- Rate-limit входа (05-security.md, TD-005) ---
     login_rate_limit_attempts: int = 10
     login_rate_limit_window_sec: int = 300

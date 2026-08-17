@@ -92,6 +92,7 @@ class UserListItem(BaseModel):
     (строки `user_channel_teams`), **без** базовых `teams`: то, что реально хранится.
     Эффективный scope канала = `teams ∪ <channel>_extra_teams` (его в готовом виде отдаёт
     `GET /api/auth/me` — имена полей разведены намеренно).
+    `bot_started` — есть хотя бы одна активная строка `knowledge_bot_links` (ADR-076).
     """
 
     id: uuid.UUID
@@ -107,6 +108,7 @@ class UserListItem(BaseModel):
     mail_extra_includes_unassigned: bool
     sms_extra_teams: list[TeamRef]
     sms_extra_includes_unassigned: bool
+    bot_started: bool
     created_at: datetime
     updated_at: datetime
 

@@ -69,6 +69,7 @@ function makeUser(
     mail_extra_includes_unassigned: false,
     sms_extra_teams: [],
     sms_extra_includes_unassigned: false,
+    bot_started: false,
     created_at: '2026-07-07T09:00:00Z',
     updated_at: '2026-07-07T09:00:00Z',
     ...over,
@@ -275,6 +276,26 @@ describe('UsersPage (плоский список с чипами команд, A
     expect(within(pending).getByText('Ожидает входа')).toBeInTheDocument();
     expect(within(active).getByText('Активен')).toBeInTheDocument();
     expect(within(inactive).getByText('Неактивен')).toBeInTheDocument();
+  });
+
+  it('бейдж «Бот» / «Бот не запущен» из bot_started (ADR-076)', () => {
+    state.users = {
+      items: [
+        makeUser({ id: 'u1', username: 'СБотом', bot_started: true }),
+        makeUser({ id: 'u2', username: 'БезБота', bot_started: false }),
+      ],
+    };
+
+    render(<UsersPage />, { wrapper });
+
+    const started = screen.getByText('СБотом').closest('[role="button"]') as HTMLElement;
+    const notStarted = screen.getByText('БезБота').closest('[role="button"]') as HTMLElement;
+    const botBadge = within(started).getByText('Бот');
+    const missingBadge = within(notStarted).getByText('Бот не запущен');
+    expect(botBadge).toHaveClass('text-status-green');
+    expect(missingBadge).toHaveClass('text-status-red');
+    expect(within(started).queryByText('Бот не запущен')).not.toBeInTheDocument();
+    expect(within(notStarted).queryByText(/^Бот$/)).not.toBeInTheDocument();
   });
 
   it('показывает бейдж «Без пароля» для беспарольного и не показывает для парольного (ADR-025)', () => {

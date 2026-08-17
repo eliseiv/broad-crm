@@ -6,7 +6,7 @@ import { Checkbox } from '@/components/ui/Checkbox';
 import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { ApiError } from '@/lib/api';
-import { ACTION_LABEL, ACTION_ORDER, pageLabel } from '@/features/users/labels';
+import { actionLabel, catalogActionColumns, pageLabel } from '@/features/users/labels';
 import { useCreateRole, useDeleteRole, useUpdateRole } from '@/features/users/hooks';
 import type {
   PermissionCatalogPage,
@@ -173,6 +173,7 @@ function RoleDialog({
 
   const isSubmitting = createMutation.isPending || updateMutation.isPending;
   const formId = 'role-editor-form';
+  const actionColumns = catalogActionColumns(catalog);
 
   return (
     <>
@@ -227,12 +228,12 @@ function RoleDialog({
                     <th className="px-3 py-2 text-left font-medium text-text-secondary">
                       Страница
                     </th>
-                    {ACTION_ORDER.map((action) => (
+                    {actionColumns.map((action) => (
                       <th
                         key={action}
                         className="px-3 py-2 text-center font-medium text-text-secondary"
                       >
-                        {ACTION_LABEL[action]}
+                        {actionLabel(action)}
                       </th>
                     ))}
                   </tr>
@@ -243,12 +244,12 @@ function RoleDialog({
                       <td className="whitespace-nowrap px-3 py-2 text-text-primary">
                         {pageLabel(page)}
                       </td>
-                      {ACTION_ORDER.map((action) => (
+                      {actionColumns.map((action) => (
                         <td key={action} className="px-3 py-2 text-center">
                           {actions.includes(action) ? (
                             <span className="inline-flex justify-center">
                               <Checkbox
-                                aria-label={`${pageLabel(page)} — ${ACTION_LABEL[action]}`}
+                                aria-label={`${pageLabel(page)} — ${actionLabel(action)}`}
                                 checked={isChecked(perm, page, action)}
                                 onChange={() => setPerm((prev) => toggle(prev, page, action))}
                               />

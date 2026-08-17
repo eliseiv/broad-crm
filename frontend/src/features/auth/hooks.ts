@@ -1,6 +1,7 @@
 import { useEffect, useMemo } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { getMe, login, setPassword } from '@/features/auth/api';
+import { useAdminLevel } from '@/features/auth/adminLevel';
 import type { Channel, ChannelTeamScope } from '@/features/auth/channelTeams';
 import { useAuthStore } from '@/store/auth';
 import type { LoginRequest, LoginSuccessResponse, SetPasswordRequest } from '@/types/api';
@@ -147,14 +148,15 @@ export function useIsSuperadmin(): boolean {
   return useAuthStore((s) => s.isSuperadmin);
 }
 
+export { useAdminLevel } from '@/features/auth/adminLevel';
+
 /**
- * Доступ к странице «Пользователи» (RBAC-администрирование): супер-админ или
- * роль `admin`. Гейтится не матрицей, а признаком admin (04-api.md, ADR-021).
+ * Доступ к странице «Пользователи» (RBAC-администрирование): `is_admin_level`
+ * (ADR-076) — супер-админ, роль `admin` или полное покрытие серверного каталога.
+ * Пока каталог грузится, `useAdminLevel().catalogPending` — не считать «не admin».
  */
 export function useIsAdmin(): boolean {
-  const isSuperadmin = useAuthStore((s) => s.isSuperadmin);
-  const role = useAuthStore((s) => s.role);
-  return isSuperadmin || role === 'admin';
+  return useAdminLevel().isAdmin;
 }
 
 /**

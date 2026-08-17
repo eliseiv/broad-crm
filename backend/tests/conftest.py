@@ -684,6 +684,20 @@ class _FakeUserChannelTeamRepo:
                     del self._db.channel_extras[(user_id, channel)]
 
 
+class _FakeKnowledgeBotLinkRepo:
+    """In-memory линки ИИ-бота: по умолчанию ни у кого нет активного линка."""
+
+    def __init__(self) -> None:
+        self.started_user_ids: set[_uuid.UUID] = set()
+
+    async def exists_for_user(self, user_id: _uuid.UUID) -> bool:
+        return user_id in self.started_user_ids
+
+    async def active_user_ids(self, user_ids: list[_uuid.UUID]) -> set[_uuid.UUID]:
+        wanted = set(user_ids)
+        return self.started_user_ids & wanted
+
+
 class RbacFakeDb:
     """In-memory «БД» для user/role/team репозиториев (общее состояние + сессия).
 
@@ -706,6 +720,7 @@ class RbacFakeDb:
         self.number_repo = _FakeSmsNumberRepo(self)
         self.mailbox_repo = _FakeMailAccountRepo(self)
         self.channel_repo = _FakeUserChannelTeamRepo(self)
+        self.knowledge_bot_repo = _FakeKnowledgeBotLinkRepo()
         # Монотонный источник `user_teams.created_at` (детерминированный порядок
         # авто-передачи лидерства без зависимости от разрешения системного таймера).
         self._member_seq = 0

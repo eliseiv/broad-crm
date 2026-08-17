@@ -28,6 +28,7 @@
 - **monitoring**: маппинг ответов Prometheus → схема метрик; вычисление `zone` на границах (79.9→green, 80→yellow, 90→yellow, 90.1→red); деградация при пустом/ошибочном ответе.
 - **provisioning**: переходы `provision_status` (pending→installing→online/error); формирование `targets/<id>.json`; имена/санитизация.
 - **notifier** (≥90 %, чистая функция перехода): матрица эскалаций — `green→yellow`/`green→red`/`yellow→red` → алерт; `red→yellow`/`*→green` и `offline→online` → молча; `online→offline` → offline-алерт; первая встреча online → база без алерта; возврат `offline→online` в нагрузке → переалерт (база `green`); `online` без метрик → пропуск без алерта; `PrometheusUnavailable` → state не тронут; формат всех 3 сообщений и `int(usage_percent)` (floor); опциональность (нет токена → задача не стартует). См. [modules/notifier](modules/notifier/README.md).
+- **`is_admin_level`** (чистая, `app/domain/permissions.py`): супер-админ → true; `role=="admin"` → true; полный каталог (включая extra-действия и `broadcast`) → true; кириллическое «Админ» с неполным каталогом (нет `documents.share` или нет `broadcast`) → false; урезанная роль → false.
 
 ### Интеграционные
 - API + тестовая PostgreSQL (testcontainers или отдельная схема). Prometheus и Ansible — **замоканы** (httpx mock / fake runner).
@@ -159,6 +160,21 @@
 - Проверка соответствия ответов схемам из [04-api.md](04-api.md) (Pydantic-схемы = нормативный контракт; тест сверяет ключевые поля и коды ошибок).
 - При расхождении docs↔код — `blame: "spec"` или `blame: "code"` в отчёте qa.
 
+### Broadcast и knowledge-bot ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md))
+
+Интеграционные (тестовая PostgreSQL; Telegram Bot API и HTTP бота — **замоканы**):
+
+- `POST /api/external/knowledge-bot/link` с валидным `X-API-Key`: bootstrap по `username` → 200 + строка в `knowledge_bot_links`; повтор → тот же `started_at`, `dead_at IS NULL`.
+- Неизвестный telegram / неактивный / системный якорь → `404 user_not_linked`, строки нет.
+- Пустой `DOCUMENTS_API_KEY` → `503`; неверный ключ → `401`.
+- `GET /api/external/documents/user-access/{id}`: шаг 1 (knowledge-линк) побеждает sms/mail; query `username` включает bootstrap.
+- `GET /api/users`: `bot_started=true` только при активном knowledge-линке; mail/sms-линк **не** поднимает флаг.
+- `GET /api/broadcasts/audience` под `broadcast:view` без `roles:view` — роли непусты; системный якорь и неактивные не в счётчиках.
+- `POST /api/broadcasts`: `all=true` + `role_ids` → `422`; пустой текст / >4096 → `422`; пустой токен → `503 knowledge_bot_not_configured`.
+- Fan-out: два линка одного user_id → одно сообщение (дедуп); пользователь роли без линка → только `skipped_not_started`; мок 403 Telegram → `dead_at` проставлен, `failed++`, ответ `200`; частичный успех → `200` с `sent`/`failed`.
+- `POST /api/broadcasts` без `broadcast:send` → `403`; Users API для роли «Админ» с полным каталогом после backfill → не `403`.
+- Контракт-тест каталога: последний ключ `broadcast` с `("view","send")`; сид `admin` после миграции `0037` покрывает полный каталог.
+
 ## Frontend (Vitest + Testing Library; Playwright для E2E)
 
 ### Unit / компонентные
@@ -201,7 +217,11 @@
   - **селектор приложения:** опции — из `GET /api/backend-economics/backends`, запроса к `GET /api/backends` **не происходит**; **пункта «Все приложения» в DOM НЕТ**; пока бэк не выбран — запросов списков нет; **подпись опции — `«{name} — {code}»`** (одна строка; порядок частей ассертить явно — он **единый** с фильтром страницы «Юзеры бэков», где формат раньше был обратным);
   - **форма «Установить план» ([ADR-073](adr/ADR-073-products-archive-and-price-columns.md) §5):** архивный продукт в ответе `scope=grantable` **остаётся в списке опций** (негативный ассерт: он НЕ отфильтрован — выдача архивного плана законна) и его подпись содержит суффикс **« (в архиве)»**; у неархивного суффикса нет;
   - **инвалидация:** успешный `PATCH` продукта инвалидирует **и** кэш списка продуктов страницы «Юзеры бэков» (форма «Установить план» показывает тот же продукт) — ассертить повторный запрос по обоим ключам.
-- **Навигация:** пункт **«Продукты и тарифы»** рендерится ⇔ есть `backend-economics:view`; пункт **«Юзеры бэков»** — ⇔ `backend-users:view`; порядок ряда — по [08-design-system.md](08-design-system.md#навигация-плоская-applayout) (12 пунктов).
+- **Навигация:** пункт **«Продукты и тарифы»** рендерится ⇔ есть `backend-economics:view`; пункт **«Юзеры бэков»** — ⇔ `backend-users:view`; пункт **«Рассылка»** — ⇔ `broadcast:view`; порядок ряда — по [08-design-system.md](08-design-system.md#навигация-плоская-applayout) (13 пунктов).
+- **`/users`:** бейдж **«Бот»** / **«Бот не запущен»** из `bot_started` (тот же `Badge`, green/red). Роль «Админ» с полным каталогом видит пункт «Пользователи» (`is_admin_level`); роль с видимым CRUD без `share`/`broadcast` — нет.
+- **Матрица `/roles`:** столбцы = объединение действий `GET /api/permissions/catalog` (есть `share`/`send`/`sync`/`tags`/`transfer`); контракт «каждый ключ `CATALOG` имеет `PAGE_LABEL`/`ACTION_LABEL`» ([TD-071](100-known-tech-debt.md) — гейт завести вместе с закрытием TD-068).
+- **`/broadcast`:** «Всем» дизейблит роли; submit шлёт `all=true` без `role_ids`; toast из `sent`/`failed`/`skipped_not_started`; `503` на **POST** → «ИИ-бот не настроен» (GET `/audience` токен не проверяет и 503 не отдаёт); кнопка «Отправить» скрыта без `broadcast:send`; лейбл роли содержит счётчики «получат»/«без бота».
+- **`AdminRoute` / пункт «Пользователи» (`catalogPending`, [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md)):** пока `needsPermissionsCatalog && !catalogReady` — Spinner «Загрузка…», **не** заглушка «нет доступа»; после ошибки каталога без полного покрытия — заглушка. Каталог не запрашивается у `is_superadmin` / `role==="admin"`.
 - ⚠️ **Прогон `tsc -b` — с удалённым `tsbuildinfo`**: инкрементальный кеш маскирует TS6307 ([ADR-066](adr/ADR-066-tailwind-config-in-app-tsproject.md) §Урок).
 
 ### E2E (Playwright, против поднятого стека или замоканного API)

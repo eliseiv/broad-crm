@@ -29,6 +29,7 @@ def _build_app(db: RbacFakeDb, principal: Any) -> Any:
         roles=db.role_repo,
         teams=db.team_repo,
         channels=db.channel_repo,
+        knowledge_bot_links=db.knowledge_bot_repo,
     )
     app.dependency_overrides[deps.get_role_service] = lambda: RoleService(repository=db.role_repo)
     app.dependency_overrides[deps.get_team_service] = lambda: TeamService(
@@ -69,6 +70,7 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
         "roles",
         "teams",
         "documents",
+        "broadcast",
     ]
     by_page = {p["page"]: p["actions"] for p in pages}
     assert by_page["dashboard"] == ["view"]
@@ -79,6 +81,9 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
     assert by_page["teams"] == ["view", "create", "edit", "delete"]
     # documents (ADR-059): share — отдельное чувствительное действие смены видимости.
     assert by_page["documents"] == ["view", "create", "edit", "delete", "share"]
+    assert by_page["broadcast"] == ["view", "send"]
+    assert pages[-1]["page"] == "broadcast"
+    assert pages[-1]["actions"] == ["view", "send"]
     # backend-users (ADR-069): edit — admin-операции над пользователями бэков.
     assert by_page["backend-users"] == ["view", "edit"]
     # backend-economics (ADR-072 §2): НЕ алиас `backend-users:edit` — отдельная страница

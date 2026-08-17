@@ -13,6 +13,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Response, status
 
 from app.api.deps import Principal, RoleServiceDep, require
+from app.domain.permissions import is_admin_level
 from app.schemas.role import (
     RoleCreateRequest,
     RoleListItem,
@@ -24,8 +25,8 @@ router = APIRouter(prefix="/roles", tags=["roles"])
 
 
 def _is_privileged(principal: Principal) -> bool:
-    """Привилегированный актор (полный каталог): супер-админ ИЛИ роль `admin`."""
-    return principal.is_superadmin or principal.role == "admin"
+    """Привилегированный актор: `is_admin_level` (ADR-076 §4)."""
+    return is_admin_level(principal)
 
 
 @router.get("", response_model=RoleListResponse)

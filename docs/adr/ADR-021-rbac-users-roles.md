@@ -17,6 +17,8 @@
 
 ## Решение
 
+> **Амендмент (ADR-076, 2026-08-17):** утверждение «страница «Пользователи» доступна только роли `admin` / супер-админу» и «`require_admin` → `is_superadmin or role == "admin"`» более не действуют в этой формулировке — гейт `require_admin` считается как `is_admin_level` (супер-админ / `role=="admin"` / полный каталог). Каталог += страница `broadcast` (`view`, `send`). См. [ADR-076](ADR-076-knowledge-bot-broadcast-and-admin-level.md) §3–4.
+
 ### 1. Каталог прав (канон на сервере)
 
 Единственный источник истины прав — серверная константа `app/domain/permissions.py::CATALOG`. Каталог «страница → допустимые действия»:
@@ -82,6 +84,8 @@
 **Фабрика зависимости `require(page, action)`** (в `app/api/deps.py`) → возвращает `Principal`, если `principal.is_superadmin or action in principal.permissions.get(page, [])`, иначе `403 forbidden()` (новый в `app/errors.py`).
 
 **Фабрика `require_admin`** → `Principal`, если `principal.is_superadmin or principal.role == "admin"`, иначе `403 forbidden()`. Гейтит Users/Roles API и `GET /api/permissions/catalog`.
+
+> **Амендмент (ADR-076, 2026-08-17):** утверждение «`require_admin` → `is_superadmin or role == "admin"`» более не действует — предикат `is_admin_level`. Roles/catalog уже под матрицей ([ADR-022](ADR-022-teams-nav-categories.md)); Users API остаётся под `require_admin`, но с новым предикатом.
 
 **Маппинг метода → действия для ресурсных роутеров** (заменяет прежний `_user: CurrentUser`):
 

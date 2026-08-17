@@ -728,6 +728,24 @@ def documents_external_not_configured() -> AppError:
     )
 
 
+def user_not_linked() -> AppError:
+    """Telegram id не сопоставлен с активным несистемным пользователем CRM (ADR-076). 404."""
+    return AppError(
+        status_code=status.HTTP_404_NOT_FOUND,
+        code="user_not_linked",
+        message="Пользователь Telegram не привязан к активному пользователю CRM",
+    )
+
+
+def knowledge_bot_not_configured() -> AppError:
+    """Рассылка выключена: пуст `KNOWLEDGE_BOT_TOKEN` (ADR-076). 503."""
+    return AppError(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        code="knowledge_bot_not_configured",
+        message="ИИ-бот не настроен",
+    )
+
+
 def document_node_gone(*, node_id: Any, deleted_at: Any, content_version: int) -> AppError:
     """Внешний `GET /api/external/documents/{id}` для удалённого узла (tombstone, ADR-060 §3). 410.
 

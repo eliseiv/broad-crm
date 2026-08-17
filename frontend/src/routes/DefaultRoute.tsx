@@ -23,15 +23,16 @@ const NAV_ORDER: { path: string; page: string }[] = [
   { path: '/users', page: 'users' },
   { path: '/roles', page: 'roles' },
   { path: '/teams', page: 'teams' },
-  // «Документы» — в конце плоского порядка (ADR-061 §1), приоритеты не меняются.
+  // «Документы» — после teams (ADR-061 §1); «Рассылка» — в конце (ADR-076).
   { path: '/documents', page: 'documents' },
+  { path: '/broadcast', page: 'broadcast' },
 ];
 
 /**
  * Permission-aware дефолтный маршрут (index `/` и fallback `*`), 08-design-system.md
  * «Дефолтный маршрут после логина (permission-aware)», ADR-022:
  *  - редирект на ПЕРВУЮ доступную вкладку в порядке навигации (без `dashboard`);
- *    `users` — по admin-признаку, ресурсные/roles/teams — по `<page>:view`;
+ *    `users` — по is_admin_level, ресурсные/roles/teams/broadcast — по `<page>:view`;
  *  - если нет ни одного доступного листа (и не admin/superadmin) — заглушка
  *    «Недостаточно прав» (global-scope), БЕЗ сброса сессии и редиректа на /login.
  * Рендерится внутри AppLayout (шапка с «Выйти» доступна; useMe обновляет права).

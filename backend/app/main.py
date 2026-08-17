@@ -38,12 +38,13 @@ _SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
 }
 
-# Внешний read-only контур документов (ADR-060, 04-api.md#external-documents) весь несёт
-# `Cache-Control: no-store` — не только 200, но и ответы-ошибки (503/401/404/410 и 400
-# валидации cursor/limit/since), которые формируют глобальные обработчики ошибок и потому
-# не проходят через тело эндпоинта. Гарантируем инвариант по префиксу пути здесь, где виден
-# КАЖДЫЙ ответ контура; на не-external эндпоинты не влияет (guard по префиксу).
-_EXTERNAL_DOCUMENTS_PREFIX = "/api/external/documents"
+# Внешние контуры документов (ADR-060) и регистрации ИИ-бота (ADR-076) несут
+# `Cache-Control: no-store` — не только 200, но и ответы-ошибки, которые формируют
+# глобальные обработчики и потому не проходят через тело эндпоинта. Guard по префиксу.
+_EXTERNAL_NO_STORE_PREFIXES = (
+    "/api/external/documents",
+    "/api/external/knowledge-bot",
+)
 _NO_STORE = "no-store"
 
 
@@ -259,7 +260,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         response = await call_next(request)
         for header, value in _SECURITY_HEADERS.items():
             response.headers.setdefault(header, value)
-        if request.url.path.startswith(_EXTERNAL_DOCUMENTS_PREFIX):
+        if any(request.url.path.startswith(prefix) for prefix in _EXTERNAL_NO_STORE_PREFIXES):
             # setdefault: не перетираем no-store, уже проставленный 200-хендлерами; на
             # ответах-ошибках контура заголовок ещё не задан — проставляем его тут.
             response.headers.setdefault("Cache-Control", _NO_STORE)

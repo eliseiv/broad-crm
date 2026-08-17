@@ -2,6 +2,8 @@
 
 - **Статус:** accepted (**тема-часть частично переопределена** — [ADR-041](ADR-041-login-theme-session-ux.md), [ADR-046](ADR-046-ui-infra-fix-pack.md); **§Layout-ветка навигации частично superseded** — [ADR-061](ADR-061-documents-sidebar-two-panel-nav.md): маршрут `/documents` — второй full-bleed после `/mail`, `isFullBleed` расширен; плоский хэдер-ряд §1 и порядок `DefaultRoute` **сохранены**)
 
+> **Амендмент (ADR-076, 2026-08-17):** утверждение «`users` — `is_superadmin || role=="admin"`» более не действует — гейт `is_admin_level`. Утверждение «порядок `DefaultRoute` сохранён» сужается: в конец ряда добавлен `broadcast`. Плоский ряд и деградация скроллом **в силе**.
+
 > ⚠️ **ТЕМА-ЧАСТЬ ЭТОГО ADR ЧАСТИЧНО ПЕРЕОПРЕДЕЛЕНА — реализуйте по актуальным docs, не по этому тексту.**
 > - **Дефолт темы — СВЕТЛАЯ**, а не системный `prefers-color-scheme` ([ADR-041](ADR-041-login-theme-session-ux.md)): подписка на `matchMedia` снята; нет сохранённого выбора → `light`.
 > - **No-FOUC-скрипт — НЕ inline, а отдельный статический файл** ([ADR-046](ADR-046-ui-infra-fix-pack.md) §4.1): прод-CSP `script-src 'self'` **не исполняет** inline-скрипт → `data-theme` не проставлялся, и это был root cause бага «каждая перезагрузка = тёмная тема». `'unsafe-inline'` **не вводится**.

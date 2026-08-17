@@ -10,10 +10,24 @@ import { useAuthStore } from '@/store/auth';
 
 // AppLayout вызывает useMe() (GET /api/auth/me). Сеть в тесте не нужна — мокаем no-op;
 // гейтинг читает принципала из стора (loginAs/loginSuperadmin).
+const catalogState = vi.hoisted(() => ({
+  data: undefined as { pages: { page: string; actions: string[] }[] } | undefined,
+  isFetched: false,
+  isError: false,
+}));
+
 vi.mock('@/features/auth/hooks', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/features/auth/hooks')>();
   return { ...actual, useMe: () => ({ data: undefined }) };
 });
+
+vi.mock('@/features/users/hooks', () => ({
+  usePermissionsCatalog: () => ({
+    data: catalogState.data,
+    isFetched: catalogState.isFetched,
+    isError: catalogState.isError,
+  }),
+}));
 
 function renderAt(initial: string) {
   function wrapper({ children }: PropsWithChildren) {
@@ -57,6 +71,9 @@ describe('AppLayout — плоская навигация (ADR-033)', () => {
     logout();
     localStorage.clear();
     document.documentElement.removeAttribute('data-theme');
+    catalogState.data = undefined;
+    catalogState.isFetched = false;
+    catalogState.isError = false;
   });
 
   describe('супер-админ видит все пункты плоским рядом', () => {
@@ -137,6 +154,57 @@ describe('AppLayout — плоская навигация (ADR-033)', () => {
       renderAt('/servers');
 
       expect(screen.getByRole('link', { name: 'Пользователи' })).toBeInTheDocument();
+    });
+
+    it('пункт «Рассылка» виден при broadcast:view (ADR-076)', () => {
+      loginAs({
+        isSuperadmin: false,
+        role: 'Оператор',
+        permissions: { broadcast: ['view', 'send'] },
+      });
+      renderAt('/broadcast');
+      expect(screen.getByRole('link', { name: 'Рассылка' })).toBeInTheDocument();
+    });
+
+    it('роль «Админ» с полным каталогом видит «Пользователи»; без share/broadcast — нет', () => {
+      const fullPages = [
+        { page: 'dashboard', actions: ['view'] },
+        { page: 'servers', actions: ['view', 'create', 'edit', 'delete'] },
+        { page: 'documents', actions: ['view', 'create', 'edit', 'delete', 'share'] },
+        { page: 'broadcast', actions: ['view', 'send'] },
+        { page: 'roles', actions: ['view'] },
+      ];
+      const fullPerms = Object.fromEntries(fullPages.map((p) => [p.page, p.actions]));
+      catalogState.data = { pages: fullPages };
+      catalogState.isFetched = true;
+
+      loginAs({ isSuperadmin: false, role: 'Админ', permissions: { ...fullPerms, roles: ['view'] } });
+      const { unmount } = renderAt('/servers');
+      expect(screen.getByRole('link', { name: 'Пользователи' })).toBeInTheDocument();
+      unmount();
+
+      const noShare = {
+        ...fullPerms,
+        documents: ['view', 'create', 'edit', 'delete'],
+        roles: ['view'],
+      };
+      loginAs({ isSuperadmin: false, role: 'Админ', permissions: noShare });
+      renderAt('/servers');
+      expect(screen.queryByRole('link', { name: 'Пользователи' })).not.toBeInTheDocument();
+    });
+
+    it('пока каталог грузится — спиннер у «Пользователи», не заглушка (ADR-076)', () => {
+      loginAs({
+        isSuperadmin: false,
+        role: 'Админ',
+        permissions: { roles: ['view'], servers: ['view'] },
+      });
+      catalogState.data = undefined;
+      catalogState.isFetched = false;
+      renderAt('/servers');
+      expect(screen.getByLabelText('Загрузка')).toBeInTheDocument();
+      expect(screen.queryByRole('link', { name: 'Пользователи' })).not.toBeInTheDocument();
+      expect(screen.queryByText('Недостаточно прав')).not.toBeInTheDocument();
     });
   });
 

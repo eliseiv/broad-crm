@@ -3,9 +3,16 @@ import { useEffect } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
+import { Spinner } from '@/components/ui/Spinner';
 import { cn } from '@/lib/cn';
 import { useTheme } from '@/lib/theme';
-import { useCanViewPage, useIsAdmin, useMe } from '@/features/auth/hooks';
+import {
+  AdminLevelContext,
+  needsPermissionsCatalog,
+  resolveAdminLevel,
+} from '@/features/auth/adminLevel';
+import { useCanViewPage, useMe } from '@/features/auth/hooks';
+import { usePermissionsCatalog } from '@/features/users/hooks';
 import { useAuthStore } from '@/store/auth';
 
 /**
@@ -34,8 +41,9 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/users', label: 'Пользователи', page: 'users' },
   { to: '/roles', label: 'Роли', page: 'roles' },
   { to: '/teams', label: 'Команды', page: 'teams' },
-  // «Документы» — пункт 10 в конце ряда (ADR-061 §1), гейт documents:view.
+  // «Документы» — пункт 12; «Рассылка» — пункт 13 (ADR-076), гейт broadcast:view.
   { to: '/documents', label: 'Документы', page: 'documents' },
+  { to: '/broadcast', label: 'Рассылка', page: 'broadcast' },
 ];
 
 /**
@@ -55,9 +63,24 @@ export function AppLayout() {
   // права могут меняться без пере-логина). Наполняет стор → гейтинг реактивен.
   useMe();
 
+  // Каталог для is_admin_level: pages из query.data в ЭТОМ рендере (не useEffect-снимок).
+  // Пока каталог грузится — catalogPending: не считаем «не admin».
+  const isSuperadmin = useAuthStore((s) => s.isSuperadmin);
+  const role = useAuthStore((s) => s.role);
+  const permissions = useAuthStore((s) => s.permissions);
+  const needsCatalog = needsPermissionsCatalog(isSuperadmin, role, permissions);
+  const catalogQuery = usePermissionsCatalog({ enabled: needsCatalog });
+  const adminLevel = resolveAdminLevel({
+    isSuperadmin,
+    role,
+    permissions,
+    catalog: catalogQuery.data?.pages,
+    needsCatalog,
+    catalogReady: catalogQuery.isFetched || catalogQuery.isError,
+  });
+
   // Доступ по страницам (общий useCanViewPage, без инлайн-canView). Пункт `users`
-  // гейтится admin-признаком (вне матрицы, ADR-021); остальные — <page>:view.
-  const isAdmin = useIsAdmin();
+  // гейтится is_admin_level (вне матрицы, ADR-076); остальные — <page>:view.
   const access: Record<string, boolean> = {
     mail: useCanViewPage('mail'),
     sms: useCanViewPage('sms'),
@@ -70,11 +93,8 @@ export function AppLayout() {
     roles: useCanViewPage('roles'),
     teams: useCanViewPage('teams'),
     documents: useCanViewPage('documents'),
-    users: isAdmin,
+    broadcast: useCanViewPage('broadcast'),
   };
-
-  // Только видимые по правам пункты (скрытый по правам пункт не рендерится).
-  const visibleItems = NAV_ITEMS.filter((item) => Boolean(access[item.page]));
 
   // Два режима shell по маршруту (08-design-system.md «Full-bleed layout», ADR-061):
   //  • /mail и /documents (full-bleed) — фиксированная высота; скролл внутри панелей.
@@ -106,86 +126,103 @@ export function AppLayout() {
   };
 
   return (
-    <div
-      className={cn(
-        'flex flex-col bg-bg-base',
-        isFullBleed
-          ? 'h-dvh max-h-dvh overflow-hidden overscroll-none'
-          : 'min-h-screen',
-      )}
-    >
-      <header
+    <AdminLevelContext.Provider value={adminLevel}>
+      <div
         className={cn(
-          'border-b border-border-subtle bg-bg-base/80 backdrop-blur-md',
-          isFullBleed ? 'shrink-0' : 'sticky top-0 z-30',
+          'flex flex-col bg-bg-base',
+          isFullBleed ? 'h-dvh max-h-dvh overflow-hidden overscroll-none' : 'min-h-screen',
         )}
       >
-        <div className="flex w-full items-center gap-4 px-6 py-3">
-          <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
-            <ServerCog className="h-[18px] w-[18px]" aria-hidden="true" />
-          </span>
-          {/* Плоский ряд пунктов; на узких вьюпортах — горизонтальный скролл ряда
+        <header
+          className={cn(
+            'border-b border-border-subtle bg-bg-base/80 backdrop-blur-md',
+            isFullBleed ? 'shrink-0' : 'sticky top-0 z-30',
+          )}
+        >
+          <div className="flex w-full items-center gap-4 px-6 py-3">
+            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-accent/15 text-accent">
+              <ServerCog className="h-[18px] w-[18px]" aria-hidden="true" />
+            </span>
+            {/* Плоский ряд пунктов; на узких вьюпортах — горизонтальный скролл ряда
               (scrollbar-none), высота хэдера фиксирована (flex-nowrap), sticky/
               full-bleed не ломаются (ADR-033 §Деградация хэдера). */}
-          <nav
-            aria-label="Основная навигация"
-            className="scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto"
-          >
-            {visibleItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={({ isActive }) =>
-                  cn(
-                    'shrink-0 whitespace-nowrap rounded-md px-3 py-2 text-[14px] font-medium transition-colors',
-                    'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-                    isActive ? 'text-accent' : 'text-text-secondary hover:text-text-primary',
-                  )
-                }
-              >
-                {item.label}
-              </NavLink>
-            ))}
-          </nav>
-          <div className="flex shrink-0 items-center gap-3">
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={toggle}
-              aria-label={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
+            <nav
+              aria-label="Основная навигация"
+              className="scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto"
             >
-              {theme === 'dark' ? (
-                <Sun className="h-4 w-4" aria-hidden="true" />
-              ) : (
-                <Moon className="h-4 w-4" aria-hidden="true" />
+              {NAV_ITEMS.map((item) => {
+                if (item.page === 'users') {
+                  if (adminLevel.catalogPending) {
+                    return (
+                      <span
+                        key="users-catalog-pending"
+                        className="inline-flex shrink-0 items-center px-3 py-2"
+                      >
+                        <Spinner className="text-text-secondary" label="Загрузка" />
+                      </span>
+                    );
+                  }
+                  if (!adminLevel.isAdmin) return null;
+                } else if (!access[item.page]) {
+                  return null;
+                }
+                return (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    className={({ isActive }) =>
+                      cn(
+                        'shrink-0 whitespace-nowrap rounded-md px-3 py-2 text-[14px] font-medium transition-colors',
+                        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                        isActive ? 'text-accent' : 'text-text-secondary hover:text-text-primary',
+                      )
+                    }
+                  >
+                    {item.label}
+                  </NavLink>
+                );
+              })}
+            </nav>
+            <div className="flex shrink-0 items-center gap-3">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={toggle}
+                aria-label={theme === 'dark' ? 'Светлая тема' : 'Тёмная тема'}
+              >
+                {theme === 'dark' ? (
+                  <Sun className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <Moon className="h-4 w-4" aria-hidden="true" />
+                )}
+              </Button>
+              {username && (
+                <span className="hidden text-[13px] text-text-secondary sm:inline">
+                  <span className="font-mono text-text-primary">{username}</span>
+                </span>
               )}
-            </Button>
-            {username && (
-              <span className="hidden text-[13px] text-text-secondary sm:inline">
-                <span className="font-mono text-text-primary">{username}</span>
-              </span>
-            )}
-            <Button variant="ghost" size="sm" onClick={handleLogout}>
-              <LogOut className="h-4 w-4" />
-              Выйти
-            </Button>
+              <Button variant="ghost" size="sm" onClick={handleLogout}>
+                <LogOut className="h-4 w-4" />
+                Выйти
+              </Button>
+            </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      {isFullBleed ? (
-        <main className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
-          <Outlet />
-        </main>
-      ) : (
-        <main>
-          {/* Контент — на всю ширину вьюпорта (решение владельца, 2026-07-23): прежний
-              контейнер max-w-[1400px] упразднён, отступы по краям сохранены. */}
-          <div className="w-full px-6 py-8">
+        {isFullBleed ? (
+          <main className="flex min-h-0 w-full flex-1 flex-col overflow-hidden">
             <Outlet />
-          </div>
-        </main>
-      )}
-    </div>
+          </main>
+        ) : (
+          <main>
+            {/* Контент — на всю ширину вьюпорта (решение владельца, 2026-07-23): прежний
+              контейнер max-w-[1400px] упразднён, отступы по краям сохранены. */}
+            <div className="w-full px-6 py-8">
+              <Outlet />
+            </div>
+          </main>
+        )}
+      </div>
+    </AdminLevelContext.Provider>
   );
 }

@@ -5,6 +5,7 @@ from app.models.base import Base
 from app.models.document_attachment import DocumentAttachment
 from app.models.document_node import DocumentNode
 from app.models.document_node_role import document_node_roles
+from app.models.knowledge_bot_link import KnowledgeBotLink
 from app.models.mail_account import MailAccount
 from app.models.mail_message import MailMessage
 from app.models.mail_message_read import MailMessageRead
@@ -35,6 +36,7 @@ __all__ = [
     "Base",
     "DocumentAttachment",
     "DocumentNode",
+    "KnowledgeBotLink",
     "MailAccount",
     "MailMessage",
     "MailMessageRead",

@@ -26,6 +26,7 @@ _SENSITIVE_KEYS = frozenset(
         "fernet_key",
         "secret",
         "admin_password",
+        "knowledge_bot_token",
     }
 )
 

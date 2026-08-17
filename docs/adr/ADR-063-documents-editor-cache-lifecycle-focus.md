@@ -84,6 +84,8 @@
 - [modules/documents](../modules/documents/README.md#frontend--тз): раздел «Frontend — ТЗ» приведён в соответствие.
 - **Прежняя формулировка «keyed по `id:content_version`» отменена** — исполнитель обязан снять её из docstring `DocumentEditor` и из комментария мутационного хука (комментарий описывает поведение, которого в коде нет).
 - **Заведён [TD-068](../100-known-tech-debt.md)**: матрица прав `/roles` рендерит только `view/create/edit/delete` ⇒ действия `documents:share`, `mail:sync`/`mail:tags`, `sms:transfer`/`sms:sync` **невозможно выдать через UI**. Функциональный пробел, вне объёма этого ADR.
+
+> **Амендмент (ADR-076, 2026-08-17):** утверждение «TD-068 — открытый пробел матрицы» более не действует как действующая норма — [TD-068](../100-known-tech-debt.md) **закрыт в коде frontend ([ADR-076](ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4, сверка 2026-08-17)**: столбцы матрицы `/roles` строятся из `GET /api/permissions/catalog`, не из зашитого `ACTION_ORDER`. Пакет этого ADR (§A кэш / §B lifecycle / §C фокус / §D инвариант подписей) **в силе**.
 - Backend, модель данных, миграции, внешний RAG-контур — **без изменений**.
 - **Follow-up из финального review (minor, вынесены за рамки реализации пакета):** [TD-069](../100-known-tech-debt.md) — rename открытого документа с несохранёнными правками молча отбрасывает их в редакторе (тот же класс silent-loss, что закрывает §B, но узкий путь); [TD-070](../100-known-tech-debt.md) — `dirty=true` при первичном монтировании ⇒ холостой re-save (предсуществующее поведение [ADR-062](ADR-062-documents-wysiwyg-tiptap.md)); [TD-071](../100-known-tech-debt.md) — инвариант §D не защищён контракт-тестом по всему серверному `CATALOG`.
 

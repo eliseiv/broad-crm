@@ -17,6 +17,8 @@
 ### §1. Хэдер-навигация ADR-033 СОХРАНЯЕТСЯ; добавляется пункт «Документы»
 
 > **Сноска (2026-08-06, [ADR-072](ADR-072-crm-admin-api-v11-economics.md)):** номер пункта («10») и перечень листьев ниже зафиксированы **на момент принятия этого решения**. Актуальные — **[08-design-system.md §Навигация](../08-design-system.md#навигация-плоская-applayout)** (единственное нормативное место): позже добавлены `backend-users` ([ADR-069](ADR-069-backend-users-page-admin-contract.md)) и `backend-economics` ([ADR-072](ADR-072-crm-admin-api-v11-economics.md)), «Документы» остаются **последним** пунктом ряда. Текст решения ниже **не меняется**.
+>
+> **Амендмент (ADR-076, 2026-08-17):** утверждение «Документы остаются последним пунктом ряда» / «`documents` добавлен в конец `DefaultRoute`» более не действует — последним листом специфицирован `broadcast`. Layout `/documents` (full-bleed) **в силе**.
 
 Плоский ряд `NavLink` в хэдере ([ADR-033](ADR-033-flat-nav-theme-toggle-numbers-table.md) §1) **не отменяется**. Добавляется пункт **«Документы»** (`/documents`, гейт `documents:view`) — как **пункт 10** в конце ряда (после «Команды»), чтобы не перенумеровывать существующие пункты и не менять порядок резолва `DefaultRoute` (он по ADR-033 стабилен). Плоский порядок листьев `DefaultRoute` дополняется `documents` в конце: `mail → sms → servers → ai-keys → proxies → backends → users → roles → teams → documents`. Нормативная таблица навигации — [08-design-system.md](../08-design-system.md#навигация-плоская-applayout).
 

@@ -17,6 +17,7 @@ function renderDefault() {
       <Route path="/users" element={<div>USERS</div>} />
       <Route path="/roles" element={<div>ROLES</div>} />
       <Route path="/backend-users" element={<div>BACKEND_USERS</div>} />
+      <Route path="/broadcast" element={<div>BROADCAST</div>} />
     </Routes>,
     { wrapper },
   );
@@ -64,6 +65,16 @@ describe('DefaultRoute (permission-aware default без /dashboard, ADR-022)', (
     renderDefault();
     expect(screen.getByText('BACKEND_USERS')).toBeInTheDocument();
     expect(screen.queryByText('Недостаточно прав')).not.toBeInTheDocument();
+  });
+
+  it('resolves /broadcast when only broadcast:view is granted (ADR-076)', () => {
+    loginAs({
+      isSuperadmin: false,
+      role: 'Оператор',
+      permissions: { broadcast: ['view', 'send'] },
+    });
+    renderDefault();
+    expect(screen.getByText('BROADCAST')).toBeInTheDocument();
   });
 
   it('non-superadmin role=admin (no explicit perms) reaches /users via admin flag', () => {

@@ -10,6 +10,8 @@
 
 from __future__ import annotations
 
+from typing import Protocol
+
 # Порядок ключей = порядок строк матрицы в UI (GET /api/permissions/catalog).
 # Ключи `page` совпадают со слагами маршрутов SPA (`ai-keys` — с дефисом).
 CATALOG: dict[str, tuple[str, ...]] = {
@@ -30,6 +32,7 @@ CATALOG: dict[str, tuple[str, ...]] = {
     "roles": ("view", "create", "edit", "delete"),
     "teams": ("view", "create", "edit", "delete"),
     "documents": ("view", "create", "edit", "delete", "share"),
+    "broadcast": ("view", "send"),
 }
 
 # Страница вне матрицы прав (гейтится require_admin, не через permissions).
@@ -74,6 +77,31 @@ def validate_permissions(permissions: dict[str, list[str]]) -> None:
             seen.add(action)
 
 
+class AdminLevelPrincipal(Protocol):
+    """Минимальный контракт принципала для `is_admin_level` (без импорта deps).
+
+    Поля — `@property`: совместимо с frozen `Principal` (read-only атрибуты).
+    """
+
+    @property
+    def is_superadmin(self) -> bool: ...
+
+    @property
+    def role(self) -> str: ...
+
+    @property
+    def permissions(self) -> dict[str, list[str]]: ...
+
+
+def is_admin_level(principal: AdminLevelPrincipal) -> bool:
+    """Admin-уровень: супер-админ, сид `admin` или полный текущий каталог (ADR-076 §4)."""
+    return (
+        principal.is_superadmin
+        or principal.role == "admin"
+        or permissions_subset(full_catalog_permissions(), principal.permissions)
+    )
+
+
 def permissions_subset(child: dict[str, list[str]], parent: dict[str, list[str]]) -> bool:
     """True ⇔ `child` — подмножество `parent` (subset-инвариант эскалации, ADR-022 §4а).
 
@@ -88,6 +116,7 @@ __all__ = [
     "CATALOG",
     "PermissionsValidationError",
     "full_catalog_permissions",
+    "is_admin_level",
     "permissions_subset",
     "validate_permissions",
 ]

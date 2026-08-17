@@ -28,6 +28,8 @@ def test_full_catalog_permissions_matches_catalog_and_is_independent_copy() -> N
     full["servers"].append("hack")
     assert "hack" not in CATALOG["servers"]
     assert "users" not in full
+    assert list(CATALOG)[-1] == "broadcast"
+    assert CATALOG["broadcast"] == ("view", "send")
 
 
 def test_validate_permissions_accepts_valid_subset_and_empty() -> None:

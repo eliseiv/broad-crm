@@ -33,6 +33,7 @@ def _service(db: RbacFakeDb) -> UserService:
         roles=db.role_repo,
         teams=db.team_repo,
         channels=db.channel_repo,
+        knowledge_bot_links=db.knowledge_bot_repo,
     )
 
 

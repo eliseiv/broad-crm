@@ -16,11 +16,12 @@ from app.db import get_session, get_sessionmaker
 from app.domain.channels import CHANNEL_MAIL, CHANNEL_SMS, Channel
 from app.domain.documents import DocumentScope
 from app.domain.mail import MailScope
-from app.domain.permissions import full_catalog_permissions, permissions_subset
+from app.domain.permissions import full_catalog_permissions, is_admin_level, permissions_subset
 from app.domain.sms import SmsScope
 from app.domain.superadmin import SUPERADMIN_USER_ID
 from app.errors import forbidden, unauthorized
 from app.infra.jwt import SetupTokenClaims, TokenError, decode_access_token, decode_setup_token
+from app.infra.knowledge_bot_telegram import KnowledgeBotClient
 from app.infra.mail_client import get_mail_client, get_mail_server_client
 from app.infra.prometheus import get_prometheus_client
 from app.infra.rate_limit import get_login_rate_limiter
@@ -30,11 +31,14 @@ from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.backend_repository import BackendRepository
 from app.repositories.document_attachment_repository import DocumentAttachmentRepository
 from app.repositories.document_repository import DocumentRepository
+from app.repositories.knowledge_bot_link_repository import KnowledgeBotLinkRepository
 from app.repositories.mail_account_repository import MailAccountRepository
+from app.repositories.mail_telegram_link_repository import MailTelegramLinkRepository
 from app.repositories.proxy_repository import ProxyRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.server_repository import ServerRepository
 from app.repositories.sms_number_repository import SmsNumberRepository
+from app.repositories.sms_telegram_link_repository import SmsTelegramLinkRepository
 from app.repositories.team_repository import TeamRepository
 from app.repositories.user_channel_team_repository import UserChannelTeamRepository
 from app.repositories.user_repository import UserRepository
@@ -47,8 +51,10 @@ from app.services.backend_economics_service import BackendEconomicsService
 from app.services.backend_monitor_service import BackendMonitorService
 from app.services.backend_service import BackendService
 from app.services.backend_user_service import BackendUserService
+from app.services.broadcast_service import BroadcastService
 from app.services.document_attachment_service import DocumentAttachmentService
 from app.services.document_service import DocumentService
+from app.services.knowledge_bot_link_service import KnowledgeBotLinkService
 from app.services.mail_ingest_service import MailIngestService
 from app.services.mail_service import MailService
 from app.services.mail_telegram_service import MailTelegramService
@@ -200,8 +206,8 @@ def require(page: str, action: str) -> Callable[[Principal], Awaitable[Principal
 
 
 async def require_admin(principal: PrincipalDep) -> Principal:
-    """Гейт Users/Roles/Permissions API: супер-админ ИЛИ роль `admin`, иначе 403."""
-    if principal.is_superadmin or principal.role == "admin":
+    """Гейт Users API: `is_admin_level` (супер-админ / сид `admin` / полный каталог)."""
+    if is_admin_level(principal):
         return principal
     raise forbidden()
 
@@ -225,6 +231,27 @@ def get_user_service(session: DbSession) -> UserService:
         roles=RoleRepository(session),
         teams=TeamRepository(session),
         channels=UserChannelTeamRepository(session),
+        knowledge_bot_links=KnowledgeBotLinkRepository(session),
+    )
+
+
+def get_knowledge_bot_link_service(session: DbSession) -> KnowledgeBotLinkService:
+    """Единый резолв Telegram → CRM-пользователь + upsert линка ИИ-бота (ADR-076)."""
+    return KnowledgeBotLinkService(
+        users=UserRepository(session),
+        knowledge_links=KnowledgeBotLinkRepository(session),
+        sms_links=SmsTelegramLinkRepository(session),
+        mail_links=MailTelegramLinkRepository(session),
+    )
+
+
+def get_broadcast_service(session: DbSession, settings: SettingsDep) -> BroadcastService:
+    """Сервис рассылки через Telegram ИИ-бота (audience + fan-out, ADR-076)."""
+    return BroadcastService(
+        links=KnowledgeBotLinkRepository(session),
+        roles=RoleRepository(session),
+        bot=KnowledgeBotClient(settings.knowledge_bot_token),
+        settings=settings,
     )
 
 
@@ -605,6 +632,10 @@ def get_client_ip(request: Request) -> str:
 
 AuthServiceDep = Annotated[AuthService, Depends(get_auth_service)]
 UserServiceDep = Annotated[UserService, Depends(get_user_service)]
+KnowledgeBotLinkServiceDep = Annotated[
+    KnowledgeBotLinkService, Depends(get_knowledge_bot_link_service)
+]
+BroadcastServiceDep = Annotated[BroadcastService, Depends(get_broadcast_service)]
 RoleServiceDep = Annotated[RoleService, Depends(get_role_service)]
 TeamServiceDep = Annotated[TeamService, Depends(get_team_service)]
 ServerServiceDep = Annotated[ServerService, Depends(get_server_service)]

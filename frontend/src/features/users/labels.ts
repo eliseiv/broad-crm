@@ -8,8 +8,18 @@
  * действия в серверный каталог обязано в том же изменении сопровождаться подписью в этом словаре.
  */
 
-/** Порядок столбцов действий в матрице прав. */
-export const ACTION_ORDER = ['view', 'create', 'edit', 'delete'] as const;
+/** Предпочтительный порядок столбцов (сортировка объединения действий каталога). */
+export const ACTION_ORDER = [
+  'view',
+  'create',
+  'edit',
+  'delete',
+  'share',
+  'send',
+  'sync',
+  'tags',
+  'transfer',
+] as const;
 
 /** Подписи действий (столбцы матрицы). */
 export const ACTION_LABEL: Record<string, string> = {
@@ -17,6 +27,11 @@ export const ACTION_LABEL: Record<string, string> = {
   create: 'Создание',
   edit: 'Изменение',
   delete: 'Удаление',
+  share: 'Видимость',
+  send: 'Отправка',
+  sync: 'Синк',
+  tags: 'Теги',
+  transfer: 'Перенос',
 };
 
 /** Подписи страниц каталога (строки матрицы). */
@@ -33,9 +48,34 @@ export const PAGE_LABEL: Record<string, string> = {
   roles: 'Роли',
   teams: 'Команды',
   documents: 'Документы',
+  broadcast: 'Рассылка',
 };
 
-/** Локализованное имя страницы (фолбэк — технический ключ). */
+const ACTION_RANK = new Map<string, number>(ACTION_ORDER.map((action, index) => [action, index]));
+
+/** Локализованное имя страницы (фолбэк — технический ключ, только авария). */
 export function pageLabel(page: string): string {
   return PAGE_LABEL[page] ?? page;
+}
+
+/** Локализованное имя действия (фолбэк — технический ключ, только авария). */
+export function actionLabel(action: string): string {
+  return ACTION_LABEL[action] ?? action;
+}
+
+/**
+ * Столбцы матрицы = объединение действий серверного каталога (ADR-076, закрытие TD-068).
+ * Порядок — ACTION_ORDER, неизвестные ключи — в конце.
+ */
+export function catalogActionColumns(catalog: { actions: string[] }[]): string[] {
+  const seen = new Set<string>();
+  for (const { actions } of catalog) {
+    for (const action of actions) seen.add(action);
+  }
+  return [...seen].sort((a, b) => {
+    const rankA = ACTION_RANK.get(a) ?? ACTION_ORDER.length;
+    const rankB = ACTION_RANK.get(b) ?? ACTION_ORDER.length;
+    if (rankA !== rankB) return rankA - rankB;
+    return a.localeCompare(b);
+  });
 }

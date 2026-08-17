@@ -697,6 +697,14 @@ erDiagram
     TEAMS ||--o{ USER_TEAMS : "1:N (ON DELETE CASCADE)"
     USERS ||--o{ USER_CHANNEL_TEAMS : "1:N (ON DELETE CASCADE)"
     TEAMS ||--o{ USER_CHANNEL_TEAMS : "1:N (ON DELETE CASCADE)"
+    KNOWLEDGE_BOT_LINKS {
+        bigint telegram_user_id PK
+        uuid user_id FK
+        text username
+        timestamptz started_at
+        timestamptz dead_at
+    }
+    USERS ||--o{ KNOWLEDGE_BOT_LINKS : "1:N (ON DELETE CASCADE)"
 ```
 
 `users.role_id → roles.id` с **`ON DELETE RESTRICT`**: роль, назначенную хотя бы одному пользователю, удалить нельзя (→ `409 role_in_use`, [04-api.md](04-api.md#delete-apirolesid)). `teams.leader_id → users.id` — **nullable, `ON DELETE SET NULL`** ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)): команда может быть **без лидера**; удаление пользователя-лидера **командой** не блокируется (независимое основание блокировки — авторство документов/вложений, `409 user_in_use`, [04-api.md](04-api.md#delete-apiusersid)) (лидерство авто-передаётся сервисом, остаток — `SET NULL`; код `409 user_is_team_leader` **упразднён**). `user_teams` — M2M между `users` и `teams`, обе стороны **`ON DELETE CASCADE`**, с колонкой `created_at` (дата добавления участника — для авто-передачи лидерства; см. [«Таблицы `teams` и `user_teams`»](#таблицы-teams-и-user_teams-crm-команды)).
@@ -711,9 +719,9 @@ erDiagram
 | `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата создания. |
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
 
-> **`permissions` (jsonb) — формат и валидация.** Объект «страница → массив действий». Допустимые страницы/действия — только из каталога (**канон — `backend/app/domain/permissions.py::CATALOG`**, [ADR-021](adr/ADR-021-rbac-users-roles.md#1-каталог-прав-канон-на-сервере)): `dashboard:[view]`; `servers`/`ai-keys`/`proxies`/`backends:[view,create,edit,delete]`; **`mail:[view,create,edit,delete,sync,tags]`** (`backend/app/domain/permissions.py:21` — прежняя запись «`mail:[view]`» описывала read-through-модель [ADR-012](adr/ADR-012-mail-read-through-proxy.md) и устарела с [ADR-038](adr/ADR-038-mail-headless-integration.md)/[ADR-044](adr/ADR-044-mail-full-merge-into-crm.md)); `sms:[view,edit,transfer,sync,delete]`; `roles`/`teams`. Полный маппинг действие→эндпоинты — [05-security.md](05-security.md#каталог-прав-канон-на-сервере). Ключ `users` **запрещён** (страница вне матрицы). Валидация — на уровне схемы/сервиса (`app/domain/permissions.py::CATALOG`), не в БД: неизвестная страница/действие, дубликат → `422 unprocessable`. DB хранит любой валидный jsonb; каноничность обеспечивает приложение (по образцу «свободного» инварианта `backends.domain`).
+> **`permissions` (jsonb) — формат и валидация.** Объект «страница → массив действий». Допустимые страницы/действия — только из каталога (**канон — `backend/app/domain/permissions.py::CATALOG`**, [ADR-021](adr/ADR-021-rbac-users-roles.md#1-каталог-прав-канон-на-сервере)): `dashboard:[view]`; `servers`/`ai-keys`/`proxies`/`backends:[view,create,edit,delete]`; **`backend-users`/`backend-economics:[view,edit]`**; **`mail:[view,create,edit,delete,sync,tags]`** (`backend/app/domain/permissions.py:21` — прежняя запись «`mail:[view]`» описывала read-through-модель [ADR-012](adr/ADR-012-mail-read-through-proxy.md) и устарела с [ADR-038](adr/ADR-038-mail-headless-integration.md)/[ADR-044](adr/ADR-044-mail-full-merge-into-crm.md)); `sms:[view,edit,transfer,sync,delete]`; `roles`/`teams`; `documents:[view,create,edit,delete,share]`; **`broadcast:[view,send]`** ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md)). Полный маппинг действие→эндпоинты — [05-security.md](05-security.md#каталог-прав-канон-на-сервере). Ключ `users` **запрещён** (страница вне матрицы). Валидация — на уровне схемы/сервиса (`app/domain/permissions.py::CATALOG`), не в БД: неизвестная страница/действие, дубликат → `422 unprocessable`. DB хранит любой валидный jsonb; каноничность обеспечивает приложение (по образцу «свободного» инварианта `backends.domain`).
 >
-> **Роль `admin` — зарезервированное имя.** Наличие у пользователя роли с `name == 'admin'` даёт доступ к странице «Пользователи»/Roles API (`require_admin`, [ADR-021](adr/ADR-021-rbac-users-roles.md#5-enforcement-сервер--единственная-граница-безопасности)). Роль `admin` сидится миграцией с полными правами по каталогу. Ресурсные страницы для admin-пользователей гейтятся её `permissions` как обычно; страница «Пользователи» — по имени роли.
+> **Роль `admin` — зарезервированное имя.** Сид `name == 'admin'` по-прежнему даёт admin-уровень. Гейт страницы «Пользователи» — `is_admin_level` (супер-админ / `role=="admin"` / полный каталог), не только точное имя ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4). Роль `admin` сидится миграцией с полными правами по каталогу (миграция `0037` дописывает `broadcast`). Ресурсные страницы для admin-пользователей гейтятся её `permissions` как обычно.
 
 ### Таблица `users`
 
@@ -1870,3 +1878,46 @@ ${DOCUMENTS_ATTACHMENTS_DIR}/<id[0:2]>/<id[2:4]>/<id>.<ext>
 **`upgrade()`** — `CREATE TABLE document_attachments` (+ 4 CHECK + 2 индекса). **Backfill не нужен** (таблица стартует пустой).
 
 **`downgrade()`** (рабочий, обязателен) — `DROP TABLE document_attachments;`. **Файлы на volume миграция НЕ трогает** (Alembic не управляет диском): после отката они остаются осиротевшими и убираются вручную/GC — зафиксировать комментарием в теле миграции, чтобы это не выглядело недосмотром.
+
+## Таблица `knowledge_bot_links` ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md))
+
+Факт «сотрудник написал Telegram ИИ-боту базы знаний» + chat_id доставки рассылки. **Не** mail/sms-линк: у ИИ-бота свой `BOT_TOKEN`, чужой линк не даёт права `sendMessage`. Образец — `sms_telegram_links` (`backend/app/models/sms_delivery.py`, `backend/app/repositories/sms_telegram_link_repository.py`). Модуль — [broadcast](modules/broadcast/README.md).
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `telegram_user_id` | `bigint` | PK | chat_id приватного чата с ИИ-ботом (не serial). |
+| `user_id` | `uuid` | `NOT NULL`, FK → `users(id)` **`ON DELETE CASCADE`** | CRM-пользователь. Системный якорь (`is_system`) в линки не попадает (резолв через `UserRepository` с `WHERE NOT is_system`). |
+| `username` | `text` | `NULL` | Нормализованный ник (без `@`, lower-case) на момент регистрации. |
+| `started_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Первый успешный upsert. Повторный upsert **не** затирает. |
+| `dead_at` | `timestamptz` | `NULL` | `NULL` = активен. `403` Telegram при рассылке → `now()`. Повторный `POST …/link` сбрасывает в `NULL`. |
+
+- 1:N `user_id` (без UNIQUE): один сотрудник может написать боту с нескольких аккаунтов.
+- Активна ⇔ `dead_at IS NULL`.
+- `UserListItem.bot_started` = EXISTS активной строки на этого пользователя. Числовой id и `started_at` наружу не отдаются.
+
+### Индексы
+
+- PK по `telegram_user_id` — upsert `ON CONFLICT (telegram_user_id) DO UPDATE`.
+- `ix_knowledge_bot_links_user_id` на `user_id` — EXISTS для `bot_started` и выборка адресатов.
+
+### Миграция `0037_knowledge_bot_links`
+
+> Файл `backend/alembic/versions/0037_knowledge_bot_links.py`. `revision = "0037_knowledge_bot_links"` — **24 символа** ≤ 32. `down_revision = "0036_ai_keys_credit_probe"`.
+
+**`upgrade()`**
+
+1. `CREATE TABLE knowledge_bot_links` + индекс `ix_knowledge_bot_links_user_id`.
+2. Backfill extra-действий ролей и `broadcast` — [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4: страницам с полным CRUD дописать `share`/`sync`/`tags`/`transfer`; сид `admin` и роли с полным прежним каталогом (без `broadcast`) получают `broadcast: [view, send]`.
+
+**`downgrade()`** — `DROP TABLE knowledge_bot_links;`. Backfill jsonb **не откатывается** (как `0010`/`0016`): комментарий в теле миграции.
+
+```sql
+CREATE TABLE knowledge_bot_links (
+    telegram_user_id  bigint PRIMARY KEY,
+    user_id           uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    username          text,
+    started_at        timestamptz NOT NULL DEFAULT now(),
+    dead_at           timestamptz
+);
+CREATE INDEX ix_knowledge_bot_links_user_id ON knowledge_bot_links (user_id);
+```

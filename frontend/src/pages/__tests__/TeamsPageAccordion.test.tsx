@@ -78,6 +78,7 @@ const USERS: UserListResponse = {
       mail_extra_includes_unassigned: false,
       sms_extra_teams: [],
       sms_extra_includes_unassigned: false,
+      bot_started: false,
       created_at: '2026-07-07T09:00:00Z',
       updated_at: '2026-07-07T09:00:00Z',
     },

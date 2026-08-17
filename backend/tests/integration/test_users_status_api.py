@@ -34,6 +34,7 @@ def _build_app(db: RbacFakeDb) -> Any:
         roles=db.role_repo,
         teams=db.team_repo,
         channels=db.channel_repo,
+        knowledge_bot_links=db.knowledge_bot_repo,
     )
     app.dependency_overrides[deps.get_role_service] = lambda: RoleService(repository=db.role_repo)
     app.dependency_overrides[deps.get_team_service] = lambda: TeamService(

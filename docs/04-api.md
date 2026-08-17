@@ -76,6 +76,8 @@
 | 422 | `document_attachment_invalid` | `POST /api/documents/nodes/{id}/attachments`: тип вне whitelist `png/jpeg/webp/gif` / фактическое содержимое не совпадает с заявленным `Content-Type` / превышен `DOCUMENTS_MAX_IMAGE_BYTES` ([Вложения](#вложения-изображения-документов-adr-068)) |
 | 410 | `document_node_gone` | Внешний `GET /api/external/documents/{id}` для **удалённого** узла (tombstone) ([External Documents](#external-documents-read-only-rag)) |
 | 503 | `documents_external_not_configured` | Внешний API документов выключен (`DOCUMENTS_API_KEY` пуст) ([External Documents](#external-documents-read-only-rag)) |
+| 404 | `user_not_linked` | Telegram `telegram_user_id` не сопоставлен с активным несистемным пользователем CRM ([user-access](#get-apiexternaldocumentsuser-accesstelegram_user_id), [knowledge-bot link](#post-apiexternalknowledge-botlink)) |
+| 503 | `knowledge_bot_not_configured` | Рассылка выключена (`KNOWLEDGE_BOT_TOKEN` пуст) ([Broadcast](#broadcast)) |
 
 `validation_error.details` — массив `{ "field": "ip", "message": "..." }`.
 
@@ -214,7 +216,7 @@
 | `sees_all_mail_teams` | boolean | **Производный admin-уровень видимости почты** ([ADR-038](adr/ADR-038-mail-headless-integration.md) §3, инвариант в силе): тот же предикат `is_superadmin OR permissions_subset(full_catalog_permissions(), permissions)`, что backend `get_mail_scope`. `true` ⇔ актор видит **все** почтовые команды. Backend — **единственный источник**. ⚠️ **Фильтр «Команда» по этому признаку НЕ гейтится** ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §6.2): условие рендера — то же [единое правило пяти экранов](08-design-system.md#фильтр-команда--единое-правило-на-пяти-экранах-нормативно-adr-055) (`options_count >= 2` по `mail_teams` + `mail_includes_unassigned`). **Где признак ДЕЙСТВИТЕЛЬНО используется на клиенте** ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §6.3 — оба контрола **admin-only**): (1) опция **«Без команды»** в селекторе «Команда» **формы ящика** (`MailboxFormModal`, `add`+`edit`, вкл. OAuth) — **предлагается к выбору только** при `sees_all_mail_teams === true` (создание ящика с `team_id=null` admin-only ⇒ не-админу это гарантированный `403`); исключение — «зеркало текущего состояния» ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §6.3.1): в `edit` под не-админом селектор **`disabled`**, и у **бесхозного** ящика опция «Без команды» **отображается** (выбрать нельзя) — иначе контрол показал бы чужую команду; (2) **дропдаун переноса ящика** на вкладке «Почты» — рендерится только admin-уровню (перенос ящика admin-only). Списки команд в обоих — из `me.mail_teams`, **не** из `GET /api/teams` |
 | `permissions` | object | Права `{ "<page>": ["<action>", ...] }`. Для супер-админа — **полный каталог** (все страницы/действия). Для БД-пользователя — `roles.permissions` |
 
-> `permissions` — производное для UI-гейтинга (фильтрация вкладок по `view`, скрытие кнопок Создать/Редактировать/Удалить). **Безопасность обеспечивается сервером** (`403 forbidden`), UI-гейтинг — только UX. Ключи `permissions` — из каталога ([`GET /api/permissions/catalog`](#permissions)); страница `users` в `permissions` не фигурирует (гейтится по `is_superadmin || role=="admin"`). `sees_all_sms_teams` — производный булев признак admin-уровня для SMS (вычисляется backend по [ADR-032](adr/ADR-032-sms-visibility-admin-full-catalog.md)); фронт использует его как источник истины вместо повторного вычисления полного каталога.
+> `permissions` — производное для UI-гейтинга (фильтрация вкладок по `view`, скрытие кнопок Создать/Редактировать/Удалить). **Безопасность обеспечивается сервером** (`403 forbidden`), UI-гейтинг — только UX. Ключи `permissions` — из каталога ([`GET /api/permissions/catalog`](#permissions)); страница `users` в `permissions` не фигурирует (гейтится по `is_admin_level`, [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md)). `sees_all_sms_teams` — производный булев признак admin-уровня для SMS (вычисляется backend по [ADR-032](adr/ADR-032-sms-visibility-admin-full-catalog.md)); фронт использует его как источник истины вместо повторного вычисления полного каталога.
 >
 > **Не путать `mail_teams`/`sms_teams` (здесь) с `mail_extra_teams`/`sms_extra_teams` ([Users](#users)):** первое — **эффективный** scope (базовые ∪ добавка), второе — **только хранимая добавка**. Имена разведены намеренно ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §5.2).
 
@@ -2054,6 +2056,88 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 **Query:** `since` (ISO 8601, обяз. — водяной знак прошлого синка), `cursor` (опц.), `limit` (`1..500`, default `100`). Tombstones включены всегда (в этом эндпоинте `include_deleted` подразумевается).
 **Response 200** — `{ "items": ExternalDocumentNode[], "next_cursor": "…"|null }` (порядок `updated_at ASC, id ASC`; удалённые несут `deleted_at`, без `content_md`). **Ошибки:** `503`, `401`, `400 validation_error` (нет/битый `since`/cursor/limit).
 
+### GET `/api/external/documents/user-access/{telegram_user_id}`
+Резолв CRM-пользователя по числовому Telegram id для ИИ-бота базы знаний. **Есть в коде** (`backend/app/api/documents_external.py`); дрейф docs закрыт [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md). Тот же `X-API-Key` / CSRF-exempt / `Cache-Control: no-store`.
+
+**Query (опц., [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md)):** `username` — ник для bootstrap-шага 4.
+
+**Порядок резолва (нормативно, единый с `POST /api/external/knowledge-bot/link`):**
+
+1. Активный `knowledge_bot_links` по `telegram_user_id`.
+2. Иначе активный `sms_telegram_links`.
+3. Иначе активный `mail_telegram_links` с `user_id IS NOT NULL`.
+4. Иначе bootstrap: `username` задан → `UserRepository.get_by_telegram(normalize_telegram(username))` (активный, `NOT is_system`).
+5. Иначе — нет.
+
+Не найден / неактивен / системный → **`404 user_not_linked`**.
+
+**Response 200** — `ExternalUserAccessResponse` (`backend/app/schemas/documents.py`):
+
+```json
+{ "user_id": "…", "role_id": "…", "role_name": "Оператор", "sees_all_documents": false }
+```
+
+`sees_all_documents` — `permissions_subset(full_catalog_permissions(), role.permissions)` (admin-уровень документов).
+
+**Ошибки:** `503 documents_external_not_configured`, `401 not_authenticated`, `404 user_not_linked`.
+
+---
+
+## External Knowledge Bot (write, X-API-Key)
+
+Регистрация запуска ИИ-бота. **Отдельный** префикс — роутер документов остаётся только GET ([ADR-060](adr/ADR-060-documents-external-readonly-api-key.md), амендмент [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md)). Тот же ключ `DOCUMENTS_API_KEY`, тот же порядок 503→401, CSRF-exempt, `Cache-Control: no-store`.
+
+### POST `/api/external/knowledge-bot/link`
+
+**Потребитель:** ba-knowledge-base, конвейер доступа ([ADR-013 бота](file:///Users/elisejverbickij/Desktop/BA/ba-knowledge-base/docs/adr/ADR-013-crm-knowledge-bot-link.md)). Бот вызывает этот эндпоинт **вместо** GET `user-access` (не «сразу после»), на cache-miss каждого сообщения, не только `/start`.
+
+**Тело:** `{ "telegram_user_id": int, "username": string|null }`.
+
+1. Единый резолв (шаги выше).
+2. Не найден / неактивен / системный → `404 user_not_linked` (тело `{"error":{"code":"user_not_linked",...}}`). Бот трактует как отказ **только** этот код; прочий 404 (нет роута) — как сбой CRM, не «отказать всем».
+3. Иначе upsert `knowledge_bot_links` (`ON CONFLICT (telegram_user_id) DO UPDATE`: `user_id`, `username`, `dead_at=NULL`; `started_at` не затирается).
+4. **Response 200** — тот же `ExternalUserAccessResponse`.
+
+**Ошибки:** `503 documents_external_not_configured`, `401 not_authenticated`, `404 user_not_linked`, `422` (нет/невалидный `telegram_user_id`).
+
+---
+
+## Broadcast
+
+Рассылка текста через Telegram ИИ-бота ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md)). JWT. Fan-out — CRM → `api.telegram.org` токеном `KNOWLEDGE_BOT_TOKEN` **без** `parse_mode`. HTTP процесса ba-knowledge-base не вызывается. `GET /audience` токен не проверяет.
+
+### GET `/api/broadcasts/audience`
+Гейт `require("broadcast","view")`. Роли для чекбоксов + счётчики (только активные несистемные пользователи). **Не** admin-gated `/api/roles`.
+
+**Response 200:**
+
+```json
+{
+  "roles": [
+    { "id": "…", "name": "Оператор", "started_count": 3, "not_started_count": 1 }
+  ],
+  "all_started_count": 10,
+  "all_not_started_count": 2
+}
+```
+
+**Ошибки:** `401`, `403`.
+
+### POST `/api/broadcasts`
+Гейт `require("broadcast","send")`. Пустой `KNOWLEDGE_BOT_TOKEN` → **`503 knowledge_bot_not_configured`**.
+
+**Тело:** `{ "text": string, "all": bool, "role_ids": uuid[] }`.
+
+- `text` — 1…4096 после `strip()`; пусто / длиннее → `422`.
+- Ровно одно: `all=true` **или** непустой `role_ids`. `all=true` + непустой `role_ids` → `422`. `all=false` и пустой `role_ids` → `422`. Несуществующий `role_id` → `422`.
+- Адресаты = активные несистемные выбранных ролей (или все при `all`) **∩** активные `knowledge_bot_links`. Дедуп по `telegram_user_id`. Без линка → `skipped_not_started`, в fan-out не входят.
+- Последовательная отправка. Успех Bot API → `sent++`. `403` Telegram → `dead_at=now()` + `failed++`. Прочая ошибка Bot API → `failed++`, линк живой. Частичный успех — **`200`**. Пустое пересечение — `200` с `sent=0`.
+- Состав получателей и тексты Telegram наружу не раскрываются.
+
+**Response 200:** `{ "sent": int, "failed": int, "skipped_not_started": int }`.
+
+**Ошибки:** `401`, `403`, `422`, `503 knowledge_bot_not_configured`.
+
 ---
 
 ## RBAC и enforcement прав
@@ -2073,14 +2157,15 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 | `teams` | `teams:view` | `teams:create` | `teams:edit` | — | `teams:delete` ([ADR-022](adr/ADR-022-teams-nav-categories.md)) |
 | `sms` | `sms:view` (`/messages`, `/numbers`) | `POST /numbers/sync` → `sms:sync`; `POST /numbers/{id}/transfer` → `sms:transfer` | `sms:edit` (`PATCH /numbers/{id}`) | — | `sms:delete` ([ADR-030](adr/ADR-030-sms-module-full-merge.md)) |
 | `documents` | `documents:view` (`/tree`, `/nodes`, `/nodes/{id}`, **`GET /attachments/{id}`**; +per-node фильтр видимости) + `GET /role-refs` и `GET /nodes/{id}/visibility` → `documents:share` | `POST /folders`/`/documents`/`/upload`/`/nodes/{id}/copy` → `documents:create`; **`POST /nodes/{id}/attachments` → `documents:edit`** | `documents:edit` (`PATCH /nodes/{id}`); `PATCH /nodes/{id}/visibility` → `documents:share` | `documents:edit` (`PATCH /order`) | `documents:delete` (soft-delete узла); **`DELETE /attachments/{id}` → `documents:edit`** ([ADR-059](adr/ADR-059-documents-module.md), [ADR-068](adr/ADR-068-documents-image-attachments.md)) |
+| `broadcast` | `GET /api/broadcasts/audience` → `broadcast:view` | `POST /api/broadcasts` → `broadcast:send` | — | — | — |
 
 - **Супер-админ** (`.env`, `superadmin=true`) проходит любой `require(...)` и `require_admin`.
 - **Reply почты** гейтится `mail:view` (у почты в каталоге одно действие `view`).
 - **`POST /api/ai-keys/{id}/balance/reset` гейтится `ai-keys:edit`, а не `ai-keys:create`** ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md)) — исключение из колонки `POST` таблицы: это правка существующего ключа, `POST` выбран из-за не-идемпотентности (новый якорь `now()` на каждый вызов). Reveal-эндпоинты ИИ-ключа (`GET /{id}/key`, `GET /{id}/billing-admin-key`) — тоже исключение из колонки `GET`: они под `ai-keys:edit` ([Reveal секретов](#reveal-секретов-по-требованию-adr-035)).
 - **Roles/Permissions API** — со Спринта A гейтятся **матрицей** `roles:*` ([ADR-022](adr/ADR-022-teams-nav-categories.md)): `/api/roles` (методы по таблице выше), `GET /api/permissions/catalog` → `require("roles","view")` (каталог нужен редактору роли). **Teams API** — `require("teams", <action>)`.
-- **Users API** — **остаётся** `require_admin` (`is_superadmin || role=="admin"`), **не** через матрицу: создание/удаление пользователей, сброс паролей, назначение ролей — admin-only ([ADR-022](adr/ADR-022-teams-nav-categories.md) §4в, замыкает эскалацию).
+- **Users API** — **остаётся** `require_admin`, **не** через матрицу: создание/удаление пользователей, сброс паролей, назначение ролей — admin-only ([ADR-022](adr/ADR-022-teams-nav-categories.md) §4в, замыкает эскалацию). Предикат `require_admin` — `is_admin_level` = `is_superadmin OR role=="admin" OR permissions_subset(full_catalog, permissions)` ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4).
 - **SMS API** ([ADR-030](adr/ADR-030-sms-module-full-merge.md)) — матрица `sms:*` (см. таблицу). `POST /api/sms/telegram/link` — **только аутентификация** (вне матрицы `sms`): доставка операторам — функция членства в команде (`user_teams`), а не права на страницу. `GET /api/teams/{id}/numbers` гейтится `teams:view`. Публичные webhook'и Twilio/Telegram и `POST /api/sms/telegram/auth` — вне JWT/RBAC (гейт — подпись/секрет/HMAC).
-- **Security-инвариант эскалации** (`POST`/`PATCH /api/roles`, реализует backend): не-супер-админ/не-`admin` не может выдать роли права сверх собственных (subset), а встроенную роль `admin` может менять/удалять только `is_superadmin || role=="admin"` — иначе `403 forbidden`. Полностью — [Roles](#roles), [ADR-022](adr/ADR-022-teams-nav-categories.md#4-security-инвариант-эскалации-привилегий-обязательно-реализует-backend).
+- **Security-инвариант эскалации** (`POST`/`PATCH /api/roles`, реализует backend): актор без `is_admin_level` не может выдать роли права сверх собственных (subset), а встроенную роль `admin` может менять/удалять только `is_admin_level` — иначе `403 forbidden`. Полностью — [Roles](#roles), [ADR-022](adr/ADR-022-teams-nav-categories.md#4-security-инвариант-эскалации-привилегий-обязательно-реализует-backend), [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4.
 - `403 forbidden` — единый код и тело `{ "error": { "code": "forbidden", "message": "Недостаточно прав", "details": null } }`. Фабрика `forbidden()` добавляется в `app/errors.py`.
 
 ---
@@ -2107,17 +2192,18 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
     { "page": "sms",      "actions": ["view", "edit", "transfer", "sync", "delete"] },
     { "page": "roles",    "actions": ["view", "create", "edit", "delete"] },
     { "page": "teams",    "actions": ["view", "create", "edit", "delete"] },
-    { "page": "documents", "actions": ["view", "create", "edit", "delete", "share"] }
+    { "page": "documents", "actions": ["view", "create", "edit", "delete", "share"] },
+    { "page": "broadcast", "actions": ["view", "send"] }
   ]
 }
 ```
 | Поле | Тип | Примечание |
 |------|-----|-----------|
-| `pages` | `PermissionCatalogPage[]` | Упорядоченный список страниц каталога (порядок = порядок строк матрицы в UI: dashboard, servers, ai-keys, proxies, backends, **backend-users**, **backend-economics**, mail, sms, roles, teams, documents). Порядок — тот же, что в константе `CATALOG`, и он же сверяется замороженным контракт-тестом каталога |
+| `pages` | `PermissionCatalogPage[]` | Упорядоченный список страниц каталога (порядок = порядок строк матрицы в UI: dashboard, servers, ai-keys, proxies, backends, **backend-users**, **backend-economics**, mail, sms, roles, teams, documents, **broadcast**). Порядок — тот же, что в константе `CATALOG`, и он же сверяется замороженным контракт-тестом каталога |
 
 > ⚠️ Пример выше — **полный** каталог: он обязан совпадать с прозой порядка ниже и с константой `CATALOG` **поэлементно**. Прежняя редакция примера расходилась с ними в трёх местах (`backend-users` и `backend-economics` отсутствовали, у `mail` стояло `["view"]` от отменённой read-through-модели [ADR-012](adr/ADR-012-mail-read-through-proxy.md)); при добавлении страницы в каталог правятся **оба** места — и пример, и проза.
 
-`PermissionCatalogPage = { page: string, actions: string[] }`. Страница `users` в каталог **не входит** (гейтится `require_admin`, не матрицей — [ADR-022](adr/ADR-022-teams-nav-categories.md)). Страницы `roles`/`teams` добавлены Спринтом A. Локализованные подписи страниц/действий — на стороне frontend ([08-design-system.md](08-design-system.md#страница-роли)).
+`PermissionCatalogPage = { page: string, actions: string[] }`. Страница `users` в каталог **не входит** (гейтится `require_admin` / `is_admin_level`, не матрицей — [ADR-022](adr/ADR-022-teams-nav-categories.md), [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md)). Страницы `roles`/`teams` добавлены Спринтом A; `broadcast` — [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md). Локализованные подписи страниц/действий — на стороне frontend ([08-design-system.md](08-design-system.md#страница-роли)). Матрица `/roles` строится из этого каталога (столбцы = объединение действий; закрытие [TD-068](100-known-tech-debt.md)).
 
 **Ошибки:** `401 unauthorized`, `403 forbidden`.
 
@@ -2143,6 +2229,7 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
   "mail_extra_includes_unassigned": true,
   "sms_extra_teams": [],
   "sms_extra_includes_unassigned": false,
+  "bot_started": false,
   "created_at": "2026-07-07T09:00:00Z",
   "updated_at": "2026-07-07T09:00:00Z"
 }
@@ -2160,6 +2247,7 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 | `teams` | `TeamRef[]` | CRM-команды пользователя (**базовое членство**, `user_teams`; может быть пустым). `TeamRef = { id: string(uuid), name: string }`. Денормализовано для группировки списка «Пользователи» по командам |
 | `mail_extra_teams` / `sms_extra_teams` | `TeamRef[]` | **ТОЛЬКО ДОБАВКА** канала ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §5.2) — строки `user_channel_teams` **без** базовых `teams` (то, что реально хранится). Может быть `[]`. **Эффективный** scope канала = `teams ∪ <channel>_extra_teams` (его в готовом виде отдаёт [`GET /api/auth/me`](#get-apiauthme)) |
 | `mail_extra_includes_unassigned` / `sms_extra_includes_unassigned` | boolean | «Без команды» канала: доступ к ящикам/номерам с `team_id IS NULL`. Значение колонки `users.<channel>_includes_unassigned` |
+| `bot_started` | boolean | `true` ⇔ есть хотя бы одна активная строка `knowledge_bot_links` на этого пользователя ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md)). Числовой chat_id и `started_at` наружу не отдаются |
 | `created_at` / `updated_at` | datetime | Метки |
 
 Пароль (`password`/`password_hash`) в ответах **отсутствует** всегда (есть лишь производный `has_password`). `teams` — CRM-команды ([Teams](#teams)), **не** mail-«команды».
@@ -2261,7 +2349,7 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 
 > **Security-инвариант эскалации (нормативно, [ADR-022](adr/ADR-022-teams-nav-categories.md#4-security-инвариант-эскалации-привилегий-обязательно-реализует-backend)).** Раз редактирование ролей гейтится матрицей, backend ОБЯЗАН запрещать эскалацию (проверка в handler после гейта):
 > - **(а) subset:** для актора, который **не** супер-админ и **не** роль `admin`, при `POST`/`PATCH` `permissions` создаваемой/изменяемой роли ⊆ `permissions` актора (по каждой `page` набор `actions` — подмножество actions актора). Нарушение → `403 forbidden`.
-> - **(б) защита `admin`:** роль с `name == "admin"` может менять (`PATCH`) / удалять (`DELETE`) **только** `is_superadmin || role == "admin"`. Иначе → `403 forbidden` (даже при наличии `roles:edit`/`roles:delete`).
+> - **(б) защита `admin`:** роль с `name == "admin"` может менять (`PATCH`) / удалять (`DELETE`) **только** `is_admin_level`. Иначе → `403 forbidden` (даже при наличии `roles:edit`/`roles:delete`).
 > - **(в)** назначение ролей пользователям и управление учётками — под `require_admin` ([Users](#users)), вне матрицы: замыкает эскалацию.
 
 ### Схема `RoleListItem`
@@ -2333,7 +2421,7 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 **Ошибки:** `401 unauthorized`, `403 forbidden` (нет `roles:edit` / правка `admin` не-админом / эскалация), `404 role_not_found`, `400 validation_error`, `422 unprocessable` (невалидный `name`/`permissions` вне каталога), `409 role_name_taken`.
 
 ### DELETE `/api/roles/{id}`
-Удаляет роль (hard delete). Гейт `require("roles","delete")`. **Запрещено удалять роль, назначенную хотя бы одному пользователю** (`ON DELETE RESTRICT`) → `409 role_in_use`. Роль `admin` может удалить **только** `is_superadmin || role=="admin"` (иначе `403 forbidden`, [ADR-022](adr/ADR-022-teams-nav-categories.md)).
+Удаляет роль (hard delete). Гейт `require("roles","delete")`. **Запрещено удалять роль, назначенную хотя бы одному пользователю** (`ON DELETE RESTRICT`) → `409 role_in_use`. Роль `admin` может удалить **только** `is_admin_level` (иначе `403 forbidden`, [ADR-022](adr/ADR-022-teams-nav-categories.md), [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md)).
 
 **Response 204** (без тела).
 

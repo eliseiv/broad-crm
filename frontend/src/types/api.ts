@@ -990,6 +990,11 @@ export interface UserListItem {
   sms_extra_teams: TeamRef[];
   /** Флаг «Без команды» канала «СМС» (доступ к номерам с `team_id = null`). */
   sms_extra_includes_unassigned: boolean;
+  /**
+   * Запуск ИИ-бота базы знаний (04-api.md, ADR-076): `true` ⇔ есть хотя бы одна
+   * активная строка `knowledge_bot_links`. Числовой chat_id и `started_at` наружу не отдаются.
+   */
+  bot_started: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -1318,6 +1323,37 @@ export interface ApiErrorBody {
     message: string;
     details: Array<{ field: string; message: string }> | null;
   };
+}
+
+// --- Рассылка (модуль `broadcast`, ADR-076; 04-api.md §Broadcast) ---
+
+/** Роль в аудитории рассылки (GET /api/broadcasts/audience). */
+export interface BroadcastAudienceRole {
+  id: string;
+  name: string;
+  started_count: number;
+  not_started_count: number;
+}
+
+/** Ответ GET /api/broadcasts/audience. */
+export interface BroadcastAudienceResponse {
+  roles: BroadcastAudienceRole[];
+  all_started_count: number;
+  all_not_started_count: number;
+}
+
+/** Тело POST /api/broadcasts. Ровно одно: `all=true` или непустой `role_ids`. */
+export interface BroadcastCreateRequest {
+  text: string;
+  all: boolean;
+  role_ids: string[];
+}
+
+/** Ответ POST /api/broadcasts (частичный успех — тоже 200). */
+export interface BroadcastCreateResponse {
+  sent: number;
+  failed: number;
+  skipped_not_started: number;
 }
 
 // --- Документы (модуль `documents`, ADR-059/061/062; 04-api.md §Documents) ---

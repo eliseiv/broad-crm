@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import type { PropsWithChildren } from 'react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, describe, expect, it } from 'vitest';
+import { AdminLevelContext } from '@/features/auth/adminLevel';
 import { AdminRoute } from '@/routes/AdminRoute';
 import {
   INSUFFICIENT_PERMISSIONS_TITLE,
@@ -38,6 +39,41 @@ describe('AdminRoute (admin-only guard, ADR-021)', () => {
     loginAs({ isSuperadmin: false, role: 'admin', permissions: {} });
     renderAdmin();
     expect(screen.getByText('USERS PAGE')).toBeInTheDocument();
+  });
+
+  it('пока catalogPending — спиннер «Загрузка…», не заглушка (ADR-076)', () => {
+    loginAs({ isSuperadmin: false, role: 'Админ', permissions: { roles: ['view'] } });
+    render(
+      <AdminLevelContext.Provider value={{ isAdmin: false, catalogPending: true }}>
+        <MemoryRouter initialEntries={['/users']}>
+          <Routes>
+            <Route element={<AdminRoute />}>
+              <Route path="/users" element={<div>USERS PAGE</div>} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </AdminLevelContext.Provider>,
+    );
+    expect(screen.getByText('Загрузка…')).toBeInTheDocument();
+    expect(screen.queryByText(INSUFFICIENT_PERMISSIONS_TITLE)).not.toBeInTheDocument();
+    expect(screen.queryByText('USERS PAGE')).not.toBeInTheDocument();
+  });
+
+  it('полный каталог (isAdmin из контекста) открывает /users без заглушки', () => {
+    loginAs({ isSuperadmin: false, role: 'Админ', permissions: {} });
+    render(
+      <AdminLevelContext.Provider value={{ isAdmin: true, catalogPending: false }}>
+        <MemoryRouter initialEntries={['/users']}>
+          <Routes>
+            <Route element={<AdminRoute />}>
+              <Route path="/users" element={<div>USERS PAGE</div>} />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </AdminLevelContext.Provider>,
+    );
+    expect(screen.getByText('USERS PAGE')).toBeInTheDocument();
+    expect(screen.queryByText(INSUFFICIENT_PERMISSIONS_TITLE)).not.toBeInTheDocument();
   });
 
   it('shows the page-scoped «Недостаточно прав» stub for a non-admin (no redirect, session kept)', () => {

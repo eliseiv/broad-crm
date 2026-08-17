@@ -12,6 +12,7 @@ from __future__ import annotations
 import uuid
 
 import pytest
+from app.repositories.knowledge_bot_link_repository import KnowledgeBotLinkRepository
 from app.repositories.mail_telegram_link_repository import MailTelegramLinkRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.team_repository import TeamRepository
@@ -34,6 +35,7 @@ def _user_service(session: object) -> UserService:
         roles=RoleRepository(session),  # type: ignore[arg-type]
         teams=TeamRepository(session),  # type: ignore[arg-type]
         channels=UserChannelTeamRepository(session),  # type: ignore[arg-type]
+        knowledge_bot_links=KnowledgeBotLinkRepository(session),  # type: ignore[arg-type]
     )
 
 

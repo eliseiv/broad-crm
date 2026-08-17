@@ -27,6 +27,7 @@ from app.infra.passwords import hash_password
 from app.logging import get_logger
 from app.models.team import Team
 from app.models.user import User
+from app.repositories.knowledge_bot_link_repository import KnowledgeBotLinkRepository
 from app.repositories.mail_telegram_link_repository import MailTelegramLinkRepository
 from app.repositories.role_repository import RoleRepository
 from app.repositories.team_repository import TeamRepository
@@ -92,11 +93,13 @@ class UserService:
         roles: RoleRepository,
         teams: TeamRepository,
         channels: UserChannelTeamRepository,
+        knowledge_bot_links: KnowledgeBotLinkRepository,
     ) -> None:
         self._users = users
         self._roles = roles
         self._teams = teams
         self._channels = channels
+        self._knowledge_bot_links = knowledge_bot_links
 
     async def list_users(self) -> UserListResponse:
         """Список пользователей (created_at ASC, id) с ролью, командами и доп-командами.
@@ -105,7 +108,12 @@ class UserService:
         """
         users = await self._users.list_all()
         extras = await self._channels.extras_for_users([user.id for user in users])
-        return UserListResponse(items=[self._to_item(user, extras) for user in users])
+        started_ids = await self._knowledge_bot_links.active_user_ids([user.id for user in users])
+        return UserListResponse(
+            items=[
+                self._to_item(user, extras, bot_started=user.id in started_ids) for user in users
+            ]
+        )
 
     async def create_user(self, payload: UserCreateRequest) -> UserListItem:
         """Создаёт пользователя. Прецеденция: username/telegram/password-формат (422) →
@@ -426,14 +434,21 @@ class UserService:
     async def _to_item_reloaded(self, user: User) -> UserListItem:
         """Элемент ответа 201/200 (одиночный пользователь): добавки читаются точечно."""
         extras = await self._channels.extras_for_users([user.id])
-        return self._to_item(user, extras)
+        bot_started = await self._knowledge_bot_links.exists_for_user(user.id)
+        return self._to_item(user, extras, bot_started=bot_started)
 
     @staticmethod
-    def _to_item(user: User, extras: dict[tuple[uuid.UUID, str], list[Team]]) -> UserListItem:
+    def _to_item(
+        user: User,
+        extras: dict[tuple[uuid.UUID, str], list[Team]],
+        *,
+        bot_started: bool,
+    ) -> UserListItem:
         """Собирает элемент ответа (пароль никогда не включается; teams — CRM-команды).
 
         `*_extra_teams` — ТОЛЬКО хранимая добавка канала (без базовых команд, ADR-055 §5.2);
         `*_extra_includes_unassigned` — колонки `users.<channel>_includes_unassigned`.
+        `bot_started` — EXISTS активный `knowledge_bot_links` (ADR-076).
         """
         return UserListItem(
             id=user.id,
@@ -449,6 +464,7 @@ class UserService:
             mail_extra_includes_unassigned=user.mail_includes_unassigned,
             sms_extra_teams=UserService._team_refs(extras.get((user.id, CHANNEL_SMS), [])),
             sms_extra_includes_unassigned=user.sms_includes_unassigned,
+            bot_started=bot_started,
             created_at=user.created_at,
             updated_at=user.updated_at,
         )

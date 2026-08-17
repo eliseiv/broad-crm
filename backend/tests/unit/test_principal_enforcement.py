@@ -14,6 +14,7 @@ from typing import Any
 
 import pytest
 from app.api.deps import Principal, get_current_principal, require, require_admin
+from app.domain.permissions import full_catalog_permissions
 from app.domain.superadmin import SUPERADMIN_USER_ID
 from app.errors import AppError
 from app.infra.jwt import issue_access_token
@@ -252,5 +253,25 @@ async def test_require_admin_forbids_non_admin_403() -> None:
 
     with pytest.raises(AppError) as exc:
         await require_admin(operator)
+    assert exc.value.status_code == 403
+    assert exc.value.code == "forbidden"
+
+
+@pytest.mark.asyncio
+async def test_require_admin_allows_cyrillic_admin_with_full_catalog() -> None:
+    admin_like = _principal(
+        is_superadmin=False, role="Админ", permissions=full_catalog_permissions()
+    )
+    assert await require_admin(admin_like) is admin_like
+
+
+@pytest.mark.asyncio
+async def test_require_admin_forbids_cyrillic_admin_without_broadcast() -> None:
+    perms = full_catalog_permissions()
+    del perms["broadcast"]
+    admin_like = _principal(is_superadmin=False, role="Админ", permissions=perms)
+
+    with pytest.raises(AppError) as exc:
+        await require_admin(admin_like)
     assert exc.value.status_code == 403
     assert exc.value.code == "forbidden"

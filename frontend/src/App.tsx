@@ -7,6 +7,7 @@ import { BackendEconomicsPage } from '@/pages/BackendEconomicsPage';
 import { BackendsPage } from '@/pages/BackendsPage';
 import { BackendUserDetailPage } from '@/pages/BackendUserDetailPage';
 import { BackendUsersPage } from '@/pages/BackendUsersPage';
+import { BroadcastPage } from '@/pages/BroadcastPage';
 import { DashboardPage } from '@/pages/DashboardPage';
 import { LoginPage } from '@/pages/LoginPage';
 import { MailMiniAppPage } from '@/pages/MailMiniAppPage';
@@ -88,6 +89,8 @@ export function App() {
               </Suspense>
             }
           />
+          {/* «Рассылка» — не-full-bleed; page-level view-guard broadcast:view (ADR-076). */}
+          <Route path="/broadcast" element={<BroadcastPage />} />
           {/* Страница «Пользователи» — admin-only (ADR-021, 08-design-system.md). */}
           <Route element={<AdminRoute />}>
             <Route path="/users" element={<UsersPage />} />

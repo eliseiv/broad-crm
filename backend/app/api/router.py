@@ -10,9 +10,11 @@ from app.api import (
     backend_economics,
     backend_users,
     backends,
+    broadcasts,
     documents,
     documents_external,
     health,
+    knowledge_bot_external,
     mail,
     mail_ingest,
     mail_me,
@@ -48,3 +50,5 @@ api_router.include_router(sms.router)
 api_router.include_router(sms_webhooks.router)
 api_router.include_router(documents.router)
 api_router.include_router(documents_external.router)
+api_router.include_router(knowledge_bot_external.router)
+api_router.include_router(broadcasts.router)
