@@ -41,7 +41,7 @@ jobs:
           echo "IDENTITY_NORM=$IDENT"
           # SQL на хост → stdin в psql внутри контейнера db
           ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" \
-            "cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T db \
+            "cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
               sh -lc 'psql -v ON_ERROR_STOP=1 -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"'" <<SQL
           SELECT id, username, telegram,
                  (password_hash IS NOT NULL) AS had_password,
