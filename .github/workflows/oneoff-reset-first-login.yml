@@ -1,0 +1,60 @@
+# One-off: сброс CRM-пользователя к «открытому первому входу».
+# password_hash → NULL, first_login_at → NULL. Удалить после использования.
+name: oneoff — reset user first login
+
+on:
+  workflow_dispatch:
+    inputs:
+      identity:
+        description: username или telegram без @
+        required: true
+        type: string
+
+jobs:
+  reset:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Reset to passwordless first-login
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          IDENTITY: ${{ github.event.inputs.identity }}
+        run: |
+          set -euo pipefail
+          IDENT=$(printf '%s' "$IDENTITY" | tr '[:upper:]' '[:lower:]' | sed 's/^@//')
+          case "$IDENT" in
+            ''|*[^a-z0-9_.-]*) echo "bad identity: $IDENT"; exit 1 ;;
+          esac
+          echo "IDENTITY_NORM=$IDENT"
+          # SQL на хост → stdin в psql внутри контейнера db
+          ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" \
+            "cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T db \
+              sh -lc 'psql -v ON_ERROR_STOP=1 -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"'" <<SQL
+          SELECT id, username, telegram,
+                 (password_hash IS NOT NULL) AS had_password,
+                 first_login_at AS had_first_login
+          FROM users
+          WHERE is_system = false
+            AND (username = '${IDENT}' OR telegram = '${IDENT}');
+
+          UPDATE users
+          SET password_hash = NULL, first_login_at = NULL
+          WHERE is_system = false
+            AND (username = '${IDENT}' OR telegram = '${IDENT}')
+          RETURNING id, username, telegram,
+                    (password_hash IS NULL) AS no_password,
+                    first_login_at;
+          SQL
