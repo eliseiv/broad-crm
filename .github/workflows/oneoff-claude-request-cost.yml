@@ -1,13 +1,20 @@
-# One-off: себестоимость Claude IOS/РФ за 7д. Удалить после прогона.
+# One-off: фон на проде + поллинг лога. Удалить после.
 name: oneoff — Claude IOS/РФ request cost
 
 on:
   workflow_dispatch:
+    inputs:
+      action:
+        description: start | status
+        required: true
+        default: start
+        type: choice
+        options: [start, status]
 
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -21,20 +28,40 @@ jobs:
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Upload and run cost report
+      - name: Start or status
         run: |
           set -euo pipefail
+          ACTION="${{ github.event.inputs.action }}"
           scp .github/scripts/claude_request_cost_report.py \
             "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/claude_request_cost_report.py"
-          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" \
-            "cd /opt/crm && \
-             for i in \$(seq 1 60); do \
-               if docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
-                 python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)\" \
-                 >/dev/null 2>&1; then echo backend_healthy; break; fi; \
-               echo waiting_backend_\$i; sleep 5; \
-             done && \
-             docker compose --env-file .env -f infra/docker-compose.yml cp \
-               /tmp/claude_request_cost_report.py backend:/app/claude_request_cost_report.py && \
-             docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
-               python /app/claude_request_cost_report.py"
+          if [ "$ACTION" = "start" ]; then
+            ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
+          set -euo pipefail
+          cd /opt/crm
+          for i in $(seq 1 60); do
+            if docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+              python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)" \
+              >/dev/null 2>&1; then echo backend_healthy; break; fi
+            echo waiting_backend_$i; sleep 5
+          done
+          docker compose --env-file .env -f infra/docker-compose.yml cp \
+            /tmp/claude_request_cost_report.py backend:/app/claude_request_cost_report.py
+          # сброс старого чекпоинта только при новом старте
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+            rm -f /tmp/claude_cost_checkpoint.json || true
+          # фон внутри контейнера через nohup+python
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+            sh -c 'nohup python /app/claude_request_cost_report.py > /tmp/claude_cost_report.log 2>&1 < /dev/null & echo STARTED_PID=$!'
+          sleep 2
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+            sh -c 'tail -n 30 /tmp/claude_cost_report.log || true'
+          echo STARTED_OK
+          EOS
+          else
+            ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
+          set -euo pipefail
+          cd /opt/crm
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+            sh -c 'echo ===LOG_TAIL===; tail -n 80 /tmp/claude_cost_report.log 2>/dev/null || echo NO_LOG; echo ===CHECKPOINT===; cat /tmp/claude_cost_checkpoint.json 2>/dev/null || echo NO_CK; echo ===PS===; ps aux | grep claude_request_cost | grep -v grep || echo NOT_RUNNING'
+          EOS
+          fi
