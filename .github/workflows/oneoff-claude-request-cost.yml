@@ -35,6 +35,6 @@ jobs:
                echo waiting_backend_\$i; sleep 5; \
              done && \
              docker compose --env-file .env -f infra/docker-compose.yml cp \
-               /tmp/claude_request_cost_report.py backend:/tmp/claude_request_cost_report.py && \
+               /tmp/claude_request_cost_report.py backend:/app/claude_request_cost_report.py && \
              docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
-               python /tmp/claude_request_cost_report.py"
+               python /app/claude_request_cost_report.py"
