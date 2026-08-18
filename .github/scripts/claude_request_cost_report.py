@@ -22,11 +22,13 @@ from app.models.service_backend import Backend
 CUTOFF = datetime.now(timezone.utc) - timedelta(days=7)
 SEM = asyncio.Semaphore(2)
 PAGE = 100
-TARGET_NAMES = {"Claude IOS", "Claude РФ"}
+# Полный прогон: все Claude IOS + бэк 232 (Claude РФ). Остальные Claude РФ не трогаем.
+TARGET_IOS_NAME = "Claude IOS"
+TARGET_CODES = {"232"}
 CHECKPOINT = Path("/tmp/claude_cost_checkpoint.json")
-SLEEP_BETWEEN_BATCHES = 0.35
-SLEEP_ON_429 = 8.0
-MAX_429_RETRIES = 8
+SLEEP_BETWEEN_BATCHES = 0.5
+SLEEP_ON_429 = 12.0
+MAX_429_RETRIES = 12
 
 
 def parse_dt(value):
@@ -229,7 +231,7 @@ async def process_backend(row: Backend, ck: dict) -> dict:
 
 
 async def main():
-    print(f"CUTOFF_UTC={CUTOFF.isoformat()} PERIOD=last_7_days SEM=2", flush=True)
+    print(f"CUTOFF_UTC={CUTOFF.isoformat()} PERIOD=last_7_days SEM=2 scope=Claude_IOS+232", flush=True)
     ck = load_checkpoint()
     ck.setdefault("started_at", datetime.now(timezone.utc).isoformat())
     ck.setdefault("backends", {})
@@ -238,12 +240,16 @@ async def main():
     sm = get_sessionmaker()
     async with sm() as db:
         rows = (
-            await db.execute(
-                select(Backend)
-                .where(Backend.name.in_(tuple(TARGET_NAMES)))
-                .order_by(Backend.name, Backend.code)
-            )
+            await db.execute(select(Backend).order_by(Backend.name, Backend.code))
         ).scalars().all()
+
+    rows = [
+        r
+        for r in rows
+        if (r.name == TARGET_IOS_NAME) or (r.code in TARGET_CODES)
+    ]
+    # Сначала 232 (самый большой), потом Claude IOS
+    rows.sort(key=lambda r: (0 if r.code in TARGET_CODES else 1, r.name or "", r.code or ""))
 
     print(f"TARGET_BACKENDS={len(rows)}", flush=True)
     for r in rows:
@@ -257,8 +263,10 @@ async def main():
         results.append(await process_backend(r, ck))
 
     print("\n=== PER BACKEND ===", flush=True)
-    by_name = {"Claude IOS": 0.0, "Claude РФ": 0.0}
-    by_req = {"Claude IOS": 0, "Claude РФ": 0}
+    ios_sum = 0.0
+    ios_req = 0
+    c232_sum = 0.0
+    c232_req = 0
     for r in results:
         print(
             f"{r['name']}|{r['code']}|sum_usd={float(r.get('sum_usd') or 0):.6f}|"
@@ -266,16 +274,25 @@ async def main():
             f"status={r.get('status')}|errors={r.get('errors')}",
             flush=True,
         )
-        if r.get("name") in by_name:
-            by_name[r["name"]] += float(r.get("sum_usd") or 0)
-            by_req[r["name"]] += int(r.get("requests_counted") or 0)
+        usd = float(r.get("sum_usd") or 0)
+        req = int(r.get("requests_counted") or 0)
+        if r.get("code") in TARGET_CODES:
+            c232_sum += usd
+            c232_req += req
+        elif r.get("name") == TARGET_IOS_NAME:
+            ios_sum += usd
+            ios_req += req
 
-    print("\n=== TOTALS BY NAME (включая частичные прогоны) ===", flush=True)
-    for name in ("Claude IOS", "Claude РФ"):
-        print(f"{name}: sum_usd={by_name[name]:.6f} requests={by_req[name]}", flush=True)
-    print(f"GRAND_TOTAL_usd={sum(by_name.values()):.6f}", flush=True)
+    print("\n=== TOTALS ===", flush=True)
+    print(f"Claude_IOS: sum_usd={ios_sum:.6f} requests={ios_req}", flush=True)
+    print(f"backend_232: sum_usd={c232_sum:.6f} requests={c232_req}", flush=True)
+    print(f"GRAND_TOTAL_usd={ios_sum + c232_sum:.6f}", flush=True)
     ck["finished_at"] = datetime.now(timezone.utc).isoformat()
-    ck["totals"] = {"by_name": by_name, "by_req": by_req, "grand": sum(by_name.values())}
+    ck["totals"] = {
+        "Claude_IOS": ios_sum,
+        "backend_232": c232_sum,
+        "grand": ios_sum + c232_sum,
+    }
     save_checkpoint(ck)
     print("REPORT_OK", flush=True)
 
