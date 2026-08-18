@@ -50,11 +50,11 @@ jobs:
           docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
             rm -f /tmp/claude_cost_checkpoint.json || true
           # фон внутри контейнера через nohup+python
+          docker compose --env-file .env -f infra/docker-compose.yml exec -d backend \
+            sh -c 'python /app/claude_request_cost_report.py > /tmp/claude_cost_report.log 2>&1'
+          sleep 3
           docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
-            sh -c 'nohup python /app/claude_request_cost_report.py > /tmp/claude_cost_report.log 2>&1 < /dev/null & echo STARTED_PID=$!'
-          sleep 2
-          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
-            sh -c 'tail -n 30 /tmp/claude_cost_report.log || true'
+            sh -c 'tail -n 40 /tmp/claude_cost_report.log || true; ps aux | grep claude_request_cost | grep -v grep || true'
           echo STARTED_OK
           EOS
           else
