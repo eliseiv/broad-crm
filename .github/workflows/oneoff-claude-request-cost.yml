@@ -9,7 +9,7 @@ on:
         required: true
         default: start
         type: choice
-        options: [start, status]
+        options: [start, status, kill]
 
 jobs:
   report:
@@ -56,6 +56,8 @@ jobs:
             sleep 8
             remote 'echo ===PID===; cat /opt/crm/reports/claude_cost.pid 2>/dev/null || true; echo ===LOG_TAIL===; tail -n 40 /opt/crm/reports/claude_cost_report.log 2>/dev/null || echo NO_LOG; echo ===HOST_PS===; ps -p "$(cat /opt/crm/reports/claude_cost.pid 2>/dev/null)" -o pid,cmd 2>/dev/null || echo NOT_RUNNING'
             echo STARTED_OK
+          elif [ "$ACTION" = "kill" ]; then
+            remote 'PID=$(cat /opt/crm/reports/claude_cost.pid 2>/dev/null || true); echo KILLING_PID=$PID; if [ -n "$PID" ]; then kill "$PID" 2>/dev/null || true; sleep 1; kill -9 "$PID" 2>/dev/null || true; fi; pkill -f claude_request_cost_report.py 2>/dev/null || true; cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T backend pkill -f claude_request_cost_report.py 2>/dev/null || true; echo ===HOST_PS===; ps -p "$(cat /opt/crm/reports/claude_cost.pid 2>/dev/null)" -o pid,cmd 2>/dev/null || echo DEAD; echo ===LOG_TAIL===; tail -n 5 /opt/crm/reports/claude_cost_report.log 2>/dev/null || true; echo KILLED_OK'
           else
             remote 'echo ===PID===; cat /opt/crm/reports/claude_cost.pid 2>/dev/null || echo NO_PID; echo ===HOST_PS===; ps -p "$(cat /opt/crm/reports/claude_cost.pid 2>/dev/null)" -o pid,etime,cmd 2>/dev/null || echo NOT_RUNNING; echo ===LOG_TAIL===; tail -n 120 /opt/crm/reports/claude_cost_report.log 2>/dev/null || echo NO_LOG; cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml cp backend:/tmp/claude_cost_checkpoint.json /opt/crm/reports/claude_cost_checkpoint.json 2>/dev/null || true; echo ===CK===; cat /opt/crm/reports/claude_cost_checkpoint.json 2>/dev/null || echo NO_CK'
           fi
