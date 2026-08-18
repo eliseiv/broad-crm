@@ -1,6 +1,6 @@
 # ADR-078 — `is_admin_level` в `GET /api/auth/me`: клиент не пересчитывает покрытие каталога
 
-- **Статус:** implemented (сверка состава 2026-08-17: `backend/app/schemas/auth.py`, `backend/app/api/auth.py`, `frontend/src/store/auth.ts`, `frontend/src/features/auth/hooks.ts`, `frontend/src/routes/AdminRoute.tsx`, `frontend/src/routes/DefaultRoute.tsx`, `frontend/src/components/AppLayout.tsx`, `frontend/src/pages/DocumentsPage.tsx`; `adminLevel.ts` удалён; прогон qa architect'ом не выполнялся; e2e/prod роли «Админ» — не проверялась)
+- **Статус:** implemented (сверка состава 2026-08-17: `backend/app/schemas/auth.py`, `backend/app/api/auth.py`, `frontend/src/store/auth.ts`, `frontend/src/features/auth/hooks.ts`, `frontend/src/routes/AdminRoute.tsx`, `frontend/src/routes/DefaultRoute.tsx`, `frontend/src/components/AppLayout.tsx`, `frontend/src/pages/DocumentsPage.tsx`; `adminLevel.ts` удалён; deploy frontend `f29c6e1`; in-process CI run 32059875139 — фильтр `role.name == «Админ»`, вывод в §Verification; ветки `role==admin` и `is_superadmin` run не покрывал; UX e2e Users nav + «Сменить видимость» — не проверялась)
 - **Дата:** 2026-08-17
 - **Контекст-модули:** [auth](../modules/auth/README.md), [documents](../modules/documents/README.md)
 - **Связано:** [ADR-076](ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4–5, [ADR-036](ADR-036-sms-team-filter-admin-only.md), [ADR-021](ADR-021-rbac-users-roles.md), [ADR-032](ADR-032-sms-visibility-admin-full-catalog.md), [ADR-059](ADR-059-documents-module.md)
@@ -67,6 +67,28 @@ OR me.is_admin_level
 - (+) Один паттерн с `sees_all_*`: производный признак считает backend.
 - (−) Старые клиенты без поля игнорируют его (JSON extra); новый SPA без поля на старом API не соберёт тип — выкатывать backend и frontend вместе.
 - Клиентские `coversFullCatalog` / `catalogPending` для `/users` отменяются; тесты на Spinner каталога в `AdminRoute`/`AppLayout` — переписать.
+
+## Verification (prod, 2026-08-17)
+
+One-off workflow (уже удалён). **Метод:** in-process проверка предиката `is_admin_level` и `permissions.documents.share` на `Principal` из строк БД прода; `is_superadmin=False` всегда. Не HTTP `GET /api/auth/me`. Артефакт — CI log run `32059875139` (2026-08-17).
+
+**Фильтр run:** только `role.name == «Админ»`. Ветки `role==admin` и `is_superadmin` этот run **не** покрывал. Строка `superadmin@system` попала потому что у якоря в БД `role.name == «Админ»` ([ADR-051](ADR-051-superadmin-db-anchor-personal-state.md)), не как проверка ветки супер-админа.
+
+Дословный вывод run 32059875139:
+
+```
+user='superadmin@system' is_admin_level=True documents_share=True me_field_present=True
+user='Елисей' is_admin_level=True documents_share=True me_field_present=True
+user='Иван' is_admin_level=True documents_share=True me_field_present=True
+user='rusbear28' is_admin_level=True documents_share=True me_field_present=True
+user='Андрей' is_admin_level=True documents_share=True me_field_present=True
+user='Анна' is_admin_level=True documents_share=True me_field_present=True
+user='Никита' is_admin_level=True documents_share=True me_field_present=True
+checked_admin_users 7
+BACKEND_OK
+```
+
+UX e2e (Users nav + «Сменить видимость») не проверялась. Deploy frontend `f29c6e1`.
 
 ## Alternatives
 

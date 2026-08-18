@@ -309,6 +309,29 @@ describe('AppLayout — режимы shell по маршруту (08-design-syst
     expect(keysShell?.classList.contains('h-dvh')).toBe(false);
   });
 
+  it('/broadcast идёт по не-full-bleed ветке (ADR-077: не в isFullBleed)', () => {
+    renderAt('/broadcast');
+    const shell = getShell();
+    expect(shell?.classList.contains('min-h-screen')).toBe(true);
+    expect(shell?.classList.contains('h-dvh')).toBe(false);
+    expect(document.documentElement.classList.contains('layout-full-bleed')).toBe(false);
+    expect(document.body.classList.contains('layout-full-bleed')).toBe(false);
+
+    const header = document.querySelector('header');
+    expect(header?.classList.contains('sticky')).toBe(true);
+    expect(header?.classList.contains('shrink-0')).toBe(false);
+
+    const main = document.querySelector('main');
+    expect(main?.classList.contains('overflow-hidden')).toBe(false);
+    expect(main?.classList.contains('flex-1')).toBe(false);
+    const wrapper = screen.getByText('Прочий контент').parentElement;
+    expect(wrapper?.tagName).toBe('DIV');
+    expect(wrapper?.classList.contains('w-full')).toBe(true);
+    expect(wrapper?.classList.contains('px-6')).toBe(true);
+    expect(wrapper?.classList.contains('py-8')).toBe(true);
+    expect(wrapper?.parentElement?.tagName).toBe('MAIN');
+  });
+
   it('/dashboard (по прямому URL) идёт по не-full-bleed ветке как /servers (ADR-022)', () => {
     renderAt('/dashboard');
     const shell = getShell();

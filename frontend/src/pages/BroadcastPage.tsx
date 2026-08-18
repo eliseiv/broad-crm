@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react';
+import { useMemo, useState, type FormEvent, type ReactNode } from 'react';
 import { AlertTriangle, Megaphone, RefreshCw, Send } from 'lucide-react';
 import { toast } from 'sonner';
 import { InsufficientPermissions } from '@/components/InsufficientPermissions';
@@ -14,6 +14,19 @@ import { ApiError } from '@/lib/api';
 import type { BroadcastAudienceRole } from '@/types/api';
 
 const TEXT_MAX = 4096;
+
+/**
+ * Page-local обёртка рабочей области (ADR-077).
+ * Хэдер AppLayout:116-176: py-3×2 (1.5rem) + ряд max(h-8, nav py-2 + text-[14px] при
+ * html line-height 1.5 → 2.3125rem) + border-b (1px) = 3.875rem.
+ * AppLayout py-8×2 = 4rem. Только min-h (не фиксированная и не max-высота); overflow-y-auto запрещён.
+ */
+const WORKSPACE_CLASS =
+  'flex w-full min-h-[calc(100dvh-3.875rem-4rem)] items-center justify-center';
+
+function BroadcastWorkspace({ children }: { children: ReactNode }) {
+  return <div className={WORKSPACE_CLASS}>{children}</div>;
+}
 
 function audienceSummary(
   sendAll: boolean,
@@ -136,10 +149,12 @@ function BroadcastForm() {
 
   if (audienceQuery.isLoading) {
     return (
-      <div className="flex items-center justify-center gap-3 rounded-card border border-border-subtle bg-surface-1 px-6 py-12 text-[13px] text-text-secondary">
-        <Spinner className="text-text-secondary" />
-        Загрузка…
-      </div>
+      <BroadcastWorkspace>
+        <div className="flex items-center justify-center gap-3 rounded-card border border-border-subtle bg-surface-1 px-6 py-12 text-[13px] text-text-secondary">
+          <Spinner className="text-text-secondary" />
+          Загрузка…
+        </div>
+      </BroadcastWorkspace>
     );
   }
 
@@ -149,131 +164,139 @@ function BroadcastForm() {
 
   if (botNotConfigured || audienceNotConfigured) {
     return (
-      <div className="flex flex-col items-center justify-center gap-3 rounded-card border border-dashed border-border-strong bg-surface-1/40 px-6 py-12 text-center">
-        <Megaphone className="h-8 w-8 text-text-tertiary" aria-hidden="true" />
-        <p className="text-base font-semibold text-text-primary">ИИ-бот не настроен</p>
-        <p className="text-[13px] text-text-secondary">
-          Обратитесь к администратору для настройки ИИ-бота базы знаний.
-        </p>
-      </div>
+      <BroadcastWorkspace>
+        <div className="flex flex-col items-center justify-center gap-3 rounded-card border border-dashed border-border-strong bg-surface-1/40 px-6 py-12 text-center">
+          <Megaphone className="h-8 w-8 text-text-tertiary" aria-hidden="true" />
+          <p className="text-base font-semibold text-text-primary">ИИ-бот не настроен</p>
+          <p className="text-[13px] text-text-secondary">
+            Обратитесь к администратору для настройки ИИ-бота базы знаний.
+          </p>
+        </div>
+      </BroadcastWorkspace>
     );
   }
 
   if (audienceQuery.isError) {
     return (
-      <div className="flex flex-col items-center justify-center gap-4 rounded-card border border-border-subtle bg-surface-1 px-6 py-12 text-center">
-        <AlertTriangle className="h-9 w-9 text-status-red" aria-hidden="true" />
-        <div>
-          <p className="text-base font-semibold text-text-primary">
-            Не удалось загрузить аудиторию
-          </p>
-          <p className="mt-1 text-[13px] text-text-secondary">
-            Проверьте соединение с сервером и попробуйте снова.
-          </p>
+      <BroadcastWorkspace>
+        <div className="flex flex-col items-center justify-center gap-4 rounded-card border border-border-subtle bg-surface-1 px-6 py-12 text-center">
+          <AlertTriangle className="h-9 w-9 text-status-red" aria-hidden="true" />
+          <div>
+            <p className="text-base font-semibold text-text-primary">
+              Не удалось загрузить аудиторию
+            </p>
+            <p className="mt-1 text-[13px] text-text-secondary">
+              Проверьте соединение с сервером и попробуйте снова.
+            </p>
+          </div>
+          <Button
+            variant="outline"
+            onClick={() => void audienceQuery.refetch()}
+            loading={audienceQuery.isFetching}
+          >
+            <RefreshCw className="h-4 w-4" />
+            Повторить
+          </Button>
         </div>
-        <Button
-          variant="outline"
-          onClick={() => void audienceQuery.refetch()}
-          loading={audienceQuery.isFetching}
-        >
-          <RefreshCw className="h-4 w-4" />
-          Повторить
-        </Button>
-      </div>
+      </BroadcastWorkspace>
     );
   }
 
   return (
-    <form className="flex w-full max-w-3xl flex-col gap-6" onSubmit={handleSubmit} noValidate>
-      <Card className="flex flex-col gap-6 p-5 sm:p-6">
-        <Textarea
-          label="Сообщение"
-          value={text}
-          maxLength={TEXT_MAX}
-          rows={8}
-          hint={`${text.length} / ${TEXT_MAX}`}
-          onChange={(e) => setText(e.target.value)}
-        />
+    <BroadcastWorkspace>
+      <form className="flex w-full max-w-3xl flex-col gap-6" onSubmit={handleSubmit} noValidate>
+        <Card className="flex flex-col gap-6 p-5 sm:p-6">
+          <Textarea
+            label="Сообщение"
+            value={text}
+            maxLength={TEXT_MAX}
+            rows={8}
+            hint={`${text.length} / ${TEXT_MAX}`}
+            onChange={(e) => setText(e.target.value)}
+          />
 
-        <fieldset className="flex min-w-0 flex-col gap-3">
-          <legend className="text-[13px] font-medium text-text-secondary">Аудитория</legend>
-          <div className={audienceRowClass(sendAll)}>
-            <div className="flex min-w-0 items-center gap-3">
-              <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-chip bg-surface-3 text-text-secondary">
-                <Megaphone className="h-5 w-5" aria-hidden="true" />
-              </span>
-              <Checkbox
-                label="Всем"
-                checked={sendAll}
-                onChange={(e) => setSendAll(e.target.checked)}
-              />
-            </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <Badge tone="green">Получат: {allStarted}</Badge>
-              <Badge tone="red">Без бота: {allNotStarted}</Badge>
-            </div>
-          </div>
-          {!roles || roles.length === 0 ? (
-            <p className="text-[13px] text-text-secondary">Ролей для выбора нет.</p>
-          ) : (
-            <ul className="flex flex-col gap-2">
-              {roles.map((role) => {
-                const selected = selectedIds.has(role.id);
-                return (
-                  <li key={role.id} className={audienceRowClass(selected)}>
-                    <Checkbox
-                      label={
-                        <span className="min-w-0 break-words text-sm font-medium text-text-primary">
-                          {role.name}
-                        </span>
-                      }
-                      aria-label={roleCheckboxAriaLabel(role)}
-                      checked={selected}
-                      disabled={sendAll}
-                      onChange={() => toggleRole(role.id)}
-                    />
-                    <div className="flex flex-wrap items-center gap-3">
-                      <Badge tone="green">Получат: {role.started_count}</Badge>
-                      <Badge tone="red">Без бота: {role.not_started_count}</Badge>
-                    </div>
-                  </li>
-                );
-              })}
-            </ul>
-          )}
-        </fieldset>
-
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="rounded-sub border border-border-subtle bg-surface-2 px-4 py-3">
-            <div className="flex flex-wrap gap-6">
-              <div aria-hidden="true" className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-[13px] text-text-secondary">Получат</span>
-                <span className="font-mono font-semibold text-text-primary">{summary.started}</span>
-              </div>
-              <div aria-hidden="true" className="flex min-w-0 flex-col gap-0.5">
-                <span className="text-[13px] text-text-secondary">Без бота</span>
-                <span className="font-mono font-semibold text-text-primary">
-                  {summary.notStarted}
+          <fieldset className="flex min-w-0 flex-col gap-3">
+            <legend className="text-[13px] font-medium text-text-secondary">Аудитория</legend>
+            <div className={audienceRowClass(sendAll)}>
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-chip bg-surface-3 text-text-secondary">
+                  <Megaphone className="h-5 w-5" aria-hidden="true" />
                 </span>
+                <Checkbox
+                  label="Всем"
+                  checked={sendAll}
+                  onChange={(e) => setSendAll(e.target.checked)}
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <Badge tone="green">Получат: {allStarted}</Badge>
+                <Badge tone="red">Без бота: {allNotStarted}</Badge>
               </div>
             </div>
-            <p className="sr-only" aria-live="polite">
-              Получат: {summary.started} · Без бота: {summary.notStarted}
-            </p>
+            {!roles || roles.length === 0 ? (
+              <p className="text-[13px] text-text-secondary">Ролей для выбора нет.</p>
+            ) : (
+              <ul className="flex flex-col gap-2">
+                {roles.map((role) => {
+                  const selected = selectedIds.has(role.id);
+                  return (
+                    <li key={role.id} className={audienceRowClass(selected)}>
+                      <Checkbox
+                        label={
+                          <span className="min-w-0 break-words text-sm font-medium text-text-primary">
+                            {role.name}
+                          </span>
+                        }
+                        aria-label={roleCheckboxAriaLabel(role)}
+                        checked={selected}
+                        disabled={sendAll}
+                        onChange={() => toggleRole(role.id)}
+                      />
+                      <div className="flex flex-wrap items-center gap-3">
+                        <Badge tone="green">Получат: {role.started_count}</Badge>
+                        <Badge tone="red">Без бота: {role.not_started_count}</Badge>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </fieldset>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="rounded-sub border border-border-subtle bg-surface-2 px-4 py-3">
+              <div className="flex flex-wrap gap-6">
+                <div aria-hidden="true" className="flex min-w-0 flex-col gap-0.5">
+                  <span className="text-[13px] text-text-secondary">Получат</span>
+                  <span className="font-mono font-semibold text-text-primary">
+                    {summary.started}
+                  </span>
+                </div>
+                <div aria-hidden="true" className="flex min-w-0 flex-col gap-0.5">
+                  <span className="text-[13px] text-text-secondary">Без бота</span>
+                  <span className="font-mono font-semibold text-text-primary">
+                    {summary.notStarted}
+                  </span>
+                </div>
+              </div>
+              <p className="sr-only" aria-live="polite">
+                Получат: {summary.started} · Без бота: {summary.notStarted}
+              </p>
+            </div>
+            {canSend && (
+              <Button
+                type="submit"
+                loading={sendMutation.isPending}
+                disabled={!canSubmit}
+                className="w-full sm:w-auto"
+              >
+                <Send className="h-4 w-4" aria-hidden="true" />
+                Отправить
+              </Button>
+            )}
           </div>
-          {canSend && (
-            <Button
-              type="submit"
-              loading={sendMutation.isPending}
-              disabled={!canSubmit}
-              className="w-full sm:w-auto"
-            >
-              <Send className="h-4 w-4" aria-hidden="true" />
-              Отправить
-            </Button>
-          )}
-        </div>
-      </Card>
-    </form>
+        </Card>
+      </form>
+    </BroadcastWorkspace>
   );
 }

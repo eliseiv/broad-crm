@@ -75,6 +75,44 @@ function liveRegion(): HTMLElement {
   return el as HTMLElement;
 }
 
+/** Page-local обёртка ADR-077: items-center + justify-center + min-h-[calc(...)]. */
+function isWorkspaceClass(className: string): boolean {
+  return (
+    /\bitems-center\b/.test(className) &&
+    /\bjustify-center\b/.test(className) &&
+    /\bmin-h-\[calc\(/.test(className)
+  );
+}
+
+function findWorkspaceAncestor(el: HTMLElement): HTMLElement | null {
+  let node: HTMLElement | null = el;
+  while (node) {
+    const cls = typeof node.className === 'string' ? node.className : '';
+    if (isWorkspaceClass(cls)) return node;
+    node = node.parentElement;
+  }
+  return null;
+}
+
+function expectWorkspace(el: HTMLElement): HTMLElement {
+  const wrap = findWorkspaceAncestor(el);
+  expect(wrap, 'ожидался предок с items-center + justify-center + min-h-[calc]').toBeTruthy();
+  const tokens = wrap!.className.split(/\s+/).filter(Boolean);
+  expect(tokens).toContain('flex');
+  expect(tokens).toContain('w-full');
+  expect(tokens).toContain('items-center');
+  expect(tokens).toContain('justify-center');
+  const minH = tokens.find((t) => t.startsWith('min-h-['));
+  expect(minH, 'min-h-[calc(...)] на обёртке').toBeTruthy();
+  expect(minH).toMatch(/^min-h-\[calc\(/);
+  expect(minH).toMatch(/100dvh/);
+  expect(minH).toMatch(/4rem/);
+  expect(tokens).not.toContain('overflow-y-auto');
+  expect(tokens.some((t) => /^h-/.test(t))).toBe(false);
+  expect(tokens.some((t) => /^max-h-/.test(t))).toBe(false);
+  return wrap!;
+}
+
 describe('BroadcastPage (ADR-076 / ADR-077)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -432,5 +470,77 @@ describe('BroadcastPage (ADR-076 / ADR-077)', () => {
     await user.type(screen.getByLabelText('Сообщение'), 'Текст');
     await user.click(screen.getByRole('checkbox', { name: 'Всем' }));
     expect(screen.getByRole('button', { name: 'Отправить' })).toBeDisabled();
+  });
+});
+
+describe('BroadcastPage — раскладка рабочей области (амендмент ADR-077)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    state.canView = true;
+    state.canSend = true;
+    state.audience = AUDIENCE;
+    state.audienceError = null;
+    state.isLoading = false;
+    state.isPending = false;
+    state.mutate.mockReset();
+  });
+
+  it('композер: предок form имеет items-center + justify-center + min-h-[calc]', () => {
+    render(<BroadcastPage />, { wrapper });
+    const form = screen.getByLabelText('Сообщение').closest('form');
+    expect(form).toBeTruthy();
+    const wrap = expectWorkspace(form as HTMLElement);
+    expect(wrap).toContainElement(form);
+    expect(form).toHaveClass('w-full', 'max-w-3xl');
+  });
+
+  it('loading: карточка «Загрузка…» внутри той же обёртки', () => {
+    state.isLoading = true;
+    state.audience = undefined;
+    render(<BroadcastPage />, { wrapper });
+    expectWorkspace(screen.getByText('Загрузка…'));
+  });
+
+  it('error audience: карточка «Не удалось загрузить…» внутри той же обёртки', () => {
+    state.audience = undefined;
+    state.audienceError = new Error('network');
+    render(<BroadcastPage />, { wrapper });
+    expectWorkspace(screen.getByText('Не удалось загрузить аудиторию'));
+  });
+
+  it('empty 503 на GET: «ИИ-бот не настроен» внутри той же обёртки', () => {
+    state.audience = undefined;
+    state.audienceError = new ApiError(503, 'knowledge_bot_not_configured', 'ИИ-бот не настроен');
+    render(<BroadcastPage />, { wrapper });
+    expectWorkspace(screen.getByText('ИИ-бот не настроен'));
+  });
+
+  it('empty 503 на POST: empty-карточка внутри той же обёртки', async () => {
+    const user = userEvent.setup();
+    state.mutate.mockImplementation((_payload: unknown, opts: { onError: (e: Error) => void }) => {
+      opts.onError(new ApiError(503, 'knowledge_bot_not_configured', 'ИИ-бот не настроен'));
+    });
+    render(<BroadcastPage />, { wrapper });
+    await user.type(screen.getByLabelText('Сообщение'), 'Текст');
+    await user.click(screen.getByRole('checkbox', { name: 'Всем' }));
+    await user.click(screen.getByRole('button', { name: 'Отправить' }));
+    expectWorkspace(screen.getByText('ИИ-бот не настроен'));
+  });
+
+  it('view-guard InsufficientPermissions не внутри центрирующей обёртки', () => {
+    state.canView = false;
+    render(<BroadcastPage />, { wrapper });
+    const stub = screen.getByText(INSUFFICIENT_PERMISSIONS_TITLE);
+    expect(findWorkspaceAncestor(stub)).toBeNull();
+    expect(screen.queryByLabelText('Сообщение')).not.toBeInTheDocument();
+  });
+
+  it('403 audience InsufficientPermissions не внутри центрирующей обёртки', () => {
+    state.audience = undefined;
+    state.audienceError = new ApiError(403, 'forbidden', 'Forbidden');
+    render(<BroadcastPage />, { wrapper });
+    const stub = screen.getByText(INSUFFICIENT_PERMISSIONS_TITLE);
+    expect(findWorkspaceAncestor(stub)).toBeNull();
+    expect(screen.queryByLabelText('Сообщение')).not.toBeInTheDocument();
   });
 });

@@ -1916,11 +1916,13 @@ interface ComboboxProps {
 
 ## Страница «Рассылка»
 
-Пункт **«Рассылка»** плоской навигации (`/broadcast`, #13), гейт **`broadcast:view`**. API — [04-api.md](04-api.md#broadcast), решение — [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md), визуальная композиция — [ADR-077](adr/ADR-077-broadcast-page-visual-redesign.md) (статус **implemented**, сверка `BroadcastPage.tsx` 2026-08-17). Layout — **не-full-bleed** (`w-full px-6 py-8`).
+Пункт **«Рассылка»** плоской навигации (`/broadcast`, #13), гейт **`broadcast:view`**. API — [04-api.md](04-api.md#broadcast), решение — [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md), визуальная композиция — [ADR-077](adr/ADR-077-broadcast-page-visual-redesign.md) (композиция композера и **раскладка в рабочей области — implemented**, сверка `BroadcastPage.tsx:24-28` 2026-08-17). Layout — **не-full-bleed** (`w-full px-6 py-8` в `AppLayout`; `/broadcast` **не** в `isFullBleed`).
 
-> **Без заголовка страницы (нормативно, [ADR-029](adr/ADR-029-ui-login-password-nav-team-form.md)).** Как Users/Roles: H1 не рендерится. Контент начинается сразу с композера (или с карточки loading/error/empty).
+> **Без заголовка страницы (нормативно, [ADR-029](adr/ADR-029-ui-login-password-nav-team-form.md)).** Как Users/Roles: H1 не рендерится. Контент — композер (или карточка loading/error/empty), **без** page-H1.
 
 > **Амендмент (ADR-077, 2026-08-17):** утверждение «Лейбл: `{name} (получат: {started_count}, без бота: {not_started_count})`» более не действует как **видимая** строка. Видимы имя + бейджи; формула — **accessible name** чекбокса. Плоская колонка без `ui/Card` более не норма.
+
+> **Амендмент (ADR-077, 2026-08-17, implemented):** основной блок (композер и те же page-level loading/error/empty) **горизонтально и вертикально центрируется в рабочей области** под sticky-хэдером, на пустом фоне `bg-bg-base`. Не в навбаре. Не full-bleed. Подробно — [ADR-077 §Раскладка](adr/ADR-077-broadcast-page-visual-redesign.md#раскладка-в-рабочей-области-амендмент-implemented).
 
 Функциональные инварианты (не менять): 1…4096 символов после `trim` на submit; HTML/Markdown не обещаются (сервер без `parse_mode`); роли **не** из `/api/roles`; «Всем» → роли `disabled`, тело `all=true`, `role_ids=[]`; иначе нужен ≥1 роль-чекбокс; сводка при «Всем» из `all_*`, иначе сумма выбранных (двойной счёт при пересечении ролей — UX-оценка); кнопка «Отправить» только при `broadcast:send`; toast / 503 / 422 / view-guard — строки ниже.
 
@@ -1930,6 +1932,7 @@ interface ComboboxProps {
 
 ```mermaid
 flowchart TB
+  wrap["обёртка: flex w-full items-center justify-center + min-h остаток рабочей области"]
   form["form: w-full max-w-3xl flex-col gap-6"]
   card["ui/Card: p-5 sm:p-6 gap-6"]
   msg["Textarea Сообщение + hint n / 4096"]
@@ -1939,6 +1942,7 @@ flowchart TB
   footer["footer: flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between"]
   sum["полоса сводки"]
   cta["Button Отправить"]
+  wrap --> form
   form --> card
   card --> msg
   card --> aud
@@ -1949,7 +1953,8 @@ flowchart TB
   footer --> cta
 ```
 
-- **Карточка:** `ui/Card` — `rounded-card border border-border-subtle bg-surface-1 shadow-card`. Ширина формы `w-full max-w-3xl` (не на всю ширину контентной колонки). `interactive` / hover-lift **не** включать — это не навигационная карточка списка.
+- **Раскладка рабочей области (амендмент ADR-077, implemented):** page-local обёртка `BroadcastWorkspace` в `BroadcastPage.tsx:24-28` — `flex w-full items-center justify-center` + `min-h-[calc(100dvh-3.875rem-4rem)]` (`3.875rem` — хэдер, `4rem` — `py-8`×2 `AppLayout`). `h-*` / `max-h-*` / `overflow-y-auto` на обёртке **запрещены**. Фон — пустой (`bg-bg-base` shell); второй поверхности нет. `InsufficientPermissions` обёрткой не оборачивать. `AppLayout` / `isFullBleed` **не** менять.
+- **Карточка:** `ui/Card` — `rounded-card border border-border-subtle bg-surface-1 shadow-card`. Ширина формы `w-full max-w-3xl` (не на всю ширину контентной колонки). Одного `mx-auto` без вертикального `min-h` + `items-center` недостаточно. `interactive` / hover-lift **не** включать — это не навигационная карточка списка.
 - **Сообщение:** `ui/Textarea` `label="Сообщение"`, `rows={8}`, `maxLength={4096}`. Счётчик — проп `hint` примитива (**не** соседний `<p>`): **`{n} / 4096`**, `n = value.length`. Placeholder не задаётся.
 - **Аудитория:** `<fieldset>` с **видимым** `<legend>` **«Аудитория»** (`text-[13px] font-medium text-text-secondary` — тот же класс, что label полей). `sr-only` на legend **запрещён**.
 - **Строка «Всем»:** под-карточка `rounded-sub border border-border-subtle bg-surface-2 px-3 py-2.5` (или `p-3`), `flex-wrap`. Слева чип `h-10 w-10 rounded-chip bg-surface-3` с `Megaphone` (`h-5 w-5`, `aria-hidden`) + `Checkbox` с видимым лейблом **«Всем»**. Справа два `Badge` **вне** `label`: **«Получат: {all_started_count}»** `tone="green"`, **«Без бота: {all_not_started_count}»** `tone="red"`. Отмечена → дополнительно `border-accent` (базовая `border-border-subtle` остаётся в разметке). Accessible name чекбокса — **«Всем»**.
@@ -1961,6 +1966,8 @@ flowchart TB
 - **a11y:** штатные `focus-visible` примитивов; `prefers-reduced-motion` не нарушать (новых анимаций не вводить). Подсказка счётчика — только через `hint` у `Textarea`.
 
 ### Состояния вне композера (без изменений ADR-076)
+
+Композиция карточек — без изменений. **Раскладка (амендмент ADR-077, implemented):** loading / error audience / empty 503 живут в той же центрирующей обёртке, что и композер. `InsufficientPermissions` — нет.
 
 - Загрузка audience → карточка «Загрузка…» + `Spinner` (как `/teams`).
 - 403 на audience → `InsufficientPermissions`.

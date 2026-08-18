@@ -1,8 +1,8 @@
 # Модуль `broadcast` — Рассылка через Telegram ИИ-бота
 
-Статус: `implemented` (сверка состава кода 2026-08-17; qa ADR-077 2026-08-17: focused 21 passed, coverage `BroadcastPage.tsx` 96.88%, related 73 passed; полный suite не прогонялся) · Исполнители: backend, frontend · Соседний репозиторий: `ba-knowledge-base` (контракт регистрации линка — обязан выкатить **вместе**)
+Статус: `implemented` (сверка состава кода 2026-08-17; qa ADR-077 раскладка 2026-08-17: focused `BroadcastPage.test.tsx` 28 passed + related зелёные; полный suite не прогонялся) · Исполнители: backend, frontend · Соседний репозиторий: `ba-knowledge-base` (контракт регистрации линка — обязан выкатить **вместе**)
 
-Решение — [ADR-076](../../adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md). Контракт — [04-api.md](../../04-api.md#broadcast). Модель — [03-data-model.md](../../03-data-model.md#таблица-knowledge_bot_links-adr-076). UI — [08-design-system.md](../../08-design-system.md#страница-рассылка). Визуальный редизайн композера — [ADR-077](../../adr/ADR-077-broadcast-page-visual-redesign.md) (implemented, сверка `BroadcastPage.tsx` 2026-08-17).
+Решение — [ADR-076](../../adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md). Контракт — [04-api.md](../../04-api.md#broadcast). Модель — [03-data-model.md](../../03-data-model.md#таблица-knowledge_bot_links-adr-076). UI — [08-design-system.md](../../08-design-system.md#страница-рассылка). Визуальный редизайн композера — [ADR-077](../../adr/ADR-077-broadcast-page-visual-redesign.md) (композиция + раскладка в рабочей области — implemented, сверка `BroadcastPage.tsx:24-28` 2026-08-17).
 
 ## Scope
 
@@ -78,6 +78,7 @@ skipped_not_started = |кандидаты без активного линка|
 - Маршрут `/broadcast`, пункт навигации «Рассылка» (#13), `broadcast:view`.
 - `DefaultRoute` += `broadcast` в конце.
 - Страница — [08-design-system.md](../../08-design-system.md#страница-рассылка). **Композер (ADR-077, implemented):** одна `ui/Card` `max-w-3xl`; видимый legend «Аудитория»; строки «Всем»/ролей — `surface-2` + `border-border-subtle` (`flex-wrap`); `Badge` **вне** `Checkbox.label`; видимый label роли = только имя, `aria-label` = формула; при «Всем» — только штатный `disabled` (без `opacity-60` на wrapper); footer DOM `[сводка, CTA]`, `flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between` (без `col-reverse`); live-region — sr-only **«Получат: N · Без бота: M»** (не `aria-label`); `Textarea.hint` = `{n} / 4096`. API-тело, гейты, toast/empty/error, без H1 — без изменений. Новых зависимостей нет. Сверка — `frontend/src/pages/BroadcastPage.tsx`; тесты — qa.
+- **Раскладка (амендмент ADR-077, implemented):** основной блок (композер + loading/error/empty 503) горизонтально и вертикально центрируется в рабочей области под хэдером, на пустом фоне. Только `BroadcastPage`: обёртка `BroadcastWorkspace` — `flex w-full items-center justify-center` + `min-h-[calc(100dvh-3.875rem-4rem)]` (`BroadcastPage.tsx:24-28`). `h-*` / `max-h-*` / `overflow-y-auto` на обёртке запрещены. `AppLayout` / `isFullBleed` не менять. `InsufficientPermissions` не оборачивать. Одного `mx-auto` недостаточно.
 - `/users`: бейдж «Бот» / «Бот не запущен» из `bot_started`.
 - Матрица ролей — столбцы из каталога (закрытие TD-068). Словарь: `PAGE_LABEL.broadcast = «Рассылка»`; `ACTION_LABEL` += `share/send/sync/tags/transfer`.
 - UI-гейт `/users` и `AdminRoute` — `me.is_admin_level` из `GET /api/auth/me` ([ADR-078](../../adr/ADR-078-me-is-admin-level.md)). Каталог ради этого гейта **не** грузится. Прежние `coversFullCatalog` / `catalogPending` отменены. Не дублировать предикат «на глаз».
@@ -92,11 +93,14 @@ Middleware доступа: **вместо** `GET …/user-access/{id}` (не «�
 - [x] `GET/POST /api/broadcasts*`, `POST /api/external/knowledge-bot/link`, user-access с `username` и шагом 1 (линк ИИ-бота).
 - [x] `UserListItem.bot_started`; страница `/broadcast`; бейдж на `/users`; матрица из каталога.
 - [x] Визуальный редизайн композера ([ADR-077](../../adr/ADR-077-broadcast-page-visual-redesign.md)) — сверка `BroadcastPage.tsx` 2026-08-17.
-- [x] QA ADR-077 (2026-08-17, focused): `BroadcastPage.test.tsx` 21 passed; coverage `BroadcastPage.tsx` 96.88%; related 73 passed.
+- [x] Раскладка в рабочей области ([ADR-077](../../adr/ADR-077-broadcast-page-visual-redesign.md) §амендмент, implemented): `BroadcastWorkspace` `min-h-[calc(100dvh-3.875rem-4rem)]`; сверка `BroadcastPage.tsx:24-28`; `AppLayout` не менялся.
+- [x] QA ADR-077 раскладка (2026-08-17, focused): `BroadcastPage.test.tsx` 28 passed + related зелёные.
 - [ ] Полный прогон [06-testing-strategy.md](../../06-testing-strategy.md#broadcast--adr-076) (backend integration + полный frontend suite) — не зафиксирован.
 
 ## Changelog
 
+- 2026-08-17: раскладка ADR-077 — implemented (`BroadcastPage.tsx:24-28`, `min-h-[calc(100dvh-3.875rem-4rem)]`); qa focused 28 passed + related; API/RBAC не менялись.
+- 2026-08-17: амендмент ADR-077 (тогда spec-ready) — центрирование блока Рассылки в рабочей области; API/RBAC не меняются.
 - 2026-08-17: QA ADR-077 зафиксирован — focused 21 passed, coverage `BroadcastPage.tsx` 96.88%, related 73 passed; полный suite не прогонялся.
 - 2026-08-17: визуальный редизайн композера `/broadcast` — implemented ([ADR-077](../../adr/ADR-077-broadcast-page-visual-redesign.md), сверка `BroadcastPage.tsx`); API не меняется.
 - 2026-08-17: контракт соседа уточнён (ba-knowledge-base ADR-013): POST **вместо** GET, не только `/start`, отказ только при `user_not_linked`.
