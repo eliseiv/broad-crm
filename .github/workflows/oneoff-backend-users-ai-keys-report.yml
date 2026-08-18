@@ -89,6 +89,43 @@ jobs:
           total_usd = sum(float(r[3] or 0) for r in rows)
           print(f"\nTOTAL_payments_sum_usd_summed={total_usd:.4f} backends_ok={len(rows)}")
 
+          print("\n=== PAYMENTS_SUM_USD per backend (ALL TIME, no date filter) ===")
+          rows2 = []
+          for b in sorted(backends, key=lambda x: (x.get("name") or "").lower()):
+              code = b.get("code")
+              if not b.get("has_admin_api_key"):
+                  print(f"{code}: SKIP (нет Admin API Key)")
+                  continue
+              path = f"/backend-users?backend_id={b['id']}&limit=1"
+              try:
+                  s = req(path, token=token, timeout=180)
+                  st = s.get("stats") or {}
+                  usd = st.get("payments_sum_usd")
+                  rows2.append((code, st.get("users_total"), st.get("paid_users"), usd))
+                  print(
+                      f"{code}: users_total={st.get('users_total')} "
+                      f"paid_users={st.get('paid_users')} payments_sum_usd={usd}"
+                  )
+                  if s.get("errors"):
+                      print(f"  errors={s['errors']}")
+              except urllib.error.HTTPError as e:
+                  body = e.read().decode("utf-8", errors="replace")[:500]
+                  print(f"{code}: HTTP {e.code} {body}")
+              except Exception as e:
+                  print(f"{code}: FAIL {type(e).__name__}: {e}")
+          total2 = sum(float(r[3] or 0) for r in rows2)
+          print(f"\nTOTAL_all_time_payments_sum_usd_summed={total2:.4f} backends_ok={len(rows2)}")
+          try:
+              all_apps = req("/backend-users?limit=1", token=token, timeout=300)
+              st = all_apps.get("stats") or {}
+              print(
+                  f"ALL_APPS_MODE stats users_total={st.get('users_total')} "
+                  f"paid_users={st.get('paid_users')} payments_sum_usd={st.get('payments_sum_usd')} "
+                  f"errors_count={len(all_apps.get('errors') or [])}"
+              )
+          except Exception as e:
+              print(f"ALL_APPS_MODE FAIL {e}")
+
           print("\n=== AI KEYS (all) ===")
           keys = req("/ai-keys", token=token)["items"]
           print(f"ai_keys_count={len(keys)}")
