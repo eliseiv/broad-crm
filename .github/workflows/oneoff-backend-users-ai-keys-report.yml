@@ -1,4 +1,4 @@
-# One-off debug payments_sum — delete after run
+# One-off: sample paid user revenue + remove after
 name: oneoff — backend-users $ + AI keys
 
 on:
@@ -19,7 +19,7 @@ jobs:
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Dump raw stats for backend 232
+      - name: Sample paid users revenue
         run: |
           ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
           set -euo pipefail
@@ -27,42 +27,61 @@ jobs:
           docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
             python - <<'PY'
           import json, os, urllib.request
-          from app.core.config import get_settings
-          from app.infra.crypto import decrypt
-          from app.db.session import SessionLocal
-          from app.models.backend import Backend
-          from sqlalchemy import select
-          import asyncio
-          from app.infra.backend_admin_client import BackendAdminClient
 
           BASE = "http://127.0.0.1:8000/api"
 
-          def http(path, data=None, token=None):
+          def req(path, data=None, token=None, timeout=120):
               headers = {"Content-Type": "application/json"}
               if token:
                   headers["Authorization"] = f"Bearer {token}"
               body = None if data is None else json.dumps(data).encode()
-              r = urllib.request.Request(BASE + path, data=body, headers=headers, method="POST" if data else "GET")
-              with urllib.request.urlopen(r, timeout=60) as resp:
+              r = urllib.request.Request(
+                  BASE + path, data=body, headers=headers, method="POST" if data else "GET"
+              )
+              with urllib.request.urlopen(r, timeout=timeout) as resp:
                   return json.load(resp)
 
-          login = http("/auth/login", {"username": os.environ["ADMIN_USER"], "password": os.environ["ADMIN_PASSWORD"]})
+          login = req("/auth/login", {
+              "username": os.environ["ADMIN_USER"],
+              "password": os.environ["ADMIN_PASSWORD"],
+          })
           token = login["access_token"]
-          backends = http("/backends", token=token)["items"]
-          target = next(b for b in backends if b.get("code") == "232")
-          crm = http(f"/backend-users?backend_id={target['id']}&limit=1", token=token)
-          print("CRM_STATS", json.dumps(crm.get("stats"), ensure_ascii=False))
-          print("CRM_ERRORS", json.dumps(crm.get("errors"), ensure_ascii=False))
-
-          async def raw():
-              async with SessionLocal() as db:
-                  row = (await db.execute(select(Backend).where(Backend.code == "232"))).scalar_one()
-                  key = decrypt(row.admin_api_key_encrypted)
-                  client = BackendAdminClient(base_url=row.domain.rstrip("/"), admin_api_key=key)
-                  stats = await client.get_stats()
-                  print("RAW_UPSTREAM_STATS", json.dumps(stats, ensure_ascii=False, default=str))
-
-          asyncio.run(raw())
-          print("DEBUG_OK")
+          backends = {b["code"]: b for b in req("/backends", token=token)["items"]}
+          for code in ("232", "5109", "5112", "5089"):
+              b = backends.get(code)
+              if not b or not b.get("has_admin_api_key"):
+                  print(f"{code}: skip")
+                  continue
+              listing = req(
+                  f"/backend-users?backend_id={b['id']}&is_paid=true&limit=5",
+                  token=token,
+              )
+              print(f"\n=== {code} paid sample (stats={listing.get('stats')}) ===")
+              for u in listing.get("items") or []:
+                  uid = u["id"]
+                  try:
+                      detail = req(
+                          f"/backend-users/{b['id']}/users/{uid}",
+                          token=token,
+                      )
+                      rev = detail.get("revenue")
+                      sub = detail.get("subscription")
+                      print(
+                          f"user={uid} is_paid={u.get('is_paid')} "
+                          f"payments_count={u.get('payments_count')} "
+                          f"revenue={rev} sub_price={None if not sub else sub.get('price')}"
+                      )
+                      pays = req(
+                          f"/backend-users/{b['id']}/users/{uid}/payments?limit=20",
+                          token=token,
+                      )
+                      items = pays.get("items") or pays.get("payments") or []
+                      if isinstance(pays, dict):
+                          print(f"  payments_payload_keys={list(pays.keys())}")
+                      for p in (items[:5] if isinstance(items, list) else []):
+                          print(f"  pay amount={p.get('amount')} currency={p.get('currency')} status={p.get('status')} at={p.get('occurred_at')}")
+                  except Exception as e:
+                      print(f"user={uid} FAIL {e}")
+          print("\nSAMPLE_OK")
           PY
           EOS
