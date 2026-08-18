@@ -1,4 +1,4 @@
-# One-off: фон на проде + поллинг лога. Удалить после.
+# One-off: host-nohup crawl, log on /opt/crm/reports. Удалить после.
 name: oneoff — Claude IOS/РФ request cost
 
 on:
@@ -37,25 +37,25 @@ jobs:
           set -euo pipefail
           scp .github/scripts/claude_request_cost_report.py \
             "${SSH_USER}@${SSH_HOST}:/tmp/claude_request_cost_report.py"
-
-          remote() {
-            # важно: команда в argv, НЕ через stdin (иначе docker exec -T съедает скрипт)
-            ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" "$@"
-          }
+          remote() { ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" "$@"; }
 
           if [ "$ACTION" = "start" ]; then
-            remote 'cd /opt/crm && for i in $(seq 1 60); do
+            remote 'mkdir -p /opt/crm/reports'
+            remote 'cd /opt/crm && for i in $(seq 1 90); do
               if docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
                 python -c "import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/api/health\", timeout=3)" \
                 >/dev/null 2>&1; then echo backend_healthy; break; fi
               echo waiting_backend_$i; sleep 5
             done'
             remote 'cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml cp /tmp/claude_request_cost_report.py backend:/app/claude_request_cost_report.py'
-            remote 'cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T backend rm -f /tmp/claude_cost_checkpoint.json /tmp/claude_cost_report.log || true'
-            remote 'cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -d backend sh -c "python /app/claude_request_cost_report.py > /tmp/claude_cost_report.log 2>&1"'
-            sleep 5
-            remote 'cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T backend sh -c "echo ===LOG_TAIL===; tail -n 50 /tmp/claude_cost_report.log 2>/dev/null || echo NO_LOG; echo ===PS===; ps aux | grep claude_request_cost | grep -v grep || echo NOT_RUNNING"'
+            remote 'rm -f /opt/crm/reports/claude_cost_report.log /opt/crm/reports/claude_cost.pid; cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T backend rm -f /tmp/claude_cost_checkpoint.json || true'
+            # nohup на ХОСТЕ держит docker exec -T; лог пишется на хост и переживает смену GHA-джобы
+            remote 'cd /opt/crm && nohup docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+              python /app/claude_request_cost_report.py \
+              > /opt/crm/reports/claude_cost_report.log 2>&1 < /dev/null & echo $! > /opt/crm/reports/claude_cost.pid; echo STARTED_PID=$(cat /opt/crm/reports/claude_cost.pid)'
+            sleep 8
+            remote 'echo ===PID===; cat /opt/crm/reports/claude_cost.pid 2>/dev/null || true; echo ===LOG_TAIL===; tail -n 40 /opt/crm/reports/claude_cost_report.log 2>/dev/null || echo NO_LOG; echo ===HOST_PS===; ps -p "$(cat /opt/crm/reports/claude_cost.pid 2>/dev/null)" -o pid,cmd 2>/dev/null || echo NOT_RUNNING'
             echo STARTED_OK
           else
-            remote 'cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T backend sh -c "echo ===LOG_TAIL===; tail -n 100 /tmp/claude_cost_report.log 2>/dev/null || echo NO_LOG; echo ===CHECKPOINT===; cat /tmp/claude_cost_checkpoint.json 2>/dev/null || echo NO_CK; echo ===PS===; ps aux | grep claude_request_cost | grep -v grep || echo NOT_RUNNING"'
+            remote 'echo ===PID===; cat /opt/crm/reports/claude_cost.pid 2>/dev/null || echo NO_PID; echo ===HOST_PS===; ps -p "$(cat /opt/crm/reports/claude_cost.pid 2>/dev/null)" -o pid,etime,cmd 2>/dev/null || echo NOT_RUNNING; echo ===LOG_TAIL===; tail -n 120 /opt/crm/reports/claude_cost_report.log 2>/dev/null || echo NO_LOG; echo ===CK===; cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T backend cat /tmp/claude_cost_checkpoint.json 2>/dev/null || echo NO_CK'
           fi
