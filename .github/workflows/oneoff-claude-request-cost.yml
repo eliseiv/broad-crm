@@ -1,0 +1,289 @@
+# One-off: себестоимость Claude IOS / Claude РФ за 7 дней. Удалить после прогона.
+name: oneoff — Claude IOS/РФ request cost
+
+on:
+  workflow_dispatch:
+
+jobs:
+  report:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Setup SSH deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Sum provider_cost_usd last 7 days
+        run: |
+          ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
+          set -euo pipefail
+          cd /opt/crm
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+            python - <<'PY'
+          import asyncio
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime, timedelta, timezone
+
+          BASE = "http://127.0.0.1:8000/api"
+          CUTOFF = datetime.now(timezone.utc) - timedelta(days=7)
+          SEM = asyncio.Semaphore(25)
+          PAGE = 100
+          TARGET_NAMES = {"Claude IOS", "Claude РФ"}
+
+          def sync_req(path: str, data=None, token=None, timeout=120):
+              headers = {"Content-Type": "application/json"}
+              if token:
+                  headers["Authorization"] = f"Bearer {token}"
+              body = None if data is None else json.dumps(data).encode()
+              method = "POST" if data is not None else "GET"
+              r = urllib.request.Request(BASE + path, data=body, headers=headers, method=method)
+              with urllib.request.urlopen(r, timeout=timeout) as resp:
+                  return json.load(resp)
+
+          async def areq(path: str, token: str, timeout=120):
+              async with SEM:
+                  return await asyncio.to_thread(sync_req, path, None, token, timeout)
+
+          def parse_dt(value: str | None):
+              if not value:
+                  return None
+              v = value.replace("Z", "+00:00")
+              try:
+                  dt = datetime.fromisoformat(v)
+              except ValueError:
+                  return None
+              if dt.tzinfo is None:
+                  dt = dt.replace(tzinfo=timezone.utc)
+              return dt.astimezone(timezone.utc)
+
+          def cost_of(item: dict) -> float | None:
+              if item.get("refunded") is True:
+                  return None
+              c = item.get("provider_cost_usd")
+              if c is None:
+                  return None
+              try:
+                  return float(c)
+              except (TypeError, ValueError):
+                  return None
+
+          async def sum_user_cost(token: str, backend_id: str, user_id: str) -> tuple[float, int, int]:
+              """Return (sum_usd, counted_requests, pages). Stop when sent_at < CUTOFF."""
+              total = 0.0
+              counted = 0
+              pages = 0
+              offset = 0
+              while True:
+                  path = (
+                      f"/backend-users/{backend_id}/users/{urllib.parse.quote(str(user_id), safe='')}"
+                      f"/requests?limit={PAGE}&offset={offset}"
+                  )
+                  try:
+                      payload = await areq(path, token, timeout=90)
+                  except Exception:
+                      break
+                  pages += 1
+                  items = payload.get("items") or []
+                  if not items:
+                      break
+                  stop = False
+                  for it in items:
+                      sent = parse_dt(it.get("sent_at"))
+                      if sent is not None and sent < CUTOFF:
+                          stop = True
+                          break
+                      if sent is None:
+                          continue
+                      c = cost_of(it)
+                      if c is not None:
+                          total += c
+                          counted += 1
+                  if stop or len(items) < PAGE:
+                      break
+                  offset += PAGE
+                  if pages >= 50:
+                      break
+              return total, counted, pages
+
+          def user_may_have_cost(detail: dict) -> bool:
+              rev = detail.get("revenue")
+              if rev is None:
+                  # v1 / no revenue block — всё равно глянем первую страницу запросов
+                  return True
+              try:
+                  api_cost = float(rev.get("api_cost_usd") or 0)
+              except (TypeError, ValueError):
+                  api_cost = 0.0
+              providers = rev.get("providers") or {}
+              return api_cost > 0 or bool(providers)
+
+          async def process_backend(token: str, b: dict) -> dict:
+              code = b.get("code")
+              name = b.get("name")
+              bid = b["id"]
+              print(f"\nSTART backend code={code!r} name={name!r}", flush=True)
+              out = {
+                  "code": code,
+                  "name": name,
+                  "users_total_listed": 0,
+                  "users_checked_detail": 0,
+                  "users_with_cost_path": 0,
+                  "users_scanned_requests": 0,
+                  "requests_counted": 0,
+                  "sum_usd": 0.0,
+                  "errors": 0,
+                  "status": "ok",
+              }
+              lock = asyncio.Lock()
+              if not b.get("has_admin_api_key"):
+                  out["status"] = "skip_no_admin_key"
+                  print(f"SKIP {code}: no admin key", flush=True)
+                  return out
+
+              offset = 0
+              while True:
+                  path = f"/backend-users?backend_id={bid}&limit={PAGE}&offset={offset}"
+                  try:
+                      listing = await areq(path, token, timeout=180)
+                  except urllib.error.HTTPError as e:
+                      out["status"] = f"http_{e.code}"
+                      out["errors"] += 1
+                      print(f"FAIL list {code}: HTTP {e.code}", flush=True)
+                      return out
+                  except Exception as e:
+                      out["status"] = f"fail_{type(e).__name__}"
+                      out["errors"] += 1
+                      print(f"FAIL list {code}: {e}", flush=True)
+                      return out
+
+                  items = listing.get("items") or []
+                  if offset == 0:
+                      st = listing.get("stats") or {}
+                      print(
+                          f"stats {code}: users_total={st.get('users_total')} "
+                          f"paid={st.get('paid_users')}",
+                          flush=True,
+                      )
+                  if not items:
+                      break
+                  out["users_total_listed"] += len(items)
+
+                  async def one(u: dict):
+                      uid = u["id"]
+                      try:
+                          detail = await areq(
+                              f"/backend-users/{bid}/users/{urllib.parse.quote(str(uid), safe='')}",
+                              token,
+                              timeout=90,
+                          )
+                      except Exception:
+                          async with lock:
+                              out["errors"] += 1
+                          return
+                      async with lock:
+                          out["users_checked_detail"] += 1
+                      if not user_may_have_cost(detail):
+                          return
+                      async with lock:
+                          out["users_with_cost_path"] += 1
+                      try:
+                          s, n, _pages = await sum_user_cost(token, bid, uid)
+                      except Exception:
+                          async with lock:
+                              out["errors"] += 1
+                          return
+                      async with lock:
+                          out["users_scanned_requests"] += 1
+                          out["sum_usd"] += s
+                          out["requests_counted"] += n
+
+                  await asyncio.gather(*(one(u) for u in items))
+                  print(
+                      f"progress {code}: listed={out['users_total_listed']} "
+                      f"cost_path={out['users_with_cost_path']} "
+                      f"sum_usd={out['sum_usd']:.6f} errors={out['errors']}",
+                      flush=True,
+                  )
+                  if len(items) < PAGE:
+                      break
+                  offset += PAGE
+
+              print(
+                  f"DONE {code}: sum_usd={out['sum_usd']:.6f} "
+                  f"requests={out['requests_counted']} "
+                  f"users_scanned={out['users_scanned_requests']} status={out['status']}",
+                  flush=True,
+              )
+              return out
+
+          async def main():
+              print(f"CUTOFF_UTC={CUTOFF.isoformat()} PERIOD=last_7_days", flush=True)
+              login = sync_req(
+                  "/auth/login",
+                  {
+                      "username": os.environ["ADMIN_USER"],
+                      "password": os.environ["ADMIN_PASSWORD"],
+                  },
+              )
+              token = login["access_token"]
+              backends = sync_req("/backends", token=token)["items"]
+              targets = [
+                  b
+                  for b in backends
+                  if (b.get("name") or "") in TARGET_NAMES
+              ]
+              targets.sort(key=lambda x: ((x.get("name") or ""), (x.get("code") or "")))
+              print(f"TARGET_BACKENDS={len(targets)}", flush=True)
+              for b in targets:
+                  print(
+                      f"  - {b.get('code')} | {b.get('name')} | "
+                      f"admin={b.get('has_admin_api_key')} | ai={b.get('ai_key_name')}",
+                      flush=True,
+                  )
+
+              results = []
+              for b in targets:
+                  results.append(await process_backend(token, b))
+
+              print("\n=== PER BACKEND ===", flush=True)
+              by_name: dict[str, float] = {"Claude IOS": 0.0, "Claude РФ": 0.0}
+              by_name_req: dict[str, int] = {"Claude IOS": 0, "Claude РФ": 0}
+              for r in results:
+                  print(
+                      f"{r['name']}|{r['code']}|sum_usd={r['sum_usd']:.6f}|"
+                      f"requests={r['requests_counted']}|"
+                      f"users_listed={r['users_total_listed']}|"
+                      f"users_cost_path={r['users_with_cost_path']}|"
+                      f"status={r['status']}|errors={r['errors']}",
+                      flush=True,
+                  )
+                  if r["name"] in by_name and r["status"] == "ok":
+                      by_name[r["name"]] += r["sum_usd"]
+                      by_name_req[r["name"]] += r["requests_counted"]
+
+              print("\n=== TOTALS BY NAME ===", flush=True)
+              for name in ("Claude IOS", "Claude РФ"):
+                  print(
+                      f"{name}: sum_usd={by_name[name]:.6f} "
+                      f"requests_counted={by_name_req[name]}",
+                      flush=True,
+                  )
+              print(
+                  f"GRAND_TOTAL_usd={sum(by_name.values()):.6f}",
+                  flush=True,
+              )
+              print("REPORT_OK", flush=True)
+
+          asyncio.run(main())
+          PY
+          EOS
