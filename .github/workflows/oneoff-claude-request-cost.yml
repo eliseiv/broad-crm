@@ -29,39 +29,33 @@ jobs:
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
 
       - name: Start or status
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          ACTION: ${{ github.event.inputs.action }}
         run: |
           set -euo pipefail
-          ACTION="${{ github.event.inputs.action }}"
           scp .github/scripts/claude_request_cost_report.py \
-            "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}:/tmp/claude_request_cost_report.py"
+            "${SSH_USER}@${SSH_HOST}:/tmp/claude_request_cost_report.py"
+
+          remote() {
+            # важно: команда в argv, НЕ через stdin (иначе docker exec -T съедает скрипт)
+            ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" "$@"
+          }
+
           if [ "$ACTION" = "start" ]; then
-            ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
-          set -euo pipefail
-          cd /opt/crm
-          for i in $(seq 1 60); do
-            if docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
-              python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)" \
-              >/dev/null 2>&1; then echo backend_healthy; break; fi
-            echo waiting_backend_$i; sleep 5
-          done
-          docker compose --env-file .env -f infra/docker-compose.yml cp \
-            /tmp/claude_request_cost_report.py backend:/app/claude_request_cost_report.py
-          # сброс старого чекпоинта только при новом старте
-          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
-            rm -f /tmp/claude_cost_checkpoint.json || true
-          # фон внутри контейнера через nohup+python
-          docker compose --env-file .env -f infra/docker-compose.yml exec -d backend \
-            sh -c 'python /app/claude_request_cost_report.py > /tmp/claude_cost_report.log 2>&1'
-          sleep 3
-          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
-            sh -c 'tail -n 40 /tmp/claude_cost_report.log || true; ps aux | grep claude_request_cost | grep -v grep || true'
-          echo STARTED_OK
-          EOS
+            remote 'cd /opt/crm && for i in $(seq 1 60); do
+              if docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+                python -c "import urllib.request; urllib.request.urlopen(\"http://127.0.0.1:8000/api/health\", timeout=3)" \
+                >/dev/null 2>&1; then echo backend_healthy; break; fi
+              echo waiting_backend_$i; sleep 5
+            done'
+            remote 'cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml cp /tmp/claude_request_cost_report.py backend:/app/claude_request_cost_report.py'
+            remote 'cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T backend rm -f /tmp/claude_cost_checkpoint.json /tmp/claude_cost_report.log || true'
+            remote 'cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -d backend sh -c "python /app/claude_request_cost_report.py > /tmp/claude_cost_report.log 2>&1"'
+            sleep 5
+            remote 'cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T backend sh -c "echo ===LOG_TAIL===; tail -n 50 /tmp/claude_cost_report.log 2>/dev/null || echo NO_LOG; echo ===PS===; ps aux | grep claude_request_cost | grep -v grep || echo NOT_RUNNING"'
+            echo STARTED_OK
           else
-            ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
-          set -euo pipefail
-          cd /opt/crm
-          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
-            sh -c 'echo ===LOG_TAIL===; tail -n 80 /tmp/claude_cost_report.log 2>/dev/null || echo NO_LOG; echo ===CHECKPOINT===; cat /tmp/claude_cost_checkpoint.json 2>/dev/null || echo NO_CK; echo ===PS===; ps aux | grep claude_request_cost | grep -v grep || echo NOT_RUNNING'
-          EOS
+            remote 'cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T backend sh -c "echo ===LOG_TAIL===; tail -n 100 /tmp/claude_cost_report.log 2>/dev/null || echo NO_LOG; echo ===CHECKPOINT===; cat /tmp/claude_cost_checkpoint.json 2>/dev/null || echo NO_CK; echo ===PS===; ps aux | grep claude_request_cost | grep -v grep || echo NOT_RUNNING"'
           fi
