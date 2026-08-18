@@ -1,4 +1,4 @@
-# One-off: выручка бэков ($) за 7 дней + привязка ИИ-ключей. Удалить после прогона.
+# One-off debug payments_sum — delete after run
 name: oneoff — backend-users $ + AI keys
 
 on:
@@ -7,7 +7,7 @@ on:
 jobs:
   report:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Setup SSH deploy key
         uses: webfactory/ssh-agent@v0.9.0
@@ -19,143 +19,50 @@ jobs:
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
 
-      - name: Fetch report on prod
+      - name: Dump raw stats for backend 232
         run: |
           ssh "${{ secrets.SSH_USER }}@${{ secrets.SSH_HOST }}" 'bash -s' <<'EOS'
           set -euo pipefail
           cd /opt/crm
           docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
             python - <<'PY'
-          import json, os, urllib.error, urllib.request
-          from datetime import date, timedelta
+          import json, os, urllib.request
+          from app.core.config import get_settings
+          from app.infra.crypto import decrypt
+          from app.db.session import SessionLocal
+          from app.models.backend import Backend
+          from sqlalchemy import select
+          import asyncio
+          from app.infra.backend_admin_client import BackendAdminClient
 
           BASE = "http://127.0.0.1:8000/api"
-          date_to = date.today().isoformat()
-          date_from = (date.today() - timedelta(days=7)).isoformat()
-          print(f"PERIOD date_from={date_from} date_to={date_to} (last 7 days inclusive of today)")
 
-          def req(path, data=None, token=None, timeout=120):
+          def http(path, data=None, token=None):
               headers = {"Content-Type": "application/json"}
               if token:
                   headers["Authorization"] = f"Bearer {token}"
               body = None if data is None else json.dumps(data).encode()
-              r = urllib.request.Request(BASE + path, data=body, headers=headers, method="POST" if data is not None else "GET")
-              with urllib.request.urlopen(r, timeout=timeout) as resp:
+              r = urllib.request.Request(BASE + path, data=body, headers=headers, method="POST" if data else "GET")
+              with urllib.request.urlopen(r, timeout=60) as resp:
                   return json.load(resp)
 
-          login = req("/auth/login", {
-              "username": os.environ["ADMIN_USER"],
-              "password": os.environ["ADMIN_PASSWORD"],
-          })
+          login = http("/auth/login", {"username": os.environ["ADMIN_USER"], "password": os.environ["ADMIN_PASSWORD"]})
           token = login["access_token"]
+          backends = http("/backends", token=token)["items"]
+          target = next(b for b in backends if b.get("code") == "232")
+          crm = http(f"/backend-users?backend_id={target['id']}&limit=1", token=token)
+          print("CRM_STATS", json.dumps(crm.get("stats"), ensure_ascii=False))
+          print("CRM_ERRORS", json.dumps(crm.get("errors"), ensure_ascii=False))
 
-          backends = req("/backends", token=token)["items"]
-          print(f"\n=== BACKENDS ({len(backends)}) → AI key ===")
-          for b in sorted(backends, key=lambda x: (x.get("name") or "").lower()):
-              print(
-                  f"code={b.get('code')!r} name={b.get('name')!r} "
-                  f"ai_key_id={b.get('ai_key_id')} ai_key_name={b.get('ai_key_name')!r} "
-                  f"has_admin_api_key={b.get('has_admin_api_key')}"
-              )
+          async def raw():
+              async with SessionLocal() as db:
+                  row = (await db.execute(select(Backend).where(Backend.code == "232"))).scalar_one()
+                  key = decrypt(row.admin_api_key_encrypted)
+                  client = BackendAdminClient(base_url=row.domain.rstrip("/"), admin_api_key=key)
+                  stats = await client.get_stats()
+                  print("RAW_UPSTREAM_STATS", json.dumps(stats, ensure_ascii=False, default=str))
 
-          print(f"\n=== PAYMENTS_SUM_USD per backend ({date_from} … {date_to}) ===")
-          rows = []
-          for b in sorted(backends, key=lambda x: (x.get("name") or "").lower()):
-              code = b.get("code")
-              if not b.get("has_admin_api_key"):
-                  print(f"{code}: SKIP (нет Admin API Key)")
-                  continue
-              path = (
-                  f"/backend-users?backend_id={b['id']}&limit=1"
-                  f"&date_from={date_from}&date_to={date_to}"
-              )
-              try:
-                  s = req(path, token=token, timeout=180)
-                  st = s.get("stats") or {}
-                  usd = st.get("payments_sum_usd")
-                  rows.append((code, st.get("users_total"), st.get("paid_users"), usd, s.get("errors")))
-                  print(
-                      f"{code}: users_total={st.get('users_total')} "
-                      f"paid_users={st.get('paid_users')} payments_sum_usd={usd}"
-                  )
-                  if s.get("errors"):
-                      print(f"  errors={s['errors']}")
-              except urllib.error.HTTPError as e:
-                  body = e.read().decode("utf-8", errors="replace")[:500]
-                  print(f"{code}: HTTP {e.code} {body}")
-              except Exception as e:
-                  print(f"{code}: FAIL {type(e).__name__}: {e}")
-
-          total_usd = sum(float(r[3] or 0) for r in rows)
-          print(f"\nTOTAL_payments_sum_usd_summed={total_usd:.4f} backends_ok={len(rows)}")
-
-          print("\n=== PAYMENTS_SUM_USD per backend (ALL TIME, no date filter) ===")
-          rows2 = []
-          for b in sorted(backends, key=lambda x: (x.get("name") or "").lower()):
-              code = b.get("code")
-              if not b.get("has_admin_api_key"):
-                  print(f"{code}: SKIP (нет Admin API Key)")
-                  continue
-              path = f"/backend-users?backend_id={b['id']}&limit=1"
-              try:
-                  s = req(path, token=token, timeout=180)
-                  st = s.get("stats") or {}
-                  usd = st.get("payments_sum_usd")
-                  rows2.append((code, st.get("users_total"), st.get("paid_users"), usd))
-                  print(
-                      f"{code}: users_total={st.get('users_total')} "
-                      f"paid_users={st.get('paid_users')} payments_sum_usd={usd}"
-                  )
-                  if s.get("errors"):
-                      print(f"  errors={s['errors']}")
-              except urllib.error.HTTPError as e:
-                  body = e.read().decode("utf-8", errors="replace")[:500]
-                  print(f"{code}: HTTP {e.code} {body}")
-              except Exception as e:
-                  print(f"{code}: FAIL {type(e).__name__}: {e}")
-          total2 = sum(float(r[3] or 0) for r in rows2)
-          print(f"\nTOTAL_all_time_payments_sum_usd_summed={total2:.4f} backends_ok={len(rows2)}")
-          try:
-              all_apps = req("/backend-users?limit=1", token=token, timeout=300)
-              st = all_apps.get("stats") or {}
-              print(
-                  f"ALL_APPS_MODE stats users_total={st.get('users_total')} "
-                  f"paid_users={st.get('paid_users')} payments_sum_usd={st.get('payments_sum_usd')} "
-                  f"errors_count={len(all_apps.get('errors') or [])}"
-              )
-          except Exception as e:
-              print(f"ALL_APPS_MODE FAIL {e}")
-
-          print("\n=== AI KEYS (all) ===")
-          keys = req("/ai-keys", token=token)["items"]
-          print(f"ai_keys_count={len(keys)}")
-          for k in sorted(keys, key=lambda x: (x.get("name") or "").lower()):
-              init, rem = k.get("balance_initial_usd"), k.get("balance_remaining_usd")
-              spend = None
-              if init is not None and rem is not None:
-                  try:
-                      spend = float(init) - float(rem)
-                  except (TypeError, ValueError):
-                      spend = None
-              print(
-                  f"name={k.get('name')!r} provider={k.get('provider')} "
-                  f"backend_count={k.get('backend_count')} "
-                  f"balance_initial_usd={init} balance_remaining_usd={rem} "
-                  f"estimated_spend_since_anchor={spend} "
-                  f"credit_status={k.get('credit_status')} "
-                  f"balance_monitoring_enabled={k.get('balance_monitoring_enabled')} "
-                  f"id={k.get('id')}"
-              )
-              try:
-                  linked = req(f"/ai-keys/{k['id']}/backends", token=token).get("backends") or []
-                  if linked:
-                      for lb in linked:
-                          print(f"  -> backend code={lb.get('code')!r} name={lb.get('name')!r} domain={lb.get('domain')!r}")
-                  else:
-                      print("  -> (no backends linked)")
-              except Exception as e:
-                  print(f"  -> FAIL list backends: {e}")
-
-          print("\nREPORT_OK")
+          asyncio.run(raw())
+          print("DEBUG_OK")
           PY
           EOS
