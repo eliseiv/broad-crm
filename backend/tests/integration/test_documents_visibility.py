@@ -4,7 +4,8 @@
 набора и невидим прочим; наследование inherit-потомком; override потомком; публичный узел
 (inherit до корня) виден всем с `documents:view`; admin-уровень (superadmin / полный каталог)
 видит всё; анти-энумерация — невидимый узел по id → 404 `document_node_not_found` (НЕ 403);
-`GET /nodes/{id}/visibility` отдаёт СОБСТВЕННЫЕ роли узла.
+`GET /nodes/{id}/visibility` отдаёт СОБСТВЕННЫЕ роли узла; union НАБОРА ролей (ADR-079 §4)
+расширяет видимость, а пустой `role_ids` даёт public-only и 200 (не 500).
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ from documents_helpers import (
 
 # Полный набор действий документов, но НЕ полный каталог прав ⇒ non-admin (sees_all=False).
 _DOC_ALL = {"documents": ["view", "create", "edit", "delete", "share"]}
+_RESTRICTED = "restricted"
 
 
 async def test_restricted_node_visible_only_to_its_role_and_inherit_children() -> None:
@@ -197,6 +199,81 @@ async def test_get_visibility_returns_own_role_ids_share_gate() -> None:
     assert sorted(body["role_ids"]) == expected
     assert r_inherit.status_code == 200
     assert r_inherit.json() == {"visibility_mode": "inherit", "role_ids": [], "rag_exclude": False}
+
+
+async def test_union_of_two_roles_widens_visibility() -> None:
+    """ADR-079 §4: набор ролей `{A, B}` видит узлы, ограниченные И ролью A, И ролью B.
+
+    Union **расширяет** видимость (пересечение по ЛЮБОЙ роли), но не делает актора
+    всевидящим: узел роли C остаётся невидимым (404, анти-энумерация).
+    """
+    async with documents_db() as sm:
+        async with sm() as s:
+            role_a = await seed_role(s)
+            role_b = await seed_role(s)
+            role_c = await seed_role(s)
+            node_a = await seed_node(s, node_type="document", name="A", visibility_mode=_RESTRICTED)
+            await set_node_roles(s, node_a.id, [role_a.id])
+            node_b = await seed_node(s, node_type="document", name="B", visibility_mode=_RESTRICTED)
+            await set_node_roles(s, node_b.id, [role_b.id])
+            node_c = await seed_node(s, node_type="document", name="C", visibility_mode=_RESTRICTED)
+            await set_node_roles(s, node_c.id, [role_c.id])
+            await s.commit()
+            id_a, id_b, id_c = str(node_a.id), str(node_b.id), str(node_c.id)
+            both = frozenset({role_a.id, role_b.id})
+
+        app = build_app(
+            sm, build_principal(is_superadmin=False, permissions=_DOC_ALL, role_ids=both)
+        )
+        async with client(app) as c:
+            r_a = await c.get(f"/api/documents/nodes/{id_a}")
+            r_b = await c.get(f"/api/documents/nodes/{id_b}")
+            r_c = await c.get(f"/api/documents/nodes/{id_c}")
+            tree = await c.get("/api/documents/tree")
+
+    assert r_a.status_code == 200
+    assert r_b.status_code == 200
+    assert r_c.status_code == 404
+    assert tree.status_code == 200
+    assert {n["id"] for n in tree.json()} == {id_a, id_b}
+
+
+async def test_empty_role_ids_sees_only_public_nodes_and_is_200() -> None:
+    """⛔ Регресс-гейт `IN ()`: пустой `role_ids` → 200 и ТОЛЬКО публичные узлы, не 500.
+
+    Пустой набор ролей — штатное состояние (пользователь заведён прямым SQL, консольный
+    супер-админ), а не ошибка: запрос обязан собраться (expanding-параметр с пустым
+    списком не должен вырождаться в невалидный SQL) и отдать public-only.
+    """
+    async with documents_db() as sm:
+        async with sm() as s:
+            role_a = await seed_role(s)
+            public_folder = await seed_node(s, name="Pub", visibility_mode="inherit")
+            public_doc = await seed_node(
+                s, node_type="document", parent_id=public_folder.id, name="P"
+            )
+            secret = await seed_node(
+                s, node_type="document", name="S", visibility_mode="restricted"
+            )
+            await set_node_roles(s, secret.id, [role_a.id])
+            await s.commit()
+            public_ids = {str(public_folder.id), str(public_doc.id)}
+            secret_id = str(secret.id)
+
+        app = build_app(
+            sm,
+            build_principal(is_superadmin=False, permissions=_DOC_ALL, role_ids=frozenset()),
+        )
+        async with client(app) as c:
+            tree = await c.get("/api/documents/tree")
+            public = await c.get(f"/api/documents/nodes/{next(iter(public_ids))}")
+            hidden = await c.get(f"/api/documents/nodes/{secret_id}")
+
+    assert tree.status_code == 200
+    assert {n["id"] for n in tree.json()} == public_ids
+    assert public.status_code == 200
+    assert hidden.status_code == 404
+    assert hidden.json()["error"]["code"] == "document_node_not_found"
 
 
 async def test_view_gate_forbidden_without_permission() -> None:

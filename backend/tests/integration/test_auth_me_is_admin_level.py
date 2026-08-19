@@ -59,7 +59,8 @@ async def test_me_is_admin_level_seed_admin_true() -> None:
     assert resp.status_code == 200
     body = resp.json()
     _assert_required_bool(body, True)
-    assert body["role"] == "admin"
+    # ADR-079 §3: `MeResponse.role` заменён списком `roles`.
+    assert body["roles"] == ["admin"]
     assert body["is_superadmin"] is False
 
 
@@ -73,7 +74,7 @@ async def test_me_is_admin_level_cyrillic_admin_full_catalog_true() -> None:
     assert resp.status_code == 200
     body = resp.json()
     _assert_required_bool(body, True)
-    assert body["role"] == "Админ"
+    assert body["roles"] == ["Админ"]
     assert body["is_superadmin"] is False
 
 

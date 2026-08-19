@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.knowledge_bot_link import KnowledgeBotLink
 from app.models.role import Role
 from app.models.user import User
+from app.models.user_role import user_roles
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,18 +112,27 @@ class KnowledgeBotLinkRepository:
         )
 
     async def audience_by_role(self) -> list[RoleAudienceCounts]:
-        """Счётчики started/not_started по каждой роли (активные несистемные)."""
+        """Счётчики started/not_started по каждой роли (активные несистемные).
+
+        Join идёт через `user_roles` (M2M, ADR-079 §5). Пользователь с двумя ролями
+        учитывается **в каждой** своей роли — сумма по строкам ≠ числу адресатов;
+        итоговое «Получат: N» считается по дедуплицированному множеству
+        (`recipients_for_roles`), а не сложением этих счётчиков.
+        """
         has_link = exists().where(
             KnowledgeBotLink.user_id == User.id,
             KnowledgeBotLink.dead_at.is_(None),
         )
-        started = func.count(User.id).filter(has_link)
-        not_started = func.count(User.id).filter(~has_link)
+        started = func.count(func.distinct(User.id)).filter(has_link)
+        not_started = func.count(func.distinct(User.id)).filter(~has_link)
         stmt = (
             select(Role.id, Role.name, started, not_started)
+            .outerjoin(user_roles, user_roles.c.role_id == Role.id)
             .outerjoin(
                 User,
-                (User.role_id == Role.id) & User.is_active.is_(True) & User.is_system.is_(False),
+                (User.id == user_roles.c.user_id)
+                & User.is_active.is_(True)
+                & User.is_system.is_(False),
             )
             .group_by(Role.id)
             .order_by(Role.created_at.asc(), Role.id.asc())
@@ -156,7 +166,9 @@ class KnowledgeBotLinkRepository:
     ) -> tuple[list[KnowledgeBotRecipient], int]:
         """Адресаты (уникальные chat_id) и `skipped_not_started` (кандидаты без линка).
 
-        Кандидаты = активные несистемные (все либо `role_id ∈ role_ids`).
+        Кандидаты = активные несистемные (все либо имеющие ЛЮБУЮ из `role_ids` —
+        M2M-join через `user_roles`, ADR-079 §5, с `DISTINCT` по `user_id`: пользователь
+        с двумя выбранными ролями иначе попал бы в кандидаты дважды).
         Адресаты = UNIQUE(telegram_user_id) живых линков этих кандидатов.
         """
         candidates_stmt = select(User.id).where(
@@ -164,7 +176,9 @@ class KnowledgeBotLinkRepository:
             User.is_system.is_(False),
         )
         if not all_users:
-            candidates_stmt = candidates_stmt.where(User.role_id.in_(role_ids))
+            candidates_stmt = candidates_stmt.join(
+                user_roles, user_roles.c.user_id == User.id
+            ).where(user_roles.c.role_id.in_(role_ids))
         candidate_ids = set((await self._session.execute(candidates_stmt)).scalars().all())
         if not candidate_ids:
             return [], 0

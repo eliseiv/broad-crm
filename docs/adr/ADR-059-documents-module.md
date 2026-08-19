@@ -11,6 +11,8 @@
 
 **Решения владельца (не пересматриваются):** видимость — по `role_id`, НЕ по командам; редактор — WYSIWYG; внешний API — полный read-only сейчас; загрузка — только `.md`.
 
+> **Амендмент ([ADR-079](ADR-079-users-m2m-roles-full-name-telegram-table.md), 2026-08-19):** утверждения «RBAC — **одна роль** на пользователя (`users.role_id`)» и «узел виден ⇔ публичен ИЛИ его эффективный набор ролей содержит **`users.role_id`**» более не действуют. Роли — M2M (`user_roles`, миграция `0038`), поэтому: `DocumentScope.role_id` → **`role_ids: frozenset`**, предикат — **`document_node_roles.role_id IN :role_ids`** (SQLAlchemy `expanding`), **пустой набор ⇒ виден только публичный узел** (не `500`, не «видно всё»). Union ролей **расширяет** видимость — это прямое требование фичи. Видимость по-прежнему **по ролям, а не по командам**; `sees_all_documents` (admin-уровень) считается по **union** прав. Модель `document_node_roles`, рекурсивный CTE наследования, анти-энумерация `404` и permission-based enforcement — **без изменений**.
+
 **Факты по репо (`claims-from-code`/docs, 2026-07-17):**
 - RBAC — одна роль на пользователя (`users.role_id`, FK `roles(id) ON DELETE RESTRICT`), каталог прав в `app/domain/permissions.py::CATALOG`; enforcement `require(page,action)`/`403` ([ADR-021](ADR-021-rbac-users-roles.md), [05-security.md](../05-security.md#каталог-прав-канон-на-сервере)).
 - Предикат admin-уровня «видит всё» — `is_superadmin OR permissions_subset(full_catalog_permissions(), permissions)` ([ADR-032](ADR-032-sms-visibility-admin-full-catalog.md)); анти-энумерация «вне scope → пусто/`404`» — устоявшийся паттерн mail/sms.

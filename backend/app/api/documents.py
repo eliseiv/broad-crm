@@ -32,8 +32,8 @@ from app.schemas.documents import (
     DocumentVisibilityRequest,
     DocumentVisibilityResponse,
     FolderCreateRequest,
-    RoleRef,
 )
+from app.schemas.user import RoleRef
 from app.services.document_attachment_service import AttachmentFile
 
 router = APIRouter(prefix="/documents", tags=["documents"])

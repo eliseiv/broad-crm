@@ -47,8 +47,8 @@ from app.schemas.documents import (
     ExternalDocumentListResponse,
     ExternalDocumentNode,
     FolderCreateRequest,
-    RoleRef,
 )
+from app.schemas.user import RoleRef
 from app.services.document_attachment_service import (
     ATTACHMENT_URL_PREFIX,
     DocumentAttachmentService,

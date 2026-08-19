@@ -663,9 +663,11 @@ erDiagram
     USERS {
         uuid id PK
         text username
+        text last_name "NULL"
+        text first_name "NULL"
+        text middle_name "NULL"
         text telegram
         text password_hash
-        uuid role_id FK
         boolean is_active
         timestamptz first_login_at
         boolean is_system
@@ -673,6 +675,11 @@ erDiagram
         boolean sms_includes_unassigned
         timestamptz created_at
         timestamptz updated_at
+    }
+    USER_ROLES {
+        uuid user_id PK_FK
+        uuid role_id PK_FK
+        timestamptz created_at
     }
     TEAMS {
         uuid id PK
@@ -691,7 +698,8 @@ erDiagram
         text channel PK "mail|sms (CHECK)"
         uuid team_id PK_FK
     }
-    ROLES ||--o{ USERS : "1:N (ON DELETE RESTRICT)"
+    USERS ||--o{ USER_ROLES : "1:N (ON DELETE CASCADE)"
+    ROLES ||--o{ USER_ROLES : "1:N (ON DELETE RESTRICT)"
     USERS ||--o| TEAMS : "leader 0..1:N (ON DELETE SET NULL)"
     USERS ||--o{ USER_TEAMS : "1:N (ON DELETE CASCADE)"
     TEAMS ||--o{ USER_TEAMS : "1:N (ON DELETE CASCADE)"
@@ -707,7 +715,7 @@ erDiagram
     USERS ||--o{ KNOWLEDGE_BOT_LINKS : "1:N (ON DELETE CASCADE)"
 ```
 
-`users.role_id → roles.id` с **`ON DELETE RESTRICT`**: роль, назначенную хотя бы одному пользователю, удалить нельзя (→ `409 role_in_use`, [04-api.md](04-api.md#delete-apirolesid)). `teams.leader_id → users.id` — **nullable, `ON DELETE SET NULL`** ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)): команда может быть **без лидера**; удаление пользователя-лидера **командой** не блокируется (независимое основание блокировки — авторство документов/вложений, `409 user_in_use`, [04-api.md](04-api.md#delete-apiusersid)) (лидерство авто-передаётся сервисом, остаток — `SET NULL`; код `409 user_is_team_leader` **упразднён**). `user_teams` — M2M между `users` и `teams`, обе стороны **`ON DELETE CASCADE`**, с колонкой `created_at` (дата добавления участника — для авто-передачи лидерства; см. [«Таблицы `teams` и `user_teams`»](#таблицы-teams-и-user_teams-crm-команды)).
+**Роли пользователя — M2M ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md), миграция `0038_user_roles_m2m`).** Прежняя колонка `users.role_id` **дропнута**; связь живёт в [`user_roles`](#таблица-user_roles-m2m-adr-079). `user_roles.role_id → roles.id` — **`ON DELETE RESTRICT`** (роль, назначенную хотя бы одному пользователю, удалить нельзя → `409 role_in_use`, [04-api.md](04-api.md#delete-apirolesid)); `user_roles.user_id → users.id` — **`ON DELETE CASCADE`**. `teams.leader_id → users.id` — **nullable, `ON DELETE SET NULL`** ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)): команда может быть **без лидера**; удаление пользователя-лидера **командой** не блокируется (независимое основание блокировки — авторство документов/вложений, `409 user_in_use`, [04-api.md](04-api.md#delete-apiusersid)) (лидерство авто-передаётся сервисом, остаток — `SET NULL`; код `409 user_is_team_leader` **упразднён**). `user_teams` — M2M между `users` и `teams`, обе стороны **`ON DELETE CASCADE`**, с колонкой `created_at` (дата добавления участника — для авто-передачи лидерства; см. [«Таблицы `teams` и `user_teams`»](#таблицы-teams-и-user_teams-crm-команды)).
 
 ### Таблица `roles`
 
@@ -721,17 +729,19 @@ erDiagram
 
 > **`permissions` (jsonb) — формат и валидация.** Объект «страница → массив действий». Допустимые страницы/действия — только из каталога (**канон — `backend/app/domain/permissions.py::CATALOG`**, [ADR-021](adr/ADR-021-rbac-users-roles.md#1-каталог-прав-канон-на-сервере)): `dashboard:[view]`; `servers`/`ai-keys`/`proxies`/`backends:[view,create,edit,delete]`; **`backend-users`/`backend-economics:[view,edit]`**; **`mail:[view,create,edit,delete,sync,tags]`** (`backend/app/domain/permissions.py:21` — прежняя запись «`mail:[view]`» описывала read-through-модель [ADR-012](adr/ADR-012-mail-read-through-proxy.md) и устарела с [ADR-038](adr/ADR-038-mail-headless-integration.md)/[ADR-044](adr/ADR-044-mail-full-merge-into-crm.md)); `sms:[view,edit,transfer,sync,delete]`; `roles`/`teams`; `documents:[view,create,edit,delete,share]`; **`broadcast:[view,send]`** ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md)). Полный маппинг действие→эндпоинты — [05-security.md](05-security.md#каталог-прав-канон-на-сервере). Ключ `users` **запрещён** (страница вне матрицы). Валидация — на уровне схемы/сервиса (`app/domain/permissions.py::CATALOG`), не в БД: неизвестная страница/действие, дубликат → `422 unprocessable`. DB хранит любой валидный jsonb; каноничность обеспечивает приложение (по образцу «свободного» инварианта `backends.domain`).
 >
-> **Роль `admin` — зарезервированное имя.** Сид `name == 'admin'` по-прежнему даёт admin-уровень. Гейт страницы «Пользователи» — `is_admin_level` (супер-админ / `role=="admin"` / полный каталог), не только точное имя ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4). Роль `admin` сидится миграцией с полными правами по каталогу (миграция `0037` дописывает `broadcast`). Ресурсные страницы для admin-пользователей гейтятся её `permissions` как обычно.
+> **Роль `admin` — зарезервированное имя.** Сид `name == 'admin'` по-прежнему даёт admin-уровень. Гейт страницы «Пользователи» — `is_admin_level` (**супер-админ / `"admin" ∈ roles` / полный каталог по union прав ВСЕХ ролей**), не только точное имя ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4 в редакции [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §2; прежняя запись `role=="admin"` читала дропнутую колонку `users.role_id`). Роль `admin` сидится миграцией с полными правами по каталогу (миграция `0037` дописывает `broadcast`); **её носители определяются по [`user_roles`](#таблица-user_roles-m2m-adr-079)**. Ресурсные страницы для admin-пользователей гейтятся её `permissions` как обычно.
 
 ### Таблица `users`
 
 | Поле | Тип | Ограничения | Описание |
 |------|-----|-------------|----------|
 | `id` | `uuid` | PK, `DEFAULT gen_random_uuid()` | Идентификатор пользователя. Кладётся в JWT как `uid` ([ADR-021](adr/ADR-021-rbac-users-roles.md#4-auth-поток-см-modulesauth-05-securitymd)). |
-| `username` | `text` | `NOT NULL`, `UNIQUE`, CHECK (см. ниже) | Логин. **Допускает кириллицу/юникод-буквы** («Админ», «Никита»). Уникален — дубликат → `409 username_taken`. **Идентификатор входа** (логин **или** `telegram`, [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). |
-| `telegram` | `text` | `NULL`, UNIQUE-when-present | **Опциональный** телеграм-ник пользователя ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md); заменяет прежний `email` из [ADR-022](adr/ADR-022-teams-nav-categories.md)). `NULL` — телеграм не задан. Уникален **только среди заданных** (частичный уникальный индекс `uq_users_telegram WHERE telegram IS NOT NULL`) — дубликат → `409 telegram_taken`. Формат валидируется на Pydantic (`422`, см. [«Правило `telegram`»](#правило-telegram-телеграм-ник-нормативно)); хранится нормализованным (без ведущего `@`, lower-case). **Второй допустимый идентификатор входа**. Не секрет. |
+| `username` | `text` | `NOT NULL`, `UNIQUE`, CHECK (см. ниже) | **Скрытый** технический логин. **Допускает кириллицу/юникод-буквы** («Админ», «Никита»). Уникален — дубликат → `409 username_taken`. **Идентификатор входа** (логин **или** `telegram`, [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). ⚠️ **Из UI поле удалено** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §9): формы создания/редактирования его **не показывают и не принимают**; **новым** пользователям значение выставляет сервис — `username := normalize_telegram(telegram)` (снять `@`, lower-case). При смене `telegram` через `PATCH` `username` **НЕ меняется** (иначе поменялся бы `sub` уже выпущенных токенов и bootstrap-резолв внешнего контура). Колонка **остаётся** в БД: `sub` JWT, якорь `is_system` (`superadmin@system`), `Principal.username`, шаг 4 резолва внешнего контура ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md) §2). |
+| `last_name` | `text` | **`NULL`** | **Фамилия** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §7; миграция `0039`). В БД nullable — у существующих пользователей фамилии нет, у якоря её нет и не будет. **Обязательность — на уровне API** (`POST`/`PATCH` → `422`, `details[].field="last_name"`), не в БД. Набор символов — то же правило, что у [`username`](#правило-username-кириллица-допускающее-нормативно) (Pydantic авторитетен). |
+| `first_name` | `text` | **`NULL`** | **Имя**. Те же правила, что у `last_name`; **обязательно на уровне API**. Миграция `0039` заполняет его текущим `username` для всех несистемных строк (`UPDATE users SET first_name = username WHERE is_system = false`) — прежний «Логин» становится «Именем». |
+| `middle_name` | `text` | **`NULL`** | **Отчество** — опционально **всегда** (и в БД, и в API). |
+| `telegram` | `text` | `NULL`, UNIQUE-when-present | Телеграм-ник пользователя ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md); заменяет прежний `email` из [ADR-022](adr/ADR-022-teams-nav-categories.md)). Уникален **только среди заданных** (частичный уникальный индекс `uq_users_telegram WHERE telegram IS NOT NULL`) — дубликат → `409 telegram_taken`. Формат валидируется на Pydantic (`422`, см. [«Правило `telegram`»](#правило-telegram-телеграм-ник-нормативно)); хранится нормализованным (без ведущего `@`, lower-case). **Второй допустимый идентификатор входа**. Не секрет. ⚠️ **Колонка остаётся `NULL`-допустимой, но API ужесточён** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §8): при **создании** `telegram` **обязателен** (`422`), через `PATCH` его **нельзя очистить** (`null`/`""` → `422`) — иначе пользователь остался бы без способа входа (поля «Логин» в UI больше нет). Прежняя норма «`PATCH` с `null`/`""` убирает телеграм» **отменена**. `NULL` в колонке сохраняется **только** у исторических строк и у якоря; такие пользователи продолжают входить по `username` — ветка резолва не меняется. |
 | `password_hash` | `text` | `NULL` | bcrypt-хэш пароля ([05-security.md](05-security.md#хэширование-паролей-bcrypt)). **`NULL` = беспарольный пользователь** (пароль ещё не задан — модель «открытого первого входа», [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). Непустой — bcrypt-хэш. Plaintext никогда не хранится/не логируется/не возвращается. |
-| `role_id` | `uuid` | `NOT NULL`, FK → `roles(id)` `ON DELETE RESTRICT` | Роль пользователя. Удаление назначенной роли запрещено (`409 role_in_use`). |
 | `is_active` | `boolean` | `NOT NULL`, `DEFAULT true` | Активен ли пользователь. `false` → вход запрещён, а действующий JWT аннулируется на следующем запросе (`401`, свежая загрузка из БД). Приоритетен для статуса: `false` → `status="inactive"` независимо от `first_login_at`. |
 | `is_system` | `boolean` | `NOT NULL`, `DEFAULT false`, частичный `UNIQUE` — `uq_users_system_singleton ON users (is_system) WHERE is_system` (**объявляется в МОДЕЛИ `User.__table_args__`**, миграция `0026` его зеркалит — иначе схема тестов (`metadata.create_all`) разошлась бы с продом) | **Системная строка-якорь супер-админа** ([ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md); миграция `0026`). `true` — ровно **одна** техническая строка (FK-цель личного состояния консольного супер-админа); `false` — обычный пользователь. **Наружу не отдаётся ни в одном контракте.** Строки с `is_system = true` **невидимы** для `GET /api/users`, состава/лидерства команд, резолва логина и Telegram-SSO (правило — [«Системная строка-якорь»](#системная-строка-якорь-супер-админа-adr-051)). |
 | `first_login_at` | `timestamptz` | `NULL` | **Момент первого успешного входа** ([ADR-028](adr/ADR-028-user-status-first-login.md); миграция `0015`). `NULL` = ещё ни разу не входил. Проставляется приложением при **первом** успешном входе — идемпотентно (`if first_login_at is None`): в парольной ветке `POST /api/auth/login` (после bcrypt-проверки) и в `POST /api/auth/set-password` (беспарольный после установки сразу залогинен). Наружу **не отдаётся** — источник производного `UserListItem.status` ([04-api.md](04-api.md#схема-userlistitem)). |
@@ -741,6 +751,29 @@ erDiagram
 | `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата последнего изменения. |
 
 > **Тристатус пользователя (нормативно, [ADR-028](adr/ADR-028-user-status-first-login.md)).** UI-статус — производное поле `UserListItem.status ∈ {"pending","active","inactive"}` (не колонка БД): `is_active=false` → `"inactive"` («Неактивен»); `is_active=true` И `first_login_at IS NULL` → `"pending"` («Ожидает входа»); `is_active=true` И `first_login_at IS NOT NULL` → `"active"` («Активен»). «Активен» — только после первого входа. Вычисляется на сервере в схеме ответа.
+
+> **Отображаемое имя (нормативно, [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §7).** ФИО-строка = `«{last_name} {first_name} {middle_name}»` со схлопыванием пустых частей и одиночными пробелами. Все три пусты → фолбэк **`username`**. Правило одно и то же в списке `/users`, в модалках и в клиентском поиске.
+
+### Таблица `user_roles` (M2M, ADR-079)
+
+Роли пользователя — **много-ко-многим** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §1, миграция `0038_user_roles_m2m`). Прежняя колонка `users.role_id` дропнута. Образец связки — [`document_node_roles`](#таблицы-модуля-документы-document_nodes-document_node_roles) (`Table` + composite PK + индекс на «правую» колонку), но **FK ролевой стороны — `RESTRICT`, а не `CASCADE`**.
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `user_id` | `uuid` | PK-часть, FK → `users(id)` **`ON DELETE CASCADE`** | Пользователь. Удаление пользователя снимает его роли автоматически. |
+| `role_id` | `uuid` | PK-часть, FK → `roles(id)` **`ON DELETE RESTRICT`** | Роль. Роль с носителями удалить нельзя → `409 role_in_use` ([04-api.md](04-api.md#delete-apirolesid)). |
+| `created_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Дата назначения. Задаёт **порядок ролей**: `roles`/`role_ids` принципала и «первая роль» (`primary_role_name` — JWT-claim `role`, `role_id`/`role_name` внешнего контура) — по `created_at ASC, role_id ASC`. |
+
+Составной первичный ключ `PRIMARY KEY (user_id, role_id)`; индекс `ix_user_roles_role_id` — под гард удаления роли и обратную выборку «кто в роли».
+
+**Почему `RESTRICT`, а не `CASCADE`.** `CASCADE` на ролевой стороне при `DELETE /api/roles/{id}` **молча снял бы роль со всех носителей** — то есть тихо урезал права работающим людям. `RESTRICT` сохраняет действующий исход `409 role_in_use` и оставляет гард зеркалом FK ([ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md) §1.5).
+
+**Инварианты (нормативно):**
+
+- **«Минимум одна роль» обеспечивает СЕРВИС, а не БД.** Табличного выражения «≥ 1 строка в дочерней таблице» без триггера нет, а триггеров в проекте нет ни одного. Пустой `role_ids` в `POST`/`PATCH /api/users` → **`422 unprocessable`** (`details[].field="role_ids"`). Прямой SQL может оставить пользователя без ролей — тогда его `permissions` = `{}` (fail-closed), а видимость документов — public-only ([05-security.md](05-security.md#видимость-документов-по-ролям-нормативно-adr-059)); `500` не возникает нигде.
+- **Права = union** всех ролей (`union_permissions`), `is_admin_level` — по union: [05-security.md § RBAC](05-security.md#rbac--роли-права-и-enforcement).
+- **Якорь супер-админа** имеет строку в `user_roles` наравне со всеми (её переносит миграция `0038`, дописывает идемпотентный bootstrap). Гард `is_in_use` якорь **включает**, счётчик `user_count` — **исключает** и считает `COUNT(DISTINCT u.id)` (M2M даёт дубли строк).
+- **Fan-out-выборки получателей**, join'ящие `users → user_roles → roles`, обязаны **дедуплицировать** адресатов (`DISTINCT` по `telegram_user_id`) и нести явный `WHERE NOT users.is_system` ([ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md), [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §5).
 
 #### Системная строка-якорь супер-админа (ADR-051)
 
@@ -753,7 +786,7 @@ erDiagram
 | `id` | **`00000000-0000-0000-0000-000000000001`** — константа `SUPERADMIN_USER_ID` (`app/domain/superadmin.py`). Фиксирована ⇒ `Principal.user_id` супер-админа подставляется **без запроса в БД**, а смена `ADMIN_USER`/`ADMIN_PASSWORD` **не теряет** его личное состояние |
 | `username` | **`superadmin@system`** — константа `SUPERADMIN_USERNAME`. Зарезервировано **by construction**: `@` отвергается правилом `username` (Pydantic, ниже) ⇒ такое имя **невозможно** создать через API (`422`); DB-CHECK его пропускает. Наружу не отдаётся (`Principal.username` супер-админа = `ADMIN_USER` из claim `sub`) |
 | `password_hash` | **bcrypt-хэш случайного секрета**, plaintext отбрасывается («locked»). **`NULL` ЗАПРЕЩЁН:** `NULL` = беспарольный ⇒ ветка «открытого первого входа» ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) выдала бы setup-token тому, кто назовёт этот `username` → эскалация до роли `admin` |
-| `role_id` | **Цепочка резолва bootstrap'ом: (1)** роль `admin` по имени → **(2)** самая ранняя роль (`created_at ASC, id ASC`) → **(3)** ролей нет вовсе ⇒ bootstrap **сам создаёт роль `admin`** с полным каталогом (тот же сид, что в data-миграции `0008`) — ветки «якорь не создан» нет. Пустая таблица ролей — **вырожденное состояние** (свежая БД без data-миграций либо удалены ВСЕ роли): БД в нём нерабочая, поэтому создание роли-заглушки = восстановление работоспособности, а не воскрешение данных (роль получает 0 носителей). После первого bootstrap ветка (3) недостижима — якорь пиннит роль через FK `RESTRICT`. **Заглушка под FK: правами НЕ наделяет** — права супер-админа берутся из `full_catalog_permissions()` по claim `superadmin=true`, БД-роль не читается |
+| роль(и) — строка в `user_roles` (**было:** колонка `role_id`, [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md)) | **Цепочка резолва bootstrap'ом: (1)** роль `admin` по имени → **(2)** самая ранняя роль (`created_at ASC, id ASC`) → **(3)** ролей нет вовсе ⇒ bootstrap **сам создаёт роль `admin`** с полным каталогом (тот же сид, что в data-миграции `0008`) — ветки «якорь не создан» нет. Пустая таблица ролей — **вырожденное состояние** (свежая БД без data-миграций либо удалены ВСЕ роли): БД в нём нерабочая, поэтому создание роли-заглушки = восстановление работоспособности, а не воскрешение данных (роль получает 0 носителей). После первого bootstrap ветка (3) недостижима — якорь пиннит роль через FK `RESTRICT`. **Заглушка под FK: правами НЕ наделяет** — права супер-админа берутся из `full_catalog_permissions()` по claim `superadmin=true`, БД-роль не читается |
 | `is_active` | `true` |
 | `telegram` | `NULL` (и никогда не задаётся — Telegram-привязка супер-админу запрещена, `403`) |
 | `is_system` | `true` (единственная такая строка — частичный уникальный индекс) |
@@ -762,9 +795,9 @@ erDiagram
 
 - **Методы-резолверы исключают `is_system`** (`WHERE NOT users.is_system`): `list_all`, `get_by_id`, `get_with_teams`, `get_by_username`, `get_by_telegram`, `get_existing_ids`, `delete_by_id`. Следствия: якоря **нет** в `GET /api/users`; `PATCH`/`DELETE /api/users/{SUPERADMIN_USER_ID}` → **`404 user_not_found`**; якорь **нельзя** назначить лидером/участником команды (**`422`**) ⇒ строк в `user_teams` у него нет и быть не может; он **не резолвится** при логине (`AuthService._resolve_db_user`) и при Telegram-SSO (`MailTelegramService._resolve_user`, `SmsTelegramLinkService.auth`).
 - **Методы уникальности видят все строки** (`exists_by_username`, `exists_by_telegram`) — они зеркалят DB-констрейнты (иначе `409` подменился бы `500`-IntegrityError).
-- **Роли** ([04-api.md](04-api.md#roles)): `user_count` (`RoleRepository.list_all_with_counts`/`count_users`) якорь **исключает** (не врать в UI); гард `is_in_use` — **включает** (зеркало FK `ON DELETE RESTRICT`) ⇒ роль, которую держит якорь (по умолчанию `admin`), **не удаляется**: `409 role_in_use`.
+- **Роли** ([04-api.md](04-api.md#roles)): `user_count` (`RoleRepository.list_all_with_counts`/`count_users`) якорь **исключает** (не врать в UI); гард `is_in_use` — **включает** (зеркало FK `ON DELETE RESTRICT`) ⇒ роль, которую держит якорь (по умолчанию `admin`), **не удаляется**: `409 role_in_use`. **С [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) оба читают [`user_roles`](#таблица-user_roles-m2m-adr-079)**, а не колонку `users.role_id`: `user_count` — `COUNT(DISTINCT u.id)` через join с `WHERE NOT users.is_system`, `is_in_use` — `EXISTS` по `user_roles.role_id` **без** фильтра `is_system`.
 
-**Bootstrap (идемпотентный, в приложении — НЕ в миграции).** `UserRepository.ensure_superadmin_anchor()` **владеет своей транзакцией и коммитит её сам** (резолв/создание роли + вставка + верификация — **один коммит**; сервиса-обёртки у него нет, вызывается из `lifespan` и из тестовой фикстуры напрямую ⇒ вызывающий передаёт **отдельную** сессию, без чужой незакоммиченной работы). Алгоритм: резолв роли (цепочка выше, **самодостаточен**) → `INSERT … ON CONFLICT DO NOTHING` (без target — накрывает `pk_users`, `uq_users_username`, `uq_users_system_singleton`) → `SELECT` по `SUPERADMIN_USER_ID` для верификации; строки нет → ERROR-лог `superadmin_anchor_missing`, приложение **всё равно поднимается** (fallback-инвариант [ADR-008](adr/ADR-008-admin-iz-env.md)). Повторные старты/воркеры — но-оп; существующая строка **не перезаписывается**. Причина «не в миграции»: [миграции не импортируют код приложения](#3-миграции-не-импортируют-код-приложения), а строке нужны `hash_password` и константы якоря.
+**Bootstrap (идемпотентный, в приложении — НЕ в миграции).** `UserRepository.ensure_superadmin_anchor()` **владеет своей транзакцией и коммитит её сам** (резолв/создание роли + вставка + верификация — **один коммит**; сервиса-обёртки у него нет, вызывается из `lifespan` и из тестовой фикстуры напрямую ⇒ вызывающий передаёт **отдельную** сессию, без чужой незакоммиченной работы). Алгоритм: резолв роли (цепочка выше, **самодостаточен**) → `INSERT … ON CONFLICT DO NOTHING` (без target — накрывает `pk_users`, `uq_users_username`, `uq_users_system_singleton`) → **`INSERT INTO user_roles (user_id, role_id) VALUES (SUPERADMIN_USER_ID, <resolved>) ON CONFLICT DO NOTHING`** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §1 — связь якоря с ролью переехала в M2M и создаётся **в том же коммите**) → `SELECT` по `SUPERADMIN_USER_ID` для верификации; строки нет → ERROR-лог `superadmin_anchor_missing`, приложение **всё равно поднимается** (fallback-инвариант [ADR-008](adr/ADR-008-admin-iz-env.md)). Повторные старты/воркеры — но-оп; существующая строка **не перезаписывается**. Причина «не в миграции»: [миграции не импортируют код приложения](#3-миграции-не-импортируют-код-приложения), а строке нужны `hash_password` и константы якоря.
 
 **ПОРЯДОК ВЫЗОВА (нормативно):**
 - **прод/staging** — `app/main.py::lifespan` (после `startup_recovery`). Порядок «миграции → приложение» гарантирован entrypoint'ом backend-контейнера (`alembic upgrade head && uvicorn …`, [07-deployment.md §Порядок запуска](07-deployment.md#порядок-запуска)) ⇒ роль `admin` из `0008` уже есть. **Посев ролей в `lifespan` не вводится.**
@@ -836,18 +869,20 @@ CREATE TABLE users (
 CREATE INDEX ix_users_role_id ON users (role_id);
 ```
 
+> **⚠️ Историческая редакция.** DDL выше — состояние базовой миграции `0008`. С [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) (миграции `0038`/`0039`) колонка `users.role_id` и индекс `ix_users_role_id` **дропнуты**, добавлены `last_name`/`first_name`/`middle_name` и таблица [`user_roles`](#таблица-user_roles-m2m-adr-079). Целевое состояние — таблица полей выше и [«Миграция `0038_user_roles_m2m`»](#миграция-0038_user_roles_m2m-концепт-adr-079) / [«Миграция `0039_users_full_name_telegram`»](#миграция-0039_users_full_name_telegram-концепт-adr-079).
+
 > **Эволюция колонок `users` (нормативно).** Базовая миграция `0008` создаёт `users` **с `password_hash NOT NULL` и без контактной колонки**. Затем: `0010_add_user_email` добавляет `email text NULL` + `uq_users_email` ([ADR-022](adr/ADR-022-teams-nav-categories.md); историческая запись). **`0011_user_passwordless_telegram` ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) заменяет `email` → `telegram`** (rename колонки + swap частичного уникального индекса на `uq_users_telegram`) **и снимает `NOT NULL` с `password_hash`** (беспарольные пользователи). Затем **`0015_user_first_login` ([ADR-028](adr/ADR-028-user-status-first-login.md)) добавляет `first_login_at timestamptz NULL`** (метка первого входа — для тристатуса). Целевое состояние (таблица полей выше) отражает результат после `0015` — см. [«Миграция `0011_user_passwordless_telegram`»](#миграция-0011_user_passwordless_telegram-концепт), [«Миграция `0015_user_first_login`»](#миграция-0015_user_first_login-концепт).
 
 ### Индексы и обоснование
 - `UNIQUE(roles.name)` — детерминированный `409 role_name_taken`.
 - `UNIQUE(users.username)` — детерминированный `409 username_taken`.
-- `ix_users_role_id` — под проверку «роль назначена пользователям?» при `DELETE /api/roles/{id}` (`ON DELETE RESTRICT` даёт `409 role_in_use`) и загрузку прав. Отдельные индексы по `permissions`/`is_active` не нужны (объём — единицы строк, NFR-1).
+- ~~`ix_users_role_id`~~ — **упразднён [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md)** вместе с колонкой `users.role_id` (миграция `0038`). Его роль перешла к **`ix_user_roles_role_id`** на M2M-таблице: проверка «роль назначена пользователям?» при `DELETE /api/roles/{id}` (`ON DELETE RESTRICT` → `409 role_in_use`), счётчик `user_count` и загрузка прав принципала. Отдельные индексы по `permissions`/`is_active` не нужны (объём — единицы строк, NFR-1). Индексов по `last_name`/`first_name` тоже нет: поиск по ФИО на странице `/users` — **клиентский** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §10), серверного фильтра нет.
 - `uq_users_telegram` (частичный UNIQUE `WHERE telegram IS NOT NULL`, миграция `0011` — заменяет `uq_users_email` из `0010`) — детерминированный `409 telegram_taken` среди заданных телеграм-ников; множество пользователей без телеграма допускается.
 
 ### Политика удаления
 
 - **Пользователь** — **hard delete** (`DELETE FROM users WHERE id = ...`), **но только если его не держит ни один FK `ON DELETE RESTRICT`**: автор документов (`document_nodes.owner_id`, [ADR-059](adr/ADR-059-documents-module.md)) или загрузивший вложение (`document_attachments.created_by`, [ADR-068](adr/ADR-068-documents-image-attachments.md)) → **`409 user_in_use`** ([04-api.md](04-api.md#delete-apiusersid)) — прикладной гард обязан быть зеркалом FK, как `409 role_in_use` строкой ниже; `500` недопустим. Soft-deleted узлы блокируют так же, как живые (tombstone — физическая строка). Реализовано и покрыто тестами (2026-07-23); остаток долга — отсутствие операции передачи владения: [TD-077](100-known-tech-debt.md). Soft-delete/аудит самого пользователя — будущий этап ([TD-001](100-known-tech-debt.md)).
-- **Роль** — hard delete, **только если не назначена ни одному пользователю** (`ON DELETE RESTRICT` → приложение возвращает `409 role_in_use`).
+- **Роль** — hard delete, **только если не назначена ни одному пользователю** (`ON DELETE RESTRICT` → приложение возвращает `409 role_in_use`). С [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) проверка идёт по [`user_roles`](#таблица-user_roles-m2m-adr-079) (`EXISTS` **без** фильтра `is_system` — зеркало FK), а не по колонке `users.role_id`. **Роли пользователя каскадом не удаляются:** `DELETE` пользователя снимает его строки `user_roles` (`ON DELETE CASCADE`), но `DELETE` роли строки `user_roles` **не** трогает — он блокируется.
 
 ## Миграция `0008_create_users_roles` (концепт)
 
@@ -856,6 +891,53 @@ CREATE INDEX ix_users_role_id ON users (role_id);
 **`upgrade()`** — создать таблицы `roles`, затем `users` (DDL выше) + индекс `ix_users_role_id`. **Сид:** вставить одну роль `admin` с полными правами по каталогу (`{"dashboard":["view"],"servers":["view","create","edit","delete"],"ai-keys":["view","create","edit","delete"],"proxies":["view","create","edit","delete"],"backends":["view","create","edit","delete"],"mail":["view"]}`), чтобы роль `admin` существовала и была назначаема из UI. Пользователи не сидятся (супер-админ — из `.env`).
 
 **`downgrade()`** — `DROP TABLE users;` затем `DROP TABLE roles;` (порядок из-за FK; индекс снимается вместе с `users`).
+
+## Миграция `0038_user_roles_m2m` (концепт, [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md))
+
+> Реализуется через Alembic. **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат — см. [07-deployment.md](07-deployment.md#откат-миграций-бд).
+
+**Идентификаторы (нормативно):**
+- **Имя файла:** `0038_user_roles_m2m.py`
+- **`revision`:** **`"0038_user_roles_m2m"`** — **19 символов** ≤ `alembic_version.version_num VARCHAR(32)` (норматив [ADR-047](adr/ADR-047-mail-fix-pack.md) §3.5)
+- **`down_revision`:** **`"0037_knowledge_bot_links"`** — фактическая голова цепочки (`backend/alembic/versions/0037_knowledge_bot_links.py:29`, сверка 2026-08-19)
+
+**`upgrade()`**:
+```sql
+CREATE TABLE user_roles (
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  role_id uuid NOT NULL REFERENCES roles(id) ON DELETE RESTRICT,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (user_id, role_id)
+);
+CREATE INDEX ix_user_roles_role_id ON user_roles (role_id);
+INSERT INTO user_roles (user_id, role_id) SELECT id, role_id FROM users;  -- включая системный якорь
+ALTER TABLE users DROP COLUMN role_id;
+```
+
+- **Перенос включает системную строку-якорь** ([ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md)): фильтра `is_system` в `INSERT … SELECT` **нет** — иначе якорь остался бы без роли, а гард `is_in_use` перестал бы держать роль `admin`.
+- **Drop колонки — в той же миграции**, после копирования: два дома одной связи (колонка + таблица) немедленно разошлись бы.
+- Индекс `ix_user_roles_role_id` **обязателен**: под гард `DELETE /api/roles/{id}` и под обратную выборку «кто в роли».
+- **`downgrade()` (нормативно):** `ALTER TABLE users ADD COLUMN role_id uuid;` → `UPDATE users u SET role_id = (SELECT ur.role_id FROM user_roles ur WHERE ur.user_id = u.id ORDER BY ur.created_at, ur.role_id LIMIT 1);` → `ALTER TABLE users ALTER COLUMN role_id SET NOT NULL, ADD CONSTRAINT fk_users_role_id FOREIGN KEY (role_id) REFERENCES roles(id) ON DELETE RESTRICT;` → `CREATE INDEX ix_users_role_id ON users (role_id);` → `DROP TABLE user_roles;`. **Откат lossy:** восстанавливается только **первая** роль (`MIN(created_at)`), прочие теряются — это цена возврата к однозначной колонке, а не дефект. Пользователь без ролей (заведён прямым SQL) не даст восстановить `NOT NULL` — такую строку перед откатом чинят вручную.
+
+## Миграция `0039_users_full_name_telegram` (концепт, [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md))
+
+> Реализуется через Alembic. Рабочий `downgrade()` обязателен.
+
+**Идентификаторы (нормативно):**
+- **Имя файла:** `0039_users_full_name_telegram.py`
+- **`revision`:** **`"0039_users_full_name_telegram"`** — **29 символов** ≤ `alembic_version.version_num VARCHAR(32)`. Сокращённая форма **не нужна** (в отличие от `0035_mail_reads_archive`, где полное имя не влезало): расхождение имени файла и `revision` — источник ошибок в `down_revision` соседней миграции, и без нужды его не вводим
+- **`down_revision`:** **`"0038_user_roles_m2m"`**
+
+**`upgrade()`**:
+```sql
+ALTER TABLE users ADD COLUMN last_name text, ADD COLUMN first_name text, ADD COLUMN middle_name text;
+UPDATE users SET first_name = username WHERE is_system = false;
+```
+
+- **Колонки nullable** — обоснование в [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §7 (у существующих фамилии нет, у якоря ФИО нет навсегда); обязательность Фамилии/Имени — **на уровне API** (`422`).
+- **Backfill только несистемных строк** (`is_system = false`): у якоря `username = superadmin@system` — служебное значение, показывать его как имя нельзя.
+- **Колонка `telegram` и `uq_users_telegram` НЕ меняются.** Ужесточение (обязателен при создании, очистка запрещена) — **прикладное**, не схемное: существующие строки с `telegram IS NULL` обязаны остаться валидными, иначе миграция упала бы на проде.
+- **`downgrade()` (нормативно):** `ALTER TABLE users DROP COLUMN middle_name, DROP COLUMN first_name, DROP COLUMN last_name;`. Lossy: введённые ФИО теряются (`first_name` откатываемой версии дублировал `username`, потери смысла нет только для строк, которых не редактировали).
 
 ---
 
@@ -1921,3 +2003,156 @@ CREATE TABLE knowledge_bot_links (
 );
 CREATE INDEX ix_knowledge_bot_links_user_id ON knowledge_bot_links (user_id);
 ```
+
+---
+
+## Таблицы снимка «Юзеры бэков» (`backend_user_snapshot_sources`, `backend_user_snapshots`) — [ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md)
+
+Read-only **зеркало** пользователей внешних бэков, наполняемое фоновым воркером `BackendUsersSnapshotService` раз в `BACKEND_USERS_SNAPSHOT_INTERVAL_SEC` (900 с). Модуль — [modules/backend-users](modules/backend-users/README.md), API — [04-api.md](04-api.md#backend-users), решение — [ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md).
+
+> **⚠️ Отмена прежней нормы.** [ADR-069](adr/ADR-069-backend-users-page-admin-contract.md) §3 «CRM — прокси **без хранилища**; собственных таблиц/миграций нет» **для этой страницы более не действует** (подтверждение той же нормы в [ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §3 **сужено** до модуля [backend-economics](modules/backend-economics/README.md) — там копий по-прежнему нет). Снимок **не источник истины**: он read-only, возраст виден оператору (`snapshot_at`), а все точечные и **все пишущие** пути остаются live.
+
+```mermaid
+erDiagram
+    BACKENDS {
+        uuid id PK
+        text code
+        text name
+        bytea admin_api_key_encrypted "NULL"
+    }
+    BACKEND_USER_SNAPSHOT_SOURCES {
+        uuid backend_id PK_FK
+        timestamptz refreshed_at "NULL"
+        text error_message "NULL"
+        timestamptz failed_at "NULL"
+        integer stats_users_total
+        integer stats_paid_users
+        float8 stats_payments_sum_usd
+        jsonb api_costs
+        boolean revenue_backfill_done
+        boolean revenue_supported "NULL"
+        timestamptz updated_at
+    }
+    BACKEND_USER_SNAPSHOTS {
+        uuid backend_id PK_FK
+        text user_id PK
+        text external_id "NULL"
+        boolean is_paid
+        int payments_count
+        int renewals_count
+        float8 tokens
+        boolean subscription_active
+        timestamptz subscription_expires_at "NULL"
+        text plan_id "NULL"
+        timestamptz registered_at
+        float8 api_cost_usd "NULL"
+        jsonb api_cost_providers "NULL"
+        timestamptz revenue_refreshed_at "NULL"
+    }
+    BACKENDS ||--o| BACKEND_USER_SNAPSHOT_SOURCES : "0..1 (ON DELETE CASCADE)"
+    BACKENDS ||--o{ BACKEND_USER_SNAPSHOTS : "1:N (ON DELETE CASCADE)"
+```
+
+### Таблица `backend_user_snapshot_sources` (одна строка на бэк с admin-ключом)
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `backend_id` | `uuid` | PK, FK → `backends(id)` **`ON DELETE CASCADE`** | Бэк-источник. Удаление бэка из реестра уносит его снимок целиком. Строка заводится воркером для бэков, у которых **задан** `admin_api_key_encrypted`. |
+| `refreshed_at` | `timestamptz` | `NULL` | Конец **последнего успешного** цикла. `NULL` — снимок ещё ни разу не собран (UI: «Снимок формируется…»). Источник `snapshot_at` ответа (`MIN` по участвующим источникам). |
+| `error_message` | `text` | `NULL` | Причина сбоя последнего цикла. **Непусто ⇔ источник попадает в `errors[]`** ответа ([04-api.md](04-api.md#get-apibackend-users)). Успешный цикл обнуляет поле. |
+| `failed_at` | `timestamptz` | `NULL` | Момент сбоя (для отличия «упал только что» от «лежит давно»). |
+| `stats_users_total` / `stats_paid_users` | `integer` | `NOT NULL`, `DEFAULT 0` | Снимок `GET {P}/stats` бэка. Читаются напрямую в сводку **при запросе без периода**. |
+| `stats_payments_sum_usd` | `double precision` | `NOT NULL`, `DEFAULT 0` | Сумма оплат из `GET {P}/stats`. `cr_percent` считает CRM (не хранится). |
+| `api_costs` | `jsonb` | `NOT NULL`, `DEFAULT '{}'::jsonb` | Агрегат расходов по нормализованным провайдерам: `{"openai":…,"anthropic":…,"fal":…,"other":…}`. Пересчитывается воркером из `backend_user_snapshots.api_cost_providers` (`SUM` по `jsonb_each_text`). **Величина lifetime** — фильтр периода на неё не действует ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §5). Признак неполноты (`api_costs.partial` ответа) **не хранится**, а вычисляется по правилу ниже. |
+| `revenue_backfill_done` | `boolean` | `NOT NULL`, `DEFAULT false` | `false` ⇒ карточки пользователей ещё добираются квотой (очередь — строки с `revenue_refreshed_at IS NULL`). **Один этот флаг НЕ описывает полноту суммы** — см. `revenue_supported` ниже и правило вычисления `partial`. |
+| `revenue_supported` | `boolean` | **`NULL`** | **Отдаёт ли бэк блок `revenue`** ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §5). Выставляется по **первой успешно добранной карточке каждого цикла**: блок `revenue` присутствует → `true`, отсутствует (`null` по контракту §4.5) → `false`. `NULL` — карточек ещё не добирали. **Пересматривается каждый цикл**: бэк, внедривший v1.1, переключается в `true` сам. |
+| `updated_at` | `timestamptz` | `NOT NULL`, `DEFAULT now()` | Метка последней записи строки (в отличие от `refreshed_at` обновляется и при сбое). |
+
+### Таблица `backend_user_snapshots` (зеркало `BackendUserItem` + экономика)
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `backend_id` | `uuid` | PK-часть, FK → `backends(id)` **`ON DELETE CASCADE`** | Бэк-владелец строки. |
+| `user_id` | `text` | PK-часть | Идентификатор пользователя **у бэка** (`id` элемента контракта). `text`, а не `uuid`: контракт не требует UUID-формы. |
+| `external_id` | `text` | `NULL` | Внешний идентификатор (напр. `apphud_id`). Участвует в поиске. |
+| `is_paid`, `payments_count`, `renewals_count`, `tokens` | `boolean` / `int` / `int` / `float8` | — | Зеркало полей элемента `GET {P}/users`. Входят в **fingerprint** dirty-детекции. |
+| `subscription_active`, `subscription_expires_at`, `plan_id` | `boolean` / `timestamptz` / `text` | `NULL` у двух последних | То же; тоже часть fingerprint. |
+| `registered_at` | `timestamptz` | `NOT NULL` | Дата регистрации — **ключ сортировки списка** и фильтра периода. |
+| `api_cost_usd` | `float8` | `NULL` | `revenue.api_cost_usd` карточки. `NULL` — **не измерено** (бэк уровня v1 без блока `revenue` либо карточка ещё не добрана), **не ноль**. |
+| `api_cost_providers` | `jsonb` | `NULL` | `revenue.providers` карточки — **сырые** ключи бэка. Нормализация (`openai`/`anthropic`/`fal`/`other`) выполняется **при агрегации** в `api_costs`, а не при записи: сырые значения сохраняются, чтобы смена правила нормализации не требовала повторного обхода. |
+| `revenue_refreshed_at` | `timestamptz` | `NULL` | Когда последний раз читалась карточка. `NULL` ⇒ строка попадает в очередь backfill-квоты. ⚠️ **Метка ставится и тогда, когда бэк вернул карточку БЕЗ блока `revenue`** (`api_cost_usd` остаётся `NULL`): строка покидает очередь, потому что перечитывать её бессмысленно. Именно поэтому полнота суммы **не выводится** из `revenue_backfill_done` — см. правило `partial` ниже. |
+
+Составной первичный ключ `PRIMARY KEY (backend_id, user_id)` — он же ключ идемпотентного батч-upsert'а (`ON CONFLICT … DO UPDATE`), гасящего дубли при сдвиге offset-пагинации источника во время обхода.
+
+### Индексы и обоснование (снимок «Юзеры бэков»)
+
+- `(registered_at DESC)` — сортировка списка в режиме «Все приложения».
+- `(backend_id, registered_at DESC)` — та же сортировка в режиме одного бэка (ведущая колонка отсекает чужие строки без обращения к куче).
+- `(user_id)`, `(external_id)` — **точечные** выборки: резолв строки при best-effort touch после мутаций, обратный поиск «кто это на других бэках», проверка существования. ⚠️ **Поиск страницы они НЕ ускоряют:** он подстрочный (`ILIKE '%q%'`, [ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §3), а btree по ведущему `%` не применяется — планировщик уйдёт в seq-scan независимо от этих индексов. Держать их ради поиска — самообман; они оправданы **точечными** обращениями, и только ими.
+  - **Порог и средство при деградации поиска — [Q-BU-1](99-open-questions.md):** когда seq-scan по `backend_user_snapshots` перестанет укладываться в бюджет ответа, вводится **GIN + `pg_trgm`** (`gin_trgm_ops` по `user_id` и `external_id`) — **семантика поиска при этом не меняется** (те же два поля, та же подстрока). Конкретный порог не назначается заранее: он зависит от числа строк на проде, которое на момент решения неизвестно.
+- Индекс по `revenue_refreshed_at` **не заводится**: очередь backfill выбирается тем же `(backend_id, registered_at DESC)` с предикатом `revenue_refreshed_at IS NULL`, отдельный индекс дал бы четвёртую запись на каждый upsert при нулевом выигрыше.
+
+### Инварианты записи (нормативно)
+
+1. **Пишет только воркер** `BackendUsersSnapshotService` — плюс **best-effort touch** после успешных `POST …/tokens` / `…/subscription` ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §4). Read-path ничего не пишет.
+2. **Только изменившиеся строки** (changed-only-writes по fingerprint) — против churn таблицы и нагрузки на autovacuum.
+3. **`DELETE` отсутствующих в источнике — только при полностью успешном обходе.** Оборванный обход снимок не прореживает.
+4. **Сбой цикла не трогает прошлый снимок** — пишутся только `error_message`/`failed_at` строки источника. Устаревшие данные с честной меткой возраста лучше пустого экрана.
+5. **Секретов в снимке нет** — admin-ключ по-прежнему живёт только в `backends.admin_api_key_encrypted` (Fernet) и расшифровывается в памяти ([05-security.md](05-security.md#rbac--роли-права-и-enforcement)).
+6. **Полнота блока «Расходы API» вычисляется по ТРЁМ условиям** — два признака строки источника **плюс** отсутствие строки состояния у запрошенного бэка ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §5, нормативно):
+
+   ```
+   api_costs.partial = ∃ участвующий источник:  revenue_backfill_done = false
+                                                OR revenue_supported IS FALSE
+                       OR ∃ запрошенный бэк БЕЗ строки в backend_user_snapshot_sources
+   ```
+
+   > **Третий дизъюнкт — «запрошенный бэк ещё не имеет строки состояния»** (сверка `backend/app/services/backend_user_service.py` 2026-08-19: `len(participating) < len(backend_ids)`). Строка `backend_user_snapshot_sources` заводится воркером, поэтому бэк, добавленный в реестр между циклами, в сумму не входит — и это ровно «сумма неполная». Без третьего дизъюнкта свежедобавленный бэк молча занижал бы итог **без пометки**. **Вырожденный случай:** строк нет **ни у одного** запрошенного бэка ⇒ **`api_costs = null`**, а не `0` с `partial=true` — нулей, которых никто не измерял, показывать нельзя. **Фактическое поведение UI при `api_costs === null` (сверка `frontend/src/pages/BackendUsersPage.tsx` 2026-08-19): блок «Расходы API» РЕНДЕРИТСЯ, но все значения — `—`** (`value={apiCosts ? formatUsdCents(...) : '—'}`); ячейка «Прочее» скрыта (`other_usd > 0` не выполняется), бейдж `partial` не показывается (`apiCosts?.partial`), а причину объясняет подпись свежести «Снимок формируется…» при `snapshot_at === null`. Прочерк честнее скрытия: блок на месте, и видно, что величина не измерена, а не равна нулю.
+   >
+   > ⚠️ **Одного `revenue_backfill_done` недостаточно.** Очередь backfill выбирается по `revenue_refreshed_at IS NULL`, а карточка бэка **уровня v1** (без блока `revenue`) при добора **тоже получает** `revenue_refreshed_at` и очередь покидает ⇒ `revenue_backfill_done` у такого источника честно становится `true`, а сумма занижена **навсегда**. Без второго дизъюнкта `partial` схлопнулся бы в `false` именно в том случае, который **никогда** не исправится сам. **Строго `IS FALSE`, а не `IS NOT TRUE`:** состояние `NULL` (карточек ещё не добирали) уже покрыто первым дизъюнктом `revenue_backfill_done = false`, и дублировать его вторым условием значило бы держать одно состояние в двух местах предиката.
+   >
+   > **Сканировать `backend_user_snapshots` (`api_cost_usd IS NULL`) ради того же вывода запрещено:** признак читается за `O(число бэков)` со строк источников, а не за `O(число пользователей)` на каждый рендер списка.
+
+## Миграция `0040_backend_users_snapshot` (концепт, [ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md))
+
+> Реализуется через Alembic. **Требование (нормативно):** рабочий `downgrade()`, протестированный на откат — см. [07-deployment.md](07-deployment.md#откат-миграций-бд).
+
+**Идентификаторы (нормативно):**
+- **Имя файла:** `0040_backend_users_snapshot.py`
+- **`revision`:** **`"0040_backend_users_snapshot"`** — **27 символов** ≤ `alembic_version.version_num VARCHAR(32)`
+- **`down_revision`:** **`"0039_users_full_name_telegram"`**
+
+**`upgrade()`** — создать обе таблицы (DDL ниже) и четыре индекса. **Backfill не выполняется:** таблицы стартуют пустыми, первый `refresh_once()` воркера наполняет их при старте приложения; до этого `snapshot_at = null` и UI показывает «Снимок формируется…».
+
+```sql
+CREATE TABLE backend_user_snapshot_sources (
+    backend_id UUID PRIMARY KEY REFERENCES backends(id) ON DELETE CASCADE,
+    refreshed_at TIMESTAMPTZ NULL,
+    error_message TEXT NULL, failed_at TIMESTAMPTZ NULL,
+    stats_users_total INTEGER NOT NULL DEFAULT 0,
+    stats_paid_users INTEGER NOT NULL DEFAULT 0,
+    stats_payments_sum_usd DOUBLE PRECISION NOT NULL DEFAULT 0,
+    api_costs JSONB NOT NULL DEFAULT '{}',
+    revenue_backfill_done BOOLEAN NOT NULL DEFAULT FALSE,
+    revenue_supported BOOLEAN NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE backend_user_snapshots (
+    backend_id UUID NOT NULL REFERENCES backends(id) ON DELETE CASCADE,
+    user_id TEXT NOT NULL, external_id TEXT NULL,
+    is_paid BOOLEAN, payments_count INT, renewals_count INT, tokens FLOAT8,
+    subscription_active BOOLEAN, subscription_expires_at TIMESTAMPTZ,
+    plan_id TEXT NULL, registered_at TIMESTAMPTZ NOT NULL,
+    api_cost_usd FLOAT8 NULL, api_cost_providers JSONB NULL,
+    revenue_refreshed_at TIMESTAMPTZ NULL,
+    PRIMARY KEY (backend_id, user_id)
+);
+CREATE INDEX ix_backend_user_snapshots_registered_at
+    ON backend_user_snapshots (registered_at DESC);
+CREATE INDEX ix_backend_user_snapshots_backend_registered_at
+    ON backend_user_snapshots (backend_id, registered_at DESC);
+CREATE INDEX ix_backend_user_snapshots_user_id ON backend_user_snapshots (user_id);
+CREATE INDEX ix_backend_user_snapshots_external_id ON backend_user_snapshots (external_id);
+```
+
+**`downgrade()` (нормативно):** `DROP TABLE backend_user_snapshots;` затем `DROP TABLE backend_user_snapshot_sources;` (индексы снимаются вместе с таблицами). Откат **не lossy по смыслу**: снимок — производные данные, источник истины остаётся у бэков; на откатанной версии страница возвращается к live fan-out.

@@ -73,13 +73,13 @@ def _db_user(*, is_active: bool = True, permissions: dict[str, list[str]] | None
         permissions={"servers": ["view"], "mail": ["view"]} if permissions is None else permissions,
     )
     # ADR-055 §2.2: `Principal` несёт флаги «Без команды» каналов — колонки `users.*`.
-    # ADR-059: `get_current_principal` читает `user.role_id` (per-node фильтр видимости
-    # документов) — фейк-пользователь обязан нести этот атрибут.
+    # ADR-079 §1/§4: роли — M2M (`user.roles`), их id идут в `Principal.role_ids`
+    # (per-node фильтр видимости документов).
+    role.id = uuid.uuid4()
     return SimpleNamespace(
         id=uuid.uuid4(),
         username="Никита",
-        role=role,
-        role_id=uuid.uuid4(),
+        roles=[role],
         is_active=is_active,
         mail_includes_unassigned=False,
         sms_includes_unassigned=False,
@@ -94,7 +94,7 @@ async def test_superadmin_token_yields_full_catalog_without_db_hit() -> None:
     principal = await get_current_principal(session, _creds(token))  # type: ignore[arg-type]
 
     assert principal.is_superadmin is True
-    assert principal.role == "admin"
+    assert principal.roles == ("admin",)
     assert principal.permissions["servers"] == ["view", "create", "edit", "delete"]
     assert session.execute_calls == 0  # супер-админ не читает БД
     # ADR-051 §1.2: идентичность супер-админа — константа якоря, БЕЗ запроса в БД.
@@ -106,14 +106,14 @@ async def test_db_user_token_loads_permissions_from_db() -> None:
     user = _db_user()
     session = _FakeSession(user)
     token, _ = issue_access_token(
-        sub=user.username, role=user.role.name, superadmin=False, uid=str(user.id)
+        sub=user.username, role=user.roles[0].name, superadmin=False, uid=str(user.id)
     )
 
     principal = await get_current_principal(session, _creds(token))  # type: ignore[arg-type]
 
     assert principal.is_superadmin is False
     assert principal.username == "Никита"
-    assert principal.role == "Оператор"
+    assert principal.roles == ("Оператор",)
     assert principal.permissions == {"servers": ["view"], "mail": ["view"]}
     assert principal.user_id == user.id  # БД-пользователь → его собственный id (claim `uid`)
     assert session.execute_calls == 1
@@ -124,14 +124,14 @@ async def test_role_permission_change_applies_without_relogin() -> None:
     user = _db_user(permissions={"servers": ["view"]})
     session = _FakeSession(user)
     token, _ = issue_access_token(
-        sub=user.username, role=user.role.name, superadmin=False, uid=str(user.id)
+        sub=user.username, role=user.roles[0].name, superadmin=False, uid=str(user.id)
     )
 
     first = await get_current_principal(session, _creds(token))  # type: ignore[arg-type]
     assert first.permissions == {"servers": ["view"]}
 
     # Админ расширил права роли — тем же токеном следующий запрос видит новые права.
-    user.role.permissions = {"servers": ["view", "edit"], "ai-keys": ["view"]}
+    user.roles[0].permissions = {"servers": ["view", "edit"], "ai-keys": ["view"]}
     second = await get_current_principal(session, _creds(token))  # type: ignore[arg-type]
     assert second.permissions == {"servers": ["view", "edit"], "ai-keys": ["view"]}
 
@@ -170,7 +170,7 @@ async def test_deactivated_user_is_401() -> None:
     user = _db_user(is_active=False)
     session = _FakeSession(user)
     token, _ = issue_access_token(
-        sub=user.username, role=user.role.name, superadmin=False, uid=str(user.id)
+        sub=user.username, role=user.roles[0].name, superadmin=False, uid=str(user.id)
     )
 
     with pytest.raises(AppError) as exc:
@@ -207,7 +207,7 @@ def _principal(*, is_superadmin: bool, role: str, permissions: dict[str, list[st
     """
     return Principal(
         username="u",
-        role=role,
+        roles=(role,),
         permissions=permissions,
         is_superadmin=is_superadmin,
         user_id=SUPERADMIN_USER_ID if is_superadmin else uuid.uuid4(),

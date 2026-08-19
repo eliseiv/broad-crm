@@ -9,11 +9,12 @@ import type { PermissionsMap, TeamRef } from '@/types/api';
  */
 export function loginAs(options?: {
   username?: string;
-  role?: string;
+  /** Имена ВСЕХ ролей принципала (ADR-079 §3, `MeResponse.roles`). */
+  roles?: string[];
   isSuperadmin?: boolean;
   /**
    * Admin-уровень (ADR-078, MeResponse.is_admin_level). По умолчанию —
-   * `isSuperadmin || role === "admin"` (два первых дизъюнкта предиката).
+   * `isSuperadmin || "admin" ∈ roles` (два первых дизъюнкта предиката в редакции ADR-079 §2).
    */
   isAdminLevel?: boolean;
   /**
@@ -48,9 +49,9 @@ export function loginAs(options?: {
 }): void {
   const {
     username = 'admin',
-    role = 'admin',
+    roles = ['admin'],
     isSuperadmin = true,
-    isAdminLevel = isSuperadmin || role === 'admin',
+    isAdminLevel = isSuperadmin || roles.includes('admin'),
     seesAllSmsTeams = isSuperadmin,
     seesAllMailTeams = isSuperadmin,
     mailTeams = [],
@@ -63,7 +64,7 @@ export function loginAs(options?: {
   store.setSession('jwt-token', username);
   store.setPrincipal({
     username,
-    role,
+    roles,
     is_superadmin: isSuperadmin,
     is_admin_level: isAdminLevel,
     sees_all_sms_teams: seesAllSmsTeams,

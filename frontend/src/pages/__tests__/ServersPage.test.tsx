@@ -138,7 +138,7 @@ describe('ServersPage', () => {
   });
 
   it('read-only user (no create): тот же empty-текст, но без кнопки «Добавить» (ADR-046 §2б)', () => {
-    loginAs({ isSuperadmin: false, role: 'Наблюдатель', permissions: { servers: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Наблюдатель'], permissions: { servers: ['view'] } });
     serversHook.value = { ...serversHook.value, data: { items: [] } };
 
     render(<ServersPage />, { wrapper });
@@ -163,7 +163,7 @@ describe('ServersPage', () => {
   });
 
   it('read-only user (no create) sees the list without the add-server card', () => {
-    loginAs({ isSuperadmin: false, role: 'Наблюдатель', permissions: { servers: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Наблюдатель'], permissions: { servers: ['view'] } });
     serversHook.value = { ...serversHook.value, data: { items: [server()] } };
 
     render(<ServersPage />, { wrapper });
@@ -175,7 +175,7 @@ describe('ServersPage', () => {
 
   it('user without servers:view sees the page-scoped stub, list is not rendered (ADR-021 §6)', () => {
     // Есть доступ к другому разделу, но нет `servers:view` → page-level view-guard.
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { mail: ['view'] } });
     serversHook.value = { ...serversHook.value, data: { items: [server()] } };
 
     render(<ServersPage />, { wrapper });

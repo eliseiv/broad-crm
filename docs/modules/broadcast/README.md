@@ -53,12 +53,20 @@
 ### Адресаты `POST /api/broadcasts` (нормативно)
 
 ```
-кандидаты = users WHERE is_active AND NOT is_system
-            AND (all OR role_id ∈ role_ids)
+кандидаты = SELECT DISTINCT u.id FROM users u
+            JOIN user_roles ur ON ur.user_id = u.id            -- M2M, ADR-079
+            WHERE u.is_active AND NOT u.is_system
+              AND (all OR ur.role_id ∈ role_ids)
 линки     = knowledge_bot_links WHERE dead_at IS NULL AND user_id ∈ кандидаты
 адресаты  = UNIQUE(telegram_user_id) по линкам
 skipped_not_started = |кандидаты без активного линка|
 ```
+
+> **⚠️ Редакция [ADR-079](../../adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §5 (нормативно).** Прежняя запись `role_id ∈ role_ids` относилась к **колонке** `users.role_id`, которой больше нет (дропнута миграцией `0038`). Следствия M2M:
+>
+> - **`DISTINCT` по `u.id` в наборе кандидатов ОБЯЗАТЕЛЕН.** Join размножает строку пользователя по числу его ролей: без дедупа пользователь с двумя выбранными ролями попал бы в кандидаты дважды и получил бы сообщение **дважды** (существующий `UNIQUE(telegram_user_id)` по линкам спасает только при совпадении линка, а `skipped_not_started` посчитался бы с завышением).
+> - **`GET /api/broadcasts/audience`:** в счётчиках роли пользователь учитывается **в каждой** своей роли — это правильно (строка роли отвечает на вопрос «сколько адресатов у ЭТОЙ роли»), поэтому **сумма по строкам ≠ числу адресатов**. Итоговая сводка «Получат: N · Без бота: M» считается **по дедуплицированному** множеству, а не сложением строк. Норма отображения — [08-design-system.md § Страница «Рассылка»](../../08-design-system.md#страница-рассылка).
+> - **`WHERE NOT u.is_system` остаётся явным условием** ([ADR-051](../../adr/ADR-051-superadmin-db-anchor-personal-state.md)) — join через `user_roles` его **не** заменяет: у якоря строка в `user_roles` есть.
 
 Последовательная отправка. `403` Telegram → `dead_at=now()`. Частичный успех = `200`.
 

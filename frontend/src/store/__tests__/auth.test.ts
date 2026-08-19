@@ -11,14 +11,15 @@ import type { MeResponse } from '@/types/api';
 
 const TOKEN_KEY = 'crm.auth.token';
 const USER_KEY = 'crm.auth.username';
-const ROLE_KEY = 'crm.auth.role';
+// ADR-079 §3: роли принципала персистятся массивом имён (ключ переименован).
+const ROLES_KEY = 'crm.auth.roles';
 const SUPERADMIN_KEY = 'crm.auth.superadmin';
 const IS_ADMIN_LEVEL_KEY = 'crm.auth.isAdminLevel';
 const PERMISSIONS_KEY = 'crm.auth.permissions';
 
 const me: MeResponse = {
   username: 'ivan',
-  role: 'Оператор',
+  roles: ['Оператор'],
   is_superadmin: false,
   is_admin_level: false,
   sees_all_sms_teams: false,
@@ -64,7 +65,7 @@ describe('auth store — сессия в localStorage (ADR-041)', () => {
     // Вкладка A уже залогинилась — токен и права лежат в общем localStorage.
     localStorage.setItem(TOKEN_KEY, 'jwt-shared');
     localStorage.setItem(USER_KEY, 'ivan');
-    localStorage.setItem(ROLE_KEY, 'Оператор');
+    localStorage.setItem(ROLES_KEY, JSON.stringify(['Оператор']));
     localStorage.setItem(SUPERADMIN_KEY, '0');
     localStorage.setItem(IS_ADMIN_LEVEL_KEY, '1');
     localStorage.setItem(PERMISSIONS_KEY, JSON.stringify({ servers: ['view'] }));
@@ -75,7 +76,7 @@ describe('auth store — сессия в localStorage (ADR-041)', () => {
     expect(state.isAuthenticated).toBe(true);
     expect(getToken()).toBe('jwt-shared');
     expect(state.username).toBe('ivan');
-    expect(state.role).toBe('Оператор');
+    expect(state.roles).toEqual(['Оператор']);
     expect(state.isSuperadmin).toBe(false);
     expect(state.isAdminLevel).toBe(true);
     expect(state.permissions).toEqual({ servers: ['view'] });
@@ -91,7 +92,7 @@ describe('auth store — сессия в localStorage (ADR-041)', () => {
     const { useAuthStore } = await freshStore();
     useAuthStore.getState().setPrincipal(me);
 
-    expect(localStorage.getItem(ROLE_KEY)).toBe('Оператор');
+    expect(JSON.parse(localStorage.getItem(ROLES_KEY) as string)).toEqual(['Оператор']);
     expect(localStorage.getItem(SUPERADMIN_KEY)).toBe('0');
     expect(localStorage.getItem(IS_ADMIN_LEVEL_KEY)).toBe('0');
     expect(useAuthStore.getState().isAdminLevel).toBe(false);
@@ -121,7 +122,7 @@ describe('auth store — сессия в localStorage (ADR-041)', () => {
     for (const key of [
       TOKEN_KEY,
       USER_KEY,
-      ROLE_KEY,
+      ROLES_KEY,
       SUPERADMIN_KEY,
       IS_ADMIN_LEVEL_KEY,
       PERMISSIONS_KEY,

@@ -155,6 +155,16 @@ class Settings(BaseSettings):
     # check_status→error немедленно; откладывается только уведомление (error_since/alert_sent).
     backend_alert_after_sec: int = 1800
 
+    # --- Снимок «Юзеров бэков» (modules/backend-users, ADR-080 §2) ---
+    # Интервал фонового обхода бэков с admin-ключом. `sleep` идёт ПОСЛЕ завершения
+    # итерации (а не фиксированным тиком) ⇒ циклы не накладываются, даже если обход
+    # крупного бэка занял больше интервала.
+    backend_users_snapshot_interval_sec: int = 900
+    # Квота холодного старта: сколько карточек `GET {P}/users/{id}` добирается за цикл
+    # на один бэк ради `revenue.providers` (очередь — строки `revenue_refreshed_at IS
+    # NULL`, порядок `registered_at DESC`). До завершения backfill — `api_costs.partial`.
+    backend_users_snapshot_revenue_batch: int = 2000
+
     # --- Модуль «Почты» (read-through-прокси, modules/mail, ADR-012) ---
     # Backend проксирует /api/mail/* во внешний сервис postapp.store, подставляя
     # MAIL_API_KEY в заголовок X-API-Key. Ключ — только из env, не в БД/логах/ответах.

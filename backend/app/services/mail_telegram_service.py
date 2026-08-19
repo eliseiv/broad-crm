@@ -25,7 +25,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import MailPushBot, Settings
 from app.domain.mail_notify import format_message_body, split_for_telegram
-from app.domain.permissions import full_catalog_permissions, permissions_subset
+from app.domain.permissions import (
+    full_catalog_permissions,
+    permissions_subset,
+    primary_role_name,
+    union_permissions,
+)
 from app.domain.sms import ValidatedInitData, verify_init_data
 from app.domain.telegram import normalize_telegram
 from app.errors import (
@@ -138,7 +143,8 @@ class MailTelegramService:
 
         token, expires_in = issue_access_token(
             sub=resolved.username,
-            role=resolved.role.name,
+            # Claim `role` информационный (ADR-079 §3): первая роль.
+            role=primary_role_name(resolved.roles),
             superadmin=False,
             uid=str(resolved.id),
         )
@@ -255,7 +261,11 @@ class MailTelegramService:
             )
             return
         team_id, _ = visibility
-        sees_all = permissions_subset(full_catalog_permissions(), dict(user.role.permissions))
+        # Права актора — union всех его ролей (ADR-079 §2).
+        sees_all = permissions_subset(
+            full_catalog_permissions(),
+            union_permissions(dict(role.permissions or {}) for role in user.roles),
+        )
         member = team_id is not None and await links.is_team_member(
             user_id=user.id, team_id=team_id
         )

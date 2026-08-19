@@ -366,7 +366,9 @@ describe('DocumentImageNodeView — blob-жизненный цикл (ADR-068 §
     fetchAttachmentBlob.mockResolvedValue(new Blob([new Uint8Array([1, 2, 3])]));
     render(<DocumentEditor node={docWithImage} canEdit={true} />, { wrapper });
 
-    await waitFor(() => expect(fetchAttachmentBlob).toHaveBeenCalledWith('att-render', expect.anything()));
+    await waitFor(() =>
+      expect(fetchAttachmentBlob).toHaveBeenCalledWith('att-render', expect.anything()),
+    );
     await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
 
     const img = await waitFor(() => {

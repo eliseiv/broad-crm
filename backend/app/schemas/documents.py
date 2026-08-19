@@ -15,6 +15,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+from app.schemas.user import RoleRef
+
 
 class FolderCreateRequest(BaseModel):
     """Тело `POST /api/documents/folders`."""
@@ -126,11 +128,10 @@ class DocumentAttachmentResponse(BaseModel):
     created_at: datetime
 
 
-class RoleRef(BaseModel):
-    """Элемент `GET /api/documents/role-refs` — роль для модалки видимости (`{id, name}`)."""
-
-    id: uuid.UUID
-    name: str
+# `RoleRef` (`{id, name}`) — ОДНА схема на весь проект (04-api.md#схема-roleref):
+# элемент `GET /api/documents/role-refs` (модалка видимости), `UserListItem.roles` и
+# `ExternalUserAccessResponse.roles`. Импортируется из `app.schemas.user`, локальный
+# дубль снят (ADR-079 §1) — две одноимённые модели разошлись бы при первой же правке.
 
 
 # --- Внешний read-only контур (RAG, X-API-Key, ADR-060) ----------------------
@@ -172,13 +173,20 @@ class ExternalUserAccessResponse(BaseModel):
     """Ответ `GET /api/external/documents/user-access/{telegram_user_id}` (этап 2 RAG).
 
     Резолв пользователя CRM по числовому telegram id (привязки sms/mail-линков).
-    `sees_all_documents` — admin-уровень (роль покрывает полный каталог прав): per-role
-    фильтр документов к такому пользователю не применяется.
+    `sees_all_documents` — admin-уровень (**union** прав всех ролей покрывает полный
+    каталог): per-role фильтр документов к такому пользователю не применяется.
+
+    **Расширение ADR-079 §6 — АДДИТИВНОЕ** (контракт чужого репозитория ba-knowledge-base
+    ломать синхронно нельзя): `role_id`/`role_name` СОХРАНЯЮТСЯ и несут **первую** роль
+    (`user_roles.created_at ASC, role_id ASC` — тот же порядок, что у JWT-claim `role`);
+    добавлено поле `roles` с полным набором. Снятие пары `role_id`/`role_name` после
+    перехода бота на `roles[]` — TD-084.
     """
 
     user_id: uuid.UUID
     role_id: uuid.UUID
     role_name: str
+    roles: list[RoleRef]
     sees_all_documents: bool
 
 

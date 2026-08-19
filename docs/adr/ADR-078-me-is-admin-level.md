@@ -27,6 +27,8 @@
 is_superadmin OR role == "admin" OR permissions_subset(full_catalog_permissions(), principal.permissions)
 ```
 
+> **Амендмент ([ADR-079](ADR-079-users-m2m-roles-full-name-telegram-table.md), 2026-08-19):** запись предиката более не действует дословно — действующая редакция **`is_superadmin OR "admin" ∈ roles OR permissions_subset(full_catalog_permissions(), union_permissions(roles))`** (роли M2M, `permissions` = union). Само поле `MeResponse.is_admin_level`, правило «клиент читает флаг из `/me` и НЕ пересчитывает каталог» и запреты `coversFullCatalog`/`catalogPending` для гейта `/users` — **в силе**. Тем же ADR-079 в `MeResponse` **`role: str` заменено на `roles: list[str]`** (ломающее изменение; фронт и бэк — одним релизом).
+
 Вычисляется в handler `/me` из уже загруженного `Principal` (нулевая стоимость). Поле обязательное, `bool`. Миграции нет. Каталог прав и Users API не меняются.
 
 `sees_all_sms_teams` / `sees_all_mail_teams` остаются отдельными полями (scope каналов). Их не заменять `is_admin_level` и не выводить на клиенте одно из другого.
@@ -58,6 +60,8 @@ OR me.is_admin_level
 - Первичное правило: если `/me.permissions.documents` содержит `share` (факт прода для полного каталога) — пункт **обязан** быть. Источник — `permissions` из `/me`, не каталог.
 - Фолбэк `me.is_admin_level` — минимальный: admin-уровень подразумевает полный каталог, включая `share`; закрывает рассинхрон персиста `permissions` без `share` при уже истинном флаге. Третьего пути (запрос каталога ради share) нет.
 - Граница безопасности — серверный `403` на `GET`/`PATCH …/visibility` и `GET /role-refs` (`require("documents","share")`). UX-гейт не ослабляет enforcement.
+
+> ⚠️ **Известное расхождение — [TD-087](../100-known-tech-debt.md) (зарегистрировано 2026-08-19).** `is_admin_level` содержит ветку **`"admin" ∈ roles`**, а `principal_sees_all_documents` / `_sms_teams` / `_mail_teams` (`backend/app/api/deps.py`) — **нет**. Поэтому у роли, **названной** `admin`, но с урезанным jsonb, фолбэк выше покажет пункт «Сменить видимость», тогда как серверная видимость останется суженной: аффорданс есть, за ним — пустой список или `404`. Доступ при этом **не расширяется** (граница — серверный `403`/`404`), расходится только UX-обещание. Долг предсуществует этому ADR; погашение — свести предикаты к одному источнику **либо** записать расхождение здесь как намеренное и сузить фолбэк.
 
 `useCan` по-прежнему читает только стор из `/me` (супер-админ → `true`; иначе `action ∈ permissions[page]`). Не гейтить share через `coversFullCatalog`.
 

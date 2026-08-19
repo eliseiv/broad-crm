@@ -79,7 +79,7 @@ describe('DocumentsPage kebab — «Сменить видимость» (ADR-078
   it('share ∈ permissions → пункт есть (даже без isAdminLevel)', async () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       isAdminLevel: false,
       permissions: { documents: ['view', 'edit', 'share'] },
     });
@@ -91,7 +91,7 @@ describe('DocumentsPage kebab — «Сменить видимость» (ADR-078
   it('роль «Админ»: isAdminLevel=true при permissions без share → пункт есть (фолбэк)', async () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Админ',
+      roles: ['Админ'],
       isAdminLevel: true,
       permissions: { documents: ['view', 'edit'] },
     });
@@ -103,7 +103,7 @@ describe('DocumentsPage kebab — «Сменить видимость» (ADR-078
   it('роль «Админ»: share в permissions + isAdminLevel → Users-баг закрыт (оба гейта)', async () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Админ',
+      roles: ['Админ'],
       isAdminLevel: true,
       permissions: { documents: ['view', 'create', 'edit', 'delete', 'share'] },
     });
@@ -115,7 +115,7 @@ describe('DocumentsPage kebab — «Сменить видимость» (ADR-078
   it('нет share и isAdminLevel=false → пункта нет', async () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Админ',
+      roles: ['Админ'],
       isAdminLevel: false,
       permissions: { documents: ['view', 'edit'] },
     });

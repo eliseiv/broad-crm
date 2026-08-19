@@ -1,10 +1,13 @@
 """Тесты UserService: прецеденция ошибок, bcrypt-хэш, telegram, беспарольность, команды.
 
 Прогоняется реальный сервис поверх in-memory фейков репозиториев (conftest.RbacFakeDb),
-что сохраняет установленную в репо конвенцию тестов без Postgres. Прецеденция (04-api.md):
-username-формат (422) → telegram-формат (422) → существование role_id/team_ids (422) →
-уникальность username (409) → уникальность telegram (409). Пароль опционален (ADR-025);
-при исключении из ведомой команды лидерство авто-передаётся (ADR-026).
+что сохраняет установленную в репо конвенцию тестов без Postgres.
+
+Контракт — ADR-079: ФИО (`last_name`/`first_name` обязательны), `telegram` обязателен и
+не очищается, роли — `role_ids` (непустой). Прецеденция (04-api.md#post-apiusers):
+формат ФИО/telegram/password (422) → непустота и существование `role_ids`, существование
+`team_ids` (422) → **`telegram_taken` (409)** → `username_taken` (409). Пароль опционален
+(ADR-025); при исключении из ведомой команды лидерство авто-передаётся (ADR-026).
 """
 
 from __future__ import annotations
@@ -43,12 +46,21 @@ async def test_create_user_hashes_password_and_omits_it_from_response(db: RbacFa
     service = _service(db)
 
     item = await service.create_user(
-        UserCreateRequest(username="Никита", password="s3cret-pass", role_id=role.id)
+        UserCreateRequest(
+            last_name="Петров",
+            first_name="Никита",
+            telegram="nikita_01",
+            password="s3cret-pass",
+            role_ids=[role.id],
+        )
     )
 
-    assert item.username == "Никита"
-    assert item.role_id == role.id
-    assert item.role_name == "admin"
+    # `username` выводится из телеграм-ника (ADR-079 §9), полем формы он больше не является.
+    assert item.username == "nikita_01"
+    assert item.first_name == "Никита"
+    assert item.last_name == "Петров"
+    assert [r.id for r in item.roles] == [role.id]
+    assert [r.name for r in item.roles] == ["admin"]
     assert item.is_active is True
     assert item.has_password is True
     # Пароль (plaintext/hash) отсутствует в схеме ответа.
@@ -61,54 +73,99 @@ async def test_create_user_hashes_password_and_omits_it_from_response(db: RbacFa
 
 
 @pytest.mark.asyncio
-async def test_create_user_invalid_username_is_422(db: RbacFakeDb) -> None:
+async def test_create_user_invalid_first_name_is_422(db: RbacFakeDb) -> None:
     role = next(iter(db.roles.values()))
     service = _service(db)
 
     with pytest.raises(AppError) as exc:
         await service.create_user(
-            UserCreateRequest(username="123", password="s3cret-pass", role_id=role.id)
+            UserCreateRequest(
+                last_name="Петров",
+                first_name="123",
+                telegram="nikita_01",
+                password="s3cret-pass",
+                role_ids=[role.id],
+            )
         )
     assert exc.value.status_code == 422
     assert exc.value.code == "unprocessable"
-    assert exc.value.details[0]["field"] == "username"
+    assert exc.value.details[0]["field"] == "first_name"
 
 
 @pytest.mark.asyncio
-async def test_create_user_missing_role_is_422_field_role_id(db: RbacFakeDb) -> None:
+async def test_create_user_missing_role_is_422_field_role_ids(db: RbacFakeDb) -> None:
     service = _service(db)
 
     with pytest.raises(AppError) as exc:
         await service.create_user(
-            UserCreateRequest(username="Никита", password="s3cret-pass", role_id=uuid.uuid4())
+            UserCreateRequest(
+                last_name="Петров",
+                first_name="Никита",
+                telegram="nikita_01",
+                password="s3cret-pass",
+                role_ids=[uuid.uuid4()],
+            )
         )
     assert exc.value.status_code == 422
-    assert exc.value.details[0]["field"] == "role_id"
+    assert exc.value.details[0]["field"] == "role_ids"
 
 
 @pytest.mark.asyncio
-async def test_create_user_precedence_username_before_role(db: RbacFakeDb) -> None:
-    # И username невалиден, И role отсутствует → сначала 422 username (прецеденция).
+async def test_create_user_empty_role_ids_is_422(db: RbacFakeDb) -> None:
+    """«Минимум одна роль» — инвариант сервиса, не БД (ADR-079 §1)."""
     service = _service(db)
 
     with pytest.raises(AppError) as exc:
         await service.create_user(
-            UserCreateRequest(username="...", password="s3cret-pass", role_id=uuid.uuid4())
+            UserCreateRequest(
+                last_name="Петров",
+                first_name="Никита",
+                telegram="nikita_01",
+                password="s3cret-pass",
+                role_ids=[],
+            )
         )
-    assert exc.value.details[0]["field"] == "username"
+    assert exc.value.status_code == 422
+    assert exc.value.details[0]["field"] == "role_ids"
 
 
 @pytest.mark.asyncio
-async def test_create_user_duplicate_username_is_409(db: RbacFakeDb) -> None:
-    role = next(iter(db.roles.values()))
+async def test_create_user_precedence_full_name_before_role(db: RbacFakeDb) -> None:
+    # И ФИО невалидно, И роли не существует → сначала 422 по ФИО (прецеденция ADR-079 §9).
     service = _service(db)
-    await service.create_user(
-        UserCreateRequest(username="Никита", password="s3cret-pass", role_id=role.id)
-    )
 
     with pytest.raises(AppError) as exc:
         await service.create_user(
-            UserCreateRequest(username="Никита", password="other-pass", role_id=role.id)
+            UserCreateRequest(
+                last_name="...",
+                first_name="Никита",
+                telegram="nikita_01",
+                password="s3cret-pass",
+                role_ids=[uuid.uuid4()],
+            )
+        )
+    assert exc.value.details[0]["field"] == "last_name"
+
+
+@pytest.mark.asyncio
+async def test_create_user_derived_username_collision_is_409_username_taken(
+    db: RbacFakeDb,
+) -> None:
+    """Выведенный из телеграма `username` совпал с ИСТОРИЧЕСКИМ логином → 409 (ADR-079 §9)."""
+    role = next(iter(db.roles.values()))
+    # Историческая строка: логин `nikita_01`, телеграма нет (заведена до ADR-079).
+    db.add_user("nikita_01", role, telegram=None)
+    service = _service(db)
+
+    with pytest.raises(AppError) as exc:
+        await service.create_user(
+            UserCreateRequest(
+                last_name="Петров",
+                first_name="Никита",
+                telegram="@Nikita_01",
+                password="other-pass",
+                role_ids=[role.id],
+            )
         )
     assert exc.value.status_code == 409
     assert exc.value.code == "username_taken"
@@ -122,10 +179,18 @@ async def test_create_user_race_integrity_error_maps_409(db: RbacFakeDb) -> None
 
     with pytest.raises(AppError) as exc:
         await service.create_user(
-            UserCreateRequest(username="Гонка", password="s3cret-pass", role_id=role.id)
+            UserCreateRequest(
+                last_name="Гонкин",
+                first_name="Гонка",
+                telegram="race_nick",
+                password="s3cret-pass",
+                role_ids=[role.id],
+            )
         )
     assert exc.value.status_code == 409
-    assert exc.value.code == "username_taken"
+    # Прецеденция race-ветки та же, что у проактивных проверок (ADR-079 §9):
+    # сперва `telegram_taken` — прямая причина, порождённая введённым значением.
+    assert exc.value.code == "telegram_taken"
 
 
 @pytest.mark.asyncio
@@ -160,12 +225,13 @@ async def test_update_user_resets_password_and_toggles_status_and_role(db: RbacF
 
     item = await service.update_user(
         user.id,
-        UserUpdateRequest(password="brand-new-pass", is_active=False, role_id=other.id),
+        UserUpdateRequest(password="brand-new-pass", is_active=False, role_ids=[other.id]),
     )
 
     assert item.is_active is False
-    assert item.role_id == other.id
-    assert item.role_name == "Оператор"
+    # `role_ids` — ПОЛНАЯ замена набора (ADR-079 §1).
+    assert [r.id for r in item.roles] == [other.id]
+    assert [r.name for r in item.roles] == ["Оператор"]
     assert verify_password("brand-new-pass", user.password_hash) is True
 
 
@@ -176,9 +242,21 @@ async def test_update_user_missing_role_is_422(db: RbacFakeDb) -> None:
     service = _service(db)
 
     with pytest.raises(AppError) as exc:
-        await service.update_user(user.id, UserUpdateRequest(role_id=uuid.uuid4()))
+        await service.update_user(user.id, UserUpdateRequest(role_ids=[uuid.uuid4()]))
     assert exc.value.status_code == 422
-    assert exc.value.details[0]["field"] == "role_id"
+    assert exc.value.details[0]["field"] == "role_ids"
+
+
+@pytest.mark.asyncio
+async def test_update_user_empty_role_ids_is_422(db: RbacFakeDb) -> None:
+    role = next(iter(db.roles.values()))
+    user = db.add_user("Иван", role)
+    service = _service(db)
+
+    with pytest.raises(AppError) as exc:
+        await service.update_user(user.id, UserUpdateRequest(role_ids=[]))
+    assert exc.value.status_code == 422
+    assert exc.value.details[0]["field"] == "role_ids"
 
 
 @pytest.mark.asyncio
@@ -217,7 +295,11 @@ async def test_create_user_without_password_is_passwordless(db: RbacFakeDb) -> N
     role = next(iter(db.roles.values()))
     service = _service(db)
 
-    item = await service.create_user(UserCreateRequest(username="Никита", role_id=role.id))
+    item = await service.create_user(
+        UserCreateRequest(
+            last_name="Петров", first_name="Никита", telegram="nikita_01", role_ids=[role.id]
+        )
+    )
 
     assert item.has_password is False
     stored = next(iter(db.users.values()))
@@ -230,7 +312,13 @@ async def test_create_user_empty_password_is_passwordless(db: RbacFakeDb) -> Non
     service = _service(db)
 
     item = await service.create_user(
-        UserCreateRequest(username="Никита", password="", role_id=role.id)
+        UserCreateRequest(
+            last_name="Петров",
+            first_name="Никита",
+            telegram="nikita_01",
+            password="",
+            role_ids=[role.id],
+        )
     )
 
     assert item.has_password is False
@@ -243,7 +331,13 @@ async def test_create_user_short_password_is_422(db: RbacFakeDb) -> None:
 
     with pytest.raises(AppError) as exc:
         await service.create_user(
-            UserCreateRequest(username="Никита", password="short", role_id=role.id)
+            UserCreateRequest(
+                last_name="Петров",
+                first_name="Никита",
+                telegram="nikita_01",
+                password="short",
+                role_ids=[role.id],
+            )
         )
     assert exc.value.status_code == 422
     assert exc.value.details[0]["field"] == "password"
@@ -259,27 +353,37 @@ async def test_create_user_with_telegram_is_normalized(db: RbacFakeDb) -> None:
 
     item = await service.create_user(
         UserCreateRequest(
-            username="Никита",
+            last_name="Петров",
+            first_name="Никита",
             telegram="@Nikita_01",
             password="s3cret-pass",
-            role_id=role.id,
+            role_ids=[role.id],
         )
     )
 
-    # Нормализация: снят ведущий @, lower-case.
+    # Нормализация: снят ведущий @, lower-case. `username` выводится из него же (§9).
     assert item.telegram == "nikita_01"
+    assert item.username == "nikita_01"
 
 
 @pytest.mark.asyncio
-async def test_create_user_without_telegram_is_none(db: RbacFakeDb) -> None:
+async def test_create_user_without_telegram_is_422(db: RbacFakeDb) -> None:
+    """`telegram` обязателен (ADR-079 §8 — прежнее «опц.» отменено)."""
     role = next(iter(db.roles.values()))
     service = _service(db)
 
-    item = await service.create_user(
-        UserCreateRequest(username="Никита", password="s3cret-pass", role_id=role.id)
-    )
-
-    assert item.telegram is None
+    with pytest.raises(AppError) as exc:
+        await service.create_user(
+            UserCreateRequest(
+                last_name="Петров",
+                first_name="Никита",
+                telegram="",
+                password="s3cret-pass",
+                role_ids=[role.id],
+            )
+        )
+    assert exc.value.status_code == 422
+    assert exc.value.details[0]["field"] == "telegram"
 
 
 @pytest.mark.asyncio
@@ -290,7 +394,11 @@ async def test_create_user_invalid_telegram_is_422_field_telegram(db: RbacFakeDb
     with pytest.raises(AppError) as exc:
         await service.create_user(
             UserCreateRequest(
-                username="Никита", telegram="bad ник", password="s3cret-pass", role_id=role.id
+                last_name="Петров",
+                first_name="Никита",
+                telegram="bad ник",
+                password="s3cret-pass",
+                role_ids=[role.id],
             )
         )
     assert exc.value.status_code == 422
@@ -303,14 +411,22 @@ async def test_create_user_duplicate_telegram_is_409(db: RbacFakeDb) -> None:
     service = _service(db)
     await service.create_user(
         UserCreateRequest(
-            username="Никита", telegram="dup_nick", password="s3cret-pass", role_id=role.id
+            last_name="Петров",
+            first_name="Никита",
+            telegram="dup_nick",
+            password="s3cret-pass",
+            role_ids=[role.id],
         )
     )
 
     with pytest.raises(AppError) as exc:
         await service.create_user(
             UserCreateRequest(
-                username="Пётр", telegram="@DUP_nick", password="other-pass", role_id=role.id
+                last_name="Сидоров",
+                first_name="Пётр",
+                telegram="@DUP_nick",
+                password="other-pass",
+                role_ids=[role.id],
             )
         )
     assert exc.value.status_code == 409
@@ -318,25 +434,42 @@ async def test_create_user_duplicate_telegram_is_409(db: RbacFakeDb) -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_user_clear_telegram_via_null(db: RbacFakeDb) -> None:
+async def test_update_user_clear_telegram_via_null_is_422(db: RbacFakeDb) -> None:
+    """Очистка телеграма запрещена (ADR-079 §8): иначе не осталось бы способа входа."""
     role = next(iter(db.roles.values()))
     user = db.add_user("Иван", role, telegram="ivan_nick")
     service = _service(db)
 
-    item = await service.update_user(user.id, UserUpdateRequest(telegram=None))
-
-    assert item.telegram is None
+    with pytest.raises(AppError) as exc:
+        await service.update_user(user.id, UserUpdateRequest(telegram=None))
+    assert exc.value.status_code == 422
+    assert exc.value.details[0]["field"] == "telegram"
+    assert user.telegram == "ivan_nick"
 
 
 @pytest.mark.asyncio
-async def test_update_user_clear_telegram_via_empty_string(db: RbacFakeDb) -> None:
+async def test_update_user_clear_telegram_via_empty_string_is_422(db: RbacFakeDb) -> None:
     role = next(iter(db.roles.values()))
     user = db.add_user("Иван", role, telegram="ivan_nick")
     service = _service(db)
 
-    item = await service.update_user(user.id, UserUpdateRequest(telegram=""))
+    with pytest.raises(AppError) as exc:
+        await service.update_user(user.id, UserUpdateRequest(telegram=""))
+    assert exc.value.status_code == 422
+    assert user.telegram == "ivan_nick"
 
-    assert item.telegram is None
+
+@pytest.mark.asyncio
+async def test_update_user_change_telegram_keeps_username(db: RbacFakeDb) -> None:
+    """Смена телеграма НЕ пересчитывает `username` (ADR-079 §9: стабильность `sub` JWT)."""
+    role = next(iter(db.roles.values()))
+    user = db.add_user("ivan_nick", role, telegram="ivan_nick")
+    service = _service(db)
+
+    item = await service.update_user(user.id, UserUpdateRequest(telegram="@New_nick"))
+
+    assert item.telegram == "new_nick"
+    assert item.username == "ivan_nick"
 
 
 @pytest.mark.asyncio
@@ -363,9 +496,11 @@ async def test_create_user_nonexistent_team_id_is_422_field_team_ids(db: RbacFak
     with pytest.raises(AppError) as exc:
         await service.create_user(
             UserCreateRequest(
-                username="Никита",
+                last_name="Петров",
+                first_name="Никита",
+                telegram="nikita_01",
                 password="s3cret-pass",
-                role_id=role.id,
+                role_ids=[role.id],
                 team_ids=[uuid.uuid4()],
             )
         )
@@ -382,7 +517,12 @@ async def test_create_user_with_team_ids_reflected_in_response(db: RbacFakeDb) -
 
     item = await service.create_user(
         UserCreateRequest(
-            username="Никита", password="s3cret-pass", role_id=role.id, team_ids=[team.id]
+            last_name="Петров",
+            first_name="Никита",
+            telegram="nikita_01",
+            password="s3cret-pass",
+            role_ids=[role.id],
+            team_ids=[team.id],
         )
     )
 

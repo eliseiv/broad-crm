@@ -82,7 +82,13 @@ async def test_created_user_status_is_pending_in_201_body() -> None:
     async with _client(app) as client:
         created = await client.post(
             "/api/users",
-            json={"username": "Новый", "password": "s3cret-pass", "role_id": str(role.id)},
+            json={
+                "last_name": "Новиков",
+                "first_name": "Новый",
+                "telegram": "novyi_0001",
+                "password": "s3cret-pass",
+                "role_ids": [str(role.id)],
+            },
         )
 
     assert created.status_code == 201

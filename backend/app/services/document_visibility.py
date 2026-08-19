@@ -22,8 +22,9 @@ async def resolve_visible_node(
     """Узел, если он существует, не soft-deleted и виден в `scope`; иначе `None`.
 
     Admin-уровень (`sees_all`) видит всё. Иначе узел виден ⇔ он публичен внутри модуля
-    (нет `restricted`-предка до корня) ИЛИ роль пользователя входит в набор ролей
-    управляющего `restricted`-узла.
+    (нет `restricted`-предка до корня) ИЛИ набор ролей управляющего `restricted`-узла
+    пересекается с ролями пользователя (по ЛЮБОЙ из ролей, ADR-079 §4). Пустой
+    `scope.role_ids` → виден только публичный узел.
     """
     node = await repo.get_node(node_id)
     if node is None:
@@ -33,8 +34,8 @@ async def resolve_visible_node(
     governing = await repo.governing_restricted(node_id)
     if governing is None:
         return node
-    role_ids = await repo.node_role_ids(governing)
-    if scope.role_id is not None and scope.role_id in role_ids:
+    node_role_ids = await repo.node_role_ids(governing)
+    if scope.role_ids & node_role_ids:
         return node
     return None
 

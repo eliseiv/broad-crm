@@ -63,7 +63,12 @@ async def test_orphan_bound_on_user_create(monkeypatch: pytest.MonkeyPatch) -> N
             svc = _user_service(s)
             # Создаём пользователя с telegram `@Katetown` — нормализуется в `katetown`.
             await svc.create_user(
-                UserCreateRequest(username="katya", telegram="@Katetown", role_id=role_id)
+                UserCreateRequest(
+                    last_name="Катина",
+                    first_name="Катя",
+                    telegram="@Katetown",
+                    role_ids=[role_id],
+                )
             )
         bound = await _link_user_id(sm, 101)
     assert bound is not None  # orphan связан синхронным хуком при создании

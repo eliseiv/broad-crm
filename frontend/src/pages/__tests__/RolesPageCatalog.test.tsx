@@ -29,7 +29,9 @@ const ROLES = {
 
 function wrapper({ children }: PropsWithChildren) {
   return (
-    <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
       {children}
     </QueryClientProvider>
   );
@@ -54,22 +56,24 @@ describe('RolesPage — матрица по-прежнему из GET /permissio
       if (path.includes('/roles')) {
         return Promise.resolve(new Response(JSON.stringify(ROLES)));
       }
-      return Promise.resolve(new Response(JSON.stringify({ error: { code: 'not_found' } }), { status: 404 }));
+      return Promise.resolve(
+        new Response(JSON.stringify({ error: { code: 'not_found' } }), { status: 404 }),
+      );
     });
     vi.stubGlobal('fetch', fetchMock);
 
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       isAdminLevel: false,
       permissions: { roles: ['view', 'create', 'edit'] },
     });
     render(<RolesPage />, { wrapper });
 
     await waitFor(() => {
-      expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/permissions/catalog'))).toBe(
-        true,
-      );
+      expect(
+        fetchMock.mock.calls.some(([url]) => String(url).includes('/permissions/catalog')),
+      ).toBe(true);
     });
 
     const user = userEvent.setup();

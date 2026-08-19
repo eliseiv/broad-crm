@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import and_, bindparam, delete, func, insert, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,7 +26,8 @@ _ORDER_BY = "ORDER BY dn.position ASC, dn.created_at DESC, dn.id ASC"
 
 # Top-down рекурсивный CTE: пропагирует «управляющий» (`gov`) ближайший `restricted`-предок
 # (включая сам узел) вниз по дереву. Узел виден ⇔ `gov IS NULL` (публичен — нет
-# `restricted`-предка до корня) ИЛИ роль пользователя ∈ набор ролей узла `gov`.
+# `restricted`-предка до корня) ИЛИ набор ролей узла `gov` пересекается с ролями
+# пользователя (видимость по ЛЮБОЙ из ролей, ADR-079 §4).
 _VISIBLE_CTE = """
 WITH RECURSIVE tree AS (
     SELECT n.id AS id, n.parent_id AS parent_id, n.visibility_mode AS visibility_mode,
@@ -46,17 +48,17 @@ WHERE ({visibility_clause})
 {order_by}
 """
 
-# Предикат видимости узла. Публичен (`gov IS NULL`) — виден всегда; иначе роль
-# пользователя должна входить в набор ролей управляющего `restricted`-узла.
-_VISIBLE_WITH_ROLE = (
+# Предикат видимости узла. Публичен (`gov IS NULL`) — виден всегда; иначе набор ролей
+# управляющего `restricted`-узла должен пересекаться с ролями пользователя (видимость по
+# ЛЮБОЙ из ролей, ADR-079 §4). `:role_ids` — expanding-bindparam (кортеж строк-UUID).
+_VISIBLE_WITH_ROLES = (
     "t.gov IS NULL OR EXISTS ("
     "SELECT 1 FROM document_node_roles r "
-    "WHERE r.node_id = t.gov AND r.role_id = CAST(:role_id AS uuid))"
+    "WHERE r.node_id = t.gov AND r.role_id IN :role_ids)"
 )
-# `role_id is None` (нет роли — напр. будущий не-admin актор без строки в `users`):
-# симметрично `_ensure_visible` виден ТОЛЬКО публичный узел. Раньше сюда уходила пустая
-# строка в `CAST('' AS uuid)` → `invalid input syntax for type uuid` (500); теперь путь
-# без `:role_id` вовсе (bindparam не передаётся).
+# Пустой набор ролей (консольный супер-админ; не-admin актор без строк в `user_roles`):
+# симметрично `_ensure_visible` виден ТОЛЬКО публичный узел. Отдельная ветка обязательна —
+# `IN ()` в SQL синтаксически невозможен, а пустой expanding-параметр дал бы 500.
 _VISIBLE_PUBLIC_ONLY = "t.gov IS NULL"
 
 # Ближайший `restricted`-предок узла (03-data-model.md#резолюция-эффективной-видимости).
@@ -211,10 +213,13 @@ class DocumentRepository:
             return list(result.scalars().all())
 
         parent_clause = ""
-        params: dict[str, str] = {}
-        if scope.role_id is not None:
-            visibility_clause = _VISIBLE_WITH_ROLE
-            params["role_id"] = str(scope.role_id)
+        params: dict[str, Any] = {}
+        bind_params: list[Any] = []
+        if scope.role_ids:
+            visibility_clause = _VISIBLE_WITH_ROLES
+            bind_params.append(
+                bindparam("role_ids", value=sorted(scope.role_ids, key=str), expanding=True)
+            )
         else:
             visibility_clause = _VISIBLE_PUBLIC_ONLY
         if parent_filter:
@@ -228,7 +233,8 @@ class DocumentRepository:
             parent_clause=parent_clause,
             order_by=_ORDER_BY,
         )
-        orm_stmt = select(DocumentNode).from_statement(text(sql).bindparams(**params))
+        statement = text(sql).bindparams(*bind_params, **params)
+        orm_stmt = select(DocumentNode).from_statement(statement)
         result = await self._session.execute(orm_stmt)
         return list(result.scalars().all())
 

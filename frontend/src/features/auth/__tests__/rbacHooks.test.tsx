@@ -17,7 +17,7 @@ describe('useCan / useIsAdmin (UI-гейтинг RBAC, ADR-021)', () => {
   it('operator is gated by its permissions map', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { servers: ['view'], mail: ['view'] },
     });
 
@@ -28,7 +28,7 @@ describe('useCan / useIsAdmin (UI-гейтинг RBAC, ADR-021)', () => {
   });
 
   it('a DB user whose role is named admin passes useIsAdmin', () => {
-    loginAs({ isSuperadmin: false, role: 'admin', permissions: {} });
+    loginAs({ isSuperadmin: false, roles: ['admin'], permissions: {} });
 
     expect(renderHook(() => useIsAdmin()).result.current).toBe(true);
   });
@@ -36,7 +36,7 @@ describe('useCan / useIsAdmin (UI-гейтинг RBAC, ADR-021)', () => {
   it('роль «Админ»: useIsAdmin ⇔ isAdminLevel из стора, не имя роли (ADR-078)', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Админ',
+      roles: ['Админ'],
       isAdminLevel: true,
       permissions: {},
     });
@@ -44,7 +44,7 @@ describe('useCan / useIsAdmin (UI-гейтинг RBAC, ADR-021)', () => {
 
     loginAs({
       isSuperadmin: false,
-      role: 'Админ',
+      roles: ['Админ'],
       isAdminLevel: false,
       permissions: { documents: ['view', 'share'] },
     });
@@ -52,7 +52,7 @@ describe('useCan / useIsAdmin (UI-гейтинг RBAC, ADR-021)', () => {
   });
 
   it('a user without loaded permissions can do nothing', () => {
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: {} });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: {} });
 
     expect(renderHook(() => useCan('servers', 'view')).result.current).toBe(false);
     expect(renderHook(() => useIsAdmin()).result.current).toBe(false);
@@ -73,7 +73,7 @@ describe('useCanViewPage (page-level view-guard, ADR-021 §6)', () => {
   });
 
   it('a DB user with role admin can view any page (даже с пустыми permissions)', () => {
-    loginAs({ isSuperadmin: false, role: 'admin', permissions: {} });
+    loginAs({ isSuperadmin: false, roles: ['admin'], permissions: {} });
 
     expect(renderHook(() => useCanViewPage('dashboard')).result.current).toBe(true);
     expect(renderHook(() => useCanViewPage('mail')).result.current).toBe(true);
@@ -83,7 +83,7 @@ describe('useCanViewPage (page-level view-guard, ADR-021 §6)', () => {
   it('a regular user can view a page iff view ∈ permissions[page]', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { mail: ['view'], servers: ['view', 'edit'] },
     });
 
@@ -96,7 +96,7 @@ describe('useCanViewPage (page-level view-guard, ADR-021 §6)', () => {
 
   it('a page present without the view action is not viewable', () => {
     // Ключ страницы есть, но без действия `view` (напр. только create) → нет доступа.
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { servers: ['create'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { servers: ['create'] } });
 
     expect(renderHook(() => useCanViewPage('servers')).result.current).toBe(false);
   });

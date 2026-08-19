@@ -63,7 +63,7 @@ async def me(principal: PrincipalDep, session: DbSession) -> MeResponse:
     )
     return MeResponse(
         username=principal.username,
-        role=principal.role,
+        roles=list(principal.roles),
         is_superadmin=principal.is_superadmin,
         is_admin_level=is_admin_level(principal),
         permissions=principal.permissions,

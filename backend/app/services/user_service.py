@@ -1,9 +1,16 @@
-"""Бизнес-логика реестра пользователей (modules/auth, 04-api.md#users, ADR-021/022/025/026).
+"""Бизнес-логика реестра пользователей (modules/auth, 04-api.md#users, ADR-021/022/025/026/079).
 
 Пароль хранится только как bcrypt-хэш; plaintext не возвращается/не логируется. Пароль
-**опционален** (беспарольный пользователь — «открытый первый вход», ADR-025). Контакт —
-`telegram` (опц., заменяет прежний email). Членство в CRM-командах (`team_ids`) — ADR-022;
-при исключении из команды, которую пользователь ведёт, лидерство авто-передаётся (ADR-026).
+**опционален** (беспарольный пользователь — «открытый первый вход», ADR-025).
+
+**ADR-079:** роли — M2M (`role_ids`, минимум одна — инвариант СЕРВИСА, 422); ФИО
+(`last_name`/`first_name` обязательны, `middle_name` опционально); `telegram`
+**обязателен** при создании и **не очищается** через `PATCH`; `username` из формы удалён —
+сервис выводит его из телеграм-ника при создании и **не пересчитывает** при смене
+телеграма (стабильность `sub` уже выпущенных токенов).
+
+Членство в CRM-командах (`team_ids`) — ADR-022; при исключении из команды, которую
+пользователь ведёт, лидерство авто-передаётся (ADR-026).
 """
 
 from __future__ import annotations
@@ -34,6 +41,7 @@ from app.repositories.team_repository import TeamRepository
 from app.repositories.user_channel_team_repository import UserChannelTeamRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.user import (
+    RoleRef,
     TeamRef,
     UserCreateRequest,
     UserListItem,
@@ -52,14 +60,18 @@ _MAIL_EXTRA_FIELD = "mail_extra_team_ids"
 _SMS_EXTRA_FIELD = "sms_extra_team_ids"
 
 
-def _validate_username(raw: str) -> str:
-    """Валидирует/нормализует username; нарушение → 422 unprocessable."""
+def _validate_name_part(raw: str, *, field: str) -> str:
+    """Валидирует/нормализует часть ФИО; нарушение → 422 unprocessable (ADR-079 §7).
+
+    Правило то же, что у `username` (кириллица-допускающее, 03-data-model.md) — оно
+    переиспользуется намеренно, чтобы не заводить второй набор допустимых символов.
+    """
     try:
         return validate_identity_name(raw)
     except IdentityNameError as exc:
         raise unprocessable(
-            "Недопустимое имя пользователя",
-            details=[{"field": "username", "message": str(exc)}],
+            "Недопустимая часть ФИО",
+            details=[{"field": field, "message": str(exc)}],
         ) from exc
 
 
@@ -84,7 +96,7 @@ def _validate_password_length(password: str) -> None:
 
 
 class UserService:
-    """CRUD реестра пользователей: username/telegram/role/пароль (опц.), команды, доп-команды."""
+    """CRUD реестра пользователей: ФИО/telegram/роли (M2M)/пароль (опц.), команды, доп-команды."""
 
     def __init__(
         self,
@@ -116,23 +128,29 @@ class UserService:
         )
 
     async def create_user(self, payload: UserCreateRequest) -> UserListItem:
-        """Создаёт пользователя. Прецеденция: username/telegram/password-формат (422) →
-        существование role_id/team_ids/*_extra_team_ids (422) → уникальность username (409) →
-        уникальность telegram (409). Пароль опционален (беспарольный при отсутствии).
+        """Создаёт пользователя. Прецеденция (ADR-079 §9, нормативно): формат ФИО/
+        telegram/password (422) → непустота и существование `role_ids`, существование
+        `team_ids`/`*_extra_team_ids` (422) → **уникальность telegram (409
+        telegram_taken)** → уникальность выведенного username (409 username_taken).
 
-        Доп-команды каналов (ADR-055 §5.2) сохраняются **за вычетом базовых** (инвариант
-        §2.3: базовые команды и так входят в scope обоих каналов) — присланная базовая
-        команда в добавке не ошибка, просто не хранится."""
-        username = _validate_username(payload.username)
-        telegram = self._normalize_optional_telegram(payload.telegram)
+        **`username` не приходит из формы** — сервис выводит его из телеграм-ника
+        (`normalize_telegram`, §9): поля «Логин» в UI больше нет. Порядок двух `409`
+        изменён ADR-079 §9: оба конфликта порождены ОДНИМ введённым значением, поэтому
+        первой называется прямая причина (`telegram_taken`), а не побочная.
+
+        Пароль опционален (беспарольный при отсутствии). Доп-команды каналов (ADR-055
+        §5.2) сохраняются **за вычетом базовых** (инвариант §2.3: базовые команды и так
+        входят в scope обоих каналов) — присланная базовая команда в добавке не ошибка,
+        просто не хранится."""
+        last_name = _validate_name_part(payload.last_name, field="last_name")
+        first_name = _validate_name_part(payload.first_name, field="first_name")
+        middle_name = self._normalize_optional_middle_name(payload.middle_name)
+        telegram = self._require_telegram(payload.telegram)
+        # `username` выводится из телеграм-ника и больше не вводится оператором (§9).
+        username = telegram
         password_hash = self._optional_password_hash(payload.password)
 
-        role = await self._roles.get_by_id(payload.role_id)
-        if role is None:
-            raise unprocessable(
-                "Роль не найдена",
-                details=[{"field": "role_id", "message": "Роль не существует"}],
-            )
+        role_ids = await self._validate_role_ids(payload.role_ids)
 
         team_ids = await self._validate_team_ids(payload.team_ids)
         extras = {
@@ -144,36 +162,40 @@ class UserService:
             ),
         }
 
+        # Прецеденция ADR-079 §9: telegram_taken ПРЕЖДЕ username_taken.
+        if await self._users.exists_by_telegram(telegram):
+            raise telegram_taken()
         if await self._users.exists_by_username(username):
             raise username_taken()
-        if telegram is not None and await self._users.exists_by_telegram(telegram):
-            raise telegram_taken()
 
         try:
             user = await self._users.create(
                 username=username,
                 telegram=telegram,
                 password_hash=password_hash,
-                role_id=payload.role_id,
+                last_name=last_name,
+                first_name=first_name,
+                middle_name=middle_name,
             )
+            await self._users.set_roles(user.id, role_ids)
             user.mail_includes_unassigned = payload.mail_extra_includes_unassigned
             user.sms_includes_unassigned = payload.sms_extra_includes_unassigned
             await self._users.set_membership(user.id, team_ids)
             for channel, extra_ids in extras.items():
                 # Инвариант §2.3: в добавке не хранятся базовые команды.
                 await self._channels.replace_extras(user.id, channel, extra_ids - team_ids)
-            if telegram is not None:
-                # Ленивый резолв orphan-линков почты (ADR-044 §6, синхронный хук):
-                # связать привязки с этим username, ожидавшие появления пользователя.
-                await MailTelegramLinkRepository(self._users.session).bind_orphans_for_user(
-                    user_id=user.id, username=telegram
-                )
+            # Ленивый резолв orphan-линков почты (ADR-044 §6, синхронный хук):
+            # связать привязки с этим username, ожидавшие появления пользователя.
+            await MailTelegramLinkRepository(self._users.session).bind_orphans_for_user(
+                user_id=user.id, username=telegram
+            )
             await self._users.session.commit()
         except IntegrityError as exc:
             await self._users.session.rollback()
             logger.info("user_create_conflict")
-            # Гонка на уникальность username/telegram между проверкой и вставкой.
-            if telegram is not None and await self._users.exists_by_telegram(telegram):
+            # Гонка на уникальность telegram/username между проверкой и вставкой —
+            # тот же порядок исходов, что и у проактивных проверок выше.
+            if await self._users.exists_by_telegram(telegram):
                 raise telegram_taken() from exc
             raise username_taken() from exc
 
@@ -183,10 +205,20 @@ class UserService:
         return await self._to_item_reloaded(reloaded)
 
     async def update_user(self, user_id: uuid.UUID, payload: UserUpdateRequest) -> UserListItem:
-        """Редактирует telegram/роль/статус/пароль/команды/доп-команды каналов.
-        404 → 422 → 409 (telegram). username не редактируется. При исключении из ведомой
-        команды — авто-передача лидерства (ADR-026). Деактивация аннулирует JWT на
-        следующем запросе.
+        """Редактирует ФИО/telegram/роли/статус/пароль/команды/доп-команды каналов.
+        404 → 422 → 409 (telegram).
+
+        **`username` не редактируется и НЕ пересчитывается при смене telegram**
+        (ADR-079 §9): иначе поменялся бы `sub` уже выпущенных токенов и ключ
+        bootstrap-резолва внешнего контура. Поэтому `username_taken` здесь недостижим.
+
+        ФИО (§7): `last_name`/`first_name` — очистка (`null`/`""`) запрещена (422);
+        `middle_name` — единственная снимаемая часть. `telegram` (§8) — **очистка
+        запрещена** (422): поля «Логин» в UI нет, пользователь остался бы без способа
+        входа. `role_ids` — полная замена набора, `[]` → 422.
+
+        При исключении из ведомой команды — авто-передача лидерства (ADR-026).
+        Деактивация аннулирует JWT на следующем запросе.
 
         Доп-команды каналов (ADR-055 §5.2/§2.3): поле не передано → набор канала не менять;
         передано → полностью заменить. Из сохраняемого набора **вычитается** эффективный
@@ -199,24 +231,37 @@ class UserService:
 
         fields_set = payload.model_fields_set
 
-        new_telegram: str | None = None
-        clear_telegram = False
-        if "telegram" in fields_set:
-            if payload.telegram is None or payload.telegram == "":
-                clear_telegram = True
-            else:
-                new_telegram = _validate_telegram(payload.telegram)
+        new_last_name = (
+            self._require_name_part(payload.last_name, field="last_name")
+            if "last_name" in fields_set
+            else None
+        )
+        new_first_name = (
+            self._require_name_part(payload.first_name, field="first_name")
+            if "first_name" in fields_set
+            else None
+        )
+        # Отчество — единственная часть ФИО, которую можно снять (`null`/`""` → NULL).
+        middle_name_touched = "middle_name" in fields_set
+        new_middle_name = (
+            self._normalize_optional_middle_name(payload.middle_name)
+            if middle_name_touched
+            else None
+        )
 
-        if "role_id" in fields_set and payload.role_id is not None:
-            role = await self._roles.get_by_id(payload.role_id)
-            if role is None:
+        new_telegram: str | None = None
+        if "telegram" in fields_set:
+            # Очистка запрещена (ADR-079 §8): `null`/`""` → 422, а не «убрать телеграм».
+            new_telegram = self._require_telegram(payload.telegram)
+
+        requested_roles: set[uuid.UUID] | None = None
+        if "role_ids" in fields_set:
+            if payload.role_ids is None:
                 raise unprocessable(
-                    "Роль не найдена",
-                    details=[{"field": "role_id", "message": "Роль не существует"}],
+                    "Нужна хотя бы одна роль",
+                    details=[{"field": "role_ids", "message": "Список ролей пуст"}],
                 )
-            # Присваиваем связь (а не только FK), чтобы `user.role` не остался
-            # устаревшим (иначе role_name в ответе показал бы старую роль).
-            user.role = role
+            requested_roles = await self._validate_role_ids(payload.role_ids)
 
         if "password" in fields_set and payload.password is not None:
             _validate_password_length(payload.password)
@@ -241,10 +286,18 @@ class UserService:
         ):
             raise telegram_taken()
 
-        if clear_telegram:
-            user.telegram = None
-        elif new_telegram is not None:
+        if new_last_name is not None:
+            user.last_name = new_last_name
+        if new_first_name is not None:
+            user.first_name = new_first_name
+        if middle_name_touched:
+            user.middle_name = new_middle_name
+
+        if new_telegram is not None:
             user.telegram = new_telegram
+
+        if requested_roles is not None:
+            await self._users.set_roles(user_id, requested_roles)
 
         if "password" in fields_set and payload.password is not None:
             user.password_hash = hash_password(payload.password)
@@ -380,11 +433,56 @@ class UserService:
         return hash_password(raw)
 
     @staticmethod
-    def _normalize_optional_telegram(raw: str | None) -> str | None:
-        """Опциональный telegram: None/`""` → None; иначе валидирует/нормализует (422)."""
-        if raw is None or raw == "":
-            return None
+    def _require_telegram(raw: str | None) -> str:
+        """Обязательный telegram (ADR-079 §8): None/`""` → 422; иначе нормализованный канон.
+
+        Общий валидатор для `POST` (поле обязательно) и `PATCH` (очистка **запрещена** —
+        прежняя норма «`null`/`""` → убрать телеграм» отменена).
+        """
+        if raw is None or raw.strip() == "":
+            raise unprocessable(
+                "Телеграм-ник обязателен",
+                details=[{"field": "telegram", "message": "Телеграм-ник не задан"}],
+            )
         return _validate_telegram(raw)
+
+    @staticmethod
+    def _require_name_part(raw: str | None, *, field: str) -> str:
+        """Обязательная часть ФИО в `PATCH` (ADR-079 §7): `null`/`""` → 422."""
+        if raw is None or raw.strip() == "":
+            raise unprocessable(
+                "Часть ФИО обязательна",
+                details=[{"field": field, "message": "Значение не задано"}],
+            )
+        return _validate_name_part(raw, field=field)
+
+    @staticmethod
+    def _normalize_optional_middle_name(raw: str | None) -> str | None:
+        """Отчество: None/`""` → None (снять); иначе валидирует/нормализует (422)."""
+        if raw is None or raw.strip() == "":
+            return None
+        return _validate_name_part(raw, field="middle_name")
+
+    async def _validate_role_ids(self, role_ids: list[uuid.UUID]) -> set[uuid.UUID]:
+        """Непустой набор существующих ролей (ADR-079 §1); иначе → 422.
+
+        «Минимум одна роль» — инвариант **сервиса**, а не БД: выразить «≥1 строка в
+        дочерней таблице» без триггера/`DEFERRABLE`-констрейнта нельзя, а триггеров в
+        проекте нет ни одного.
+        """
+        requested = set(role_ids)
+        if not requested:
+            raise unprocessable(
+                "Нужна хотя бы одна роль",
+                details=[{"field": "role_ids", "message": "Список ролей пуст"}],
+            )
+        existing = await self._roles.existing_ids(requested)
+        if existing != requested:
+            raise unprocessable(
+                "Роль не найдена",
+                details=[{"field": "role_ids", "message": "Роль не существует"}],
+            )
+        return requested
 
     async def _validate_team_ids(self, team_ids: list[uuid.UUID]) -> set[uuid.UUID]:
         """Проверяет существование всех team_ids; несуществующие → 422. Возвращает set."""
@@ -453,10 +551,12 @@ class UserService:
         return UserListItem(
             id=user.id,
             username=user.username,
+            last_name=user.last_name,
+            first_name=user.first_name,
+            middle_name=user.middle_name,
             telegram=user.telegram,
             has_password=user.password_hash is not None,
-            role_id=user.role_id,
-            role_name=user.role.name,
+            roles=[RoleRef(id=role.id, name=role.name) for role in user.roles],
             is_active=user.is_active,
             status=UserService._derive_status(user),
             teams=[TeamRef(id=team.id, name=team.name) for team in user.teams],

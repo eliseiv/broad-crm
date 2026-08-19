@@ -66,7 +66,7 @@ describe('App routing (permission-aware default без /dashboard, ADR-022)', ()
   });
 
   it('resolves the default to the first tab the user can reach (no mail → /servers)', () => {
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { servers: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { servers: ['view'] } });
     renderAt('/');
     expect(screen.getByText('SERVERS')).toBeInTheDocument();
   });

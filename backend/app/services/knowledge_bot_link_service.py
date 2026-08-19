@@ -7,7 +7,11 @@
 
 from __future__ import annotations
 
-from app.domain.permissions import full_catalog_permissions, permissions_subset
+from app.domain.permissions import (
+    full_catalog_permissions,
+    permissions_subset,
+    union_permissions,
+)
 from app.domain.telegram import normalize_telegram
 from app.errors import user_not_linked
 from app.models.user import User
@@ -16,6 +20,7 @@ from app.repositories.mail_telegram_link_repository import MailTelegramLinkRepos
 from app.repositories.sms_telegram_link_repository import SmsTelegramLinkRepository
 from app.repositories.user_repository import UserRepository
 from app.schemas.documents import ExternalUserAccessResponse
+from app.schemas.user import RoleRef
 
 
 class KnowledgeBotLinkService:
@@ -62,12 +67,25 @@ class KnowledgeBotLinkService:
         return self.to_access_response(user)
 
     def to_access_response(self, user: User) -> ExternalUserAccessResponse:
-        """`ExternalUserAccessResponse`: `sees_all_documents` = полный каталог роли."""
-        permissions = dict(user.role.permissions or {})
+        """`ExternalUserAccessResponse`: `sees_all_documents` = полный каталог по union.
+
+        Контракт расширен **аддитивно** (ADR-079 §6 — ломать чужой репозиторий
+        ba-knowledge-base синхронно нельзя): `role_id`/`role_name` сохраняются и несут
+        **первую** роль (`User.roles` уже упорядочены `created_at ASC, role_id ASC`),
+        новое поле `roles` несёт полный набор. Долг на снятие пары — TD-084.
+
+        Пользователь без ролей (заведён прямым SQL) в контракт не укладывается —
+        `role_id` там non-null; отдаём `user_not_linked`, а не 500 на `IndexError`.
+        """
+        if not user.roles:
+            raise user_not_linked()
+        primary = user.roles[0]
+        permissions = union_permissions(dict(role.permissions or {}) for role in user.roles)
         return ExternalUserAccessResponse(
             user_id=user.id,
-            role_id=user.role_id,
-            role_name=user.role.name,
+            role_id=primary.id,
+            role_name=primary.name,
+            roles=[RoleRef(id=role.id, name=role.name) for role in user.roles],
             sees_all_documents=permissions_subset(full_catalog_permissions(), permissions),
         )
 

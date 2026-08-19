@@ -32,6 +32,7 @@ import pytest
 from app.models import Base
 from app.models.role import Role
 from app.models.user import User
+from app.models.user_role import user_roles
 from app.repositories.mail_account_repository import MailAccountRepository
 from app.repositories.sms_number_repository import SmsNumberRepository
 from app.repositories.team_repository import TeamRepository
@@ -39,6 +40,7 @@ from app.repositories.user_channel_team_repository import UserChannelTeamReposit
 from app.repositories.user_repository import UserRepository
 from app.schemas.team import TeamCreateRequest, TeamListItem, TeamUpdateRequest
 from app.services.team_service import TeamService
+from sqlalchemy import insert
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -93,13 +95,16 @@ async def _seed_users(
         users = [
             User(
                 username=f"u-{uuid.uuid4().hex[:10]}",
-                role_id=role.id,
                 password_hash="x",
                 is_active=True,
             )
             for _ in range(count)
         ]
         session.add_all(users)
+        await session.flush()
+        # Роли — M2M (ADR-079 §1): колонки `users.role_id` больше нет.
+        for user in users:
+            await session.execute(insert(user_roles).values(user_id=user.id, role_id=role.id))
         await session.commit()
         return [(user.id, user.username) for user in users]
 

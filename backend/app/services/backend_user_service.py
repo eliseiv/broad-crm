@@ -1,24 +1,32 @@
-"""Бизнес-логика страницы «Пользователи бэков» (modules/backend-users).
+"""Бизнес-логика страницы «Пользователи бэков» (modules/backend-users, ADR-069/080).
 
-CRM — прокси к CRM Admin API бэков (contract v1): собственного хранилища
-пользователей бэков нет, admin-ключ расшифровывается в памяти обработчика и
-уходит только заголовком `X-Admin-Key` (во frontend не попадает).
+Admin-ключ бэка расшифровывается в памяти обработчика и уходит только заголовком
+`X-Admin-Key` (во frontend не попадает).
 
-Режим «Все приложения»: fan-out по всем бэкам с заданным admin-ключом
-(конкурентно, семафор как у монитора), merge отсортированных по `registered_at
-DESC` списков и срез [offset, offset+limit). Контракт ограничивает страницу
-источника 100 записями, поэтому окно добирается постраничным дочитыванием;
-глубина окна ограничена `_MAX_WINDOW` (глубже UI не листает). Упавший источник
-не роняет ответ — он попадает в `errors[]` (partial-data warning в UI). Туда же
-попадает бэк реестра БЕЗ admin-ключа: опросить его нельзя, но и молчать нельзя —
-иначе «Ничего не найдено» неотличимо от «пользователя нет» (прод-инцидент
-`selquro`, ADR-069).
+**Список читается из Postgres-снимка** (ADR-080 §2/§3 — норма ADR-069 §3 «прокси без
+хранилища» для этого модуля отменена): один SQL с `JOIN backends` вместо десятков
+upstream-запросов на рендер, сортировка `registered_at DESC, backend_id, user_id`,
+окно merge ≤ 1000 упразднено. Снимок наполняет фоновый воркер
+`BackendUsersSnapshotService`; его возраст виден оператору через `snapshot_at`.
+
+**Точечные и пишущие пути остаются live** (§4): карточка, оплаты, запросы, тарифы,
+начисление токенов, выдача подписки. После успешных admin-мутаций строка снимка
+обновляется **best-effort** значениями из ответа бэка — провал touch'а не превращает
+состоявшуюся операцию в ошибку.
+
+**Бэки БЕЗ admin-ключа скрыты** (§1): они не опрашиваются и в `errors[]` не попадают
+никогда — элемент `errors[]` означает «источник опрашивался и не ответил». Прод-инцидент
+`selquro` закрыт другим средством: фильтр приложений на странице строится по
+`has_admin_api_key`, а пустое состояние прямо говорит «подключите бэк с Admin API Key».
+Режим ОДНОГО бэка не меняется: явный `backend_id` без ключа → `409
+backend_admin_key_not_set` (осознанное действие оператора, а не фоновая конфигурация).
 """
 
 from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any, TypeVar
 
@@ -32,6 +40,11 @@ from app.infra.backend_admin_client import BackendAdminClient
 from app.logging import get_logger
 from app.models.service_backend import Backend
 from app.repositories.backend_repository import BackendRepository
+from app.repositories.backend_user_snapshot_repository import (
+    BackendUserSnapshotRepository,
+    SnapshotRow,
+    SnapshotSourceState,
+)
 from app.schemas.backend_user import (
     AddBackendUserTokensRequest,
     BackendProductsResponse,
@@ -40,6 +53,7 @@ from app.schemas.backend_user import (
     BackendUserItem,
     BackendUserPaymentsResponse,
     BackendUserRequestsResponse,
+    BackendUsersApiCosts,
     BackendUsersListResponse,
     BackendUsersSourceError,
     BackendUsersStats,
@@ -47,20 +61,18 @@ from app.schemas.backend_user import (
     GrantBackendUserSubscriptionRequest,
 )
 from app.services.backend_admin_source import BackendAdminSourceResolver, BackendSource
+from app.services.backend_users_snapshot_service import (
+    PROVIDER_KEYS,
+    PROVIDER_OTHER,
+    normalize_provider,
+)
 
 logger = get_logger(__name__)
 
-# Максимум одновременных admin-запросов при fan-out (паттерн backend_monitor_service).
+# Максимум одновременных admin-запросов при live fan-out `stats` (паттерн монитора).
 _FANOUT_CONCURRENCY = 5
 
-# Страница источника по контракту (§2.1: limit <= 100).
-_SOURCE_PAGE_LIMIT = 100
-
-# Предел глубины окна merge-пагинации «Все приложения» (защита от дорогих глубоких страниц).
-_MAX_WINDOW = 1000
-
 _CONTRACT_MISMATCH = "Бэк вернул данные не по контракту"
-_ADMIN_KEY_NOT_SET = "Admin API Key не задан в CRM — бэк НЕ опрошен"
 
 
 def _backend_fields(backend: Backend) -> dict[str, Any]:
@@ -74,20 +86,135 @@ def _backend_fields(backend: Backend) -> dict[str, Any]:
 _ModelT = TypeVar("_ModelT", bound=BaseModel)
 
 
-def _sort_key(item: BackendUserItem) -> datetime:
-    """Ключ merge-сортировки: naive-метки трактуем как UTC (контракт требует UTC)."""
-    dt = item.registered_at
-    return dt if dt.tzinfo is not None else dt.replace(tzinfo=UTC)
+def _parse_date_bound(raw: str | None, *, end_of_day: bool) -> datetime | None:
+    """ISO-дата/датавремя фильтра периода → tz-aware граница; мусор → `None`.
+
+    Голая дата (`2026-08-19`) как ВЕРХНЯЯ граница разворачивается в конец суток —
+    иначе `date_to` отсекал бы всех, кто зарегистрировался в этот день позже полуночи.
+    Неразбираемое значение не 400-ит запрос (сигнатура эндпоинта не менялась, а прежний
+    путь просто транслировал строку бэку) — фильтр по этой границе не применяется.
+    """
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if len(raw.strip()) == 10 and end_of_day:
+        parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
+
+
+def _snapshot_item(row: SnapshotRow) -> BackendUserItem:
+    """Строка снимка → элемент контракта (форма ответа не меняется, ADR-080 §6)."""
+    return BackendUserItem(
+        backend_id=row.backend_id,
+        backend_code=row.backend_code,
+        backend_name=row.backend_name,
+        id=row.user_id,
+        external_id=row.external_id,
+        is_paid=bool(row.is_paid),
+        payments_count=row.payments_count or 0,
+        renewals_count=row.renewals_count or 0,
+        tokens=row.tokens or 0,
+        subscription_active=bool(row.subscription_active),
+        subscription_expires_at=row.subscription_expires_at,
+        plan_id=row.plan_id,
+        registered_at=row.registered_at,
+    )
+
+
+def _snapshot_at(
+    backend_ids: list[uuid.UUID], states: list[SnapshotSourceState]
+) -> datetime | None:
+    """`MIN(refreshed_at)` по участвующим источникам; хоть один не собран → `None`.
+
+    «Не собран» — это и источник без строки состояния (воркер до него не доходил), и
+    строка с `refreshed_at IS NULL`: метка свежести обязана быть честной для ВСЕЙ
+    выдачи, а не для её собранной части.
+    """
+    by_id = {state.backend_id: state for state in states}
+    marks: list[datetime] = []
+    for backend_id in backend_ids:
+        state = by_id.get(backend_id)
+        if state is None or state.refreshed_at is None:
+            return None
+        marks.append(state.refreshed_at)
+    return min(marks) if marks else None
+
+
+def _api_costs(
+    backend_ids: list[uuid.UUID], states: list[SnapshotSourceState]
+) -> BackendUsersApiCosts | None:
+    """Агрегат «Расходы API» + `partial` (ADR-080 §5, нормативно).
+
+    ```
+    partial = ∃ участвующий источник:  revenue_backfill_done = false
+                                       OR revenue_supported IS FALSE
+    ```
+
+    Второй дизъюнкт закрывает дыру: карточка бэка **уровня v1** (без блока `revenue`)
+    при доборе тоже получает `revenue_refreshed_at` и покидает очередь ⇒
+    `revenue_backfill_done` у него честно становится `true`, а сумма занижена НАВСЕГДА.
+    Строго `IS FALSE`, а не `IS NOT TRUE`: состояние `NULL` («карточек ещё не добирали»)
+    уже покрыто первым дизъюнктом, и дублировать его значило бы держать одно состояние
+    в двух местах предиката.
+
+    Признак читается со строк ИСТОЧНИКОВ — `O(число бэков)`; сканировать
+    `backend_user_snapshots` (`api_cost_usd IS NULL`) ради того же вывода запрещено.
+
+    Ни одного собранного источника → `None` («снимок ещё не сформирован»).
+    """
+    by_id = {state.backend_id: state for state in states}
+    participating = [by_id[bid] for bid in backend_ids if bid in by_id]
+    if not participating:
+        return None
+
+    totals = dict.fromkeys(PROVIDER_KEYS, 0.0)
+    for state in participating:
+        for provider, amount in state.api_costs.items():
+            totals[normalize_provider(provider)] += float(amount or 0)
+
+    partial = len(participating) < len(backend_ids) or any(
+        not state.revenue_backfill_done or state.revenue_supported is False
+        for state in participating
+    )
+    return BackendUsersApiCosts(
+        openai_usd=round(totals["openai"], 6),
+        anthropic_usd=round(totals["anthropic"], 6),
+        fal_usd=round(totals["fal"], 6),
+        other_usd=round(totals[PROVIDER_OTHER], 6),
+        total_usd=round(sum(totals.values()), 6),
+        partial=partial,
+    )
 
 
 class BackendUserService:
-    """Агрегация/транзит CRM Admin API бэков для страницы «Пользователи бэков»."""
+    """Список из снимка + live-транзит CRM Admin API для страницы «Пользователи бэков»."""
 
-    def __init__(self, repository: BackendRepository) -> None:
+    def __init__(
+        self,
+        repository: BackendRepository,
+        snapshots: BackendUserSnapshotRepository | None = None,
+    ) -> None:
         self._repo = repository
         # Расшифровка admin-ключа — общий security-critical путь двух модулей
         # (services/backend_admin_source.py, ADR-072 §Последствия).
         self._sources = BackendAdminSourceResolver(repository)
+        # Снимок (ADR-080): read-path списка и best-effort touch после admin-мутаций.
+        self._snapshots_override = snapshots
+
+    @property
+    def _snapshots(self) -> BackendUserSnapshotRepository:
+        """Репозиторий снимка — **ленивый** (создаётся при первом обращении).
+
+        Ленивость не косметическая: чисто live-пути (карточка, оплаты, тарифы) снимка не
+        касаются вовсе, и требовать сессию БД на конструирование сервиса ради них значило
+        бы связать транзит с хранилищем, которого он не использует.
+        """
+        if self._snapshots_override is None:
+            self._snapshots_override = BackendUserSnapshotRepository(self._repo.session)
+        return self._snapshots_override
 
     # --- список / сводка ---
 
@@ -102,103 +229,119 @@ class BackendUserService:
         limit: int,
         offset: int,
     ) -> BackendUsersListResponse:
-        """Объединённый список пользователей + сводка (04-api.md#get-apibackend-users).
+        """Список пользователей + сводка ИЗ СНИМКА (04-api.md#get-apibackend-users).
 
-        `backend_id=None` — режим «Все приложения». Окно merge ограничено
-        `_MAX_WINDOW` (422 не бросаем — глубже UI не запрашивает, срез вернётся пустым).
+        `backend_id=None` — режим «Все приложения» (участвуют бэки с admin-ключом);
+        явный `backend_id` — тот же SQL, но `404`/`409` резолвера сохраняются.
+
+        - `items`/`total` — один SQL по снимку с `JOIN backends`, стабильный порядок
+          `registered_at DESC, backend_id, user_id`, `LIMIT/OFFSET` + `COUNT`. Глубина
+          пагинации ничем не ограничена (окно merge ≤ 1000 упразднено, ADR-080 §3).
+        - `stats` **без периода** — суммы `stats_*` строк источников; `cr_percent`
+          считает CRM. **С периодом — live fan-out ТОЛЬКО `GET {P}/stats`** (один запрос
+          на бэк): периодные суммы из снимка невыводимы — он хранит текущее состояние
+          пользователя, а не историю платежей.
+        - `errors[]` — источники с `error_message IS NOT NULL` (+ сбои live-`stats`).
+        - `snapshot_at` — `MIN(refreshed_at)`; хотя бы один источник ни разу не
+          обновлялся → `null` (UI: «Снимок формируется…»).
+        - `api_costs` — lifetime-агрегат расходов + `partial` (§5).
         """
-        sources, unqueried = await self._resolve_sources(backend_id)
-        # Бэк без admin-ключа попадает в `errors[]`, а не выпадает молча: иначе «Ничего не
-        # найдено» неотличимо от «пользователя нет», хотя его бэк просто не опрашивался.
-        errors: list[BackendUsersSourceError] = [
-            BackendUsersSourceError(**_backend_fields(b), message=_ADMIN_KEY_NOT_SET)
-            for b in unqueried
-        ]
+        sources = await self._resolve_sources(backend_id)
         if not sources:
-            return BackendUsersListResponse(
-                total=0, items=[], stats=BackendUsersStats(), errors=errors
-            )
+            return BackendUsersListResponse(total=0, items=[], stats=BackendUsersStats())
 
-        window = min(offset + limit, _MAX_WINDOW)
-        filters = {
-            "search": search,
-            "date_from": date_from,
-            "date_to": date_to,
-            "is_paid": is_paid,
-        }
+        backend_ids = [backend.id for backend, _client in sources]
+        states = await self._snapshots.source_states(backend_ids)
 
+        rows, total = await self._snapshots.list_page(
+            backend_ids=backend_ids,
+            search=search,
+            date_from=_parse_date_bound(date_from, end_of_day=False),
+            date_to=_parse_date_bound(date_to, end_of_day=True),
+            is_paid=is_paid,
+            limit=limit,
+            offset=offset,
+        )
+
+        errors = self._snapshot_errors(sources, states)
+        has_period = bool(date_from or date_to)
+        if has_period:
+            stats = await self._live_period_stats(sources, date_from, date_to, errors)
+        else:
+            stats = self._stats_from_states(states)
+        if stats.users_total > 0:
+            stats.cr_percent = round(stats.paid_users / stats.users_total * 100, 1)
+
+        return BackendUsersListResponse(
+            total=total,
+            items=[_snapshot_item(row) for row in rows],
+            stats=stats,
+            errors=errors,
+            snapshot_at=_snapshot_at(backend_ids, states),
+            api_costs=_api_costs(backend_ids, states),
+        )
+
+    @staticmethod
+    def _stats_from_states(states: list[SnapshotSourceState]) -> BackendUsersStats:
+        """Сводка без периода — суммы `stats_*` строк источников (ни одного запроса вовне)."""
+        stats = BackendUsersStats()
+        for state in states:
+            stats.users_total += state.stats_users_total
+            stats.paid_users += state.stats_paid_users
+            stats.payments_sum_usd += state.stats_payments_sum_usd
+        return stats
+
+    async def _live_period_stats(
+        self,
+        sources: list[BackendSource],
+        date_from: str | None,
+        date_to: str | None,
+        errors: list[BackendUsersSourceError],
+    ) -> BackendUsersStats:
+        """Сводка с периодом — **один** live-`GET {P}/stats` на источник (ADR-080 §3).
+
+        Дорогой путь явно ограничен одним запросом на бэк: периодные суммы из снимка
+        невыводимы. Сбой источника не роняет ответ — он добавляется в `errors[]`.
+        """
         semaphore = asyncio.Semaphore(_FANOUT_CONCURRENCY)
-        single_source = backend_id is not None
 
-        async def fetch(backend: Backend, client: BackendAdminClient) -> dict[str, Any]:
+        async def fetch(client: BackendAdminClient) -> dict[str, Any]:
             async with semaphore:
-                items, total = await self._fetch_window(backend, client, window, filters)
-                stats_raw = await client.get_stats(date_from=date_from, date_to=date_to)
-                return {"items": items, "total": total, "stats": stats_raw}
+                return await client.get_stats(date_from=date_from, date_to=date_to)
 
-        results = await asyncio.gather(*(fetch(b, c) for b, c in sources), return_exceptions=True)
-
-        merged: list[BackendUserItem] = []
-        total = 0
+        results = await asyncio.gather(
+            *(fetch(client) for _backend, client in sources), return_exceptions=True
+        )
         stats = BackendUsersStats()
         for (backend, _client), result in zip(sources, results, strict=True):
             if isinstance(result, BaseException):
-                # Единственный источник — пробрасываем точную ошибку (404/502 и т.п.).
-                if single_source and isinstance(result, AppError):
-                    raise result
                 if not isinstance(result, Exception):
                     raise result
                 errors.append(self._source_error(backend, result))
                 continue
-            merged.extend(result["items"])
-            total += result["total"]
-            self._accumulate_stats(stats, backend, result["stats"], errors)
+            self._accumulate_stats(stats, backend, result, errors)
+        return stats
 
-        if stats.users_total > 0:
-            stats.cr_percent = round(stats.paid_users / stats.users_total * 100, 1)
+    @staticmethod
+    def _snapshot_errors(
+        sources: list[BackendSource], states: list[SnapshotSourceState]
+    ) -> list[BackendUsersSourceError]:
+        """`errors[]` = источники со сбоем последнего цикла воркера (ADR-080 §1/§3).
 
-        merged.sort(key=_sort_key, reverse=True)
-        return BackendUsersListResponse(
-            total=total,
-            items=merged[offset : offset + limit],
-            stats=stats,
-            errors=errors,
-        )
-
-    async def _fetch_window(
-        self,
-        backend: Backend,
-        client: BackendAdminClient,
-        window: int,
-        filters: dict[str, Any],
-    ) -> tuple[list[BackendUserItem], int]:
-        """Дочитывает у источника первые `window` строк страницами по контрактному лимиту."""
-        items: list[BackendUserItem] = []
-        total = 0
-        while len(items) < window:
-            page_limit = min(_SOURCE_PAGE_LIMIT, window - len(items))
-            raw = await client.list_users(limit=page_limit, offset=len(items), **filters)
-            page, total = self._parse_users_page(backend, raw)
-            items.extend(page)
-            if len(page) < page_limit or len(items) >= total:
-                break
-        return items, total
-
-    def _parse_users_page(
-        self, backend: Backend, raw: dict[str, Any]
-    ) -> tuple[list[BackendUserItem], int]:
-        raw_items = raw.get("items")
-        raw_total = raw.get("total")
-        if not isinstance(raw_items, list) or not isinstance(raw_total, int):
-            raise backend_admin_unavailable(_CONTRACT_MISMATCH)
-        try:
-            items = [
-                BackendUserItem.model_validate({**item, **_backend_fields(backend)})
-                for item in raw_items
-            ]
-        except (ValidationError, TypeError) as exc:
-            raise backend_admin_unavailable(_CONTRACT_MISMATCH) from exc
-        return items, raw_total
+        Бэка без admin-ключа здесь нет никогда — он вообще не попадает в `sources`.
+        Источник без строки состояния (воркер ещё не доходил) ошибкой НЕ считается: это
+        «снимок формируется», и об этом говорит `snapshot_at: null`.
+        """
+        failures = {
+            state.backend_id: state.error_message
+            for state in states
+            if state.error_message is not None
+        }
+        return [
+            BackendUsersSourceError(**_backend_fields(backend), message=failures[backend.id])
+            for backend, _client in sources
+            if backend.id in failures
+        ]
 
     def _accumulate_stats(
         self,
@@ -265,7 +408,9 @@ class BackendUserService:
         двойного сабмита лежит на UI; сервис лишь транзитом передаёт сумму."""
         _, client = await self._require_source(backend_id)
         raw = await client.add_tokens(user_id, amount=payload.amount)
-        return self._validate(BackendUserTokensResponse, raw)
+        response = self._validate(BackendUserTokensResponse, raw)
+        await self._touch_snapshot(backend_id, user_id, tokens=response.tokens)
+        return response
 
     async def grant_subscription(
         self,
@@ -281,21 +426,76 @@ class BackendUserService:
             expires_in_days=payload.expires_in_days,
             grant_id=payload.grant_id,
         )
-        return self._validate(BackendUserGrantResponse, raw)
+        response = self._validate(BackendUserGrantResponse, raw)
+        await self._touch_snapshot(
+            backend_id,
+            user_id,
+            tokens=response.tokens,
+            subscription_active=response.subscription_active,
+            subscription_expires_at=response.subscription_expires_at,
+            touch_subscription=True,
+        )
+        return response
+
+    async def _touch_snapshot(
+        self,
+        backend_id: uuid.UUID,
+        user_id: str,
+        *,
+        tokens: float | None = None,
+        subscription_active: bool | None = None,
+        subscription_expires_at: datetime | None = None,
+        touch_subscription: bool = False,
+    ) -> None:
+        """Best-effort обновление строки снимка после успешной admin-операции (ADR-080 §4).
+
+        Без него оператор, начисливший токены, видел бы в списке старое значение до
+        следующего цикла воркера — самый заметный случай расхождения свежести.
+
+        **Пишутся только ИЗМЕРЕННЫЕ величины** (ADR-072 §5): `tokens=None` («бэк поля не
+        отдал») колонку НЕ трогает — иначе выдача плана, которая баланс не меняет,
+        затирала бы реальный баланс нулём.
+
+        **Провал touch'а НЕ превращает состоявшуюся операцию в ошибку** (тот же принцип
+        «сначала факт, затем интерпретация», что в ADR-073 §8): у бэка изменение уже
+        применено, и 500 из-за не обновившегося зеркала подтолкнул бы оператора повторить
+        НЕидемпотентное начисление токенов.
+        """
+        try:
+            await self._snapshots.touch_row(
+                backend_id=backend_id,
+                user_id=user_id,
+                tokens=tokens,
+                subscription_active=subscription_active,
+                subscription_expires_at=subscription_expires_at,
+                touch_subscription=touch_subscription,
+            )
+            await self._snapshots.session.commit()
+        except Exception as exc:
+            # `rollback()` обязателен: сессия запроса общая, и после сбоя statement'а
+            # Postgres держит транзакцию в состоянии «aborted» — без отката ЛЮБОЙ
+            # следующий SQL в этом же запросе упал бы `InFailedSQLTransactionError`,
+            # то есть провал best-effort touch'а всё-таки уронил бы ответ.
+            with suppress(Exception):
+                await self._snapshots.session.rollback()
+            logger.warning(
+                "backend_users_snapshot_touch_failed",
+                backend_id=str(backend_id),
+                error_type=type(exc).__name__,
+            )
 
     # --- источники ---
 
-    async def _resolve_sources(
-        self, backend_id: uuid.UUID | None
-    ) -> tuple[list[BackendSource], list[Backend]]:
-        """Источники агрегации + бэки, которые опросить нельзя (нет admin-ключа).
+    async def _resolve_sources(self, backend_id: uuid.UUID | None) -> list[BackendSource]:
+        """Участвующие источники: бэки с admin-ключом (ADR-080 §1).
 
-        Для одного бэка список «не опрошенных» всегда пуст: отсутствие ключа там —
-        явная ошибка `409 backend_admin_key_not_set`, а не тихая деградация.
+        Бэк без ключа в режиме «Все приложения» просто не участвует — ни в выборке, ни в
+        `errors[]`. Для ОДНОГО бэка отсутствие ключа остаётся явной ошибкой
+        `409 backend_admin_key_not_set` (осознанное действие оператора).
         """
         if backend_id is not None:
-            return [await self._require_source(backend_id)], []
-        return await self._sources.list_split()
+            return [await self._require_source(backend_id)]
+        return await self._sources.list_with_admin_key()
 
     async def _require_source(self, backend_id: uuid.UUID) -> BackendSource:
         return await self._sources.require(backend_id)

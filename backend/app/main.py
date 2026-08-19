@@ -22,6 +22,7 @@ from app.services.ai_key_balance_sync_service import AiKeyBalanceSyncService
 from app.services.ai_key_credit_probe_service import AiKeyCreditProbeService
 from app.services.ai_key_monitor_service import AiKeyMonitorService
 from app.services.backend_monitor_service import BackendMonitorService
+from app.services.backend_users_snapshot_service import BackendUsersSnapshotService
 from app.services.mail_dispatcher_service import MailDispatcherService
 from app.services.monitoring_service import MonitoringService
 from app.services.notifier_service import NotifierService
@@ -161,6 +162,16 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     )
     backend_monitor_task = asyncio.create_task(backend_monitor.run())
 
+    # Снимок «Юзеров бэков» (modules/backend-users, ADR-080 §2): стартует ВСЕГДА и
+    # НЕ гейтится Telegram — это не монитор, а источник данных страницы. Первый
+    # `refresh_once()` выполняется немедленно; при отсутствии бэков с admin-ключом
+    # итерация вырождается в но-оп (ни одного upstream-запроса).
+    backend_users_snapshot = BackendUsersSnapshotService(
+        sessionmaker=get_sessionmaker(),
+        settings=settings,
+    )
+    backend_users_snapshot_task = asyncio.create_task(backend_users_snapshot.run())
+
     # Retry-монитор доставок SMS (modules/sms, ADR-030): стартует ТОЛЬКО при
     # sms_bot_enabled (задан SMS_TELEGRAM_BOT_TOKEN). Переотправляет pending/failed
     # доставки; при отключённом боте доставка не работает и монитор не нужен.
@@ -214,6 +225,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     backend_monitor_task.cancel()
     with suppress(asyncio.CancelledError):
         await backend_monitor_task
+
+    backend_users_snapshot_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await backend_users_snapshot_task
 
     if sms_delivery_monitor_task is not None:
         sms_delivery_monitor_task.cancel()

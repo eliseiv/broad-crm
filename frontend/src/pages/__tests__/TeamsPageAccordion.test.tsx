@@ -68,8 +68,11 @@ const USERS: UserListResponse = {
       username: 'Никита',
       telegram: null,
       has_password: true,
-      role_id: 'r1',
-      role_name: 'Оператор',
+      // ADR-079 §7: ФИО nullable — историческая строка отображается по `username`.
+      last_name: null,
+      first_name: null,
+      middle_name: null,
+      roles: [{ id: 'r1', name: 'Оператор' }],
       is_active: true,
       status: 'active',
       teams: [],

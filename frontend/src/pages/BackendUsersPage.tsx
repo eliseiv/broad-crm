@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { InsufficientPermissions } from '@/components/InsufficientPermissions';
+import { SummaryCell } from '@/components/SummaryCell';
 import { Button } from '@/components/ui/Button';
 import { Input } from '@/components/ui/Input';
 import { Pill } from '@/components/ui/Pill';
@@ -30,6 +31,24 @@ function formatInt(value: number): string {
 
 function formatUsd(value: number): string {
   return `$${formatInt(value)}`;
+}
+
+/**
+ * Расходы API — USD **с центами** (ADR-080 §6): суммы себестоимости бывают меньше
+ * доллара, и округление до целых показало бы «$0» вместо реального расхода.
+ */
+function formatUsdCents(value: number): string {
+  return `$${value.toLocaleString('ru-RU', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+/** «Данные на HH:MM» — время последнего полного цикла воркера снимка (ADR-080 §3). */
+function formatSnapshotTime(iso: string): string {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '—';
+  return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
 }
 
 export function BackendUsersPage() {
@@ -105,6 +124,10 @@ function BackendUsersList() {
   const items = data?.items ?? [];
   const total = data?.total ?? 0;
   const sourceErrors = data?.errors ?? [];
+  // Снимок ещё не сформирован → `snapshot_at`/`api_costs` приходят `null` (ADR-080 §6).
+  const snapshotAt = data?.snapshot_at ?? null;
+  const apiCosts = data?.api_costs ?? null;
+  const showOther = (apiCosts?.other_usd ?? 0) > 0;
   const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
 
   const cyclePaidFilter = () => setIsPaid((prev) => (prev === null ? true : prev ? false : null));
@@ -195,6 +218,58 @@ function BackendUsersList() {
           label="CR%"
           value={stats ? `${stats.cr_percent.toLocaleString('ru-RU')}%` : '—'}
         />
+      </div>
+
+      {/* Блок «Расходы API» (ADR-080 §5/§6, modules/backend-users). Данные приходят тем
+          же GET /api/backend-users — отдельного запроса нет. */}
+      <div className="mb-4">
+        <div className="mb-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-text-tertiary">
+          {/* Подпись ОБЯЗАНА называть период: показатель накопительный (lifetime), и
+              фильтр периода страницы на него не действует — иначе оператор прочтёт
+              сумму как «за выбранный период». */}
+          <span>Расходы API — накопительно за всё время, фильтр периода не действует</span>
+          <span aria-hidden="true">·</span>
+          {/* «Снимок формируется…» нормативно означает `snapshot_at === null` в ПОЛУЧЕННОМ
+              ответе. Пока ответа нет (isLoading), это утверждение недоказуемо — показываем
+              «—», как соседние ячейки сводки. */}
+          <span>
+            {isLoading
+              ? '—'
+              : snapshotAt
+                ? `Данные на ${formatSnapshotTime(snapshotAt)}`
+                : 'Снимок формируется…'}
+          </span>
+          {apiCosts?.partial && (
+            <>
+              <span aria-hidden="true">·</span>
+              <span className="text-status-yellow">расходы ещё собираются</span>
+            </>
+          )}
+        </div>
+        <div
+          className={cn(
+            'grid grid-cols-2 gap-px overflow-hidden rounded-card border border-border-subtle bg-border-subtle',
+            // «Прочее» появляется только при ненулевой сумме — постоянная ячейка «$0.00»
+            // создавала бы впечатление, что «прочих» провайдеров ждут.
+            showOther ? 'lg:grid-cols-4' : 'lg:grid-cols-3',
+          )}
+        >
+          <SummaryCell
+            label="Расход OpenAI"
+            value={apiCosts ? formatUsdCents(apiCosts.openai_usd) : '—'}
+          />
+          <SummaryCell
+            label="Расход Anthropic"
+            value={apiCosts ? formatUsdCents(apiCosts.anthropic_usd) : '—'}
+          />
+          <SummaryCell
+            label="Расход Fal"
+            value={apiCosts ? formatUsdCents(apiCosts.fal_usd) : '—'}
+          />
+          {showOther && apiCosts && (
+            <SummaryCell label="Прочее" value={formatUsdCents(apiCosts.other_usd)} />
+          )}
+        </div>
       </div>
 
       {isLoading && (
@@ -317,14 +392,5 @@ function BackendUsersList() {
         </div>
       )}
     </>
-  );
-}
-
-function SummaryCell({ label, value }: { label: string; value: string }) {
-  return (
-    <div className={cn('bg-surface-1 px-5 py-4')}>
-      <p className="text-[12px] text-text-tertiary">{label}</p>
-      <p className="mt-1 text-xl font-bold text-text-primary">{value}</p>
-    </div>
   );
 }

@@ -179,6 +179,8 @@ node_exporter ставится Ansible'ом на целевые серверы �
 | Таймаут проверки бэка (per-attempt, все фазы `httpx`) | `BACKEND_CHECK_TIMEOUT_SEC` | `10` (секунд) |
 | **Overall-deadline** проверки одного бэка (анти-зависание, `asyncio.wait_for`; [ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) | `BACKEND_CHECK_DEADLINE_SEC` | `30` (секунд) |
 | **Grace-порог** непрерывной недоступности бэка перед 🔴-алертом ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) | `BACKEND_ALERT_AFTER_SEC` | `1800` (30 мин) |
+| **Интервал снимка «Юзеры бэков»** — период фонового воркера `BackendUsersSnapshotService` ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md)); `sleep` **после** завершения итерации, поэтому фактический период ≥ значения | `BACKEND_USERS_SNAPSHOT_INTERVAL_SEC` | `900` (15 мин) |
+| **Квота backfill экономики** на один бэк за цикл — сколько карточек `GET {P}/users/{id}` добирается ради блока «Расходы API» ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §5) | `BACKEND_USERS_SNAPSHOT_REVENUE_BATCH` | `2000` |
 | TTL setup-токена первого входа ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) | `PWD_SETUP_TOKEN_EXPIRES_MIN` | `10` (минут) |
 | Конкурентность исходящих PromQL (семафор) | (константа backend) | `4` |
 | `--query.max-concurrency` Prometheus | (флаг запуска) | `50` |

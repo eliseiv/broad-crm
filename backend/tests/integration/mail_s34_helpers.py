@@ -30,6 +30,7 @@ from app.models.role import Role
 from app.models.team import Team, user_teams
 from app.models.user import User
 from app.models.user_channel_team import user_channel_teams
+from app.models.user_role import user_roles
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import insert
 from sqlalchemy import text as sa_text
@@ -182,7 +183,8 @@ def build_principal(
 
     return Principal(
         username="tester",
-        role=role,
+        # ADR-079 §2: принципал несёт НАБОР ролей; `role` хелпера — сокращение «одна роль».
+        roles=(role,),
         permissions=full_catalog_permissions() if permissions is None else permissions,
         is_superadmin=is_superadmin,
         user_id=user_id,
@@ -288,7 +290,6 @@ async def seed_user(
 ) -> User:
     user = User(
         username=username or f"user-{uuid.uuid4().hex[:10]}",
-        role_id=role.id,
         password_hash="x",
         is_active=is_active,
         telegram=telegram,
@@ -296,6 +297,8 @@ async def seed_user(
     )
     session.add(user)
     await session.flush()
+    # Роль — строка `user_roles` (M2M, ADR-079 §1), а не колонка `users.role_id`.
+    await session.execute(insert(user_roles).values(user_id=user.id, role_id=role.id))
     return user
 
 

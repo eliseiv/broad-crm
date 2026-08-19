@@ -40,23 +40,16 @@ class BackendAdminSourceResolver:
         return backend, self.client(backend)
 
     async def list_with_admin_key(self) -> list[BackendSource]:
-        """Все бэки реестра, у которых задан admin-ключ (fan-out «Все приложения»)."""
-        sources, _ = await self.list_split()
-        return sources
+        """Все бэки реестра, у которых задан admin-ключ (fan-out «Все приложения»).
 
-    async def list_split(self) -> tuple[list[BackendSource], list[Backend]]:
-        """Реестр, разделённый на опрашиваемые источники и бэки БЕЗ admin-ключа.
-
-        Второй список существует ради наблюдаемости: бэк без ключа опросить нельзя, но
-        МОЛЧА пропускать его нельзя тоже — оператор получал бы «Ничего не найдено»,
-        неотличимое от «такого пользователя нет», хотя пользователь есть на бэке,
-        который в выборку не входил (прод-инцидент `selquro`: бэк в реестре и под
-        мониторингом, admin-ключ не задан → ни одного admin-запроса к нему).
+        Прежний `list_split()` (пара «источники + бэки БЕЗ ключа») **удалён вместе со
+        своим единственным потребителем** (ADR-080 §1): бэк без ключа больше не попадает
+        в `errors[]` и наружу не называется вовсе, поэтому второй список стал мёртвым.
+        Оставлять его «на всякий случай» значило бы держать в security-critical резолвере
+        путь, которым никто не ходит.
         """
         backends = await self._repo.list_all()
-        sources = [(b, self.client(b)) for b in backends if b.admin_api_key_encrypted is not None]
-        unqueried = [b for b in backends if b.admin_api_key_encrypted is None]
-        return sources, unqueried
+        return [(b, self.client(b)) for b in backends if b.admin_api_key_encrypted is not None]
 
     @staticmethod
     def client(backend: Backend) -> BackendAdminClient:

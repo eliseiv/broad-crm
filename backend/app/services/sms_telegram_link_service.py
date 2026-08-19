@@ -17,6 +17,7 @@ from datetime import UTC, datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
+from app.domain.permissions import primary_role_name
 from app.domain.sms import ValidatedInitData, verify_init_data
 from app.domain.telegram import normalize_telegram
 from app.errors import (
@@ -133,7 +134,8 @@ class SmsTelegramLinkService:
 
         token, expires_in = issue_access_token(
             sub=resolved.username,
-            role=resolved.role.name,
+            # Claim `role` информационный (ADR-079 §3): первая роль.
+            role=primary_role_name(resolved.roles),
             superadmin=False,
             uid=str(resolved.id),
         )

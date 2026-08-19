@@ -130,7 +130,13 @@ async def test_users_crud_contract_and_password_never_returned() -> None:
     async with _client(app) as client:
         created = await client.post(
             "/api/users",
-            json={"username": "Никита", "password": "s3cret-pass", "role_id": str(role.id)},
+            json={
+                "last_name": "Петров",
+                "first_name": "Никита",
+                "telegram": "nikita_01",
+                "password": "s3cret-pass",
+                "role_ids": [str(role.id)],
+            },
         )
         listed = await client.get("/api/users")
         user_id = created.json()["id"]
@@ -139,8 +145,10 @@ async def test_users_crud_contract_and_password_never_returned() -> None:
         repeat = await client.delete(f"/api/users/{user_id}")
 
     assert created.status_code == 201
-    assert created.json()["username"] == "Никита"
-    assert created.json()["role_name"] == "Оператор"
+    # `username` выводится из телеграм-ника (ADR-079 §9), полем формы он больше не является.
+    assert created.json()["username"] == "nikita_01"
+    assert created.json()["first_name"] == "Никита"
+    assert [r["name"] for r in created.json()["roles"]] == ["Оператор"]
     # Пароль создан → has_password=true; plaintext/hash/ключ "password" отсутствуют
     # (ответ несёт только производный флаг has_password, ADR-025).
     assert created.json()["has_password"] is True
@@ -148,7 +156,7 @@ async def test_users_crud_contract_and_password_never_returned() -> None:
     assert "s3cret-pass" not in created.text
     assert "password_hash" not in created.text
     assert listed.status_code == 200
-    assert [u["username"] for u in listed.json()["items"]] == ["Никита"]
+    assert [u["first_name"] for u in listed.json()["items"]] == ["Никита"]
     assert patched.status_code == 200
     assert patched.json()["is_active"] is False
     assert deleted.status_code == 204
@@ -163,38 +171,71 @@ async def test_users_error_codes_and_precedence() -> None:
     app = _build_app(db, make_principal())
 
     async with _client(app) as client:
-        bad_username = await client.post(
+        bad_name = await client.post(
             "/api/users",
-            json={"username": "123", "password": "s3cret-pass", "role_id": str(role.id)},
+            json={
+                "last_name": "123",
+                "first_name": "Никита",
+                "telegram": "nikita_01",
+                "password": "s3cret-pass",
+                "role_ids": [str(role.id)],
+            },
         )
         missing_role = await client.post(
             "/api/users",
             json={
-                "username": "Пётр",
+                "last_name": "Сидоров",
+                "first_name": "Пётр",
+                "telegram": "petr_0001",
                 "password": "s3cret-pass",
-                "role_id": "00000000-0000-0000-0000-0000000000ff",
+                "role_ids": ["00000000-0000-0000-0000-0000000000ff"],
+            },
+        )
+        empty_roles = await client.post(
+            "/api/users",
+            json={
+                "last_name": "Сидоров",
+                "first_name": "Пётр",
+                "telegram": "petr_0002",
+                "password": "s3cret-pass",
+                "role_ids": [],
             },
         )
         await client.post(
             "/api/users",
-            json={"username": "Никита", "password": "s3cret-pass", "role_id": str(role.id)},
+            json={
+                "last_name": "Петров",
+                "first_name": "Никита",
+                "telegram": "nikita_01",
+                "password": "s3cret-pass",
+                "role_ids": [str(role.id)],
+            },
         )
         dup = await client.post(
             "/api/users",
-            json={"username": "Никита", "password": "other-pass", "role_id": str(role.id)},
+            json={
+                "last_name": "Петров",
+                "first_name": "Никита",
+                "telegram": "@Nikita_01",
+                "password": "other-pass",
+                "role_ids": [str(role.id)],
+            },
         )
         # PATCH password '' → 422 unprocessable (не «очистка»).
         list_resp = await client.get("/api/users")
-        uid = next(u["id"] for u in list_resp.json()["items"] if u["username"] == "Никита")
+        uid = next(u["id"] for u in list_resp.json()["items"] if u["first_name"] == "Никита")
         empty_pw = await client.patch(f"/api/users/{uid}", json={"password": ""})
 
-    assert bad_username.status_code == 422
-    assert bad_username.json()["error"]["code"] == "unprocessable"
-    assert bad_username.json()["error"]["details"][0]["field"] == "username"
+    assert bad_name.status_code == 422
+    assert bad_name.json()["error"]["code"] == "unprocessable"
+    assert bad_name.json()["error"]["details"][0]["field"] == "last_name"
     assert missing_role.status_code == 422
-    assert missing_role.json()["error"]["details"][0]["field"] == "role_id"
+    assert missing_role.json()["error"]["details"][0]["field"] == "role_ids"
+    assert empty_roles.status_code == 422
+    assert empty_roles.json()["error"]["details"][0]["field"] == "role_ids"
+    # ADR-079 §9: прецеденция изменена — `telegram_taken` ПРЕЖДЕ `username_taken`.
     assert dup.status_code == 409
-    assert dup.json()["error"]["code"] == "username_taken"
+    assert dup.json()["error"]["code"] == "telegram_taken"
     assert empty_pw.status_code == 422
     assert empty_pw.json()["error"]["details"][0]["field"] == "password"
 
@@ -381,10 +422,11 @@ async def test_users_telegram_and_teams_contract_via_api() -> None:
         created = await client.post(
             "/api/users",
             json={
-                "username": "Никита",
+                "last_name": "Петров",
+                "first_name": "Никита",
                 "telegram": "@Nikita_01",
                 "password": "s3cret-pass",
-                "role_id": str(role.id),
+                "role_ids": [str(role.id)],
                 "team_ids": [str(team.id)],
             },
         )
@@ -392,10 +434,11 @@ async def test_users_telegram_and_teams_contract_via_api() -> None:
         dup_tg = await client.post(
             "/api/users",
             json={
-                "username": "Пётр",
+                "last_name": "Сидоров",
+                "first_name": "Пётр",
                 "telegram": "NIKITA_01",
                 "password": "s3cret-pass",
-                "role_id": str(role.id),
+                "role_ids": [str(role.id)],
             },
         )
 
@@ -417,13 +460,19 @@ async def test_users_create_without_password_is_passwordless_via_api() -> None:
     async with _client(app) as client:
         created = await client.post(
             "/api/users",
-            json={"username": "Никита", "role_id": str(role.id)},
+            json={
+                "last_name": "Петров",
+                "first_name": "Никита",
+                "telegram": "nikita_01",
+                "role_ids": [str(role.id)],
+            },
         )
 
     assert created.status_code == 201
     body = created.json()
     assert body["has_password"] is False  # беспарольный пользователь (ADR-025)
-    assert body["telegram"] is None
+    # `telegram` обязателен (ADR-079 §8) — беспарольность его не отменяет.
+    assert body["telegram"] == "nikita_01"
 
 
 @pytest.mark.asyncio
@@ -436,10 +485,11 @@ async def test_users_invalid_telegram_is_422_via_api() -> None:
         resp = await client.post(
             "/api/users",
             json={
-                "username": "Никита",
+                "last_name": "Петров",
+                "first_name": "Никита",
                 "telegram": "ab",  # < 5 символов → невалидный формат
                 "password": "s3cret-pass",
-                "role_id": str(role.id),
+                "role_ids": [str(role.id)],
             },
         )
 
@@ -457,9 +507,11 @@ async def test_users_nonexistent_team_id_is_422_via_api() -> None:
         resp = await client.post(
             "/api/users",
             json={
-                "username": "Никита",
+                "last_name": "Петров",
+                "first_name": "Никита",
+                "telegram": "nikita_01",
                 "password": "s3cret-pass",
-                "role_id": str(role.id),
+                "role_ids": [str(role.id)],
                 "team_ids": ["00000000-0000-0000-0000-0000000000aa"],
             },
         )

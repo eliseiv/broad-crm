@@ -54,13 +54,44 @@ class BackendUsersSourceError(BaseModel):
     message: str
 
 
+class BackendUsersApiCosts(BaseModel):
+    """Блок «Расходы API» — lifetime-агрегат по нормализованным провайдерам (ADR-080 §5).
+
+    Источник — `revenue.providers` карточек `GET {P}/users/{id}`, собираемых воркером.
+    Показатель **накопительный за всё время**: фильтр периода страницы на него НЕ
+    действует (период меняет список и `stats`, но не расходы) — UI обязан назвать это
+    подписью, иначе оператор прочтёт lifetime как «за выбранный период».
+
+    `partial=true` ⇔ хотя бы у одного участвующего источника не завершён backfill
+    карточек **ИЛИ** источник не отдаёт блок `revenue` (`revenue_supported IS FALSE`).
+    Второй дизъюнкт обязателен: бэк уровня v1 покидает очередь backfill штатно, и без
+    него неполная сумма объявлялась бы полной именно там, где это НИКОГДА не исправится
+    само. UI обязан показывать признак.
+    """
+
+    openai_usd: float = 0
+    anthropic_usd: float = 0
+    fal_usd: float = 0
+    other_usd: float = 0
+    total_usd: float = 0
+    partial: bool = False
+
+
 class BackendUsersListResponse(BaseModel):
-    """Ответ GET /api/backend-users: страница объединённого списка + сводка + сбои."""
+    """Ответ GET /api/backend-users: страница объединённого списка + сводка + сбои.
+
+    `snapshot_at`/`api_costs` — **аддитивные** поля снимка (ADR-080 §6); существующие
+    `total`/`items`/`stats`/`errors` не меняются. `null` в обоих — «снимок ещё не
+    сформирован» (UI: «Снимок формируется…»).
+    """
 
     total: int
     items: list[BackendUserItem]
     stats: BackendUsersStats
     errors: list[BackendUsersSourceError] = Field(default_factory=list)
+    # MIN(refreshed_at) по участвующим источникам; хотя бы один ни разу не обновлялся → null.
+    snapshot_at: datetime | None = None
+    api_costs: BackendUsersApiCosts | None = None
 
 
 # --- Карточка пользователя ---
@@ -222,10 +253,18 @@ class BackendUserTokensResponse(BaseModel):
 
 
 class BackendUserGrantResponse(BaseModel):
-    """Ответ бэка на выдачу подписки (транзит). `applied=false` — повтор grant_id."""
+    """Ответ бэка на выдачу подписки (транзит). `applied=false` — повтор grant_id.
+
+    `tokens` — **`None` = «НЕ ИЗМЕРЕНО», а не ноль** (нормативный принцип ADR-072 §5).
+    Выдача плана баланс не меняет, поэтому бэк вправе поле не отдавать; дефолт `0`
+    (прежняя редакция) превращал «поле отсутствует» в «на счету ноль», и best-effort
+    touch снимка (ADR-080 §4) затирал реальный баланс нулём до следующего цикла воркера.
+    У `BackendUserTokensResponse.tokens` поле обязательное — там начисление баланс
+    меняет и ответ обязан его нести.
+    """
 
     id: str
-    tokens: float = 0
+    tokens: float | None = None
     subscription_active: bool = False
     subscription_expires_at: datetime | None = None
     applied: bool = True

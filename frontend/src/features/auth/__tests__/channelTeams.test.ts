@@ -117,7 +117,7 @@ describe('teamFilterParams — «Без команды» → no_team=true (ADR-0
 describe('channelScopeFromMe — scope канала из `/api/auth/me` (ADR-055 §5.1)', () => {
   const me: MeResponse = {
     username: 'ivan',
-    role: 'Оператор',
+    roles: ['Оператор'],
     is_superadmin: false,
     is_admin_level: false,
     sees_all_sms_teams: false,

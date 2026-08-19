@@ -13,7 +13,7 @@ const IS_ADMIN_LEVEL_KEY = 'crm.auth.isAdminLevel';
 function meBody(overrides: Partial<MeResponse> = {}): MeResponse {
   return {
     username: 'ivan',
-    role: 'Админ',
+    roles: ['Админ'],
     is_superadmin: false,
     is_admin_level: true,
     sees_all_sms_teams: true,
@@ -80,7 +80,7 @@ describe('AppLayout — isAdminLevel из /me, без каталога (ADR-078)
     loginAs({
       username: 'ivan',
       isSuperadmin: false,
-      role: 'Админ',
+      roles: ['Админ'],
       isAdminLevel: true,
       permissions: { servers: ['view'], documents: ['view', 'share'] },
     });
@@ -113,7 +113,7 @@ describe('AppLayout — isAdminLevel из /me, без каталога (ADR-078)
 
     loginAs({
       isSuperadmin: false,
-      role: 'Админ',
+      roles: ['Админ'],
       isAdminLevel: false,
       permissions: { servers: ['view'] },
     });
@@ -129,10 +129,9 @@ describe('AppLayout — isAdminLevel из /me, без каталога (ADR-078)
     const fetchMock = vi.fn((url: string) => {
       if (String(url).includes('/auth/me')) {
         return Promise.resolve(
-          new Response(
-            JSON.stringify({ error: { code: 'internal_error', message: 'fail' } }),
-            { status: 500 },
-          ),
+          new Response(JSON.stringify({ error: { code: 'internal_error', message: 'fail' } }), {
+            status: 500,
+          }),
         );
       }
       return Promise.resolve(new Response(JSON.stringify({ pages: [] })));
@@ -142,7 +141,7 @@ describe('AppLayout — isAdminLevel из /me, без каталога (ADR-078)
     loginAs({
       username: 'ivan',
       isSuperadmin: false,
-      role: 'Админ',
+      roles: ['Админ'],
       isAdminLevel: true,
       permissions: { servers: ['view'] },
     });
@@ -177,7 +176,7 @@ describe('AppLayout — isAdminLevel из /me, без каталога (ADR-078)
     loginAs({
       username: 'ivan',
       isSuperadmin: false,
-      role: 'Админ',
+      roles: ['Админ'],
       isAdminLevel: true,
       permissions: { servers: ['view'] },
     });

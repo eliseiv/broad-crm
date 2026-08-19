@@ -96,8 +96,10 @@ async def test_users_crud_create_subtracts_base_team_from_extras_and_is_not_422(
             resp = await c.post(
                 "/api/users",
                 json={
-                    "username": "Никита",
-                    "role_id": str(role_id),
+                    "last_name": "Петров",
+                    "first_name": "Никита",
+                    "telegram": "nikita_01",
+                    "role_ids": [str(role_id)],
                     "team_ids": [str(a)],
                     # A — базовая, прислана и в добавке: вычитается, а не 422.
                     "mail_extra_team_ids": [str(a), str(b)],
@@ -134,8 +136,10 @@ async def test_users_crud_nonexistent_extra_team_is_422_with_field() -> None:
             resp = await c.post(
                 "/api/users",
                 json={
-                    "username": "Пётр",
-                    "role_id": str(role_id),
+                    "last_name": "Сидоров",
+                    "first_name": "Пётр",
+                    "telegram": "petr_0001",
+                    "role_ids": [str(role_id)],
                     "mail_extra_team_ids": [str(uuid.uuid4())],
                 },
             )

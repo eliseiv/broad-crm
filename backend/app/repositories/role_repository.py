@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.role import Role
 from app.models.user import User
+from app.models.user_role import user_roles
 
 
 class RoleRepository:
@@ -33,8 +34,10 @@ class RoleRepository:
     async def list_all_with_counts(self) -> list[tuple[Role, int]]:
         """Все роли с числом носителей (`user_count`), сортировка `created_at ASC, id`.
 
-        Агрегат `COUNT(users) GROUP BY role_id` через LEFT JOIN — роли без носителей
-        отдаются с `user_count=0` (ADR-022).
+        Агрегат `COUNT(DISTINCT u.id)` через LEFT JOIN на `user_roles` (ADR-079 §1) —
+        роли без носителей отдаются с `user_count=0` (ADR-022). `DISTINCT` обязателен:
+        M2M-join даёт по строке на каждую пару, и пользователь с двумя ролями иначе
+        посчитался бы дважды в каждой.
 
         **Отображение исключает системную строку-якорь** (`NOT is_system`, ADR-051 §1.5):
         роль `admin` не должна получать фантомного «+1 пользователь» в UI. Предикат — в
@@ -42,8 +45,12 @@ class RoleRepository:
         носителей пропали бы из выдачи.
         """
         stmt = (
-            select(Role, func.count(User.id))
-            .outerjoin(User, (User.role_id == Role.id) & User.is_system.is_(False))
+            select(Role, func.count(func.distinct(User.id)))
+            .outerjoin(user_roles, user_roles.c.role_id == Role.id)
+            .outerjoin(
+                User,
+                (User.id == user_roles.c.user_id) & User.is_system.is_(False),
+            )
             .group_by(Role.id)
             .order_by(Role.created_at.asc(), Role.id.asc())
         )
@@ -53,9 +60,15 @@ class RoleRepository:
     async def count_users(self, role_id: uuid.UUID) -> int:
         """Число пользователей с этой ролью (для `user_count` в ответе POST/PATCH).
 
-        Отображение — якорь исключён (`NOT is_system`, ADR-051 §1.5).
+        Отображение — якорь исключён (`NOT is_system`, ADR-051 §1.5); счёт по
+        `COUNT(DISTINCT u.id)` через `user_roles` (ADR-079 §1).
         """
-        stmt = select(func.count(User.id)).where(User.role_id == role_id, User.is_system.is_(False))
+        stmt = (
+            select(func.count(func.distinct(User.id)))
+            .select_from(user_roles)
+            .join(User, User.id == user_roles.c.user_id)
+            .where(user_roles.c.role_id == role_id, User.is_system.is_(False))
+        )
         result = await self._session.execute(stmt)
         return int(result.scalar_one())
 
@@ -100,12 +113,13 @@ class RoleRepository:
         """Назначена ли роль хотя бы одному пользователю (для 409 role_in_use).
 
         **Гард удаления ВКЛЮЧАЕТ системную строку-якорь** (фильтра `is_system` здесь НЕТ —
-        ADR-051 §1.5): метод обязан быть зеркалом FK `users.role_id → roles.id ON DELETE
-        RESTRICT`, иначе `DELETE /api/roles/{id}` вместо `409 role_in_use` упал бы
-        IntegrityError → 500. Осознанное следствие: роль, которую держит якорь (по
-        умолчанию встроенная `admin`), не удаляется даже при `user_count = 0`.
+        ADR-051 §1.5): метод обязан быть зеркалом FK `user_roles.role_id → roles.id
+        ON DELETE RESTRICT` (ADR-079 §1), иначе `DELETE /api/roles/{id}` вместо
+        `409 role_in_use` упал бы IntegrityError → 500. Осознанное следствие: роль,
+        которую держит якорь (по умолчанию встроенная `admin`), не удаляется даже при
+        `user_count = 0`.
         """
-        stmt = select(User.id).where(User.role_id == role_id).limit(1)
+        stmt = select(user_roles.c.user_id).where(user_roles.c.role_id == role_id).limit(1)
         result = await self._session.execute(stmt)
         return result.first() is not None
 

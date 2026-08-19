@@ -113,7 +113,7 @@ describe('AiKeysPage grouping', () => {
   });
 
   it('user without ai-keys:view sees the page-scoped stub, list is not rendered (ADR-021 §6)', () => {
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { mail: ['view'] } });
     aiKeysHook.value = {
       ...aiKeysHook.value,
       data: { items: [makeKey({ id: 'o1', name: 'GPT One', provider: 'openai' })] },

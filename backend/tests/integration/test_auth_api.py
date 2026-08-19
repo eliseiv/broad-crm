@@ -56,7 +56,8 @@ async def test_login_me_and_auth_error_contracts() -> None:
     # ADR-021: /me отдаёт профиль + права принципала (супер-админ → полный каталог).
     me_body = me.json()
     assert me_body["username"] == "admin"
-    assert me_body["role"] == "admin"
+    # ADR-079 §3: `MeResponse.role` заменён списком `roles`.
+    assert me_body["roles"] == ["admin"]
     assert me_body["is_superadmin"] is True
     assert "is_admin_level" in me_body
     assert me_body["is_admin_level"] is True

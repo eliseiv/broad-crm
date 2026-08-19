@@ -16,6 +16,7 @@ import uuid
 from datetime import UTC, datetime
 
 from app.config import Settings
+from app.domain.permissions import primary_role_name
 from app.domain.telegram import normalize_telegram
 from app.errors import (
     invalid_credentials,
@@ -98,7 +99,8 @@ class AuthService:
                         await self._users.session.commit()
                     token, expires_in = issue_access_token(
                         sub=user.username,
-                        role=user.role.name,
+                        # Claim `role` информационный (ADR-079 §3): первая роль.
+                        role=primary_role_name(user.roles),
                         superadmin=False,
                         uid=str(user.id),
                     )
@@ -153,7 +155,7 @@ class AuthService:
 
         token, expires_in = issue_access_token(
             sub=user.username,
-            role=user.role.name,
+            role=primary_role_name(user.roles),
             superadmin=False,
             uid=str(user.id),
         )

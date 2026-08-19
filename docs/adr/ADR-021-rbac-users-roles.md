@@ -5,6 +5,8 @@
 - Спринт: 3
 - Расширяет / уточняет: [ADR-008](ADR-008-admin-iz-env.md) (амендмент — см. ниже), [ADR-002](ADR-002-dvuhshagovyy-auth.md) (JWT-payload)
 
+> **Амендмент ([ADR-079](ADR-079-users-m2m-roles-full-name-telegram-table.md), 2026-08-19):** утверждение «у пользователя **одна** роль (`users.role_id`, FK `roles(id) ON DELETE RESTRICT`)» более не действует — роли стали **many-to-many** (таблица `user_roles`, миграция `0038_user_roles_m2m`; колонка `users.role_id` **дропнута**). Следствия: `permissions` принципала = **union** прав всех ролей; `is_admin_level` считается по union, ветка сида читается как **`"admin" ∈ roles`**; `Principal.role: str` → **`roles: tuple[str, ...]`**, `role_id` → **`role_ids: frozenset`**; `GET /api/auth/me.role` → **`roles: list[str]`**; JWT-claim `role` **становится информационным** (первая роль; в авторизации не участвует — права грузятся из БД по `uid`). FK `ON DELETE RESTRICT` и исход `409 role_in_use` сохранены — теперь на `user_roles.role_id`. Пункт «назначение ролей пользователям — только под `require_admin`» (замыкание эскалации) **в силе**.
+
 ## Контекст
 
 До Спринта 3 система — **однопользовательская**: единственный администратор берётся из `.env` (`ADMIN_USER`/`ADMIN_PASSWORD`), сравнение plaintext через `secrets.compare_digest` ([ADR-008](ADR-008-admin-iz-env.md)); JWT несёт только `sub`; зависимость `get_current_user` возвращает голый `str` username; таблиц `users`/`roles` нет; ролей в токене нет; нет `403`/`forbidden()`; хэширования паролей нет (нет `bcrypt`). Ресурсные роутеры (`servers`/`ai-keys`/`mail`/`proxies`/`backends`) защищены пер-эндпоинт зависимостью `_user: CurrentUser` — «любой аутентифицированный».

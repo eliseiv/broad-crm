@@ -28,7 +28,7 @@
 - **monitoring**: маппинг ответов Prometheus → схема метрик; вычисление `zone` на границах (79.9→green, 80→yellow, 90→yellow, 90.1→red); деградация при пустом/ошибочном ответе.
 - **provisioning**: переходы `provision_status` (pending→installing→online/error); формирование `targets/<id>.json`; имена/санитизация.
 - **notifier** (≥90 %, чистая функция перехода): матрица эскалаций — `green→yellow`/`green→red`/`yellow→red` → алерт; `red→yellow`/`*→green` и `offline→online` → молча; `online→offline` → offline-алерт; первая встреча online → база без алерта; возврат `offline→online` в нагрузке → переалерт (база `green`); `online` без метрик → пропуск без алерта; `PrometheusUnavailable` → state не тронут; формат всех 3 сообщений и `int(usage_percent)` (floor); опциональность (нет токена → задача не стартует). См. [modules/notifier](modules/notifier/README.md).
-- **`is_admin_level`** (чистая, `app/domain/permissions.py`): супер-админ → true; `role=="admin"` → true; полный каталог (включая extra-действия и `broadcast`) → true; кириллическое «Админ» с неполным каталогом (нет `documents.share` или нет `broadcast`) → false; урезанная роль → false.
+- **`is_admin_level`** (чистая, `app/domain/permissions.py`): супер-админ → true; **`"admin" ∈ roles`** → true ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §2 — прежняя ветка `role=="admin"` относилась к единственной роли); полный каталог **по union прав всех ролей** (включая extra-действия и `broadcast`) → true; **две частичные роли, чей union покрывает полный каталог → true** (ключевой новый кейс); кириллическое «Админ» с неполным каталогом (нет `documents.share` или нет `broadcast`) → false; урезанная роль → false.
 - **`GET /api/auth/me` += `is_admin_level` ([ADR-078](adr/ADR-078-me-is-admin-level.md)):** супер-админ → `true`; сид `admin` → `true`; роль «Админ» с `full_catalog_permissions()` → `true`; та же роль без `documents.share` или без `broadcast` → `false`; урезанная роль → `false`. Поле обязательное, `bool`.
 
 ### Интеграционные
@@ -110,7 +110,46 @@
   - **каталог ящиков ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §5.3):** `GET /api/mail/mailboxes` у не-админа с `mail_includes_unassigned=true` **содержит** бесхозные ящики (`team_id: null`), без флага — **не содержит**. Контракт (query/схема) при этом не менялся.
 - **`MailAccountRef` ([ADR-056](adr/ADR-056-mail-mini-app-mailbox-context.md)):** `GET /api/mail/messages` отдаёт `mail_account.number`/`app_name`/`team`; ящик без команды → **`team: null`** (LEFT JOIN, письмо **не пропадает** из ленты); число SQL-запросов на страницу ленты **не растёт с числом писем** (нет N+1).
 
-### Backend Users + Backend Economics ([ADR-069](adr/ADR-069-backend-users-page-admin-contract.md) / [ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md))
+### Волна [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) — M2M-роли, ФИО, вход по Telegram, таблица `/users`
+
+Волна реализована (`implemented`, сверка состава 2026-08-19 — шапки [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md)/[ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md)); прогон — по измерениям `qa` (backend 1854 passed, frontend зелёный). Существующие `test_users_roles_api.py`, auth-тесты, `test_documents_visibility.py` и broadcast/knowledge-bot **переписываются**, а не дополняются: контракт ломающий.
+
+**Миграции (интеграционные, на реальном Postgres):**
+- **`0038_user_roles_m2m`:** `revision`/`down_revision` = `0038_user_roles_m2m` / `0037_knowledge_bot_links`, длина `revision` ≤ 32; после `upgrade` — таблица `user_roles`, индекс `ix_user_roles_role_id`, **колонки `users.role_id` НЕТ**; **перенос включает системную строку-якорь** (`is_system = true` получил строку в `user_roles` — фильтра `is_system` в `INSERT … SELECT` быть не должно); FK ролевой стороны — **`RESTRICT`** (прямой `DELETE FROM roles` по назначенной роли даёт `IntegrityError`), пользовательской — `CASCADE` (`DELETE FROM users` уносит строки связи).
+- **`0038` `downgrade` — LOSSY, и это ассертится:** пользователю с двумя ролями (`created_at` t1 < t2) после отката восстановлена **ровно первая** (`MIN(created_at)`), колонка `NOT NULL` + FK + `ix_users_role_id` на месте, `user_roles` дропнута. Отдельный кейс: пользователь **без** ролей (заведён прямым SQL) — `downgrade` не может выставить `NOT NULL`; ожидаемое поведение зафиксировать явно ([07-deployment.md § Откат миграций БД](07-deployment.md#откат-миграций-бд) — такую строку чинят вручную **до** отката).
+- **`0039_users_full_name_telegram`:** три колонки добавлены и **nullable**; backfill `first_name = username` **только для `is_system = false`** (у якоря ФИО осталось `NULL` — гейт против «имя `superadmin@system` в UI»); `telegram` и `uq_users_telegram` **не изменены** (строки с `telegram IS NULL` пережили миграцию); `downgrade` дропает три колонки.
+
+**Права и принципал (unit + интеграционные):**
+- **`union_permissions`:** объединение по страницам с дедупом действий; пустой набор ролей → `{}`.
+- ⛔ **`is_admin_level` — ключевой новый кейс: ДВЕ частичные роли, чей union == полный каталог → `true`** (по отдельности каждая даёт `false`). Плюс ветки: супер-админ → `true`; `"admin" ∈ roles` → `true`; union без `documents.share` или без `broadcast` → `false`.
+- **`Principal`:** `roles: tuple[str, ...]` и `role_ids: frozenset` в порядке `user_roles.created_at ASC, role_id ASC`; супер-админ → `roles=("admin",)`, `role_ids=frozenset()`; смена ролей через `PATCH` применяется **на следующем запросе без пере-логина**.
+- **JWT-claim `role` информационный:** токен, выпущенный **до** смены ролей, остаётся валидным, а права берутся из БД (кейс: выдать роль после выпуска токена → новое право работает **без** релогина). Гейта по claim `role` нет ни на одном пути.
+- **Инвариант эскалации:** актор с двумя частичными ролями создаёт роль с `permissions` ⊆ **union** → `200`; сверх union → `403`. ⛔ **Негативный гейт:** набор, который ⊆ union, но **не** ⊆ ни одной отдельной роли актора, обязан **проходить** — поролевая проверка запрещена.
+
+**Users API:**
+- `POST`: `role_ids` пустой / отсутствует / несуществующий → `422` (`details[].field="role_ids"`); `last_name`/`first_name` пустые → `422` на своём поле; `middle_name` опционально.
+- **`telegram` обязателен** при создании (`422` при отсутствии/пустом); **`PATCH` с `null`/`""` → `422`** (запрет очистки) — регресс-гейт против возврата прежней нормы «очистка убирает телеграм».
+- **`username := normalize_telegram(telegram)`** у нового пользователя; **при смене `telegram` через `PATCH` `username` НЕ меняется**; коллизия с историческим логином → **`409 username_taken`**.
+- ⛔ **Прецеденция двух `409`: `telegram_taken` ПЕРЕД `username_taken`** — кейс, где заняты оба (телеграм у одного пользователя, выведенный логин у другого): ответ обязан быть `telegram_taken`.
+- `UserListItem`: `roles: RoleRef[]` вместо `role_id`/`role_name`, ФИО, `username` **остался**; порядок `roles` детерминирован.
+- **`user_count` / `is_in_use`:** `COUNT(DISTINCT u.id)` через `user_roles` (пользователь с двумя ролями **не** удваивает счётчик своей роли), якорь **исключён** из счётчика и **включён** в гард ⇒ роль якоря → **`409 role_in_use` при `user_count = 0`**.
+- **Якорь:** `ensure_superadmin_anchor` идемпотентен по `user_roles` (двойной вызов не плодит строк); `PATCH`/`DELETE` по его `id` → `404`.
+
+**Видимость документов:**
+- Узел, ограниченный ролью `A`, виден пользователю с ролями `{A, B}` (union **расширяет** видимость); узел, ограниченный `B`, — тоже.
+- ⛔ **Пустой `role_ids` → видны ТОЛЬКО публичные узлы, ответ `200`, НЕ `500`** (регресс-гейт на `IN ()`/expanding-параметр). Супер-админ с пустым `role_ids` видит всё — через `sees_all_documents`, а не через набор ролей.
+
+**Рассылка и внешний контур:**
+- ⛔ **DISTINCT-дедуп адресатов:** пользователь с двумя **выбранными** ролями получает сообщение **ровно один раз**; `skipped_not_started` не задвоен.
+- `GET /api/broadcasts/audience`: пользователь учтён **в каждой** своей роли (сумма по строкам > числа адресатов) — это норма, а сводка «Получат: N» считается по дедуплицированному множеству.
+- `WHERE NOT users.is_system` сохранён во всех fan-out-выборках (якорь не попадает в адресаты даже с ролью `admin`).
+- **Внешний контур ИИ-бота:** ответ несёт **и** `role_id`/`role_name` (первая роль), **и** `roles[]` (полный набор), значения **согласованы**; `sees_all_documents` считается по union ([TD-084](100-known-tech-debt.md)).
+
+**Auth:** вход существующего пользователя по историческому `username` **работает** (в т.ч. при `telegram IS NULL`); вход нового — по telegram-нику; `MeResponse.roles` — массив, `permissions` — union.
+
+**Frontend (vitest):** `UsersPage` — таблица (колонки, сводные плашки, клиентский поиск по ФИО+`username`+`telegram`, сортировка `localeCompare('ru')`, фолбэк `username` при пустом ФИО, чипы ролей и команд, «Без роли»/«Без команды»); `AddUserModal` — **поля «Логин» НЕТ**, Фамилия/Имя обязательны, Telegram обязателен, роли — MultiSelect с минимумом один, `409 username_taken` рендерится **на поле «Телеграм»**.
+
+### Backend Users + Backend Economics ([ADR-069](adr/ADR-069-backend-users-page-admin-contract.md) / [ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) / [ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md))
 
 Сценарии ниже **заводили покрытие обоих модулей с нуля** — до волны [ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) собственных тестов у них не было. Фактическое покрытие на дату — **не здесь**, а в датированных домах ([modules/backend-economics §Состояние](modules/backend-economics/README.md#состояние-замер-на-замороженном-дереве-2026-08-07), [README §Статусы модулей](README.md#статусы-модулей)); этот раздел задаёт **что обязано быть покрыто**, а не что покрыто. Приоритет — **регресс-гейты**, каждый из которых стережёт конкретный уже осмысленный способ сломаться; «общий happy path» ни один из них не заменяет.
 
@@ -156,6 +195,40 @@
 - ответ бэка **без** новых полей (`tokens`/`avatar_tokens`/`grantable`/`updated_at` в `products`; `tokens_spent`/`provider_cost_usd`/`refunded` в `requests`) валиден и **не** даёт `502`; отсутствующее поле нормализуется в **`null`** (ассертить именно `null` в ответе CRM, а не отсутствие ключа) — **включая `refunded`: его тип `bool | null`, и `null` ≠ `false`** ([04-api.md](04-api.md#backend-users));
 - **асимметрия `/pricing`:** элемент `pricing` **без** `tokens` (или без `tariff_id`/`kind`) → **`502 backend_admin_unavailable`** (contract mismatch), а **не** `null`. Кейс обязателен: он стережёт, чтобы «опциональность» продуктов не была скопирована на тарифы;
 - `GET /api/backend-users/{id}/products` **не шлёт** параметр `scope` (умолчание `grantable` сохраняет поведение формы «Установить план»), а `GET /api/backend-economics/{id}/products` шлёт **`scope=all`** (ассертить строку query фактического upstream-запроса).
+
+**Волна [ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) — снимок, скрытие keyless-бэков, «Расходы API» (`implemented`):**
+
+- **Миграция `0040_backend_users_snapshot`:** `upgrade` создаёт обе таблицы и **четыре** индекса; `revision`/`down_revision` — `0040_backend_users_snapshot` / `0039_users_full_name_telegram`, длина `revision` ≤ 32; `downgrade` дропает обе таблицы в порядке FK; **`revenue_supported` присутствует и nullable** (гейт против «забыли колонку» — на ней держится `partial`); `ON DELETE CASCADE` от `backends` уносит обе таблицы (кейс: удалить бэк → строк снимка нет).
+- ⛔ **Обязательный файл-гейт `tests/integration/test_backend_users_keyless_hidden.py`** (инвертированный `test_backend_users_unqueried_sources.py`): бэк реестра **без** `admin_api_key_encrypted` → его нет в `items` **и `errors == []`**. Файл обязан существовать: без него возврат старой ветки «keyless → `errors[]`» пройдёт молча. Отдельный кейс: **единственный** бэк без ключа при явном `backend_id` → по-прежнему **`409 backend_admin_key_not_set`** (не скрытие).
+- **Воркер `BackendUsersSnapshotService`** — unit на `FakeAdminTransport` (`tests/backend_admin_helpers.py`), вызов **прямой `refresh_once()`** (в интеграционных тестах `lifespan` не выполняется):
+  - **полный обход** без `_MAX_WINDOW`: источник на 250 строк при `limit=100` → 3 страницы, в снимке 250 строк;
+  - **changed-only-writes:** второй `refresh_once()` без изменений на источнике → **ни одного `UPDATE`** (ассертить по счётчику записей/`updated_at`, а не «глазами»); изменение `tokens` одного пользователя → ровно одна запись и dirty-set из одного элемента;
+  - **delete-missing ТОЛЬКО при полном успехе:** пользователь исчез с источника → строка удалена; **обрыв на 2-й странице** (исключение транспорта) → **ни одна строка не удалена**;
+  - **сохранение снимка при сбое:** исключение в цикле → прошлые `items` целы, у источника заполнены `error_message`/`failed_at`, `refreshed_at` **не сдвинут**; следующий успешный цикл обнуляет `error_message`/`failed_at`;
+  - **backfill-квота:** `BACKEND_USERS_SNAPSHOT_REVENUE_BATCH=2` и 5 строк с `revenue_refreshed_at IS NULL` → за цикл добрано ровно 2, порядок — `registered_at DESC`; после третьего цикла `revenue_backfill_done = true`;
+  - **`_normalize_provider`** — по кейсу на каждую ветку: `openai`/`gpt-4o` → `openai`; `anthropic`/`claude-3` → `anthropic`; `fal`/`fal.ai` → `fal`; **незнакомый (`replicate`) → `other`, а не потерян**; регистр не влияет (`OpenAI` → `openai`); сырые ключи в `api_cost_providers` **сохранены как есть** (нормализация — только при агрегации);
+  - **`revenue_supported`:** карточка **с** блоком `revenue` → `true`; карточка **без** `revenue` (`null`) → `false`; признак **пересматривается** — бэк, начавший отдавать `revenue`, переключается в `true` следующим циклом.
+- ⛔ **`api_costs.partial` — по кейсу на КАЖДЫЙ дизъюнкт формулы** ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §5). Три условия, три гейта:
+  - **(1)** незавершённый backfill (`revenue_backfill_done = false`) → `partial = true`;
+  - **(2)** бэк уровня **v1 без `revenue`**, backfill **завершён** (`revenue_backfill_done = true`, все `revenue_refreshed_at` проставлены) ⇒ **`partial` обязан остаться `true`** (через `revenue_supported IS FALSE`). Реализация «`partial` = только `revenue_backfill_done = false`» этот кейс проваливает — он и есть регресс-гейт;
+  - **(3)** **`len(participating) < len(backend_ids)`** — запрошен бэк, у которого ещё нет строки `backend_user_snapshot_sources` (добавлен в реестр между циклами) ⇒ **`partial = true`**, даже если у всех остальных источников backfill завершён и `revenue_supported = true`;
+  - **вырожденный:** **`participating == []`** (строк нет ни у одного запрошенного бэка) ⇒ **`api_costs is None`**, а **не** `BackendUsersApiCosts` с нулями и `partial=true`;
+  - **негативный:** все источники `revenue_supported = true`, backfill завершён, строки есть у всех запрошенных → `partial = false`.
+- **Read-path (интеграционные, чтение из снимка):**
+  - **tie-break:** две строки с **одинаковым** `registered_at` → порядок детерминирован по `backend_id, user_id`; постраничный проход `limit=1` покрывает обе без повторов и пропусков;
+  - **паритет поиска:** `search` матчит `user_id` **и** `external_id`, регистронезависимо, по подстроке; **не** матчит поля, которых в снимке нет;
+  - **фильтры:** `backend_id`, период по `registered_at`, `is_paid`; `total` согласован с `items` при `offset > 0`;
+  - **`stats` без периода** — суммы строк источников (upstream-вызовов **ноль**); **`stats` с периодом** — ровно **один** `GET {P}/stats` на бэк (ассертить число вызовов);
+  - **`snapshot_at`** = `MIN(refreshed_at)`; хотя бы один источник ни разу не собран → **`null`**;
+  - **`errors[]`** — только источники с `error_message IS NOT NULL`;
+  - **режим одного бэка** читает тот же SQL; `404 backend_not_found` для несуществующего.
+- **Best-effort touch:** успешный `POST …/tokens` → строка снимка обновлена `tokens` из ответа; **сбой touch (исключение репозитория) НЕ меняет исход операции** — ответ остаётся `200`, аудит записан (кросс-реф [TD-081](100-known-tech-debt.md) — тот же класс «сначала факт, затем интерпретация»); аналогично для `POST …/subscription` (`tokens`/`subscription_active`/`subscription_expires_at`).
+- **Frontend (vitest)** — формулировать по **фактическому** поведению `frontend/src/pages/BackendUsersPage.tsx` (сверка 2026-08-19), а не по «ожидаемому»:
+  - блок «Расходы API» рендерит три ячейки; **«Прочее» отсутствует при `other_usd = 0`** и появляется при `> 0`;
+  - ⛔ **`api_costs === null` → блок ВСЁ РАВНО РЕНДЕРИТСЯ, а значения — `—`** (`value={apiCosts ? formatUsdCents(...) : '—'}`); ассертить **наличие** ячеек с прочерками, а **не** их отсутствие. Кейс «блок скрыт при `null`» был бы docs↔code mismatch: при `null` скрывается только ячейка «Прочее» (по `other_usd > 0`) и бейдж `partial` (по `apiCosts?.partial`);
+  - метка «Данные на HH:MM» из `snapshot_at`; **`snapshot_at === null` → «Снимок формируется…»** — именно эта подпись объясняет оператору прочерки;
+  - `partial` → пометка «расходы ещё собираются»; при `api_costs === null` пометки **нет** (нечему быть частичным);
+  - **бэк без Admin API Key не даёт жёлтую плашку** (в `errors[]` его нет).
 
 ### Контрактные
 - Проверка соответствия ответов схемам из [04-api.md](04-api.md) (Pydantic-схемы = нормативный контракт; тест сверяет ключевые поля и коды ошибок).

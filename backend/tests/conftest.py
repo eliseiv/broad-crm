@@ -67,14 +67,20 @@ def test_settings(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 def make_principal(
     *,
     username: str = "admin",
-    role: str = "admin",
+    role: str | None = None,
+    roles: tuple[str, ...] = ("admin",),
     permissions: dict[str, list[str]] | None = None,
     is_superadmin: bool = True,
     user_id: _uuid.UUID | None = None,
     mail_includes_unassigned: bool = False,
     sms_includes_unassigned: bool = False,
+    role_ids: frozenset[Any] | None = None,
 ) -> Any:
     """Строит `Principal` (супер-админ по умолчанию — полный каталог прав).
+
+    `roles` — имена ВСЕХ ролей актора (ADR-079 §2; заменяет прежнее `role: str`),
+    `role_ids` — их идентификаторы (scope видимости документов, §4). Сокращение `role`
+    сохранено для тестов «одна роль»: оно разворачивается в одноэлементный `roles`.
 
     `user_id` — НЕ-опционален в типе (ADR-051 §1.2): принципала без идентичности больше
     не существует. Умолчание: супер-админ → константа `SUPERADMIN_USER_ID` (строка-якорь,
@@ -94,12 +100,13 @@ def make_principal(
 
     return Principal(
         username=username,
-        role=role,
+        roles=(role,) if role is not None else tuple(roles),
         permissions=full_catalog_permissions() if permissions is None else permissions,
         is_superadmin=is_superadmin,
         user_id=user_id,
         mail_includes_unassigned=mail_includes_unassigned,
         sms_includes_unassigned=sms_includes_unassigned,
+        role_ids=frozenset() if role_ids is None else frozenset(role_ids),
     )
 
 
@@ -121,11 +128,12 @@ def override_principal() -> Callable[..., Any]:
 
 
 class _FakeUser:
-    """Фейк ORM-пользователя: присваивание `.role` синхронизирует `.role_id`.
+    """Фейк ORM-пользователя: роли — M2M (ADR-079 §1), ФИО — три nullable-поля (§7).
 
-    Модель SQLAlchemy при `user.role = role` обновляет FK `role_id` на flush; фейк
-    воспроизводит это через property-сеттер, чтобы сервис-тесты видели то же поведение.
-    `telegram` (опц., ADR-025; заменяет прежний email). `password_hash` nullable
+    `roles` — производное свойство из общей `RbacFakeDb` (как `User.roles` в модели),
+    порядок — по дате добавления связи (`user_roles.created_at`, затем `role_id`): он
+    задаёт «первую» роль (JWT-claim `role`, внешний контур бота).
+    `telegram` (ADR-025/079; обязателен при создании через API). `password_hash` nullable
     (`None` = беспарольный пользователь, ADR-025). `teams` — производное свойство
     CRM-команд пользователя (по членству команд в общей `RbacFakeDb`), порядок
     `created_at DESC` (как `User.teams` в модели)."""
@@ -136,12 +144,14 @@ class _FakeUser:
         id: _uuid.UUID,
         username: str,
         password_hash: str | None,
-        role: Any,
         is_active: bool,
         created_at: datetime,
         updated_at: datetime,
         db: RbacFakeDb,
         telegram: str | None = None,
+        last_name: str | None = None,
+        first_name: str | None = None,
+        middle_name: str | None = None,
         first_login_at: datetime | None = None,
         mail_includes_unassigned: bool = False,
         sms_includes_unassigned: bool = False,
@@ -150,8 +160,9 @@ class _FakeUser:
         self.username = username
         self.telegram = telegram
         self.password_hash = password_hash
-        self._role = role
-        self.role_id = role.id if role is not None else None
+        self.last_name = last_name
+        self.first_name = first_name
+        self.middle_name = middle_name
         self.is_active = is_active
         # Флаги «Без команды» по каналам (ADR-055 §2.2) — колонки
         # `users.mail_includes_unassigned` / `users.sms_includes_unassigned`.
@@ -165,13 +176,11 @@ class _FakeUser:
         self._db = db
 
     @property
-    def role(self) -> Any:
-        return self._role
-
-    @role.setter
-    def role(self, value: Any) -> None:
-        self._role = value
-        self.role_id = value.id if value is not None else None
+    def roles(self) -> list[Any]:
+        """Роли пользователя в порядке `user_roles.created_at ASC, role_id ASC`."""
+        pairs = self._db.user_role_links.get(self.id, {})
+        ordered = sorted(pairs.items(), key=lambda item: (item[1], str(item[0])))
+        return [self._db.roles[rid] for rid, _ in ordered if rid in self._db.roles]
 
     @property
     def teams(self) -> list[Any]:
@@ -329,16 +338,19 @@ class _FakeUserRepo:
         username: str,
         telegram: str | None = None,
         password_hash: str | None,
-        role_id: _uuid.UUID,
+        last_name: str | None = None,
+        first_name: str | None = None,
+        middle_name: str | None = None,
     ) -> Any:
-        role = self._db.roles.get(role_id)
         now = datetime.now(UTC)
         user = _FakeUser(
             id=_uuid.uuid4(),
             username=username,
             telegram=telegram,
             password_hash=password_hash,
-            role=role,
+            last_name=last_name,
+            first_name=first_name,
+            middle_name=middle_name,
             is_active=True,
             created_at=now,
             updated_at=now,
@@ -347,6 +359,20 @@ class _FakeUserRepo:
         self._db.users[user.id] = user
         return user
 
+    async def role_ids_of_user(self, user_id: _uuid.UUID) -> set[_uuid.UUID]:
+        return set(self._db.user_role_links.get(user_id, {}))
+
+    async def set_roles(self, user_id: _uuid.UUID, role_ids: set[_uuid.UUID]) -> None:
+        # Существующие связи СОХРАНЯЮТ дату добавления (она задаёт порядок ролей,
+        # ADR-079 §1) — удаляются только снятые, добавляются только новые.
+        links = self._db.user_role_links.setdefault(user_id, {})
+        for rid in list(links):
+            if rid not in role_ids:
+                del links[rid]
+        for rid in role_ids:
+            if rid not in links:
+                links[rid] = self._db.next_created_at()
+
     async def delete_by_id(self, user_id: _uuid.UUID) -> bool:
         # Каскад user_teams: снять членства удаляемого пользователя.
         for team in self._db.teams.values():
@@ -354,6 +380,8 @@ class _FakeUserRepo:
         # Каскад user_channel_teams (FK ON DELETE CASCADE, ADR-055 §2.1).
         for key in [k for k in self._db.channel_extras if k[0] == user_id]:
             del self._db.channel_extras[key]
+        # Каскад user_roles (FK user_id ON DELETE CASCADE, ADR-079 §1).
+        self._db.user_role_links.pop(user_id, None)
         return self._db.users.pop(user_id, None) is not None
 
 
@@ -372,7 +400,11 @@ class _FakeRoleRepo:
         return [(role, await self.count_users(role.id)) for role in roles]
 
     async def count_users(self, role_id: _uuid.UUID) -> int:
-        return sum(1 for u in self._db.users.values() if u.role_id == role_id)
+        # COUNT(DISTINCT u.id) через user_roles (ADR-079 §1); якорь в фейке не заводится.
+        return sum(1 for uid in self._db.users if role_id in self._db.user_role_links.get(uid, {}))
+
+    async def existing_ids(self, role_ids: set[_uuid.UUID]) -> set[_uuid.UUID]:
+        return {rid for rid in role_ids if rid in self._db.roles}
 
     async def get_by_id(self, role_id: _uuid.UUID) -> Any | None:
         return self._db.roles.get(role_id)
@@ -381,7 +413,8 @@ class _FakeRoleRepo:
         return any(r.name == name and r.id != exclude_id for r in self._db.roles.values())
 
     async def is_in_use(self, role_id: _uuid.UUID) -> bool:
-        return any(u.role_id == role_id for u in self._db.users.values())
+        # Зеркало FK user_roles.role_id ON DELETE RESTRICT — БЕЗ фильтра is_system.
+        return any(role_id in links for links in self._db.user_role_links.values())
 
     async def create(self, *, name: str, permissions: dict[str, list[str]]) -> Any:
         now = datetime.now(UTC)
@@ -714,6 +747,9 @@ class RbacFakeDb:
         # `user_channel_teams` (ADR-055 §2.1): ТОЛЬКО добавка канала, базовые команды
         # (`user_teams`) сюда не пишутся — инвариант нормализации §2.3.
         self.channel_extras: dict[tuple[_uuid.UUID, str], set[_uuid.UUID]] = {}
+        # `user_roles` (ADR-079 §1): {user_id: {role_id: created_at}} — дата добавления
+        # задаёт порядок ролей («первая роль» = JWT-claim `role`, внешний контур бота).
+        self.user_role_links: dict[_uuid.UUID, dict[_uuid.UUID, datetime]] = {}
         self.user_repo = _FakeUserRepo(self)
         self.role_repo = _FakeRoleRepo(self)
         self.team_repo = _FakeTeamRepo(self)
@@ -743,22 +779,31 @@ class RbacFakeDb:
     def add_user(
         self,
         username: str,
-        role: Any,
+        role: Any = None,
         *,
+        roles: list[Any] | None = None,
         is_active: bool = True,
         password_hash: str | None = "x",
         telegram: str | None = None,
+        last_name: str | None = None,
+        first_name: str | None = None,
+        middle_name: str | None = None,
         first_login_at: datetime | None = None,
         mail_includes_unassigned: bool = False,
         sms_includes_unassigned: bool = False,
     ) -> Any:
+        """Создаёт пользователя. `role` — сокращение для одной роли (ADR-079: ролей может
+        быть несколько, полный набор передаётся через `roles`; порядок = порядок списка).
+        """
         now = datetime.now(UTC)
         user = _FakeUser(
             id=_uuid.uuid4(),
             username=username,
             telegram=telegram,
             password_hash=password_hash,
-            role=role,
+            last_name=last_name,
+            first_name=first_name,
+            middle_name=middle_name,
             is_active=is_active,
             created_at=now,
             updated_at=now,
@@ -768,7 +813,19 @@ class RbacFakeDb:
             sms_includes_unassigned=sms_includes_unassigned,
         )
         self.users[user.id] = user
+        assigned = list(roles) if roles is not None else ([role] if role is not None else [])
+        links = self.user_role_links.setdefault(user.id, {})
+        for assigned_role in assigned:
+            if assigned_role is not None and assigned_role.id not in links:
+                links[assigned_role.id] = self.next_created_at()
         return user
+
+    def set_user_roles(self, user: Any, roles: list[Any]) -> None:
+        """Прямая замена набора ролей (минуя сервис) — состояние БД для теста."""
+        links: dict[_uuid.UUID, datetime] = {}
+        for role in roles:
+            links[role.id] = self.next_created_at()
+        self.user_role_links[user.id] = links
 
     def add_extra_team(self, user: Any, channel: str, team: Any) -> None:
         """Строка `user_channel_teams (user, channel, team)` — доп-команда канала (§2.1).

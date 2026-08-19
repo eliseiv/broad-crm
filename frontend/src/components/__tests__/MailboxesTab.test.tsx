@@ -386,7 +386,7 @@ describe('MailboxesTab — клиентский фильтр по команде
   it('без `sees_all_mail_teams` селектор НЕ рендерится вовсе (не пустой, не disabled)', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       seesAllMailTeams: false,
       permissions: { mail: ['view'] },
     });
@@ -477,7 +477,7 @@ describe('MailboxesTab — фильтр «Команда»: порог 2 (ADR-05
   it('0 вариантов канала → контрола «Команда» НЕТ вовсе', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { mail: ['view'] },
       mailTeams: [],
       mailIncludesUnassigned: false,
@@ -490,7 +490,7 @@ describe('MailboxesTab — фильтр «Команда»: порог 2 (ADR-05
   it('1 вариант (одна команда) → контрола НЕТ', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { mail: ['view'] },
       mailTeams: MAIL_TEAMS,
       mailIncludesUnassigned: false,
@@ -503,7 +503,7 @@ describe('MailboxesTab — фильтр «Команда»: порог 2 (ADR-05
   it('2 команды у НЕ-АДМИНА → контрол ЕСТЬ (гейт ADR-050 §1.2 ОТМЕНЁН, TD-058 закрыт)', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { mail: ['view'] },
       mailTeams: [...MAIL_TEAMS, SUPPORT],
       mailIncludesUnassigned: false,
@@ -548,7 +548,7 @@ describe('MailboxesTab — резолв имени команды в колон�
     catalogState.mailboxes = [mailbox({ team_id: 'team-3' })];
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { mail: ['view'] },
       mailTeams: MAIL_TEAMS,
     });
@@ -562,7 +562,7 @@ describe('MailboxesTab — резолв имени команды в колон�
     catalogState.mailboxes = [mailbox({ team_id: null })];
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { mail: ['view'] },
       mailTeams: MAIL_TEAMS,
       mailIncludesUnassigned: true,

@@ -26,6 +26,7 @@ from app.models.document_node_role import document_node_roles
 from app.models.role import Role
 from app.models.team import Team, user_teams
 from app.models.user import User
+from app.models.user_role import user_roles
 
 # Переиспускаем канало-агностичные хелперы приложения/клиента.
 from sms_helpers import build_app, client  # noqa: F401  (реэкспорт для тестов)
@@ -75,8 +76,12 @@ def build_principal(
     role: str = "admin",
     permissions: dict[str, list[str]] | None = None,
     role_id: uuid.UUID | None = None,
+    role_ids: frozenset[uuid.UUID] | None = None,
 ) -> Any:
-    """Строит `Principal` c ролью (`role_id` — для per-node фильтра видимости, ADR-059).
+    """Строит `Principal` c ролями (`role_ids` — per-node фильтр видимости, ADR-059/079 §4).
+
+    `role_id` сохранён как сокращение «одна роль» — им пользуются существующие тесты
+    видимости; при передаче он превращается в одноэлементный `role_ids`.
 
     Супер-админ без явного `user_id` → константа `SUPERADMIN_USER_ID` (строка-якорь).
     """
@@ -87,13 +92,16 @@ def build_principal(
     if user_id is None:
         user_id = SUPERADMIN_USER_ID if is_superadmin else uuid.uuid4()
 
+    if role_ids is None:
+        role_ids = frozenset() if role_id is None else frozenset({role_id})
+
     return Principal(
         username="tester",
-        role=role,
+        roles=(role,),
         permissions=full_catalog_permissions() if permissions is None else permissions,
         is_superadmin=is_superadmin,
         user_id=user_id,
-        role_id=role_id,
+        role_ids=role_ids,
     )
 
 
@@ -123,12 +131,12 @@ async def seed_user(
 ) -> User:
     user = User(
         username=username or f"user-{uuid.uuid4().hex[:10]}",
-        role_id=role.id,
         password_hash="x",
         is_active=True,
     )
     session.add(user)
     await session.flush()
+    await session.execute(insert(user_roles).values(user_id=user.id, role_id=role.id))
     return user
 
 

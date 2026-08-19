@@ -154,7 +154,7 @@ describe('ProxiesPage', () => {
   });
 
   it('user without proxies:view sees the page-scoped stub, list is not rendered (ADR-021 §6)', () => {
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { mail: ['view'] } });
     proxiesHook.value = { ...proxiesHook.value, data: { items: [proxy()] } };
     render(<ProxiesPage />, { wrapper });
 

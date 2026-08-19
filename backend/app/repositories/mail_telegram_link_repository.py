@@ -19,11 +19,13 @@ from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.permissions import union_permissions
 from app.models.mail_telegram import MailTelegramLink
 from app.models.mail_user_settings import MailUserSettings
 from app.models.role import Role
 from app.models.team import user_teams
 from app.models.user import User
+from app.models.user_role import user_roles
 
 
 @dataclass(frozen=True, slots=True)
@@ -168,13 +170,20 @@ class MailTelegramLinkRepository:
         return [MailRecipient(user_id=uid, telegram_user_id=int(tg)) for uid, tg in rows]
 
     async def sees_all_candidates(self) -> list[SeesAllCandidate]:
-        """Кандидаты admin-уровня: все живые привязки активных юзеров + права роли.
+        """Кандидаты admin-уровня: все живые привязки активных юзеров + **union** прав ролей.
 
         Сервис фильтрует по предикату «полный каталог прав» (§6 «super_admin с живым
         линком»). Opt-out исключён здесь же.
 
+        **Роли — M2M** (ADR-079 §5): join идёт через `user_roles`, поэтому пользователь с
+        несколькими ролями даёт несколько строк. Они схлопываются в ОДНОГО кандидата с
+        **объединением** прав (`union_permissions`) — иначе актор, чей полный каталог
+        собирается из двух частичных ролей, не прошёл бы предикат ни по одной строке.
+        Дедуп обязателен и сам по себе: без него такой пользователь получил бы рассылку
+        столько раз, сколько у него ролей.
+
         **Системная строка-якорь супер-админа исключена ЯВНО** (`NOT is_system`, ADR-051
-        §1.4(в)) — здесь это критично: выборка отбирает кандидатов ПО ПРАВАМ РОЛИ, а роль
+        §1.4(в)) — здесь это критично: выборка отбирает кандидатов ПО ПРАВАМ РОЛЕЙ, а роль
         якоря — `admin` (полный каталог). Неявно его отсекал бы только INNER JOIN на
         `mail_telegram_links` (Telegram-привязка супер-админу запрещена, 403 — §1.6);
         держать единственную преграду неявной нельзя.
@@ -182,7 +191,8 @@ class MailTelegramLinkRepository:
         stmt = (
             select(User.id, MailTelegramLink.telegram_user_id, Role.permissions)
             .join(MailTelegramLink, MailTelegramLink.user_id == User.id)
-            .join(Role, Role.id == User.role_id)
+            .join(user_roles, user_roles.c.user_id == User.id)
+            .join(Role, Role.id == user_roles.c.role_id)
             .outerjoin(MailUserSettings, MailUserSettings.user_id == User.id)
             .where(
                 User.is_active.is_(True),
@@ -192,9 +202,17 @@ class MailTelegramLinkRepository:
             )
         )
         rows = (await self._session.execute(stmt)).all()
+        collected: dict[uuid.UUID, tuple[int, list[dict[str, list[str]]]]] = {}
+        for uid, telegram_user_id, perms in rows:
+            _chat, bucket = collected.setdefault(uid, (int(telegram_user_id), []))
+            bucket.append(dict(perms or {}))
         return [
-            SeesAllCandidate(user_id=uid, telegram_user_id=int(tg), permissions=dict(perms))
-            for uid, tg, perms in rows
+            SeesAllCandidate(
+                user_id=uid,
+                telegram_user_id=chat_id,
+                permissions=union_permissions(perms_list),
+            )
+            for uid, (chat_id, perms_list) in collected.items()
         ]
 
     async def is_team_member(self, *, user_id: uuid.UUID, team_id: uuid.UUID) -> bool:

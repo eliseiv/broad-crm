@@ -35,7 +35,7 @@ describe('DefaultRoute (permission-aware default без /dashboard, ADR-022)', (
   it('redirects to /mail when the user has mail:view', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { mail: ['view'], servers: ['view'] },
     });
     renderDefault();
@@ -45,13 +45,13 @@ describe('DefaultRoute (permission-aware default без /dashboard, ADR-022)', (
 
   it('falls through to the first available leaf when earlier leaves are inaccessible', () => {
     // Нет mail, но есть servers:view — первая доступная в порядке навигации /servers.
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { servers: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { servers: ['view'] } });
     renderDefault();
     expect(screen.getByText('SERVERS')).toBeInTheDocument();
   });
 
   it('resolves /roles when only roles:view is granted', () => {
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { roles: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { roles: ['view'] } });
     renderDefault();
     expect(screen.getByText('ROLES')).toBeInTheDocument();
   });
@@ -59,7 +59,7 @@ describe('DefaultRoute (permission-aware default без /dashboard, ADR-022)', (
   it('resolves /backend-users when only backend-users:view is granted (ADR-069)', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Менеджер',
+      roles: ['Менеджер'],
       permissions: { 'backend-users': ['view', 'edit'] },
     });
     renderDefault();
@@ -70,7 +70,7 @@ describe('DefaultRoute (permission-aware default без /dashboard, ADR-022)', (
   it('resolves /broadcast when only broadcast:view is granted (ADR-076)', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { broadcast: ['view', 'send'] },
     });
     renderDefault();
@@ -79,7 +79,7 @@ describe('DefaultRoute (permission-aware default без /dashboard, ADR-022)', (
 
   it('non-superadmin role=admin (no explicit perms) reaches /users via admin flag', () => {
     // `users` гейтится admin-признаком, не матрицей (04-api.md, ADR-021/022).
-    loginAs({ isSuperadmin: false, role: 'admin', isAdminLevel: true, permissions: {} });
+    loginAs({ isSuperadmin: false, roles: ['admin'], isAdminLevel: true, permissions: {} });
     renderDefault();
     expect(screen.getByText('USERS')).toBeInTheDocument();
   });
@@ -87,7 +87,7 @@ describe('DefaultRoute (permission-aware default без /dashboard, ADR-022)', (
   it('роль «Админ» с isAdminLevel=true → /users (закрытие бага, ADR-078)', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Админ',
+      roles: ['Админ'],
       isAdminLevel: true,
       permissions: {},
     });
@@ -98,7 +98,7 @@ describe('DefaultRoute (permission-aware default без /dashboard, ADR-022)', (
   it('isAdminLevel=false не ведёт на /users даже при широких правах без admin-уровня', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Админ',
+      roles: ['Админ'],
       isAdminLevel: false,
       permissions: { servers: ['view'], documents: ['view', 'share'] },
     });
@@ -108,7 +108,7 @@ describe('DefaultRoute (permission-aware default без /dashboard, ADR-022)', (
   });
 
   it('shows the «Недостаточно прав» stub when the user has no view anywhere', () => {
-    loginAs({ isSuperadmin: false, role: 'Пусто', permissions: {} });
+    loginAs({ isSuperadmin: false, roles: ['Пусто'], permissions: {} });
     renderDefault();
     expect(screen.getByText('Недостаточно прав')).toBeInTheDocument();
     // Не редиректит и не разлогинивает — только заглушка.

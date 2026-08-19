@@ -1,9 +1,11 @@
 """Репозиторий реестра пользователей (SQLAlchemy 2.0 async, modules/auth, ADR-021/025).
 
-Роль подгружается eager через `User.role` (`lazy="joined"`). CRM-команды (`User.teams`)
-грузятся точечно через `selectinload` в `list_all`/`get_with_teams` (в hot-path
-принципала `get_by_id` не загружаются). Членство в командах (`user_teams`) пишется
-явными statements (`set_membership`) — источник записи под контролем сервиса; при
+Роли подгружаются через `User.roles` (M2M `user_roles`, `lazy="selectin"`, ADR-079 §1);
+набор ролей пишется явными statements (`set_roles`) — источник записи под контролем
+сервиса, `created_at` существующих строк СОХРАНЯЕТСЯ (он задаёт порядок ролей).
+CRM-команды (`User.teams`) грузятся точечно через `selectinload` в
+`list_all`/`get_with_teams` (в hot-path принципала `get_by_id` не загружаются).
+Членство в командах (`user_teams`) пишется явными statements (`set_membership`) — при
 изменении набора команд `created_at` существующих строк СОХРАНЯЕТСЯ (дата добавления
 важна для авто-передачи лидерства, ADR-026), новым строкам ставится `now()`.
 
@@ -36,6 +38,7 @@ from app.logging import get_logger
 from app.models.role import Role
 from app.models.team import user_teams
 from app.models.user import User
+from app.models.user_role import user_roles
 
 logger = get_logger(__name__)
 
@@ -64,22 +67,58 @@ class UserRepository:
         username: str,
         telegram: str | None,
         password_hash: str | None,
-        role_id: uuid.UUID,
+        last_name: str | None = None,
+        first_name: str | None = None,
+        middle_name: str | None = None,
     ) -> User:
         """Создаёт пользователя (пароль — только bcrypt-хэш ИЛИ None для беспарольного).
 
-        Членство в командах записывается отдельно (`set_membership`).
+        Роли (`set_roles`) и членство в командах (`set_membership`) записываются отдельно:
+        обе связи — M2M, источник записи под контролем сервиса (ADR-079 §1).
         """
         user = User(
             username=username,
             telegram=telegram,
             password_hash=password_hash,
-            role_id=role_id,
+            last_name=last_name,
+            first_name=first_name,
+            middle_name=middle_name,
         )
         self._session.add(user)
         await self._session.flush()
         await self._session.refresh(user)
         return user
+
+    async def role_ids_of_user(self, user_id: uuid.UUID) -> set[uuid.UUID]:
+        """Текущий набор id ролей пользователя (для вычисления снятых при PATCH)."""
+        stmt = select(user_roles.c.role_id).where(user_roles.c.user_id == user_id)
+        result = await self._session.execute(stmt)
+        return set(result.scalars().all())
+
+    async def set_roles(self, user_id: uuid.UUID, role_ids: set[uuid.UUID]) -> None:
+        """Приводит набор ролей пользователя к `role_ids` (в текущей транзакции).
+
+        Существующие строки СОХРАНЯЮТ `created_at`: он задаёт порядок ролей («первая
+        роль» — информационный JWT-claim `role` и `role_id`/`role_name` внешнего контура
+        бота, ADR-079 §3/§6), и переприсвоение сбило бы его при любом сохранении формы.
+        Удаляются только снятые, добавляются только новые (`created_at = DEFAULT now()`).
+        «Минимум одна роль» здесь НЕ проверяется — это инвариант сервиса (422).
+        """
+        current = await self.role_ids_of_user(user_id)
+        to_remove = current - role_ids
+        to_add = role_ids - current
+        if to_remove:
+            await self._session.execute(
+                delete(user_roles).where(
+                    user_roles.c.user_id == user_id,
+                    user_roles.c.role_id.in_(to_remove),
+                )
+            )
+        if to_add:
+            await self._session.execute(
+                insert(user_roles),
+                [{"user_id": user_id, "role_id": rid} for rid in to_add],
+            )
 
     async def list_all(self) -> list[User]:
         """Все пользователи (с ролью и командами), сортировка `created_at ASC, id`.
@@ -110,13 +149,20 @@ class UserRepository:
         return result.unique().scalar_one_or_none()
 
     async def get_with_teams(self, user_id: uuid.UUID) -> User | None:
-        """Пользователь с ролью и командами (для тела ответа users API) или None.
+        """Пользователь с ролями и командами (для тела ответа users API) или None.
 
         Якорь невидим (`NOT is_system`, ADR-051 §1.4).
+
+        **`populate_existing=True` обязателен** (`expire_on_commit=False`, `app/db.py`):
+        метод вызывается ПОСЛЕ `set_roles`/`set_membership`, а обе связи пишутся ЯВНЫМИ
+        statements мимо ORM-коллекций. Без принудительного перезаполнения identity-map
+        вернул бы тот же объект со СТАРЫМ набором ролей, и ответ `201`/`200` показал бы
+        роли до правки.
         """
         stmt = (
             select(User)
-            .options(selectinload(User.teams))
+            .options(selectinload(User.teams), selectinload(User.roles))
+            .execution_options(populate_existing=True)
             .where(User.id == user_id, User.is_system.is_(False))
         )
         result = await self._session.execute(stmt)
@@ -238,7 +284,8 @@ class UserRepository:
            `pk_users`, и по `uq_users_username`, и по `uq_users_system_singleton`.
            Повторный старт / несколько воркеров / рестарт — но-оп; существующая строка
            НЕ перезаписывается (пароль-заглушка не ротируется, отметки прочитанности не
-           трогаются).
+           трогаются). Следом — **`INSERT INTO user_roles … ON CONFLICT DO NOTHING`**
+           (ADR-079 §1): связь якоря с ролью живёт в M2M и пишется в том же коммите.
         3. **Верификация** `SELECT` по `SUPERADMIN_USER_ID`: строки нет (например,
            `username` занят древней записью в обход валидации) → ERROR-лог
            `superadmin_anchor_missing`; исключение НЕ бросается — приложение обязано
@@ -259,13 +306,19 @@ class UserRepository:
                 id=SUPERADMIN_USER_ID,
                 username=SUPERADMIN_USERNAME,
                 password_hash=hash_password(secrets.token_urlsafe(_ANCHOR_SECRET_BYTES)),
-                role_id=role_id,
                 is_active=True,
                 is_system=True,
             )
             .on_conflict_do_nothing()
         )
         await self._session.execute(stmt)
+        # Связь якоря с ролью переехала в M2M (ADR-079 §1) и создаётся в ТОМ ЖЕ коммите:
+        # `ON CONFLICT DO NOTHING` делает шаг идемпотентным (повторный старт/воркеры).
+        await self._session.execute(
+            pg_insert(user_roles)
+            .values(user_id=SUPERADMIN_USER_ID, role_id=role_id)
+            .on_conflict_do_nothing()
+        )
         await self._session.commit()
 
         exists = await self._session.execute(
@@ -275,7 +328,7 @@ class UserRepository:
             logger.error("superadmin_anchor_missing", user_id=str(SUPERADMIN_USER_ID))
 
     async def _resolve_anchor_role_id(self) -> uuid.UUID:
-        """Роль-заглушка якоря под `NOT NULL` FK `users.role_id` (ADR-051 §1.1, цепочка).
+        """Роль-заглушка якоря для строки `user_roles` (ADR-051 §1.1 / ADR-079 §1, цепочка).
 
         (1) роль `admin` → (2) самая ранняя роль (`created_at ASC, id ASC`) → (3) ролей
         нет ВООБЩЕ ⇒ создать `admin` с полным каталогом прав (тот же сид, что в

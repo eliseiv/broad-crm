@@ -16,7 +16,12 @@ from app.db import get_session, get_sessionmaker
 from app.domain.channels import CHANNEL_MAIL, CHANNEL_SMS, Channel
 from app.domain.documents import DocumentScope
 from app.domain.mail import MailScope
-from app.domain.permissions import full_catalog_permissions, is_admin_level, permissions_subset
+from app.domain.permissions import (
+    full_catalog_permissions,
+    is_admin_level,
+    permissions_subset,
+    union_permissions,
+)
 from app.domain.sms import SmsScope
 from app.domain.superadmin import SUPERADMIN_USER_ID
 from app.errors import forbidden, unauthorized
@@ -29,6 +34,7 @@ from app.infra.sms_telegram import SmsBotClient
 from app.infra.telegram import TelegramClient
 from app.repositories.ai_key_repository import AiKeyRepository
 from app.repositories.backend_repository import BackendRepository
+from app.repositories.backend_user_snapshot_repository import BackendUserSnapshotRepository
 from app.repositories.document_attachment_repository import DocumentAttachmentRepository
 from app.repositories.document_repository import DocumentRepository
 from app.repositories.knowledge_bot_link_repository import KnowledgeBotLinkRepository
@@ -93,7 +99,11 @@ class Principal:
     """
 
     username: str
-    role: str
+    # Имена ВСЕХ ролей пользователя (ADR-079 §2), порядок — `user_roles.created_at ASC,
+    # role_id ASC`. Первый элемент — «первая» роль (информационный JWT-claim `role`).
+    # Супер-админ (`.env`) → `("admin",)`.
+    roles: tuple[str, ...]
+    # Union прав всех ролей (ADR-079 §2). Для супер-админа — полный каталог.
     permissions: dict[str, list[str]]
     is_superadmin: bool
     # Идентичность принципала — НЕ-опциональна (ADR-051 §1.2): принципала без `user_id`
@@ -109,12 +119,12 @@ class Principal:
     # у супер-админа не используются (`sees_all_teams=True` перекрывает их — §3).
     mail_includes_unassigned: bool = False
     sms_includes_unassigned: bool = False
-    # Единственная роль пользователя (`users.role_id`, ADR-021) — для per-node фильтра
-    # видимости документов (ADR-059): узел виден ⇔ публичен ИЛИ его эффективный набор
-    # ролей содержит `role_id`. Берётся из той же уже загруженной строки (лишнего запроса
-    # нет). У консольного супер-админа роли-строки в `users` нет → `None` (его видимость
-    # покрывает admin-предикат `sees_all`, роль не нужна).
-    role_id: uuid.UUID | None = None
+    # Идентификаторы ВСЕХ ролей пользователя (`user_roles`, ADR-079 §4) — для per-node
+    # фильтра видимости документов (ADR-059): узел виден ⇔ публичен ИЛИ его эффективный
+    # набор ролей пересекается с `role_ids`. Берутся из той же уже загруженной строки
+    # (лишнего запроса нет). У консольного супер-админа строк в `user_roles` нет →
+    # `frozenset()` (его видимость покрывает admin-предикат `sees_all`).
+    role_ids: frozenset[uuid.UUID] = frozenset()
 
 
 async def get_current_principal(
@@ -139,7 +149,7 @@ async def get_current_principal(
     if claims.superadmin:
         return Principal(
             username=claims.sub,
-            role="admin",
+            roles=("admin",),
             permissions=full_catalog_permissions(),
             is_superadmin=True,
             user_id=SUPERADMIN_USER_ID,
@@ -158,13 +168,13 @@ async def get_current_principal(
 
     return Principal(
         username=user.username,
-        role=user.role.name,
-        permissions=dict(user.role.permissions),
+        roles=tuple(role.name for role in user.roles),
+        permissions=union_permissions(dict(role.permissions or {}) for role in user.roles),
         is_superadmin=False,
         user_id=user.id,
         mail_includes_unassigned=user.mail_includes_unassigned,
         sms_includes_unassigned=user.sms_includes_unassigned,
-        role_id=user.role_id,
+        role_ids=frozenset(role.id for role in user.roles),
     )
 
 
@@ -397,15 +407,15 @@ def principal_sees_all_documents(principal: Principal) -> bool:
 
 
 def get_document_scope(principal: PrincipalDep) -> DocumentScope:
-    """Фабрика scope видимости документов (ADR-059): `sees_all` + `role_id` пользователя.
+    """Фабрика scope видимости документов (ADR-059 в редакции ADR-079 §4).
 
-    `role_id` уже в принципале (загружен той же строкой пользователя — без доп. запроса);
-    у admin-уровня не используется. Синхронная — БД не требуется (в отличие от SMS/почты,
-    где scope — множество команд).
+    `role_ids` уже в принципале (загружены вместе с ролями — без доп. запроса); у
+    admin-уровня не используются. Пустой набор (консольный супер-админ) → public-only,
+    а не 500. Синхронная — БД не требуется (в отличие от SMS/почты, где scope — команды).
     """
     return DocumentScope(
         sees_all=principal_sees_all_documents(principal),
-        role_id=principal.role_id,
+        role_ids=principal.role_ids,
     )
 
 
@@ -573,8 +583,15 @@ def get_backend_service(
 
 
 def get_backend_user_service(session: DbSession) -> BackendUserService:
-    """Сервис страницы «Пользователи бэков» (прокси CRM Admin API, modules/backend-users)."""
-    return BackendUserService(repository=BackendRepository(session))
+    """Сервис страницы «Пользователи бэков» (modules/backend-users, ADR-080).
+
+    Список читается из Postgres-снимка (`BackendUserSnapshotRepository`), точечные и
+    пишущие пути — live через CRM Admin API бэков.
+    """
+    return BackendUserService(
+        repository=BackendRepository(session),
+        snapshots=BackendUserSnapshotRepository(session),
+    )
 
 
 def get_backend_economics_service(session: DbSession) -> BackendEconomicsService:

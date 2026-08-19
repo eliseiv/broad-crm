@@ -126,6 +126,10 @@ middleware после получения апдейта вызывает `POST /
 is_superadmin OR role == "admin" OR permissions_subset(full_catalog_permissions(), principal.permissions)
 ```
 
+> **Амендмент ([ADR-079](ADR-079-users-m2m-roles-full-name-telegram-table.md), 2026-08-19):** запись предиката выше более не действует дословно — роли стали M2M. Действующая редакция: **`is_superadmin OR "admin" ∈ roles OR permissions_subset(full_catalog_permissions(), union_permissions(roles))`**, где `permissions` принципала = **union** прав всех его ролей. Смысл предиката, его единое место (`app/domain/permissions.py`) и правило «страница `users` остаётся вне каталога» — **в силе**.
+>
+> Тем же ADR амендированы два соседних утверждения §5–§6: **адресаты рассылки** резолвятся join'ом `users → user_roles → roles` и **обязаны дедуплицироваться** (`DISTINCT` по `telegram_user_id`) — иначе пользователь с двумя выбранными ролями получит сообщение дважды; в счётчиках аудитории он учитывается **в каждой** своей роли, поэтому сумма по строкам ≠ числу адресатов, а сводка «Получат: N» считается по дедуплицированному множеству. Требование явного **`WHERE NOT users.is_system`** в fan-out-выборках ([ADR-051](ADR-051-superadmin-db-anchor-personal-state.md)) — **в силе**, M2M-join его не заменяет. `UserListItem.bot_started` и бейдж «Бот» — **в силе** (бейдж переезжает в колонку таблицы, [ADR-079](ADR-079-users-m2m-roles-full-name-telegram-table.md) §10).
+
 Тот же предикат, что `sees_all_documents` / `sees_all_sms_teams` / `sees_all_mail_teams` ([ADR-032](ADR-032-sms-visibility-admin-full-catalog.md)). Страница `users` **остаётся вне каталога** (эскалация через назначение ролей по-прежнему не выдаётся отдельным чекбоксом).
 
 `require_admin`, UI-гейт `/users`, защита сид-роли `admin` ([ADR-022](ADR-022-teams-nav-categories.md) §4б) и subset-исключение «актор сам admin-уровня» переводятся на `is_admin_level`. Имя `admin` остаётся зарезервированным сидом; кириллическое «Админ» проходит **только если** jsonb роли покрывает **полный** текущий каталог (включая `share`/`send` и прочие extra-действия).

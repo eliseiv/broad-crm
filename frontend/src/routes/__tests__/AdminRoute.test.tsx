@@ -13,7 +13,10 @@ import { loginAs, logout } from '@/test/authTestUtils';
 const getPermissionsCatalog = vi.fn();
 vi.mock('@/features/users/api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/features/users/api')>();
-  return { ...actual, getPermissionsCatalog: (...args: unknown[]) => getPermissionsCatalog(...args) };
+  return {
+    ...actual,
+    getPermissionsCatalog: (...args: unknown[]) => getPermissionsCatalog(...args),
+  };
 });
 
 function renderAdmin() {
@@ -45,13 +48,13 @@ describe('AdminRoute (admin-only guard, ADR-078)', () => {
   });
 
   it('renders the guarded page when isAdminLevel is true (role admin)', () => {
-    loginAs({ isSuperadmin: false, role: 'admin', isAdminLevel: true, permissions: {} });
+    loginAs({ isSuperadmin: false, roles: ['admin'], isAdminLevel: true, permissions: {} });
     renderAdmin();
     expect(screen.getByText('USERS PAGE')).toBeInTheDocument();
   });
 
   it('роль «Админ» с isAdminLevel открывает /users без Spinner каталога', () => {
-    loginAs({ isSuperadmin: false, role: 'Админ', isAdminLevel: true, permissions: {} });
+    loginAs({ isSuperadmin: false, roles: ['Админ'], isAdminLevel: true, permissions: {} });
     renderAdmin();
     expect(screen.getByText('USERS PAGE')).toBeInTheDocument();
     expect(screen.queryByText(INSUFFICIENT_PERMISSIONS_TITLE)).not.toBeInTheDocument();
@@ -62,7 +65,7 @@ describe('AdminRoute (admin-only guard, ADR-078)', () => {
   it('shows the page-scoped «Недостаточно прав» stub when isAdminLevel is false (no redirect, session kept)', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       isAdminLevel: false,
       permissions: { servers: ['view'] },
     });

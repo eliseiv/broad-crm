@@ -232,9 +232,7 @@ describe('SmsPage', () => {
     );
 
     await user.click(screen.getByRole('option', { name: '+15552220002 · Beta' }));
-    expect(useSmsMessagesSpy).toHaveBeenLastCalledWith(
-      expect.objectContaining({ numberId: 2 }),
-    );
+    expect(useSmsMessagesSpy).toHaveBeenLastCalledWith(expect.objectContaining({ numberId: 2 }));
   });
 
   it('фильтр номера: опции отсортированы по phone_number (не по id)', async () => {

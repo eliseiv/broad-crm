@@ -7,10 +7,9 @@ import { Input } from '@/components/ui/Input';
 import { Modal } from '@/components/ui/Modal';
 import { MultiSelect } from '@/components/ui/MultiSelect';
 import type { MultiSelectOption } from '@/components/ui/MultiSelect';
-import { Select } from '@/components/ui/Select';
-import type { SelectOption } from '@/components/ui/Select';
 import { UserChannelTeamsBlock } from '@/components/UserChannelTeamsBlock';
 import { ApiError } from '@/lib/api';
+import { fullName } from '@/features/users/fullName';
 import { useCreateUser, useDeleteUser, useUpdateUser } from '@/features/users/hooks';
 import type {
   RoleListItem,
@@ -23,7 +22,7 @@ import type {
 interface AddUserModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Роли для Select (из GET /api/roles). */
+  /** Роли для мультивыбора «Роли» (из GET /api/roles). */
   roles: RoleListItem[];
   /** CRM-команды для мультивыбора «Команды» (из GET /api/teams). */
   teams: TeamListItem[];
@@ -33,10 +32,20 @@ interface AddUserModalProps {
   user?: UserListItem;
 }
 
-type UserField = 'username' | 'telegram' | 'password' | 'role_id';
+type UserField = 'last_name' | 'first_name' | 'middle_name' | 'telegram' | 'password' | 'role_ids';
 type Errors = Partial<Record<UserField, string>>;
 
-function roleOptions(roles: RoleListItem[]): SelectOption[] {
+/** Поля, по которым сервер отдаёт `details[].field` (04-api.md Users). */
+const API_FIELDS: readonly UserField[] = [
+  'last_name',
+  'first_name',
+  'middle_name',
+  'telegram',
+  'password',
+  'role_ids',
+];
+
+function roleOptions(roles: RoleListItem[]): MultiSelectOption[] {
   return roles.map((r) => ({ value: r.id, label: r.name }));
 }
 
@@ -44,10 +53,17 @@ function teamOptions(teams: TeamListItem[]): MultiSelectOption[] {
   return teams.map((t) => ({ value: t.id, label: t.name }));
 }
 
-/** username: required, 1–64 после trim (кириллица допускается — валидацию формата ведёт сервер). */
-function validateUsername(username: string): string | undefined {
-  const trimmed = username.trim();
-  if (!trimmed) return 'Укажите логин';
+/**
+ * Часть ФИО: 1–64 после trim (кириллица допускается — формат ведёт сервер, ADR-079 §7).
+ * `required` управляется вызывающим: фамилия и имя обязательны, отчество — нет.
+ */
+function validateNamePart(
+  value: string,
+  required: boolean,
+  emptyMessage: string,
+): string | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) return required ? emptyMessage : undefined;
   if (trimmed.length > 64) return 'Не более 64 символов';
   return undefined;
 }
@@ -65,35 +81,32 @@ function sameIds(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((id) => b.includes(id));
 }
 
-/** Маппинг ошибок API в пофилдовые (04-api.md прецеденция ошибок Users). */
+/** Маппинг ошибок API в пофилдовые (04-api.md прецеденция ошибок Users, ADR-079 §9). */
 function mapApiError(err: unknown, setErrors: (u: (prev: Errors) => Errors) => void): void {
   if (err instanceof ApiError) {
-    if (err.status === 409) {
-      // 04-api.md: 409 username_taken / telegram_taken (различаем по code, ADR-025).
-      if (err.code === 'telegram_taken') {
-        setErrors((prev) => ({
-          ...prev,
-          telegram: 'Пользователь с таким Телеграмом уже существует',
-        }));
-      } else {
-        setErrors((prev) => ({
-          ...prev,
-          username: 'Пользователь с таким логином уже существует',
-        }));
-      }
+    // ОБА известных конфликта порождены одним введённым значением — телеграм-ником,
+    // поэтому оба показываются на поле «Телеграм»: поля «Логин» в форме больше нет
+    // (ADR-079 §9). Коды перечислены явно: неопознанный 409 уходит в общий фолбэк, а не
+    // вешает на «Телеграм» сообщение о конфликте, которого этот код не описывает.
+    if (err.status === 409 && err.code === 'username_taken') {
+      setErrors((prev) => ({
+        ...prev,
+        telegram: 'Этот Телеграм уже занят как логин другого пользователя',
+      }));
+      return;
+    }
+    if (err.status === 409 && err.code === 'telegram_taken') {
+      setErrors((prev) => ({
+        ...prev,
+        telegram: 'Пользователь с таким Телеграмом уже существует',
+      }));
       return;
     }
     if (err.status === 422 || err.status === 400) {
       const mapped: Errors = {};
       for (const d of err.details ?? []) {
-        if (
-          d.field === 'username' ||
-          d.field === 'telegram' ||
-          d.field === 'password' ||
-          d.field === 'role_id'
-        ) {
-          mapped[d.field] = d.message;
-        }
+        const field = API_FIELDS.find((f) => f === d.field);
+        if (field) mapped[field] = d.message;
       }
       if (Object.keys(mapped).length > 0) {
         setErrors((prev) => ({ ...prev, ...mapped }));
@@ -135,6 +148,20 @@ export function AddUserModal({
   );
 }
 
+/** Кнопка-глазок показа пароля (общая для обеих модалок). */
+function PasswordToggle({ shown, onToggle }: { shown: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-label={shown ? 'Скрыть пароль' : 'Показать пароль'}
+      className="flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+    >
+      {shown ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+    </button>
+  );
+}
+
 function AddUserDialog({
   open,
   onOpenChange,
@@ -146,10 +173,14 @@ function AddUserDialog({
   roles: RoleListItem[];
   teams: TeamListItem[];
 }) {
-  const [username, setUsername] = useState('');
+  const [lastName, setLastName] = useState('');
+  const [firstName, setFirstName] = useState('');
+  const [middleName, setMiddleName] = useState('');
   const [telegram, setTelegram] = useState('');
   const [password, setPassword] = useState('');
-  const [roleId, setRoleId] = useState(roles[0]?.id ?? '');
+  // Роли — мультивыбор, минимум одна (ADR-079 §1). Предвыбора нет: назначение прав
+  // должно быть осознанным действием, а не умолчанием первой роли из списка.
+  const [roleIds, setRoleIds] = useState<string[]>([]);
   const [teamIds, setTeamIds] = useState<string[]>([]);
   // Блоки каналов (ADR-055 §6.1): хранится и отправляется ТОЛЬКО ДОБАВКА сверх базового
   // членства (`team_ids`); флаг «Без команды» — отдельным полем на канал.
@@ -163,27 +194,40 @@ function AddUserDialog({
 
   const noRoles = roles.length === 0;
 
+  const clearError = (field: UserField) => {
+    setErrors((prev) => (prev[field] ? { ...prev, [field]: undefined } : prev));
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const nextErrors: Errors = {};
-    const uErr = validateUsername(username);
-    if (uErr) nextErrors.username = uErr;
+    const lastErr = validateNamePart(lastName, true, 'Укажите фамилию');
+    if (lastErr) nextErrors.last_name = lastErr;
+    const firstErr = validateNamePart(firstName, true, 'Укажите имя');
+    if (firstErr) nextErrors.first_name = firstErr;
+    const middleErr = validateNamePart(middleName, false, '');
+    if (middleErr) nextErrors.middle_name = middleErr;
+    // Телеграм обязателен (ADR-079 §8) — он единственный способ входа нового
+    // пользователя, из него же сервис выводит скрытый username.
+    if (!telegram.trim()) nextErrors.telegram = 'Укажите Телеграм';
     // Пароль опционален (ADR-025): валидируем 8–128 только если введён.
     const pErr = validatePassword(password, false);
     if (pErr) nextErrors.password = pErr;
-    if (!roleId) nextErrors.role_id = 'Выберите роль';
+    if (roleIds.length === 0) nextErrors.role_ids = 'Выберите хотя бы одну роль';
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
 
     const payload: UserCreateRequest = {
-      username: username.trim(),
-      role_id: roleId,
+      last_name: lastName.trim(),
+      first_name: firstName.trim(),
+      telegram: telegram.trim(),
+      role_ids: roleIds,
     };
+    // Отчество опционально: пусто → не отправляем.
+    const trimmedMiddle = middleName.trim();
+    if (trimmedMiddle) payload.middle_name = trimmedMiddle;
     // Пароль опционален: пусто → не отправляем (беспарольный «открытый первый вход», ADR-025).
     if (password) payload.password = password;
-    // Телеграм опционален: пусто → не отправляем (без телеграма, 04-api.md).
-    const trimmedTelegram = telegram.trim();
-    if (trimmedTelegram) payload.telegram = trimmedTelegram;
     if (teamIds.length > 0) payload.team_ids = teamIds;
     // Отправляется ТОЛЬКО добавка: базовые (disabled) чекбоксы блоков в `*_extra_team_ids`
     // не включаются (ADR-055 §6.1; сервер вычитает пересечение и сам — §2.3).
@@ -210,7 +254,7 @@ function AddUserDialog({
       open={open}
       onOpenChange={(next) => !isSubmitting && onOpenChange(next)}
       title="Добавить пользователя"
-      description="Логин обязателен; пароль можно не задавать — пользователь задаст его при первом входе. Доступ определяется ролью."
+      description="Фамилия, имя и Телеграм обязательны; пароль можно не задавать — пользователь задаст его при первом входе. Доступ определяется ролями."
       dismissible={!isSubmitting}
       footer={
         <>
@@ -230,62 +274,79 @@ function AddUserDialog({
           </p>
         )}
         <Input
-          label="Логин"
-          value={username}
-          error={errors.username}
+          label="Фамилия"
+          value={lastName}
+          error={errors.last_name}
           autoFocus
           maxLength={64}
           autoComplete="off"
           onChange={(e) => {
-            setUsername(e.target.value);
-            if (errors.username) setErrors((p) => ({ ...p, username: undefined }));
+            setLastName(e.target.value);
+            clearError('last_name');
+          }}
+        />
+        <Input
+          label="Имя"
+          value={firstName}
+          error={errors.first_name}
+          maxLength={64}
+          autoComplete="off"
+          onChange={(e) => {
+            setFirstName(e.target.value);
+            clearError('first_name');
+          }}
+        />
+        <Input
+          label="Отчество"
+          value={middleName}
+          error={errors.middle_name}
+          maxLength={64}
+          autoComplete="off"
+          onChange={(e) => {
+            setMiddleName(e.target.value);
+            clearError('middle_name');
           }}
         />
         <Input
           label="Телеграм"
           type="text"
-          placeholder="@username (опционально)"
+          placeholder="@username"
           value={telegram}
           error={errors.telegram}
           autoComplete="off"
           onChange={(e) => {
             setTelegram(e.target.value);
-            if (errors.telegram) setErrors((p) => ({ ...p, telegram: undefined }));
+            clearError('telegram');
           }}
         />
         <Input
           label="Пароль"
           type={showPassword ? 'text' : 'password'}
-          placeholder="Не менее 8 символов (опционально)"
+          placeholder="Не менее 8 символов"
+          hint="Оставьте пустым — пользователь задаст пароль при первом входе"
           value={password}
           error={errors.password}
           maxLength={128}
           autoComplete="new-password"
           onChange={(e) => {
             setPassword(e.target.value);
-            if (errors.password) setErrors((p) => ({ ...p, password: undefined }));
+            clearError('password');
           }}
           trailing={
-            <button
-              type="button"
-              onClick={() => setShowPassword((v) => !v)}
-              aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
-              className="flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-            >
-              {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-            </button>
+            <PasswordToggle shown={showPassword} onToggle={() => setShowPassword((v) => !v)} />
           }
         />
-        <Select
-          label="Роль"
+        <MultiSelect
+          label="Роли"
+          value={roleIds}
           options={roleOptions(roles)}
-          value={roleId}
-          error={errors.role_id}
+          error={errors.role_ids}
           disabled={noRoles}
-          onChange={(e) => {
-            setRoleId(e.target.value);
-            if (errors.role_id) setErrors((p) => ({ ...p, role_id: undefined }));
+          onChange={(next) => {
+            setRoleIds(next);
+            clearError('role_ids');
           }}
+          emptyHint="Пока нет ролей"
         />
         <MultiSelect
           label="Команды"
@@ -333,11 +394,19 @@ function EditUserDialog({
   user: UserListItem;
 }) {
   const initialTeamIds = user.teams.map((t) => t.id);
+  const initialRoleIds = user.roles.map((r) => r.id);
   // ТОЛЬКО ДОБАВКА канала (`*_extra_teams` — строки `user_channel_teams`, без базовых `teams`).
   const initialSmsExtra = user.sms_extra_teams.map((t) => t.id);
   const initialMailExtra = user.mail_extra_teams.map((t) => t.id);
-  const [telegram, setTelegram] = useState(user.telegram ?? '');
-  const [roleId, setRoleId] = useState(user.role_id);
+  const currentLastName = user.last_name ?? '';
+  const currentFirstName = user.first_name ?? '';
+  const currentMiddleName = user.middle_name ?? '';
+  const currentTelegram = user.telegram ?? '';
+  const [lastName, setLastName] = useState(currentLastName);
+  const [firstName, setFirstName] = useState(currentFirstName);
+  const [middleName, setMiddleName] = useState(currentMiddleName);
+  const [telegram, setTelegram] = useState(currentTelegram);
+  const [roleIds, setRoleIds] = useState<string[]>(initialRoleIds);
   const [isActive, setIsActive] = useState(user.is_active);
   const [password, setPassword] = useState('');
   const [teamIds, setTeamIds] = useState<string[]>(initialTeamIds);
@@ -351,30 +420,51 @@ function EditUserDialog({
   const updateMutation = useUpdateUser(user.id);
   const deleteMutation = useDeleteUser();
 
+  const clearError = (field: UserField) => {
+    setErrors((prev) => (prev[field] ? { ...prev, [field]: undefined } : prev));
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const nextErrors: Errors = {};
+    // Части ФИО, уже заполненные у пользователя, очистить нельзя (PATCH `""`/`null` → 422).
+    // Историческая строка с пустой фамилией остаётся редактируемой: пустое поле там
+    // означает «не менять», а не «очистить».
+    const lastErr = validateNamePart(lastName, Boolean(currentLastName), 'Укажите фамилию');
+    if (lastErr) nextErrors.last_name = lastErr;
+    const firstErr = validateNamePart(firstName, Boolean(currentFirstName), 'Укажите имя');
+    if (firstErr) nextErrors.first_name = firstErr;
+    const middleErr = validateNamePart(middleName, false, '');
+    if (middleErr) nextErrors.middle_name = middleErr;
+    // Очистка телеграма запрещена (ADR-079 §8) — форма обязана блокировать сабмит и
+    // объяснять причину. У исторической строки без телеграма пустое поле = «не менять».
+    if (currentTelegram && !telegram.trim()) {
+      nextErrors.telegram = 'Телеграм нельзя удалить — это единственный способ входа';
+    }
     const pErr = validatePassword(password, false);
     if (pErr) nextErrors.password = pErr;
-    if (!roleId) nextErrors.role_id = 'Выберите роль';
+    if (roleIds.length === 0) nextErrors.role_ids = 'Выберите хотя бы одну роль';
     setErrors(nextErrors);
     if (Object.keys(nextErrors).length > 0) return;
 
-    // Отправляем ТОЛЬКО изменённые поля (04-api.md: exclude_unset). username не редактируется.
+    // Отправляем ТОЛЬКО изменённые поля (04-api.md: exclude_unset). username не
+    // редактируется и при смене telegram не пересчитывается (ADR-079 §9).
     const payload: UserUpdateRequest = {};
-    if (roleId !== user.role_id) payload.role_id = roleId;
+    const trimmedLast = lastName.trim();
+    const trimmedFirst = firstName.trim();
+    const trimmedMiddle = middleName.trim();
+    if (trimmedLast && trimmedLast !== currentLastName) payload.last_name = trimmedLast;
+    if (trimmedFirst && trimmedFirst !== currentFirstName) payload.first_name = trimmedFirst;
+    // Отчество — единственная снимаемая часть ФИО: пусто → null (очистить).
+    if (trimmedMiddle !== currentMiddleName)
+      payload.middle_name = trimmedMiddle === '' ? null : trimmedMiddle;
+    const trimmedTelegram = telegram.trim();
+    if (trimmedTelegram && trimmedTelegram !== currentTelegram) payload.telegram = trimmedTelegram;
+    if (!sameIds(roleIds, initialRoleIds)) payload.role_ids = roleIds;
     if (isActive !== user.is_active) payload.is_active = isActive;
     if (password) payload.password = password;
-    // telegram: сравниваем с текущим; пусто → null (убрать телеграм), значение → установить.
-    const trimmedTelegram = telegram.trim();
-    const currentTelegram = user.telegram ?? '';
-    if (trimmedTelegram !== currentTelegram)
-      payload.telegram = trimmedTelegram === '' ? null : trimmedTelegram;
     // team_ids: если набор изменился — передаём полный новый набор (заменяет членство).
-    const teamsChanged =
-      teamIds.length !== initialTeamIds.length ||
-      !teamIds.every((id) => initialTeamIds.includes(id));
-    if (teamsChanged) payload.team_ids = teamIds;
+    if (!sameIds(teamIds, initialTeamIds)) payload.team_ids = teamIds;
 
     // Добавки каналов (ADR-055 §5.2): переданное поле ПОЛНОСТЬЮ заменяет набор добавок
     // (`[]` → снять все) ⇒ шлём только при изменении. Базовые команды в добавку не входят.
@@ -418,6 +508,7 @@ function EditUserDialog({
   };
 
   const isSubmitting = updateMutation.isPending;
+  const displayName = fullName(user);
 
   return (
     <>
@@ -425,7 +516,7 @@ function EditUserDialog({
         open={open}
         onOpenChange={(next) => !isSubmitting && onOpenChange(next)}
         title="Изменить пользователя"
-        description={`Логин «${user.username}» не редактируется.`}
+        description="Телеграм можно сменить, но не удалить — это единственный способ входа."
         dismissible={!isSubmitting}
         footer={
           <div className="flex w-full items-center justify-between gap-2">
@@ -450,33 +541,61 @@ function EditUserDialog({
           className="flex flex-col gap-4"
           noValidate
         >
-          <div className="flex flex-col gap-1.5">
-            <span className="text-[13px] font-medium text-text-secondary">Логин</span>
-            <div className="flex h-10 items-center rounded-[10px] border border-border-subtle bg-surface-2 px-3">
-              <span className="font-mono text-sm text-text-primary">{user.username}</span>
-            </div>
-          </div>
+          <Input
+            label="Фамилия"
+            value={lastName}
+            error={errors.last_name}
+            maxLength={64}
+            autoComplete="off"
+            onChange={(e) => {
+              setLastName(e.target.value);
+              clearError('last_name');
+            }}
+          />
+          <Input
+            label="Имя"
+            value={firstName}
+            error={errors.first_name}
+            maxLength={64}
+            autoComplete="off"
+            onChange={(e) => {
+              setFirstName(e.target.value);
+              clearError('first_name');
+            }}
+          />
+          <Input
+            label="Отчество"
+            value={middleName}
+            error={errors.middle_name}
+            maxLength={64}
+            autoComplete="off"
+            onChange={(e) => {
+              setMiddleName(e.target.value);
+              clearError('middle_name');
+            }}
+          />
           <Input
             label="Телеграм"
             type="text"
-            placeholder="@username (опционально)"
+            placeholder="@username"
             value={telegram}
             error={errors.telegram}
             autoComplete="off"
             onChange={(e) => {
               setTelegram(e.target.value);
-              if (errors.telegram) setErrors((p) => ({ ...p, telegram: undefined }));
+              clearError('telegram');
             }}
           />
-          <Select
-            label="Роль"
+          <MultiSelect
+            label="Роли"
+            value={roleIds}
             options={roleOptions(roles)}
-            value={roleId}
-            error={errors.role_id}
-            onChange={(e) => {
-              setRoleId(e.target.value);
-              if (errors.role_id) setErrors((p) => ({ ...p, role_id: undefined }));
+            error={errors.role_ids}
+            onChange={(next) => {
+              setRoleIds(next);
+              clearError('role_ids');
             }}
+            emptyHint="Пока нет ролей"
           />
           <MultiSelect
             label="Команды"
@@ -503,17 +622,10 @@ function EditUserDialog({
             autoComplete="new-password"
             onChange={(e) => {
               setPassword(e.target.value);
-              if (errors.password) setErrors((p) => ({ ...p, password: undefined }));
+              clearError('password');
             }}
             trailing={
-              <button
-                type="button"
-                onClick={() => setShowPassword((v) => !v)}
-                aria-label={showPassword ? 'Скрыть пароль' : 'Показать пароль'}
-                className="flex h-7 w-7 items-center justify-center rounded-md text-text-tertiary transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
-              >
-                {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-              </button>
+              <PasswordToggle shown={showPassword} onToggle={() => setShowPassword((v) => !v)} />
             }
           />
           {/* Блоки каналов — ВНИЗУ формы, перед кнопками, в порядке «СМС» → «Почты»; оба
@@ -543,7 +655,7 @@ function EditUserDialog({
         open={confirmOpen}
         onOpenChange={(next) => !deleteMutation.isPending && setConfirmOpen(next)}
         title="Удалить пользователя?"
-        description={`Пользователь «${user.username}» будет удалён. Действие необратимо.`}
+        description={`Пользователь «${displayName}» будет удалён. Действие необратимо.`}
         dismissible={!deleteMutation.isPending}
         footer={
           <>

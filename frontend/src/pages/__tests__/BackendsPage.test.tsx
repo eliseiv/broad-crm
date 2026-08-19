@@ -165,7 +165,7 @@ describe('BackendsPage', () => {
     // Без права create кнопки нет (при сохранённом backends:view).
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { backends: ['view'] },
     });
     rerender(<BackendsPage />);
@@ -176,7 +176,7 @@ describe('BackendsPage', () => {
   });
 
   it('user without backends:view sees the page-scoped stub, list is not rendered (ADR-021 §6)', () => {
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { mail: ['view'] } });
     backendsHook.value = { ...backendsHook.value, data: { items: [backend()] } };
     render(<BackendsPage />, { wrapper });
 

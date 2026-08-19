@@ -49,4 +49,8 @@ class Role(Base):
         onupdate=func.now(),
     )
 
-    users: Mapped[list[User]] = relationship(back_populates="role")
+    # Носители роли (M2M через `user_roles`, ADR-079 §1). `viewonly` — набор пишется
+    # явными statements репозитория пользователей; здесь только чтение.
+    users: Mapped[list[User]] = relationship(
+        "User", secondary="user_roles", viewonly=True, lazy="select"
+    )

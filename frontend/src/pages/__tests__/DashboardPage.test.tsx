@@ -122,7 +122,7 @@ describe('DashboardPage', () => {
 
   it('renders the page-scoped «Недостаточно прав» stub when the user lacks dashboard:view', () => {
     // Обычный пользователь с доступом к другому разделу, но без `dashboard:view`.
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { mail: ['view'] } });
     render(<DashboardPage />);
 
     // Page-scoped заглушка (не «нет ни одного раздела») вместо контента, ADR-021 §6.

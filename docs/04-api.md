@@ -48,8 +48,8 @@
 | 409 | `username_taken` | Пользователь с таким `username` уже существует ([Users](#users)) |
 | 409 | `telegram_taken` | Пользователь с таким `telegram` уже существует ([Users](#users), [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md); заменяет прежний `email_taken`) |
 | 409 | `role_name_taken` | Роль с таким `name` уже существует ([Roles](#roles)) |
-| 409 | `role_in_use` | Роль назначена ≥1 пользователю — удаление запрещено ([Roles](#roles)) |
-| 409 | `user_in_use` | Пользователь **владеет документами или вложениями** — удаление запрещено ([Users](#delete-apiusersid)). Зеркало FK `document_nodes.owner_id` / `document_attachments.created_by` `ON DELETE RESTRICT` ([ADR-059](adr/ADR-059-documents-module.md)/[ADR-068](adr/ADR-068-documents-image-attachments.md)) — тот же принцип, что `role_in_use` для `users.role_id` |
+| 409 | `role_in_use` | Роль назначена ≥1 пользователю — удаление запрещено ([Roles](#roles)). Проверка — `EXISTS` по **`user_roles`** (M2M, [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md)) **без** фильтра `is_system`: зеркало FK `ON DELETE RESTRICT`, иначе роль системного якоря дала бы `500` |
+| 409 | `user_in_use` | Пользователь **владеет документами или вложениями** — удаление запрещено ([Users](#delete-apiusersid)). Зеркало FK `document_nodes.owner_id` / `document_attachments.created_by` `ON DELETE RESTRICT` ([ADR-059](adr/ADR-059-documents-module.md)/[ADR-068](adr/ADR-068-documents-image-attachments.md)) — тот же принцип, что `role_in_use` для **`user_roles.role_id`** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §1; прежняя ссылка на колонку `users.role_id` устарела — колонка дропнута миграцией `0038`) |
 | 409 | `team_name_taken` | Команда с таким `name` уже существует ([Teams](#teams)) |
 | 409 | `password_already_set` | Установка пароля первого входа для пользователя, у которого пароль уже задан ([Auth](#post-apiauthset-password), [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) |
 | 422 | `unprocessable` | Семантически некорректные данные (напр. невалидный IP; невалидный `username`/`telegram`; `permissions` вне каталога; несуществующий `role_id` при создании/правке пользователя — [Users](#users)/[Roles](#roles)) |
@@ -76,7 +76,7 @@
 | 422 | `document_attachment_invalid` | `POST /api/documents/nodes/{id}/attachments`: тип вне whitelist `png/jpeg/webp/gif` / фактическое содержимое не совпадает с заявленным `Content-Type` / превышен `DOCUMENTS_MAX_IMAGE_BYTES` ([Вложения](#вложения-изображения-документов-adr-068)) |
 | 410 | `document_node_gone` | Внешний `GET /api/external/documents/{id}` для **удалённого** узла (tombstone) ([External Documents](#external-documents-read-only-rag)) |
 | 503 | `documents_external_not_configured` | Внешний API документов выключен (`DOCUMENTS_API_KEY` пуст) ([External Documents](#external-documents-read-only-rag)) |
-| 404 | `user_not_linked` | Telegram `telegram_user_id` не сопоставлен с активным несистемным пользователем CRM ([user-access](#get-apiexternaldocumentsuser-accesstelegram_user_id), [knowledge-bot link](#post-apiexternalknowledge-botlink)) |
+| 404 | `user_not_linked` | Telegram `telegram_user_id` не сопоставлен с активным несистемным пользователем CRM **либо у сопоставленного нет ни одной роли** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §6: `role_id`/`role_name` ответа non-null — заполнить их нечем) ([user-access](#get-apiexternaldocumentsuser-accesstelegram_user_id), [knowledge-bot link](#post-apiexternalknowledge-botlink)) |
 | 503 | `knowledge_bot_not_configured` | Рассылка выключена (`KNOWLEDGE_BOT_TOKEN` пуст) ([Broadcast](#broadcast)) |
 
 `validation_error.details` — массив `{ "field": "ip", "message": "..." }`.
@@ -189,8 +189,8 @@
 **Response 200** — схема `MeResponse`:
 ```json
 {
-  "username": "Никита",
-  "role": "Оператор",
+  "username": "nikita_ops",
+  "roles": ["Оператор", "Редактор документов"],
   "is_superadmin": false,
   "is_admin_level": false,
   "sees_all_sms_teams": false,
@@ -208,15 +208,15 @@
 ```
 | Поле | Тип | Примечание |
 |------|-----|-----------|
-| `username` | string | `sub` токена (для супер-админа — `ADMIN_USER`, для БД-пользователя — `username`) |
-| `role` | string | Имя роли. Для супер-админа — `"admin"` |
+| `username` | string | `sub` токена (для супер-админа — `ADMIN_USER`, для БД-пользователя — `username`). ⚠️ **Не отображаемое имя:** ФИО живёт в Users API ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §7), в `/me` его нет |
+| `roles` | string[] | **Имена всех ролей** актора ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §3), порядок — `user_roles.created_at ASC, role_id ASC`. Для супер-админа — `["admin"]`. ⚠️ **Заменяет прежнее поле `role: string`** — ломающее изменение, фронт и бэк выкатываются одним релизом. Массив непуст у любого пользователя, заведённого через API (минимум одна роль — `422`); теоретически пустой (роли сняты прямым SQL) читается как «прав нет», а не как ошибка |
 | `is_superadmin` | boolean | `true` — `.env`-супер-админ (полный доступ); `false` — БД-пользователь |
-| `is_admin_level` | boolean | **Производный admin-уровень** ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4, [ADR-078](adr/ADR-078-me-is-admin-level.md)): `= is_superadmin OR role=="admin" OR permissions_subset(full_catalog_permissions(), permissions)` — тот же предикат, что `require_admin`. `true` ⇔ актор видит страницу «Пользователи» (вне каталога). Backend — **единственный источник** (фронт не дублирует `permissions_subset` и не тянет `GET /api/permissions/catalog` ради этого гейта). Для кириллической роли «Админ» с полным каталогом — `true`, даже если `role !== "admin"`. Не заменяет `sees_all_sms_teams` / `sees_all_mail_teams` |
+| `is_admin_level` | boolean | **Производный admin-уровень** ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4, [ADR-078](adr/ADR-078-me-is-admin-level.md), редакция [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §2): `= is_superadmin OR "admin" ∈ roles OR permissions_subset(full_catalog_permissions(), permissions)`, где `permissions` = **union** прав всех ролей — тот же предикат, что `require_admin`. `true` ⇔ актор видит страницу «Пользователи» (вне каталога). Backend — **единственный источник** (фронт не дублирует `permissions_subset` и не тянет `GET /api/permissions/catalog` ради этого гейта). Для кириллической роли «Админ» с полным каталогом — `true`, даже если `role !== "admin"`. Не заменяет `sees_all_sms_teams` / `sees_all_mail_teams` |
 | `mail_teams` / `sms_teams` | `TeamRef[]` | **Команды канала, доступные актору** ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §5.1). `TeamRef = { id: string(uuid), name: string }`, сортировка по `name` (ru, ci). **Не-админ:** эффективный scope = `user_teams` **∪** доп-команды канала (`user_channel_teams`), т.е. **объединение**, а не только добавка. **Admin-уровень (`sees_all_<channel>_teams = true`): ВСЕ команды системы** (его scope не сужен) — **`[]` не отдаётся**. Это делает `/me` **единственным** источником опций команд канала на клиенте (в т.ч. в **Mini App**, где `GET /api/teams` запрещён; корень закрытого [TD-058](100-known-tech-debt.md)) |
 | `mail_includes_unassigned` / `sms_includes_unassigned` | boolean | Видит ли актор **объекты без команды** этого канала (`mail_accounts.team_id IS NULL` / `sms_phone_numbers.team_id IS NULL`) — [ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §3. Значение = `users.<channel>_includes_unassigned`; при **`sees_all_<channel>_teams = true` → `true`** (admin видит и бесхозные). Фронт по нему решает, показывать ли опцию **«Без команды»** в фильтре |
 | `sees_all_sms_teams` | boolean | **Производный admin-уровень видимости SMS** ([ADR-032](adr/ADR-032-sms-visibility-admin-full-catalog.md), [ADR-036](adr/ADR-036-sms-team-filter-admin-only.md)): `= is_superadmin OR permissions_subset(full_catalog_permissions(), permissions)` — тот же предикат, что backend `get_sms_scope`. `true` ⇔ актор видит **все** SMS-команды (супер-админ / роль с полным каталогом). Backend — **единственный источник** (фронт не дублирует `permissions_subset`). ⚠️ **Фильтр «Команда» по этому признаку НЕ гейтится** ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §6.2: отдельной ветки «`sees_all_*` → рендерить всегда» **НЕТ**): условие рендера — [единое правило пяти экранов](08-design-system.md#фильтр-команда--единое-правило-на-пяти-экранах-нормативно-adr-055) `options_count = sms_teams.length + (sms_includes_unassigned ? 1 : 0) >= 2`, одинаковое для **любого** актора, включая admin-уровень (у него порог выполняется сам). Прежнее «фильтр только при `sees_all_sms_teams === true`» ([ADR-036](adr/ADR-036-sms-team-filter-admin-only.md)) — **ОТМЕНЕНО**. Контролов SMS-клиента под этим гейтом [ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §6.3 **не оставляет** (перенос номера гейтится правом `sms:transfer` + `sms_includes_unassigned`); признак остаётся серверным admin-признаком |
 | `sees_all_mail_teams` | boolean | **Производный admin-уровень видимости почты** ([ADR-038](adr/ADR-038-mail-headless-integration.md) §3, инвариант в силе): тот же предикат `is_superadmin OR permissions_subset(full_catalog_permissions(), permissions)`, что backend `get_mail_scope`. `true` ⇔ актор видит **все** почтовые команды. Backend — **единственный источник**. ⚠️ **Фильтр «Команда» по этому признаку НЕ гейтится** ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §6.2): условие рендера — то же [единое правило пяти экранов](08-design-system.md#фильтр-команда--единое-правило-на-пяти-экранах-нормативно-adr-055) (`options_count >= 2` по `mail_teams` + `mail_includes_unassigned`). **Где признак ДЕЙСТВИТЕЛЬНО используется на клиенте** ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §6.3 — оба контрола **admin-only**): (1) опция **«Без команды»** в селекторе «Команда» **формы ящика** (`MailboxFormModal`, `add`+`edit`, вкл. OAuth) — **предлагается к выбору только** при `sees_all_mail_teams === true` (создание ящика с `team_id=null` admin-only ⇒ не-админу это гарантированный `403`); исключение — «зеркало текущего состояния» ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §6.3.1): в `edit` под не-админом селектор **`disabled`**, и у **бесхозного** ящика опция «Без команды» **отображается** (выбрать нельзя) — иначе контрол показал бы чужую команду; (2) **дропдаун переноса ящика** на вкладке «Почты» — рендерится только admin-уровню (перенос ящика admin-only). Списки команд в обоих — из `me.mail_teams`, **не** из `GET /api/teams` |
-| `permissions` | object | Права `{ "<page>": ["<action>", ...] }`. Для супер-админа — **полный каталог** (все страницы/действия). Для БД-пользователя — `roles.permissions` |
+| `permissions` | object | Права `{ "<page>": ["<action>", ...] }`. Для супер-админа — **полный каталог** (все страницы/действия). Для БД-пользователя — **union `roles.permissions` всех его ролей** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §2): объединение по страницам, действия дедуплицированы. Прежняя редакция «`roles.permissions` (единственной роли)» отменена |
 
 > `permissions` — производное для UI-гейтинга (фильтрация вкладок по `view`, скрытие кнопок Создать/Редактировать/Удалить, в т.ч. `documents:share` → пункт «Сменить видимость»). **Безопасность обеспечивается сервером** (`403 forbidden`), UI-гейтинг — только UX. Ключи `permissions` — из каталога ([`GET /api/permissions/catalog`](#permissions)); страница `users` в `permissions` не фигурирует (гейтится по `is_admin_level` из **этого же** ответа, [ADR-078](adr/ADR-078-me-is-admin-level.md)). `sees_all_sms_teams` — производный булев признак admin-уровня для SMS (вычисляется backend по [ADR-032](adr/ADR-032-sms-visibility-admin-full-catalog.md)); фронт использует его как источник истины вместо повторного вычисления полного каталога.
 >
@@ -953,15 +953,73 @@ Reveal **ADMIN API KEY** бэка по требованию. Гейт **`require
 
 ## Backend Users
 
-Страница «Пользователи бэков» ([ADR-069](adr/ADR-069-backend-users-page-admin-contract.md), модуль — [modules/backend-users](modules/backend-users/README.md)). **CRM — прокси** к универсальному **CRM Admin API contract v1** бэков: собственного хранилища нет, admin-ключ бэка (`admin_api_key_encrypted`, [ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)) расшифровывается в памяти и уходит в бэк заголовком `X-Admin-Key`; во frontend не попадает. Префикс admin-эндпоинтов бэка (`/api/billing/admin` ИЛИ `/v1/admin`) определяется автоматически и кэшируется в памяти процесса.
+Страница «Пользователи бэков» ([ADR-069](adr/ADR-069-backend-users-page-admin-contract.md), **[ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md)**; модуль — [modules/backend-users](modules/backend-users/README.md)). CRM работает с универсальным **CRM Admin API contract v1** бэков: admin-ключ бэка (`admin_api_key_encrypted`, [ADR-040](adr/ADR-040-backend-relations-secrets-reverse-lookup.md)) расшифровывается в памяти и уходит в бэк заголовком `X-Admin-Key`; во frontend не попадает. Префикс admin-эндпоинтов бэка (`/api/billing/admin` ИЛИ `/v1/admin`) определяется автоматически и кэшируется в памяти процесса.
+
+> **Контракт и модель источника изменены [ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) (2026-08-19, статус `implemented` — сверка состава в шапке ADR).**
+>
+> **«CRM — прокси БЕЗ хранилища» для этой страницы БОЛЬШЕ НЕ ДЕЙСТВУЕТ** ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md), отменяет [ADR-069](adr/ADR-069-backend-users-page-admin-contract.md) §3; подтверждение той же нормы в [ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §3 **сужено** до [Backend Economics](#backend-economics), где копий по-прежнему нет). Действующий принцип — **«список из снимка, карточка live»**:
+>
+> - **`GET /api/backend-users` читается из Postgres-снимка** (`backend_user_snapshot_sources` + `backend_user_snapshots`, [03-data-model.md](03-data-model.md#таблицы-снимка-юзеры-бэков-backend_user_snapshot_sources-backend_user_snapshots--adr-080), миграция `0040`), который наполняет фоновый asyncio-воркер `BackendUsersSnapshotService` раз в `BACKEND_USERS_SNAPSHOT_INTERVAL_SEC` (900 с). Брокер не вводится ([ADR-006](adr/ADR-006-async-provisioning-bez-brokera.md)/NFR-1).
+> - **Все точечные и все пишущие пути остаются live** (`/users/{id}`, `/payments`, `/requests`, `/products`, `POST …/tokens`, `POST …/subscription`) — карточка обязана показывать актуальный баланс сразу после начисления.
+> - После успешной мутации выполняется **best-effort touch** строки снимка значениями из ответа бэка; провал touch логируется и **не** превращает успешную операцию в ошибку.
+> - Возраст данных списка **виден оператору** — поле `snapshot_at`.
 
 RBAC: чтение — `require("backend-users","view")`; admin-операции — `require("backend-users","edit")` + аудит-событие `backend_admin_action` (structlog, без секретов).
 
 ### GET /api/backend-users
 
-Объединённый список пользователей + сводка. Query: `backend_id?` (UUID; нет — «Все приложения»: fan-out по всем бэкам с admin-ключом), `search?`, `date_from?`/`date_to?` (ISO-дата, фильтр по регистрации), `is_paid?`, `limit` (1–100, def 50), `offset`.
+Объединённый список пользователей + сводка. Query (**не меняется** [ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md)): `backend_id?` (UUID; нет — «Все приложения»), `search?`, `date_from?`/`date_to?` (ISO-дата, фильтр по регистрации), `is_paid?`, `limit` (1–100, def 50), `offset`.
 
-**Response 200** — `BackendUsersListResponse`: `{ total, items: BackendUserItem[], stats: { users_total, paid_users, payments_sum_usd, cr_percent }, errors: [{ backend_id, backend_name, message }] }`. `items` — merge источников по `registered_at DESC` (глубина окна ≤ 1000); `cr_percent` считает CRM; `errors[]` — бэки, чьих данных в выборке нет (partial data, UI показывает предупреждение): **не ответившие** при fan-out **и не опрошенные** — те, у которых в CRM не задан Admin API Key (`Admin API Key не задан в CRM — бэк НЕ опрошен`). Второй случай обязателен: без него «Ничего не найдено» неотличимо от «пользователя нет», хотя его бэк в fan-out не входил (прод-инцидент `selquro`). Упавший единственный источник (`backend_id` задан) → транзит его ошибки; отсутствие ключа у единственного источника → `409 backend_admin_key_not_set`.
+**Response 200** — `BackendUsersListResponse`:
+
+```json
+{
+  "total": 12034,
+  "items": [ /* BackendUserItem[] */ ],
+  "stats": { "users_total": 12034, "paid_users": 811, "payments_sum_usd": 41233.55, "cr_percent": 6.74 },
+  "errors": [ { "backend_id": "…", "backend_code": "api-eu", "backend_name": "API EU", "message": "Таймаут подключения" } ],
+  "snapshot_at": "2026-08-19T09:45:00Z",
+  "api_costs": { "openai_usd": 1204.51, "anthropic_usd": 883.02, "fal_usd": 141.9,
+                 "other_usd": 0, "total_usd": 2229.43, "partial": true }
+}
+```
+
+**Источник и порядок (нормативно, [ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §3):**
+
+- `items`/`total` — **из снимка**, один SQL с `JOIN backends`. Сортировка — **`registered_at DESC, backend_id, user_id`**: tie-break обязателен, иначе `LIMIT/OFFSET` даёт нестабильные страницы. **Окно merge ≤ 1000 упразднено** — глубина пагинации ничем не ограничена.
+- **Паритет поиска (нормативно):** `search` — подстрочный, регистронезависимый, **по `user_id` и `external_id`** (`ILIKE`) — ровно тот набор полей, по которому искал бэк. Расширять его нельзя (других полей в снимке нет), сужать — тоже. При деградации на объёме — `pg_trgm`-индекс, **не** смена семантики.
+- `stats` — **без периода**: суммы `stats_*` строк источников; `cr_percent` считает CRM. **С `date_from`/`date_to` — live fan-out ТОЛЬКО `GET {P}/stats`** (один запрос на бэк): периодные суммы из снимка невыводимы, снимок хранит текущее состояние пользователя, а не историю платежей.
+- **`errors[]` = ТОЛЬКО реальные сбои.** Элемент ⇔ «источник опрашивался и не ответил (или ответил не по контракту)»: строки снимка с `error_message IS NOT NULL` плюс сбои live-`stats` при периоде.
+  > ⛔ **Прежняя норма отменена** ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §1, амендмент [ADR-069](adr/ADR-069-backend-users-page-admin-contract.md) §4): бэк реестра **без** Admin API Key **скрывается** и в `errors[]` **не появляется никогда**; сообщение «Admin API Key не задан в CRM — бэк НЕ опрошен» **упразднено**. Исходную неотличимость «ничего не найдено» ↔ «бэк не опрашивался» (прод-инцидент `selquro`) закрывает **состав фильтра приложений** (он строится по `has_admin_api_key`) и пустое состояние «подключите бэк с Admin API Key», а не жёлтая плашка. Постоянная плашка при штатной конфигурации обесценивала предупреждение о настоящем сбое.
+- Упавший **единственный** источник (`backend_id` задан) → транзит его ошибки; **отсутствие ключа у единственного источника → `409 backend_admin_key_not_set`** (осознанное действие оператора — поведение сохранено).
+
+> **`BackendUserItem.tokens` — non-null (`float`, default `0`), и это осознанно** (сверка `backend/app/schemas/backend_user.py:32` 2026-08-19). Баланс, не пришедший от бэка, в **списке** показывается как `0`, а не `—`. Это **сознательное исключение** из правила «`null` ≠ `0`» ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §5), действующего для **себестоимости** (`provider_cost_usd`) в истории запросов: там `0` — денежное утверждение «стоило ноль», здесь `tokens` — остаток счёта, у которого «неизвестно» и «пусто» для оператора списка равнозначны, а колонка обязана быть сортируемым числом. **Точное значение всегда доступно в карточке** (live-путь, `balance.tokens`). Переносить это послабление на `provider_cost_usd`/`api_cost_usd` **запрещено**.
+
+**Новые поля ответа (аддитивные, [ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §6):**
+
+| Поле | Тип | Семантика |
+|------|-----|-----------|
+| `snapshot_at` | `datetime \| null` | **Возраст данных списка** — `MIN(refreshed_at)` по участвующим источникам. `null` ⇔ хотя бы один источник ещё ни разу не собран ⇒ UI показывает «Снимок формируется…», а не пустую таблицу без объяснения. Не относится к точечным путям — они live |
+| `api_costs` | `BackendUsersApiCosts \| null` | Блок «Расходы API». `null` — снимок ещё не сформирован (тот же случай, что `snapshot_at: null`) |
+
+`BackendUsersApiCosts = { openai_usd, anthropic_usd, fal_usd, other_usd, total_usd: float, partial: bool }`.
+
+- ⚠️ **Показатель — LIFETIME, накопительный за всё время.** Источник — `revenue.providers` карточек (`GET {P}/users/{id}`), это lifetime-агрегат контракта. **Фильтр периода страницы на этот блок НЕ действует**: `date_from`/`date_to` меняют `items` и `stats`, но не `api_costs`. UI **обязан** назвать это подписью — иначе оператор прочтёт lifetime как «за выбранный период».
+- **Нормализация ключей провайдера (нормативно):** `openai`/`gpt*` → `openai`; `anthropic`/`claude*` → `anthropic`; `fal`/`fal.ai` → `fal`; **всё остальное → `other`** (незнакомый провайдер не теряется). Сопоставление регистронезависимое, по префиксу.
+- **Вычисление `partial` (нормативно, [ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §5):**
+
+  ```
+  partial = ∃ участвующий источник:  revenue_backfill_done = false
+                                     OR revenue_supported IS FALSE
+           OR ∃ запрошенный бэк БЕЗ строки в backend_user_snapshot_sources
+  ```
+
+  **Третий дизъюнкт — «запрошенный бэк ещё не имеет строки состояния»** (сверка `backend/app/services/backend_user_service.py` 2026-08-19: `len(participating) < len(backend_ids)`). Строка `backend_user_snapshot_sources` заводится воркером, поэтому бэк, добавленный в реестр между циклами, в сумму не входит — и это ровно «сумма неполная». Без третьего дизъюнкта свежедобавленный бэк молча занижал бы итог **без пометки**. **Вырожденный случай:** строк нет **ни у одного** запрошенного бэка ⇒ **`api_costs = null`**, а не `0` с `partial=true` — нулей, которых никто не измерял, показывать нельзя. **Фактическое поведение UI при `api_costs === null` (сверка `frontend/src/pages/BackendUsersPage.tsx` 2026-08-19): блок «Расходы API» РЕНДЕРИТСЯ, но все значения — `—`** (`value={apiCosts ? formatUsdCents(...) : '—'}`); ячейка «Прочее» скрыта (`other_usd > 0` не выполняется), бейдж `partial` не показывается (`apiCosts?.partial`), а причину объясняет подпись свежести «Снимок формируется…» при `snapshot_at === null`. Прочерк честнее скрытия: блок на месте, и видно, что величина не измерена, а не равна нулю.
+
+  Флаг покрывает **три** состояния: (1) backfill карточек ещё не завершён; (2) бэк **уровня v1 без блока `revenue`** — его пользователи в сумму не входят, показатель **занижен постоянно**; (3) запрошенный бэк ещё не имеет строки состояния. Различить их **в самом флаге** нельзя (он скалярный) — принято осознанно, для оператора последствие одно: «сумма неполная»; поимённое разведение — [TD-085](100-known-tech-debt.md).
+  > ⚠️ **Второй дизъюнкт обязателен.** Очередь backfill выбирается по `revenue_refreshed_at IS NULL`, а карточка v1-бэка **тоже получает** эту метку и покидает очередь ⇒ `revenue_backfill_done` у него становится `true`. Считать `partial` **только** по нему значило бы объявить сумму полной ровно в том случае, который **никогда** не исправится сам. Признак `backend_user_snapshot_sources.revenue_supported` (`bool|null`) выставляется по первой добранной карточке каждого цикла и пересматривается — бэк, внедривший v1.1, переключается в `true` сам ([03-data-model.md](03-data-model.md#таблица-backend_user_snapshot_sources-одна-строка-на-бэк-с-admin-ключом)).
+- `refunded`/`estimated` учитываются **так, как их считает бэк**.
+- `total_usd` — сумма четырёх слагаемых, считается CRM (не хранится отдельным полем в снимке).
 
 ### GET /api/backend-users/{backend_id}/products
 
@@ -976,7 +1034,7 @@ RBAC: чтение — `require("backend-users","view")`; admin-операции
 
 ### GET /api/backend-users/{backend_id}/users/{user_id}
 
-Карточка: `{ backend_id, backend_name, id, external_id, registered_at, balance, subscription, revenue|null, media_stats|null }` — опциональные блоки контракта §4.5 при отсутствии = `null` (UI скрывает секции).
+Карточка: `{ backend_id, backend_name, id, external_id, registered_at, balance, subscription, revenue|null, media_stats|null }` — опциональные блоки контракта §4.5 при отсутствии = `null` (UI скрывает секции). **Путь LIVE и остаётся live** ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §4): из снимка карточка **не** читается. Следствие — смешанная свежесть «список (до 15 мин) ↔ карточка (сейчас)»; наиболее заметный её случай (начисление токенов) закрыт touch'ем после мутаций. Блок `revenue.providers` этой же карточки — источник агрегата `api_costs` списка (§5 ADR-080).
 
 ### GET /api/backend-users/{backend_id}/users/{user_id}/payments · /requests
 
@@ -993,11 +1051,11 @@ RBAC: чтение — `require("backend-users","view")`; admin-операции
 
 ### POST /api/backend-users/{backend_id}/users/{user_id}/tokens
 
-Тело `{ amount: int }` (`!= 0`; отрицательное — списание). **НЕ идемпотентен** (контракт §3.1) — UI блокирует повторный сабмит. Response `{ id, tokens }`.
+Тело `{ amount: int }` (`!= 0`; отрицательное — списание). **НЕ идемпотентен** (контракт §3.1) — UI блокирует повторный сабмит. Response `{ id, tokens }`. **Путь live** (в бэк напрямую); после успеха — **best-effort touch** строки снимка полем `tokens` из ответа ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §4). Провал touch логируется и **не** превращает успешную операцию в ошибку: у бэка начисление уже состоялось. Поле `tokens` — **float\|null**: `null` (бэк поле не прислал, [ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §1.1) touch **не пишет** в снимок — `null` ≠ `0`, прежний баланс строки сохраняется до следующего цикла воркера (та же норма, что у `/subscription` ниже).
 
 ### POST /api/backend-users/{backend_id}/users/{user_id}/subscription
 
-Тело `{ product_id, expires_in_days (1..3660), grant_id }` — **идемпотентен** по `grant_id` (генерирует UI при открытии формы). Response `{ id, tokens, subscription_active, subscription_expires_at, applied }`; `applied=false` — распознанный повтор.
+Тело `{ product_id, expires_in_days (1..3660), grant_id }` — **идемпотентен** по `grant_id` (генерирует UI при открытии формы). Response `{ id, tokens, subscription_active, subscription_expires_at, applied }`; `applied=false` — распознанный повтор. **Путь live**; после успеха — **best-effort touch** строки снимка полями `tokens`/`subscription_active`/`subscription_expires_at` из ответа ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §4), с тем же правилом «провал touch не отменяет успех». Поле `tokens` в ответе бэка — **float\|null**: у бэка уровня v1 без поля `tokens` CRM нормализует его в `null` и touch **не пишет** `tokens` в снимок (`null` ≠ `0`, [ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §1.1) — прежний баланс строки сохраняется до следующего цикла воркера.
 
 **Ошибки (все эндпоинты):** `401/403`; `404 backend_not_found`; `409 backend_admin_key_not_set` (у бэка нет admin-ключа); `404 backend_user_not_found` (транзит 404 бэка — **только на путях `/users/*`**, см. ниже); **`400 backend_admin_bad_request` (транзит `400` ИЛИ `422` бэка:** минус-баланс/неизвестный product — `400`; отказ валидации тела у бэка, напр. слишком большая сумма — `422`. **Клиент общий с [Backend Economics](#backend-economics), и маппинг `422` действует и здесь** — [ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md) §7.3; прежде `422` давал `502` с «Ошибка бэка (HTTP 422)». Текст причины: `detail`-строка — транзитом, `detail`-список — `msg` первого элемента, иначе фолбэк «Бэк отверг значение: не прошло проверку на стороне бэка»**)**; `502 backend_admin_rejected` (бэк отверг ключ), `502 backend_admin_not_supported` (оба префикса 404 — контракт не реализован), `502 backend_admin_unavailable` (сеть/таймаут/5xx/не-контрактные данные).
 
@@ -1009,7 +1067,7 @@ RBAC: чтение — `require("backend-users","view")`; admin-операции
 
 Страница **«Продукты и тарифы»** ([ADR-072](adr/ADR-072-crm-admin-api-v11-economics.md), модуль — [modules/backend-economics](modules/backend-economics/README.md), UI — [08-design-system.md](08-design-system.md#страница-продукты-и-тарифы-нормативно-adr-072)). Каталог продуктов бэка (сколько токенов даёт продукт) и тарифы списания за генерацию (сколько токенов стоит чат/фото/видео) с правкой количества токенов из CRM.
 
-**CRM — прокси без собственного хранилища** ([ADR-069](adr/ADR-069-backend-users-page-admin-contract.md) §3 **подтверждён**, не отменён): продукты, тарифы и себестоимость **не** копируются в БД CRM, собственных таблиц и миграций модуль не добавляет. Транспорт тот же, что у [Backend Users](#backend-users): admin-ключ бэка расшифровывается в памяти и уходит заголовком `X-Admin-Key`, префикс (`/api/billing/admin` ИЛИ `/v1/admin`) определяется автоматически — **всегда по v1-пути `GET {P}/products`**; расширенные пути детекцию не выполняют.
+**CRM — прокси без собственного хранилища** ([ADR-069](adr/ADR-069-backend-users-page-admin-contract.md) §3 **подтверждён для ЭТОГО модуля**): продукты, тарифы и себестоимость **не** копируются в БД CRM, собственных таблиц и миграций модуль не добавляет. ⚠️ **Подтверждение действует только здесь:** для соседней страницы [Backend Users](#backend-users) §3 **отменён** — там введён Postgres-снимок списка пользователей ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md), миграция `0040`). Запрет копии **денежных** величин (продукты, тарифы, себестоимость) — в силе без изменений. Транспорт тот же, что у [Backend Users](#backend-users): admin-ключ бэка расшифровывается в памяти и уходит заголовком `X-Admin-Key`, префикс (`/api/billing/admin` ИЛИ `/v1/admin`) определяется автоматически — **всегда по v1-пути `GET {P}/products`**; расширенные пути детекцию не выполняют.
 
 RBAC: чтение — **`require("backend-economics","view")`**; правка — **`require("backend-economics","edit")`** + аудит-событие `backend_admin_action` (действия `product_tokens_updated` / `pricing_updated`, в деталях — дельта `1000->1500`, пишется **только после успеха бэка**). **Ключ `backend-economics` — не алиас `backend-users:edit`**: роль с полным `backend-users:["view","edit"]` и без `backend-economics` получает `403` на **всех** путях ниже.
 
@@ -2071,15 +2129,24 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 4. Иначе bootstrap: `username` задан → `UserRepository.get_by_telegram(normalize_telegram(username))` (активный, `NOT is_system`).
 5. Иначе — нет.
 
-Не найден / неактивен / системный → **`404 user_not_linked`**.
+Не найден / неактивен / системный / **без единой роли** → **`404 user_not_linked`**.
+
+> **Четвёртая причина — «пользователь без ролей» ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §6, нормативно).** Ответ несёт **non-null** `role_id`/`role_name` (первая роль), и заполнить их у пользователя с пустым набором ролей нечем. Такое состояние недостижимо через API (минимум одна роль — `422`), но возможно правкой БД прямым SQL. Исход — тот же **`404 user_not_linked`**, а не `500` и не `roles: []` с пустыми `role_id`/`role_name`: контур read-only и обязан деградировать в «доступа нет», а не отдавать полуфабрикат, который бот прочтёт как валидный. Тот же принцип, что «нет строки → нет доступа» на шагах 1–5 выше.
 
 **Response 200** — `ExternalUserAccessResponse` (`backend/app/schemas/documents.py`):
 
 ```json
-{ "user_id": "…", "role_id": "…", "role_name": "Оператор", "sees_all_documents": false }
+{ "user_id": "…", "role_id": "…", "role_name": "Оператор",
+  "roles": [ { "id": "…", "name": "Оператор" }, { "id": "…", "name": "Редактор документов" } ],
+  "sees_all_documents": false }
 ```
 
-`sees_all_documents` — `permissions_subset(full_catalog_permissions(), role.permissions)` (admin-уровень документов).
+`sees_all_documents` — `permissions_subset(full_catalog_permissions(), permissions)` (admin-уровень документов), где `permissions` — **union прав всех ролей** пользователя ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §2).
+
+> **Расширение [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §6 — АДДИТИВНОЕ (нормативно).** Роли стали M2M, но контракт **чужого** репозитория (ba-knowledge-base) в этом цикле не ломается:
+> - **`role_id` / `role_name` СОХРАНЯЮТСЯ** и несут **первую** роль (`user_roles.created_at ASC, role_id ASC` — тот же порядок, что у JWT-claim `role`). Они больше **не** описывают пользователя целиком.
+> - **`roles: RoleRef[]`** — полный набор ролей; потребителю, которому нужна фильтрация по ролям, читать **его**.
+> - Снятие `role_id`/`role_name` после перехода бота на `roles[]` — [TD-084](100-known-tech-debt.md). До этого **оба** представления обязаны отдаваться и быть согласованными.
 
 **Ошибки:** `503 documents_external_not_configured`, `401 not_authenticated`, `404 user_not_linked`.
 
@@ -2096,7 +2163,7 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 **Тело:** `{ "telegram_user_id": int, "username": string|null }`.
 
 1. Единый резолв (шаги выше).
-2. Не найден / неактивен / системный → `404 user_not_linked` (тело `{"error":{"code":"user_not_linked",...}}`). Бот трактует как отказ **только** этот код; прочий 404 (нет роута) — как сбой CRM, не «отказать всем».
+2. Не найден / неактивен / системный / **без единой роли** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §6) → `404 user_not_linked` (тело `{"error":{"code":"user_not_linked",...}}`). Бот трактует как отказ **только** этот код; прочий 404 (нет роута) — как сбой CRM, не «отказать всем».
 3. Иначе upsert `knowledge_bot_links` (`ON CONFLICT (telegram_user_id) DO UPDATE`: `user_id`, `username`, `dead_at=NULL`; `started_at` не затирается).
 4. **Response 200** — тот же `ExternalUserAccessResponse`.
 
@@ -2165,7 +2232,7 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 - **Reply почты** гейтится `mail:view` (у почты в каталоге одно действие `view`).
 - **`POST /api/ai-keys/{id}/balance/reset` гейтится `ai-keys:edit`, а не `ai-keys:create`** ([ADR-070](adr/ADR-070-ai-key-estimated-balance-monitor.md)) — исключение из колонки `POST` таблицы: это правка существующего ключа, `POST` выбран из-за не-идемпотентности (новый якорь `now()` на каждый вызов). Reveal-эндпоинты ИИ-ключа (`GET /{id}/key`, `GET /{id}/billing-admin-key`) — тоже исключение из колонки `GET`: они под `ai-keys:edit` ([Reveal секретов](#reveal-секретов-по-требованию-adr-035)).
 - **Roles/Permissions API** — со Спринта A гейтятся **матрицей** `roles:*` ([ADR-022](adr/ADR-022-teams-nav-categories.md)): `/api/roles` (методы по таблице выше), `GET /api/permissions/catalog` → `require("roles","view")` (каталог нужен редактору роли). **Teams API** — `require("teams", <action>)`.
-- **Users API** — **остаётся** `require_admin`, **не** через матрицу: создание/удаление пользователей, сброс паролей, назначение ролей — admin-only ([ADR-022](adr/ADR-022-teams-nav-categories.md) §4в, замыкает эскалацию). Предикат `require_admin` — `is_admin_level` = `is_superadmin OR role=="admin" OR permissions_subset(full_catalog, permissions)` ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4).
+- **Users API** — **остаётся** `require_admin`, **не** через матрицу: создание/удаление пользователей, сброс паролей, назначение ролей — admin-only ([ADR-022](adr/ADR-022-teams-nav-categories.md) §4в, замыкает эскалацию). Предикат `require_admin` — `is_admin_level` = **`is_superadmin OR "admin" ∈ roles OR permissions_subset(full_catalog, permissions)`** (`permissions` = union прав всех ролей — [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §2; прежняя запись `role=="admin"` описывала единственную роль) ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4).
 - **SMS API** ([ADR-030](adr/ADR-030-sms-module-full-merge.md)) — матрица `sms:*` (см. таблицу). `POST /api/sms/telegram/link` — **только аутентификация** (вне матрицы `sms`): доставка операторам — функция членства в команде (`user_teams`), а не права на страницу. `GET /api/teams/{id}/numbers` гейтится `teams:view`. Публичные webhook'и Twilio/Telegram и `POST /api/sms/telegram/auth` — вне JWT/RBAC (гейт — подпись/секрет/HMAC).
 - **Security-инвариант эскалации** (`POST`/`PATCH /api/roles`, реализует backend): актор без `is_admin_level` не может выдать роли права сверх собственных (subset), а встроенную роль `admin` может менять/удалять только `is_admin_level` — иначе `403 forbidden`. Полностью — [Roles](#roles), [ADR-022](adr/ADR-022-teams-nav-categories.md#4-security-инвариант-эскалации-привилегий-обязательно-реализует-backend), [ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md) §4.
 - `403 forbidden` — единый код и тело `{ "error": { "code": "forbidden", "message": "Недостаточно прав", "details": null } }`. Фабрика `forbidden()` добавляется в `app/errors.py`.
@@ -2213,17 +2280,25 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 
 ## Users
 
-Реестр дополнительных пользователей (супер-админ из `.env` сюда **не входит**: его системная строка-якорь `is_system` **исключена** из всех ответов — `GET` её не показывает, `PATCH`/`DELETE` по её `id` → `404 user_not_found`; [ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md), [03-data-model.md](03-data-model.md#системная-строка-якорь-супер-админа-adr-051)). Модель — [03-data-model.md](03-data-model.md#таблицы-roles-и-users-rbac), решения — [ADR-021](adr/ADR-021-rbac-users-roles.md), [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md). Все эндпоинты — гейт `require_admin`. **Пароль (plaintext) никогда не возвращается** — только на вход; **пароль опционален** (беспарольные пользователи — [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)).
+Реестр дополнительных пользователей (супер-админ из `.env` сюда **не входит**: его системная строка-якорь `is_system` **исключена** из всех ответов — `GET` её не показывает, `PATCH`/`DELETE` по её `id` → `404 user_not_found`; [ADR-051](adr/ADR-051-superadmin-db-anchor-personal-state.md), [03-data-model.md](03-data-model.md#системная-строка-якорь-супер-админа-adr-051)). Модель — [03-data-model.md](03-data-model.md#таблицы-roles-и-users-rbac), решения — [ADR-021](adr/ADR-021-rbac-users-roles.md), [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md), **[ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md)** (M2M-роли, ФИО, обязательный `telegram`). Все эндпоинты — гейт `require_admin` (**`is_admin_level` считается по union прав всех ролей актора** — [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §2). **Пароль (plaintext) никогда не возвращается** — только на вход; **пароль опционален** (беспарольные пользователи — [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)).
+
+> **Контракт изменён [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) (2026-08-19, статус `implemented` — сверка состава в шапке ADR).** Ломающие изменения: `role_id`/`role_name` → **`role_ids`/`roles`** (роли стали M2M); добавлены **`last_name`/`first_name`/`middle_name`**; `telegram` **обязателен** при создании и **не очищается** через `PATCH`; поле `username` **исчезло из запросов** (сервис выставляет его сам из `telegram`). Фронт и бэк выкатывались **одним** релизом.
+
+### Схема `RoleRef`
+
+Компактная ссылка на роль (по образцу `TeamRef`): `{ id: string(uuid), name: string }`. Используется в `UserListItem.roles` и во внешнем контуре ([External Documents](#external-documents-read-only-rag)).
 
 ### Схема `UserListItem`
 ```json
 {
   "id": "b7c1...e4",
-  "username": "Никита",
+  "username": "nikita_ops",
+  "last_name": "Петров",
+  "first_name": "Никита",
+  "middle_name": "Сергеевич",
   "telegram": "nikita_ops",
   "has_password": true,
-  "role_id": "2a9f...c0",
-  "role_name": "Оператор",
+  "roles": [ { "id": "2a9f...c0", "name": "Оператор" }, { "id": "77b0...12", "name": "Редактор документов" } ],
   "is_active": true,
   "status": "active",
   "teams": [ { "id": "d3f0...a1", "name": "Продажи" } ],
@@ -2239,14 +2314,14 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 | Поле | Тип | Примечание |
 |------|-----|-----------|
 | `id` | string (uuid) | Идентификатор пользователя |
-| `username` | string | Логин (кириллица/юникод допускаются). **Идентификатор входа** (логин или `telegram`) |
-| `telegram` | string \| null | Опциональный телеграм-ник ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md); заменяет прежний `email`); `null` — не задан. Нормализован (без `@`, lower-case). Второй идентификатор входа |
+| `username` | string | **Скрытый технический логин**, всё ещё отдаётся ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §9): используется UI как **фолбэк-отображение**, если все три части ФИО пусты, и как диагностическое значение. **В запросах его нет** — у новых пользователей сервис выставляет `username := normalize_telegram(telegram)`. По-прежнему **идентификатор входа** (логин или `telegram`) |
+| `last_name` / `first_name` / `middle_name` | string \| null | **ФИО** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §7). `null` — часть не заполнена (у исторических строк заполнено только `first_name` — туда миграция `0039` перенесла прежний логин). Отображаемое имя строит клиент: `«{last_name} {first_name} {middle_name}»` со схлопыванием пустых, всё пусто → `username` |
+| `telegram` | string \| null | Телеграм-ник ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md); заменяет прежний `email`). Нормализован (без `@`, lower-case). Второй идентификатор входа. `null` — **только у исторических строк**: у всех, созданных после [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md), поле заполнено (обязательно при создании, очистка запрещена) |
 | `has_password` | boolean | Производное: `password_hash IS NOT NULL`. `false` — **беспарольный** пользователь (ещё не прошёл «открытый первый вход», [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). Сам хэш/пароль не возвращается |
-| `role_id` | string (uuid) | ID роли |
-| `role_name` | string | Имя роли (денормализовано для UI-списка) |
+| `roles` | `RoleRef[]` | **Все роли пользователя** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §1), порядок — `user_roles.created_at ASC, role_id ASC`. **Заменяет `role_id`/`role_name`** (оба поля **удалены** из этого контракта). Массив непуст у любого пользователя, заведённого через API |
 | `is_active` | boolean | Активен ли пользователь (используется формой редактирования как тумблер «Активен») |
 | `status` | string | **Производный** тристатус ([ADR-028](adr/ADR-028-user-status-first-login.md)) ∈ `"pending"` \| `"active"` \| `"inactive"`. Правило (приоритет `is_active`): `is_active==false` → `"inactive"`; `is_active==true` И ещё не входил (`first_login_at IS NULL`) → `"pending"`; `is_active==true` И входил хотя бы раз → `"active"`. UI-лейблы: `"inactive"`→«Неактивен», `"pending"`→«Ожидает входа», `"active"`→«Активен» ([08-design-system.md](08-design-system.md#страница-пользователи)). Сама метка `first_login_at` наружу не отдаётся |
-| `teams` | `TeamRef[]` | CRM-команды пользователя (**базовое членство**, `user_teams`; может быть пустым). `TeamRef = { id: string(uuid), name: string }`. Денормализовано для группировки списка «Пользователи» по командам |
+| `teams` | `TeamRef[]` | CRM-команды пользователя (**базовое членство**, `user_teams`; может быть пустым). `TeamRef = { id: string(uuid), name: string }`. Денормализовано для колонки «Команды» таблицы `/users` (чипы). ⚠️ Прежняя формулировка «для **группировки** списка по командам» устарела: группировка отменена [ADR-065](adr/ADR-065-users-flat-list-team-chips.md), а сам список стал таблицей — [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §10 |
 | `mail_extra_teams` / `sms_extra_teams` | `TeamRef[]` | **ТОЛЬКО ДОБАВКА** канала ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §5.2) — строки `user_channel_teams` **без** базовых `teams` (то, что реально хранится). Может быть `[]`. **Эффективный** scope канала = `teams ∪ <channel>_extra_teams` (его в готовом виде отдаёт [`GET /api/auth/me`](#get-apiauthme)) |
 | `mail_extra_includes_unassigned` / `sms_extra_includes_unassigned` | boolean | «Без команды» канала: доступ к ящикам/номерам с `team_id IS NULL`. Значение колонки `users.<channel>_includes_unassigned` |
 | `bot_started` | boolean | `true` ⇔ есть хотя бы одна активная строка `knowledge_bot_links` на этого пользователя ([ADR-076](adr/ADR-076-knowledge-bot-broadcast-and-admin-level.md)). Числовой chat_id и `started_at` наружу не отдаются |
@@ -2271,35 +2346,41 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 **Request** — схема `UserCreateRequest`:
 ```json
 {
-  "username": "Никита", "telegram": "@nikita_ops", "password": "s3cret-pass",
-  "role_id": "2a9f...c0", "team_ids": ["d3f0...a1"],
+  "last_name": "Петров", "first_name": "Никита", "middle_name": "Сергеевич",
+  "telegram": "@nikita_ops", "password": "s3cret-pass",
+  "role_ids": ["2a9f...c0", "77b0...12"], "team_ids": ["d3f0...a1"],
   "mail_extra_team_ids": ["9b2c...7e"], "mail_extra_includes_unassigned": true,
   "sms_extra_team_ids": [], "sms_extra_includes_unassigned": false
 }
 ```
 | Поле | Тип | Правила |
 |------|-----|---------|
-| `username` | string | required, 1–64 после `strip()`, кириллица-допускающий формат ([03-data-model.md](03-data-model.md#правило-username-кириллица-допускающее-нормативно)). Уникален → дубликат `409 username_taken` |
-| `telegram` | string? | **опц.** Отсутствует/`null`/`""` → без телеграма. Задан → формат телеграм-ника (опц. ведущий `@`, 5–32 `[A-Za-z0-9_]`; нормализуется — снять `@`, lower-case, [03-data-model.md](03-data-model.md#правило-telegram-телеграм-ник-нормативно)); невалидный → `422 unprocessable` (`details[].field="telegram"`). Уникален среди заданных → дубликат `409 telegram_taken` |
+| `last_name` | string | **required** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §7), 1–64 после `strip()`, тот же кириллица-допускающий формат, что у [`username`](03-data-model.md#правило-username-кириллица-допускающее-нормативно). Пусто/невалидно → `422 unprocessable` (`details[].field="last_name"`). В БД колонка nullable — обязательность **только здесь** |
+| `first_name` | string | **required**, те же правила (`details[].field="first_name"`) |
+| `middle_name` | string? | **опц.** Отсутствует/`null`/`""` → `NULL`. Задан → те же правила формата |
+| `telegram` | string | **required** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §8 — **прежнее «опц.» отменено**). Формат телеграм-ника (опц. ведущий `@`, 5–32 `[A-Za-z0-9_]`; нормализуется — снять `@`, lower-case, [03-data-model.md](03-data-model.md#правило-telegram-телеграм-ник-нормативно)); отсутствует/пуст/невалиден → `422 unprocessable` (`details[].field="telegram"`). Уникален → дубликат `409 telegram_taken`. **Из него же выводится `username`** (§9 ADR-079): коллизия нормализованного значения с историческим логином → `409 username_taken`, и форма показывает эту ошибку **на поле «Телеграм»** (поля «Логин» в UI нет) |
 | `password` | string? | **опц.**, 8–128 при наличии. Отсутствует/`null`/`""` → пользователь создаётся **беспарольным** (`password_hash=NULL`; задаст пароль при «открытом первом входе», [ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)). Задан → хэшируется bcrypt; в ответе не возвращается |
-| `role_id` | string (uuid) | required. Роль должна существовать → иначе `422 unprocessable` (`details[].field="role_id"`) |
+| `role_ids` | string[] | **required, непустой** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §1). Каждый `id` должен существовать; без дублей. Пустой массив, отсутствие поля или несуществующая роль → `422 unprocessable` (`details[].field="role_ids"`). **Заменяет `role_id`** (поле удалено). «Минимум одна роль» — инвариант **сервиса**, не БД |
 | `team_ids` | string[]? | **опц.**, default `[]`. Список `id` CRM-команд пользователя (**базовое членство**, [Teams](#teams)); каждый должен существовать → иначе `422 unprocessable` (`details[].field="team_ids"`). Без дублей. Команда при создании **необязательна** (роль — обязательна) |
 | `mail_extra_team_ids` / `sms_extra_team_ids` | string[]? | **опц.**, default `[]`. **Дополнительные** команды канала ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §5.2). Каждый `id` должен существовать → иначе `422 unprocessable` (`details[].field="mail_extra_team_ids"` / `"sms_extra_team_ids"`). Без дублей. **Пересечение с `team_ids` того же запроса ВЫЧИТАЕТСЯ сервисом** (базовые команды и так входят в scope канала) — это **не ошибка** |
 | `mail_extra_includes_unassigned` / `sms_extra_includes_unassigned` | boolean? | **опц.**, default `false`. «Без команды» канала: доступ к ящикам/номерам с `team_id IS NULL` |
 
-**Response 201** — созданный `UserListItem` (с `telegram`/`has_password`/`teams`/`*_extra_teams`/`*_extra_includes_unassigned`, без пароля).
+**Response 201** — созданный `UserListItem` (с ФИО/`telegram`/`has_password`/`roles`/`teams`/`*_extra_teams`/`*_extra_includes_unassigned`, без пароля).
 
-**Прецеденция ошибок (нормативно):** схемная валидация (`400`/`422` — форма/`username`/`telegram`/`password`) → существование `role_id`, всех `team_ids` **и всех `*_extra_team_ids`** (`422 unprocessable`) → уникальность `username` (`409 username_taken`) → уникальность `telegram` (`409 telegram_taken`).
+**Прецеденция ошибок (нормативно):** схемная валидация (`400`/`422` — форма/ФИО/`telegram`/`password`) → существование и непустота `role_ids`, существование всех `team_ids` **и всех `*_extra_team_ids`** (`422 unprocessable`) → уникальность `telegram` (`409 telegram_taken`) → уникальность выведенного `username` (`409 username_taken`).
 
-**Ошибки:** `401 unauthorized`, `403 forbidden`, `400 validation_error`, `422 unprocessable` (невалидный `username`/`telegram`/`password`/несуществующий `role_id`/`team_ids`), `409 username_taken`, `409 telegram_taken`.
+> **Порядок двух `409` изменён [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md)** (прежде `username_taken` шёл первым). Причина: оба конфликта теперь порождены **одним** введённым значением — телеграм-ником. `telegram_taken` («такой телеграм уже у другого пользователя») — прямое и понятное объяснение; `username_taken` («выведенный логин совпал с историческим») — редкий побочный случай, и показывать его вперёд означало бы назвать оператору менее вероятную причину.
+
+**Ошибки:** `401 unauthorized`, `403 forbidden`, `400 validation_error`, `422 unprocessable` (невалидные ФИО/`telegram`/`password`; пустой или несуществующий `role_ids`; несуществующие `team_ids`), `409 telegram_taken`, `409 username_taken`.
 
 ### PATCH `/api/users/{id}`
-Редактирование пользователя: **роль**, **статус активности**, **сброс пароля**. `username` не редактируется. Гейт `require_admin`. Все поля опциональны; передаются только изменяемые (`model_dump(exclude_unset=True)`).
+Редактирование пользователя: **ФИО**, **телеграм**, **роли**, **статус активности**, **сброс пароля**. `username` не редактируется **и не меняется автоматически** при смене `telegram` ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §9 — иначе поменялся бы `sub` уже выпущенных токенов). Гейт `require_admin`. Все поля опциональны; передаются только изменяемые (`model_dump(exclude_unset=True)`).
 
 **Request** — схема `UserUpdateRequest`:
 ```json
 {
-  "telegram": "new_nick", "role_id": "5b1e...aa", "is_active": false, "password": "new-pass-123",
+  "last_name": "Петров", "first_name": "Никита", "middle_name": null,
+  "telegram": "new_nick", "role_ids": ["5b1e...aa"], "is_active": false, "password": "new-pass-123",
   "team_ids": ["d3f0...a1", "e4a1...b2"],
   "mail_extra_team_ids": ["9b2c...7e"], "mail_extra_includes_unassigned": true,
   "sms_extra_team_ids": ["9b2c...7e", "1a44...09"], "sms_extra_includes_unassigned": false
@@ -2307,20 +2388,26 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 ```
 | Поле | Тип | Правила |
 |------|-----|---------|
-| `telegram` | string? | опц. Не передано → не менять; `null`/`""` → **убрать** телеграм (`telegram=NULL`); валидный → установить (нормализация — снять `@`, lower-case; дубль → `409 telegram_taken`; невалидный формат → `422`, [03-data-model.md](03-data-model.md#правило-telegram-телеграм-ник-нормативно)) |
-| `role_id` | string (uuid)? | опц. Передано → сменить роль (роль должна существовать → `422`) |
+| `last_name` / `first_name` | string? | опц. **Не передано → не менять** (по `model_fields_set`). Передано → 1–64 после `strip()`, формат как при создании; пустая строка/`null` → **`422`** (очистка обязательной части ФИО не предусмотрена — [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §7) |
+| `middle_name` | string? | опц. Не передано → не менять; `null`/`""` → **очистить** (`NULL`); валидное → установить. Отчество — единственная часть ФИО, которую можно снять |
+| `telegram` | string? | опц. Не передано → не менять; валидный → установить (нормализация — снять `@`, lower-case; дубль → `409 telegram_taken`; невалидный формат → `422`, [03-data-model.md](03-data-model.md#правило-telegram-телеграм-ник-нормативно)). ⛔ **`null`/`""` → `422 unprocessable`** ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §8): **очистка запрещена** — поля «Логин» в UI больше нет, и пользователь остался бы без единого способа входа. **Прежняя норма «`null`/`""` → убрать телеграм» ОТМЕНЕНА.** `username` при смене телеграма **не пересчитывается** |
+| `role_ids` | string[]? | опц. Не передано → роли не менять; передано → **полностью заменяет** набор ролей ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §1). Каждый `id` должен существовать; без дублей. **`[]` → `422 unprocessable`** (`details[].field="role_ids"`) — «минимум одна роль». **Заменяет `role_id`** (поле удалено) |
 | `is_active` | boolean? | опц. Передано → установить статус. Деактивация аннулирует действующий JWT пользователя на следующем запросе (`401`) |
 | `password` | string? | опц. **Не передано → не менять**; передан непустой (8–128) → **сброс/установка пароля** (re-hash bcrypt; для беспарольного — задаёт пароль). Пустая строка `""` → `422 unprocessable` (не «очистка»; сброс в беспарольное состояние через PATCH не предусмотрен) |
 | `team_ids` | string[]? | опц. Не передано → членство не менять; передано → **полностью заменяет** набор CRM-команд пользователя (каждый `id` должен существовать → `422`; без дублей; `[]` → выйти из всех команд). Если пользователь — **лидер** команды, из которой его исключают, — лидерство **авто-передаётся** следующему участнику по дате добавления (или команда становится без лидера, если участников не осталось) — [ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md), [Teams](#teams). Прежнее «лидер не исключается» отменено |
 | `mail_extra_team_ids` / `sms_extra_team_ids` | string[]? | опц. Не передано → добавку канала не менять; передано → **полностью заменяет** набор доп-команд канала (`[]` → снять все). Каждый `id` должен существовать → `422` (`details[].field` = имя поля); без дублей. **Пересечение с эффективным `team_ids` (переданным в этом же `PATCH`, иначе — текущим членством) ВЫЧИТАЕТСЯ** ([ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md) §2.3) — не ошибка. **Следствие (нормативно):** исключение пользователя из команды через `team_ids` **снимает** её и из обоих каналов (копии в добавке не остаётся) |
 | `mail_extra_includes_unassigned` / `sms_extra_includes_unassigned` | boolean? | опц. Не передано → не менять; передано → установить флаг «Без команды» канала |
 
-**Response 200** — обновлённый `UserListItem` (с `telegram`/`has_password`/`teams`/`*_extra_teams`/`*_extra_includes_unassigned`).
+**Response 200** — обновлённый `UserListItem` (с ФИО/`telegram`/`has_password`/`roles`/`teams`/`*_extra_teams`/`*_extra_includes_unassigned`).
 
-**Ошибки:** `401 unauthorized`, `403 forbidden`, `404 user_not_found`, `400 validation_error`, `422 unprocessable` (несуществующий `role_id`/`team_ids`/`*_extra_team_ids` / невалидный `telegram`/`password`), `409 telegram_taken`.
+> **Смена ролей применяется мгновенно** — права грузятся из БД на каждый запрос ([05-security.md § Enforcement](05-security.md#enforcement-свежая-загрузка-прав-из-бд)); пере-логин не нужен, отзыв токена не требуется. JWT-claim `role` у пользователя при этом **устаревает и это не дефект**: claim информационный ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §3), в авторизации не участвует.
+
+**Ошибки:** `401 unauthorized`, `403 forbidden`, `404 user_not_found`, `400 validation_error`, `422 unprocessable` (пустой/несуществующий `role_ids`; несуществующие `team_ids`/`*_extra_team_ids`; невалидные ФИО/`password`; **очистка `telegram`**), `409 telegram_taken`.
 
 ### DELETE `/api/users/{id}`
-Удаляет пользователя (hard delete). Гейт `require_admin`. Членства в командах (`user_teams`) и **доп-команды каналов** (`user_channel_teams`, [ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md)) снимаются `ON DELETE CASCADE`. **Если пользователь — лидер команд(ы), удаление НЕ блокируется** ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)): для каждой такой команды лидерство **авто-передаётся** следующему участнику по дате добавления (`user_teams.created_at`); если других участников нет → команда становится **без лидера** (`leader_id=NULL`). Затем пользователь удаляется — **если его не держит FK `ON DELETE RESTRICT`** (авторство документов/вложений → `409 user_in_use`, см. ниже). Код `409 user_is_team_leader` **упразднён**.
+Удаляет пользователя (hard delete). Гейт `require_admin`. **Роли** (`user_roles`, [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md)), членства в командах (`user_teams`) и **доп-команды каналов** (`user_channel_teams`, [ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md)) снимаются `ON DELETE CASCADE`.
+
+> **Асимметрия двух концов `user_roles` — намеренная ([ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md) §1).** Удаление **пользователя** его строки связи снимает молча (`user_id` → `ON DELETE CASCADE`), а удаление **роли** блокируется — `409 role_in_use` (`role_id` → **`ON DELETE RESTRICT`**). Причина: снятие ролей у уходящего пользователя ничего ни у кого не отнимает, а `CASCADE` на ролевой стороне тихо урезал бы права **всем** носителям роли. Именно поэтому гард `is_in_use` обязан читать `user_roles` **без** фильтра `is_system` — иначе `DELETE` роли системного якоря дал бы `500` вместо `409`. **Если пользователь — лидер команд(ы), удаление НЕ блокируется** ([ADR-026](adr/ADR-026-teams-optional-leader-auto-transfer.md)): для каждой такой команды лидерство **авто-передаётся** следующему участнику по дате добавления (`user_teams.created_at`); если других участников нет → команда становится **без лидера** (`leader_id=NULL`). Затем пользователь удаляется — **если его не держит FK `ON DELETE RESTRICT`** (авторство документов/вложений → `409 user_in_use`, см. ниже). Код `409 user_is_team_leader` **упразднён**.
 
 **Response 204** (без тела).
 

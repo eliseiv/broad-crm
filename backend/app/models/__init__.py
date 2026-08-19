@@ -1,6 +1,7 @@
 """SQLAlchemy-модели."""
 
 from app.models.ai_key import AiKey, AiKeyStatus, AiProvider
+from app.models.backend_user_snapshot import BackendUserSnapshot, BackendUserSnapshotSource
 from app.models.base import Base
 from app.models.document_attachment import DocumentAttachment
 from app.models.document_node import DocumentNode
@@ -26,12 +27,15 @@ from app.models.sms_telegram_link import SmsTelegramLink
 from app.models.team import Team, user_teams
 from app.models.user import User
 from app.models.user_channel_team import user_channel_teams
+from app.models.user_role import user_roles
 
 __all__ = [
     "AiKey",
     "AiKeyStatus",
     "AiProvider",
     "Backend",
+    "BackendUserSnapshot",
+    "BackendUserSnapshotSource",
     "BackendStatus",
     "Base",
     "DocumentAttachment",
@@ -64,5 +68,6 @@ __all__ = [
     "User",
     "document_node_roles",
     "user_channel_teams",
+    "user_roles",
     "user_teams",
 ]

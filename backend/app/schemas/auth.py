@@ -61,8 +61,12 @@ class MeResponse(BaseModel):
 
     `permissions` — производное для UI-гейтинга (для супер-админа — полный каталог).
     Безопасность обеспечивается сервером (403), UI-гейтинг — только UX.
-    `is_admin_level` — тот же предикат, что `require_admin` (ADR-076 §4 / ADR-078):
-    `is_superadmin OR role=="admin" OR permissions_subset(full_catalog, permissions)`.
+    `roles` — имена ВСЕХ ролей актора (ADR-079 §3; **ломающая замена `role: str`**),
+    порядок — `user_roles.created_at ASC, role_id ASC`; супер-админ → `["admin"]`.
+    `permissions` — **union** прав всех ролей.
+    `is_admin_level` — тот же предикат, что `require_admin` (ADR-076 §4 / ADR-078 в
+    редакции ADR-079 §2): `is_superadmin OR "admin" ∈ roles OR
+    permissions_subset(full_catalog, permissions)`.
     `sees_all_sms_teams` — производный admin-уровень видимости SMS (ADR-032/036):
     `is_superadmin OR permissions_subset(full_catalog_permissions(), permissions)`;
     backend — единственный источник (фронт не дублирует `permissions_subset`).
@@ -78,7 +82,7 @@ class MeResponse(BaseModel):
     """
 
     username: str
-    role: str
+    roles: list[str]
     is_superadmin: bool
     is_admin_level: bool
     permissions: dict[str, list[str]]

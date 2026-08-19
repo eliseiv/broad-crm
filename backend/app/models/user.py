@@ -5,9 +5,17 @@
 (`is_system=true`, ADR-051) — FK-цель личного состояния, невидимая для реестра, логина
 и Telegram-SSO. `username` допускает кириллицу/юникод-буквы (DB-CHECK — «свободный»
 инвариант; полное правило — Pydantic/app.domain.identity). Пароль — только bcrypt-хэш
-(`password_hash`), plaintext не хранится. `role_id` FK → roles ON DELETE RESTRICT
-(роль с носителями удалить нельзя → 409 role_in_use). Роль подгружается eager
-(`lazy="joined"`) — безопасно в async (загрузка в том же SELECT, без ленивого IO).
+(`password_hash`), plaintext не хранится.
+
+**Роли — M2M через `user_roles`** (ADR-079 §1, миграция `0038`): прежняя колонка
+`users.role_id` дропнута. `User.roles` — `viewonly` relationship (`secondary="user_roles"`,
+`lazy="selectin"`, порядок `user_roles.created_at ASC, role_id ASC`): запись идёт явными
+statements через `UserRepository.set_roles`, а чтения (принципал, реестр, SSO) получают
+набор ролей одним дополнительным SELECT без ленивого IO. FK `user_roles.role_id → roles`
+— `ON DELETE RESTRICT` (роль с носителями удалить нельзя → 409 role_in_use).
+
+**ФИО** (`last_name`/`first_name`/`middle_name`, ADR-079 §7, миграция `0039`) — nullable
+в БД; обязательность Фамилии и Имени — на уровне API (422).
 """
 
 from __future__ import annotations
@@ -20,7 +28,6 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
-    ForeignKey,
     Index,
     Text,
     func,
@@ -30,6 +37,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+from app.models.user_role import user_roles
 
 if TYPE_CHECKING:
     from app.models.role import Role
@@ -70,14 +78,15 @@ class User(Base):
     # WHERE telegram IS NOT NULL, миграция 0011). Хранится нормализованным (без `@`,
     # lower-case); формат — на Pydantic/домене (app.domain.telegram).
     telegram: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # ФИО (ADR-079 §7, миграция 0039). NULL-допустимы: у исторических строк фамилии нет,
+    # у системного якоря ФИО нет и не будет никогда. Обязательность `last_name`/
+    # `first_name` — на уровне API (422), формат — тот же `validate_name_part`.
+    last_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    first_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    middle_name: Mapped[str | None] = mapped_column(Text, nullable=True)
     # NULL = беспарольный пользователь (пароль ещё не задан — «открытый первый вход»,
     # ADR-025, миграция 0011). Непустой — bcrypt-хэш. Plaintext не хранится.
     password_hash: Mapped[str | None] = mapped_column(Text, nullable=True)
-    role_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True),
-        ForeignKey("roles.id", ondelete="RESTRICT"),
-        nullable=False,
-    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("true"))
     # Системная строка-якорь супер-админа (ADR-051, миграция 0026). `true` — ровно одна
     # техническая строка (FK-цель личного состояния консольного супер-админа); `false` —
@@ -111,7 +120,19 @@ class User(Base):
         onupdate=func.now(),
     )
 
-    role: Mapped[Role] = relationship(back_populates="users", lazy="joined")
+    # Роли пользователя (M2M через `user_roles`, ADR-079 §1). `viewonly` — набор пишется
+    # явными statements (`UserRepository.set_roles`), источник записи под контролем
+    # сервиса. `lazy="selectin"` — безопасно в async (отдельный SELECT сразу после
+    # основного, без ленивого IO при обращении к атрибуту). Порядок — `created_at ASC,
+    # role_id ASC`: он задаёт «первую» роль (информационный JWT-claim `role`,
+    # `role_id`/`role_name` внешнего контура бота).
+    roles: Mapped[list[Role]] = relationship(
+        "Role",
+        secondary="user_roles",
+        viewonly=True,
+        lazy="selectin",
+        order_by=(user_roles.c.created_at.asc(), user_roles.c.role_id.asc()),
+    )
     # CRM-команды пользователя (M2M через user_teams). `viewonly` — членство пишется
     # явными statements в репозитории. Грузится точечно через selectinload (список/
     # деталь пользователя); в hot-path принципала (get_by_id) не загружается.

@@ -31,7 +31,8 @@ vi.mock('sonner', () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
 
-const PRIVATE_KEY = '-----BEGIN OPENSSH PRIVATE KEY-----\nQUJDRA==\n-----END OPENSSH PRIVATE KEY-----';
+const PRIVATE_KEY =
+  '-----BEGIN OPENSSH PRIVATE KEY-----\nQUJDRA==\n-----END OPENSSH PRIVATE KEY-----';
 
 /** Поле пароля различается по селектору: у радио-опции доступное имя тоже содержит «Пароль». */
 const passwordField = () =>
@@ -245,9 +246,7 @@ describe('AddServerModal — источник текста ошибки 422 (ADR
       { field: 'ssh_key_passphrase', message: 'Ключ не защищён парольной фразой — уберите её' },
     ]);
 
-    expect(
-      screen.getByText('Ключ не защищён парольной фразой — уберите её'),
-    ).toBeInTheDocument();
+    expect(screen.getByText('Ключ не защищён парольной фразой — уберите её')).toBeInTheDocument();
   });
 
   it('ОБЯЗАТЕЛЬНЫЙ: для ip показывается ЛОКАЛЬНЫЙ русский текст, а не сырой pydantic (случай «:1»)', async () => {
@@ -272,9 +271,7 @@ describe('AddServerModal — источник текста ошибки 422 (ADR
     // Запрос ушёл (клиентская регулярка `:1` пропустила) — иначе кейс был бы недостижим.
     expect(createMutation.mutate).toHaveBeenCalledTimes(1);
     expect(screen.getByText('Некорректный IP-адрес')).toBeInTheDocument();
-    expect(
-      screen.queryByText('value is not a valid IPv4 or IPv6 address'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('value is not a valid IPv4 or IPv6 address')).not.toBeInTheDocument();
   });
 
   it('для name и ssh_user сырой текст pydantic тоже заменяется локальным', async () => {
@@ -295,9 +292,7 @@ describe('AddServerModal — источник текста ошибки 422 (ADR
 
     expect(screen.getByText('Некорректное название (1–64 символа)')).toBeInTheDocument();
     expect(screen.getByText('Некорректный пользователь (1–64 символа)')).toBeInTheDocument();
-    expect(
-      screen.queryByText('String should have at most 64 characters'),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText('String should have at most 64 characters')).not.toBeInTheDocument();
   });
 
   it('422 с field=ssh_password подсвечивает поле пароля серверным текстом', async () => {

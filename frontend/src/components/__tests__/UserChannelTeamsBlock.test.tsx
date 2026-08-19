@@ -65,8 +65,11 @@ function existingUser(over: Partial<UserListItem> = {}): UserListItem {
     username: 'Никита',
     telegram: null,
     has_password: true,
-    role_id: 'r1',
-    role_name: 'Оператор',
+    // ADR-079 §7: ФИО nullable — историческая строка отображается по `username`.
+    last_name: null,
+    first_name: null,
+    middle_name: null,
+    roles: [{ id: 'r1', name: 'Оператор' }],
     is_active: true,
     status: 'active',
     teams: [{ id: 't1', name: 'Продажи' }],
@@ -262,8 +265,16 @@ describe('Отправляется ТОЛЬКО добавка (ADR-055 §6.1/§
     );
     render(<AddUserModal open onOpenChange={vi.fn()} roles={ROLES} teams={TEAMS} mode="add" />);
 
-    await user.type(screen.getByLabelText('Логин'), 'Никита');
+    // Обязательный минимум формы (ADR-079): ФИО, телеграм, минимум одна роль.
+    await user.type(screen.getByLabelText('Фамилия'), 'Петров');
+    await user.type(screen.getByLabelText('Имя'), 'Никита');
+    await user.type(screen.getByLabelText('Телеграм'), '@nikita_01');
     await user.type(screen.getByLabelText('Пароль'), 's3cret-pass');
+    await user.click(
+      within(screen.getByRole('group', { name: 'Роли' })).getByRole('checkbox', {
+        name: 'Оператор',
+      }),
+    );
     // Базовая команда — «Продажи» (блок «Команды», `MultiSelect` — группа чекбоксов).
     const teamsGroup = screen.getByRole('group', { name: 'Команды' });
     await user.click(within(teamsGroup).getByRole('checkbox', { name: 'Продажи' }));
@@ -292,8 +303,15 @@ describe('Отправляется ТОЛЬКО добавка (ADR-055 §6.1/§
     );
     render(<AddUserModal open onOpenChange={vi.fn()} roles={ROLES} teams={TEAMS} mode="add" />);
 
-    await user.type(screen.getByLabelText('Логин'), 'Пётр');
+    await user.type(screen.getByLabelText('Фамилия'), 'Петров');
+    await user.type(screen.getByLabelText('Имя'), 'Пётр');
+    await user.type(screen.getByLabelText('Телеграм'), '@petr_01');
     await user.type(screen.getByLabelText('Пароль'), 's3cret-pass');
+    await user.click(
+      within(screen.getByRole('group', { name: 'Роли' })).getByRole('checkbox', {
+        name: 'Оператор',
+      }),
+    );
 
     await user.click(blockToggle('СМС'));
     await user.click(within(blockPanel('СМС')).getByLabelText('Логистика'));

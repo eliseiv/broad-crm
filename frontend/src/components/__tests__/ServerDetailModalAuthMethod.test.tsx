@@ -45,9 +45,7 @@ describe('ServerDetailModal — строка «Способ входа» (ADR-06
   beforeEach(() => vi.clearAllMocks());
 
   it('auth_method=password → строка «Способ входа: Пароль» и строка секрета «Пароль»', () => {
-    render(
-      <ServerDetailModal open onOpenChange={vi.fn()} server={makeServer()} canEdit={true} />,
-    );
+    render(<ServerDetailModal open onOpenChange={vi.fn()} server={makeServer()} canEdit={true} />);
 
     expect(screen.getByText('Способ входа')).toBeInTheDocument();
     // «Пароль» встречается дважды: значение строки способа входа и метка строки секрета.
@@ -134,9 +132,7 @@ describe('ServerDetailModal — строка «Способ входа» (ADR-06
   it('парольный сервер под servers:edit — глаз ЕСТЬ и reveal вызывается (регресс ADR-035)', async () => {
     revealServerPassword.mockResolvedValue({ value: 'ssh-secret' });
     const user = userEvent.setup();
-    render(
-      <ServerDetailModal open onOpenChange={vi.fn()} server={makeServer()} canEdit={true} />,
-    );
+    render(<ServerDetailModal open onOpenChange={vi.fn()} server={makeServer()} canEdit={true} />);
 
     const eye = eyeButton();
     expect(eye).toBeInTheDocument();
@@ -147,9 +143,7 @@ describe('ServerDetailModal — строка «Способ входа» (ADR-06
   });
 
   it('парольный сервер без servers:edit — глаза нет и запроса нет', () => {
-    render(
-      <ServerDetailModal open onOpenChange={vi.fn()} server={makeServer()} canEdit={false} />,
-    );
+    render(<ServerDetailModal open onOpenChange={vi.fn()} server={makeServer()} canEdit={false} />);
 
     expect(eyeButton()).not.toBeInTheDocument();
     expect(revealServerPassword).not.toHaveBeenCalled();

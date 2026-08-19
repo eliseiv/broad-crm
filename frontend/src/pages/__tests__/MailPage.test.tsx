@@ -337,7 +337,6 @@ describe('MailPage "С тегами" navigation (ADR-071)', () => {
   });
 });
 
-
 // Скрытие полосы прокрутки (08-design-system.md «Скрытие полосы прокрутки», раздел «Где
 // применяется» → MAIL — список писем). jsdom НЕ вычисляет computed scrollbar-width — проверяем
 // НАЛИЧИЕ класса scrollbar-none и СОХРАНЕНИЕ overflow-класса (прокрутка не отменяется).
@@ -400,7 +399,7 @@ describe('MailPage view-guard (mail:view)', () => {
 
   it('renders the page-scoped stub and does not request the feed without mail:view', () => {
     // Обычный пользователь с доступом к другому разделу, но без `mail:view`.
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { servers: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { servers: ['view'] } });
     feed.value = baseFeed({ messages: [makeMessage(2)] });
     render(<MailPage />);
 
@@ -414,7 +413,7 @@ describe('MailPage view-guard (mail:view)', () => {
   });
 
   it('renders the mail content for a user holding mail:view', () => {
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { mail: ['view'] } });
     feed.value = baseFeed({ messages: [makeMessage(2), makeMessage(1)] });
     render(<MailPage />);
 
@@ -435,7 +434,7 @@ describe('MailPage — пометка «прочитано» при открыт
     vi.clearAllMocks();
     ioCallback = null;
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { mail: ['view'] } });
   });
 
   afterEach(() => {
@@ -498,7 +497,7 @@ describe('MailPage — откат «Отметить непрочитанным�
     vi.clearAllMocks();
     ioCallback = null;
     vi.stubGlobal('IntersectionObserver', MockIntersectionObserver);
-    loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { mail: ['view'] } });
+    loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { mail: ['view'] } });
   });
 
   afterEach(() => {
@@ -545,7 +544,6 @@ describe('MailPage — откат «Отметить непрочитанным�
     expect(markReadSpy).toHaveBeenCalledTimes(1);
   });
 });
-
 
 // ADR-051 §2/§3 ОТМЕНИЛ норму ADR-050 §2.5 («у супер-админа личного состояния нет»).
 // Теперь супер-админ из `.env` — полноценный субъект личной прочитанности: его идентичность
@@ -628,7 +626,7 @@ describe('MailPage — блок «Команды» в сайдбаре: поро
   it('0 вариантов канала → блока «Команды» НЕТ', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { mail: ['view'] },
       mailTeams: [],
       mailIncludesUnassigned: false,
@@ -641,7 +639,7 @@ describe('MailPage — блок «Команды» в сайдбаре: поро
   it('1 вариант (одна команда, без «Без команды») → блока НЕТ', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { mail: ['view'] },
       mailTeams: MAIL_TEAMS,
       mailIncludesUnassigned: false,
@@ -654,7 +652,7 @@ describe('MailPage — блок «Команды» в сайдбаре: поро
   it('2 команды у НЕ-АДМИНА → блок ЕСТЬ', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { mail: ['view'] },
       mailTeams: [...MAIL_TEAMS, SUPPORT],
       mailIncludesUnassigned: false,
@@ -671,7 +669,7 @@ describe('MailPage — блок «Команды» в сайдбаре: поро
   it('1 команда + «Без команды» = 2 варианта → блок ЕСТЬ', () => {
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { mail: ['view'] },
       mailTeams: MAIL_TEAMS,
       mailIncludesUnassigned: true,
@@ -703,7 +701,7 @@ describe('MailPage — блок «Команды» в сайдбаре: поро
     const user = userEvent.setup();
     loginAs({
       isSuperadmin: false,
-      role: 'Оператор',
+      roles: ['Оператор'],
       permissions: { mail: ['view'] },
       mailTeams: MAIL_TEAMS,
       mailIncludesUnassigned: true,

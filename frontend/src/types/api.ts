@@ -101,18 +101,25 @@ export interface SetPasswordRequest {
 
 /**
  * Ответ GET /api/auth/me (04-api.md, схема `MeResponse`). Профиль + права
- * текущего принципала для UI-гейтинга. `role` для супер-админа — "admin".
+ * текущего принципала для UI-гейтинга. `roles` для супер-админа — ["admin"].
  * `is_admin_level` — производный admin-уровень (ADR-078); гейт `/users`.
  * `permissions` — `{ "<page>": ["<action>", ...] }` (для супер-админа — полный каталог).
  * Безопасность обеспечивает сервер (403); гейтинг — только UX.
  */
 export interface MeResponse {
   username: string;
-  role: string;
+  /**
+   * Имена ВСЕХ ролей актора (04-api.md `MeResponse`, ADR-079 §3), порядок —
+   * `user_roles.created_at ASC, role_id ASC`; для супер-админа — `["admin"]`.
+   * Заменяет прежнее поле `role: string` (роли стали M2M). Пустой массив
+   * (роли сняты прямым SQL) читается как «прав нет», а не как ошибка.
+   */
+  roles: string[];
   is_superadmin: boolean;
   /**
-   * Производный admin-уровень (04-api.md, ADR-078): тот же предикат, что
-   * `require_admin` — `is_superadmin OR role=="admin" OR полный каталог`.
+   * Производный admin-уровень (04-api.md, ADR-078 в редакции ADR-079 §2): тот же
+   * предикат, что `require_admin` — `is_superadmin OR "admin" ∈ roles OR полный
+   * каталог по union прав всех ролей`.
    * `true` ⇔ актор видит страницу «Пользователи». Backend — единственный
    * источник; фронт не пересчитывает покрытие каталога.
    */
@@ -957,15 +964,38 @@ export interface TeamRef {
 }
 
 /**
+ * Компактная ссылка на роль (04-api.md, схема `RoleRef`; по образцу `TeamRef`,
+ * ADR-079 §1). Используется в `UserListItem.roles`.
+ */
+export interface RoleRef {
+  id: string;
+  name: string;
+}
+
+/**
  * Элемент списка пользователей (04-api.md, схема `UserListItem`). Пароль
  * (`password`/`password_hash`) в ответах отсутствует всегда — только на вход.
  */
 export interface UserListItem {
   id: string;
+  /**
+   * СКРЫТЫЙ технический логин (ADR-079 §9): в запросах его больше нет (сервис
+   * выводит `username := normalize_telegram(telegram)`), в UI — только фолбэк-
+   * отображение при пустом ФИО и диагностическое значение. Остаётся идентификатором входа.
+   */
   username: string;
   /**
-   * Опциональный телеграм-ник (ADR-025; заменяет прежний `email`); `null` — не
-   * задан. Нормализован (без `@`, lower-case). Второй идентификатор входа.
+   * ФИО (ADR-079 §7). `null` — часть не заполнена (у исторических строк заполнено
+   * только `first_name` — туда миграция 0039 перенесла прежний логин). Отображаемое
+   * имя строит клиент — `fullName()` (`features/users/fullName.ts`).
+   */
+  last_name: string | null;
+  first_name: string | null;
+  middle_name: string | null;
+  /**
+   * Телеграм-ник (ADR-025). Нормализован (без `@`, lower-case), второй идентификатор
+   * входа. `null` — ТОЛЬКО у исторических строк: с ADR-079 §8 поле обязательно
+   * при создании и не очищается.
    */
   telegram: string | null;
   /**
@@ -973,9 +1003,11 @@ export interface UserListItem {
    * пользователь (ещё не прошёл «открытый первый вход»). Сам пароль не возвращается.
    */
   has_password: boolean;
-  role_id: string;
-  /** Имя роли (денормализовано для UI-списка). */
-  role_name: string;
+  /**
+   * ВСЕ роли пользователя (ADR-079 §1), порядок — `user_roles.created_at ASC,
+   * role_id ASC`. Заменяет удалённые `role_id`/`role_name`.
+   */
+  roles: RoleRef[];
   is_active: boolean;
   /**
    * Производный тристатус (ADR-028): `"inactive"` (`is_active==false`);
@@ -1013,17 +1045,20 @@ export interface UserListResponse {
 }
 
 /**
- * Тело POST /api/users (04-api.md, `UserCreateRequest`; ADR-025). `username` 1–64
- * (кириллица допускается), `role_id` — существующая роль. `password` **опционален**
- * (8–128 при наличии; отсутствие → беспарольный пользователь «открытого первого входа»).
- * `telegram` опционален (формат телеграм-ника, нормализуется/уникален на сервере);
- * `team_ids` — опц. набор CRM-команд.
+ * Тело POST /api/users (04-api.md, `UserCreateRequest`; ADR-025, ADR-079).
+ * `last_name`/`first_name` — обязательны (1–64 после trim, кириллица допускается),
+ * `middle_name` — опц. `telegram` **обязателен** (§8): из него же сервис выводит
+ * `username`, поэтому поля `username` в запросе НЕТ (§9). `password` **опционален**
+ * (8–128 при наличии; отсутствие → беспарольный пользователь «открытого первого
+ * входа»). `role_ids` — непустой набор существующих ролей (§1). `team_ids` — опц.
  */
 export interface UserCreateRequest {
-  username: string;
-  telegram?: string;
+  last_name: string;
+  first_name: string;
+  middle_name?: string;
+  telegram: string;
   password?: string;
-  role_id: string;
+  role_ids: string[];
   team_ids?: string[];
   /**
    * ДОПОЛНИТЕЛЬНЫЕ команды канала сверх базового членства (ADR-055 §5.2; default `[]`).
@@ -1039,15 +1074,24 @@ export interface UserCreateRequest {
 }
 
 /**
- * Тело PATCH /api/users/{id} (04-api.md, `UserUpdateRequest`; ADR-025). `username`
- * не редактируется. Все поля опциональны — передаются только изменяемые
- * (exclude_unset). `password`: не передан → не менять; непустой (8–128) → сброс/установка.
- * `telegram`: не передан → не менять; `null`/`""` → убрать телеграм. `team_ids`
+ * Тело PATCH /api/users/{id} (04-api.md, `UserUpdateRequest`; ADR-025, ADR-079).
+ * `username` не редактируется и не пересчитывается при смене телеграма (§9). Все поля
+ * опциональны — передаются только изменяемые (exclude_unset). `password`: не передан →
+ * не менять; непустой (8–128) → сброс/установка. `telegram`: не передан → не менять;
+ * ⛔ `null`/`""` → `422` — **очистка запрещена** (§8), форма обязана её блокировать.
+ * `role_ids` (если передан) полностью заменяет набор ролей (`[]` → `422`). `team_ids`
  * (если передан) полностью заменяет набор CRM-команд пользователя.
  */
 export interface UserUpdateRequest {
-  telegram?: string | null;
-  role_id?: string;
+  /** Обязательные части ФИО: передано → установить; очистка (`""`/`null`) → `422`. */
+  last_name?: string;
+  first_name?: string;
+  /** Единственная снимаемая часть ФИО: `null` → очистить. */
+  middle_name?: string | null;
+  /** Смена телеграма; очистка запрещена — `null`/`""` даёт `422` (ADR-079 §8). */
+  telegram?: string;
+  /** Полная замена набора ролей (ADR-079 §1); пустой набор → `422`. */
+  role_ids?: string[];
   is_active?: boolean;
   password?: string;
   team_ids?: string[];
@@ -1504,12 +1548,40 @@ export interface BackendUsersSourceError {
   message: string;
 }
 
+/**
+ * Расходы на API-провайдеров по бэкам (04-api.md, схема `BackendUsersApiCosts`;
+ * ADR-080 §5/§6). Показатель **накопительный за всё время (lifetime)** — фильтр
+ * периода страницы на него НЕ действует; UI обязан называть это подписью.
+ * Ключи провайдеров нормализует сервер (openai/anthropic/fal, прочее → other).
+ */
+export interface BackendUsersApiCosts {
+  openai_usd: number;
+  anthropic_usd: number;
+  fal_usd: number;
+  other_usd: number;
+  total_usd: number;
+  /**
+   * `true` — сумма неполная: backfill карточек не завершён ЛИБО источник не отдаёт
+   * блок `revenue` (постоянное занижение). UI обязан это показать, иначе неполная
+   * сумма читается как полная.
+   */
+  partial: boolean;
+}
+
 /** Ответ GET /api/backend-users. */
 export interface BackendUsersListResponse {
   total: number;
   items: BackendUserItem[];
   stats: BackendUsersStats;
   errors: BackendUsersSourceError[];
+  /**
+   * Момент последнего полного цикла воркера снимка — `MIN(refreshed_at)` по
+   * участвующим источникам (ADR-080 §3). `null` — хотя бы один источник ни разу не
+   * обновлялся («Снимок формируется…»).
+   */
+  snapshot_at: string | null;
+  /** `null` — снимок ещё не сформирован (тот же случай, что `snapshot_at: null`). */
+  api_costs: BackendUsersApiCosts | null;
 }
 
 export interface BackendUserBalance {
@@ -1666,10 +1738,11 @@ export interface BackendUserTokensResponse {
   tokens: number;
 }
 
-/** `applied=false` — бэк распознал повтор grant_id и не продлил повторно. */
+/** `applied=false` — бэк распознал повтор grant_id и не продлил повторно.
+ *  `tokens: null` — бэк уровня v1 не отдал поле (null ≠ 0, ADR-072). */
 export interface BackendUserGrantResponse {
   id: string;
-  tokens: number;
+  tokens: number | null;
   subscription_active: boolean;
   subscription_expires_at: string | null;
   applied: boolean;

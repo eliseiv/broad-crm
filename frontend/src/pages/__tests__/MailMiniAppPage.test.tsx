@@ -471,7 +471,7 @@ describe('MailMiniAppPage — прочитанность (ADR-050 §2.6/§2.8)',
 function meResponse(over: Partial<MeResponse> = {}): MeResponse {
   return {
     username: 'ivan',
-    role: 'Оператор',
+    roles: ['Оператор'],
     is_superadmin: false,
     is_admin_level: false,
     sees_all_sms_teams: false,

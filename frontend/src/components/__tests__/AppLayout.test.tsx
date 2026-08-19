@@ -114,7 +114,7 @@ describe('AppLayout — плоская навигация (ADR-033)', () => {
 
   describe('видимость пунктов по правам (гейтинг: скрытый пункт не рендерится)', () => {
     it('только servers:view → виден лишь «Серверы» (users скрыт — не admin)', () => {
-      loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { servers: ['view'] } });
+      loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { servers: ['view'] } });
       renderAt('/servers');
 
       expect(screen.getByRole('link', { name: 'Серверы' })).toBeInTheDocument();
@@ -124,7 +124,7 @@ describe('AppLayout — плоская навигация (ADR-033)', () => {
     });
 
     it('только roles:view → виден «Роли»; «Пользователи»(admin) и «Команды»(teams:view) скрыты', () => {
-      loginAs({ isSuperadmin: false, role: 'Оператор', permissions: { roles: ['view'] } });
+      loginAs({ isSuperadmin: false, roles: ['Оператор'], permissions: { roles: ['view'] } });
       renderAt('/roles');
 
       expect(screen.getByRole('link', { name: 'Роли' })).toBeInTheDocument();
@@ -134,7 +134,7 @@ describe('AppLayout — плоская навигация (ADR-033)', () => {
     });
 
     it('«Пользователи» виден при isAdminLevel, не матрицей прав (ADR-078)', () => {
-      loginAs({ isSuperadmin: false, role: 'admin', isAdminLevel: true, permissions: {} });
+      loginAs({ isSuperadmin: false, roles: ['admin'], isAdminLevel: true, permissions: {} });
       renderAt('/servers');
 
       expect(screen.getByRole('link', { name: 'Пользователи' })).toBeInTheDocument();
@@ -143,7 +143,7 @@ describe('AppLayout — плоская навигация (ADR-033)', () => {
     it('пункт «Рассылка» виден при broadcast:view (ADR-076)', () => {
       loginAs({
         isSuperadmin: false,
-        role: 'Оператор',
+        roles: ['Оператор'],
         permissions: { broadcast: ['view', 'send'] },
       });
       renderAt('/broadcast');
@@ -153,7 +153,7 @@ describe('AppLayout — плоская навигация (ADR-033)', () => {
     it('роль «Админ»: пункт «Пользователи» ⇔ isAdminLevel, без Spinner каталога (ADR-078)', () => {
       loginAs({
         isSuperadmin: false,
-        role: 'Админ',
+        roles: ['Админ'],
         isAdminLevel: true,
         permissions: { servers: ['view'] },
       });
@@ -164,7 +164,7 @@ describe('AppLayout — плоская навигация (ADR-033)', () => {
 
       loginAs({
         isSuperadmin: false,
-        role: 'Админ',
+        roles: ['Админ'],
         isAdminLevel: false,
         permissions: { servers: ['view'] },
       });

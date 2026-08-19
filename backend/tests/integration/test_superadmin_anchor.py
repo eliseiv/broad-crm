@@ -66,8 +66,9 @@ async def _anchor_row(sm: async_sessionmaker[AsyncSession]) -> Any:
     async with sm() as s:
         row = await s.execute(
             text(
-                "SELECT id, username, password_hash, role_id, is_active, is_system, telegram, "
-                "first_login_at FROM users WHERE is_system"
+                "SELECT u.id, u.username, u.password_hash, ur.role_id, u.is_active, "
+                "u.is_system, u.telegram, u.first_login_at "
+                "FROM users u JOIN user_roles ur ON ur.user_id = u.id WHERE u.is_system"
             )
         )
         return row.all()
@@ -209,7 +210,8 @@ async def test_login_as_reserved_anchor_username_is_401_without_setup_token(
 async def test_delete_role_held_by_anchor_is_409_not_500(monkeypatch: pytest.MonkeyPatch) -> None:
     """`DELETE` роли `admin` (её держит якорь) → `409 role_in_use`, а НЕ `500` IntegrityError.
 
-    `is_in_use` — зеркало FK `users.role_id → roles.id ON DELETE RESTRICT` и обязан ВИДЕТЬ
+    `is_in_use` — зеркало FK `user_roles.role_id → roles.id ON DELETE RESTRICT` (ADR-079 §1)
+    и обязан ВИДЕТЬ
     якорь (§1.5). Осознанное следствие: роль якоря неудаляема даже при `user_count = 0`.
     """
     await _enable_mail(monkeypatch)
@@ -240,12 +242,18 @@ async def test_role_user_count_excludes_anchor(monkeypatch: pytest.MonkeyPatch) 
             admin_role = (
                 await s.execute(text("SELECT id FROM roles WHERE name = 'admin'"))
             ).scalar_one()
+            real_id = uuid.uuid4()
             await s.execute(
                 text(
-                    "INSERT INTO users (id, username, password_hash, role_id, is_active, "
-                    "is_system) VALUES (:id, 'real-admin', 'x', :rid, true, false)"
+                    "INSERT INTO users (id, username, password_hash, is_active, is_system) "
+                    "VALUES (:id, 'real-admin', 'x', true, false)"
                 ),
-                {"id": str(uuid.uuid4()), "rid": str(admin_role)},
+                {"id": str(real_id)},
+            )
+            # Роль — строка `user_roles` (M2M, ADR-079 §1).
+            await s.execute(
+                text("INSERT INTO user_roles (user_id, role_id) VALUES (:uid, :rid)"),
+                {"uid": str(real_id), "rid": str(admin_role)},
             )
             await s.commit()
 
@@ -255,7 +263,8 @@ async def test_role_user_count_excludes_anchor(monkeypatch: pytest.MonkeyPatch) 
         # В БД роль `admin` держат ДВОЕ (якорь + real-admin) — счётчик обязан показать 1.
         async with sm() as s:
             physical = await s.execute(
-                text("SELECT count(*) FROM users WHERE role_id = :rid"), {"rid": str(admin_role)}
+                text("SELECT count(*) FROM user_roles WHERE role_id = :rid"),
+                {"rid": str(admin_role)},
             )
             assert physical.scalar_one() == 2
 
@@ -289,7 +298,7 @@ async def test_bootstrap_is_idempotent_and_does_not_rewrite_existing_row() -> No
 
     assert len(before) == 1
     assert len(after) == 1
-    assert before[0] == after[0]  # id, username, password_hash, role_id, ... — всё то же
+    assert before[0] == after[0]  # id, username, password_hash, роль, ... — всё то же
     # Роль-заглушка тоже создаётся ровно один раз (шаг (3) цепочки не дублирует).
     assert role_count == 1
 
@@ -324,17 +333,13 @@ async def test_second_system_row_violates_singleton_index() -> None:
     """
     async with mail_db() as sm:
         async with sm() as s:
-            role_id = (
-                await s.execute(text("SELECT id FROM roles WHERE name = 'admin'"))
-            ).scalar_one()
-
             with pytest.raises(IntegrityError):
                 await s.execute(
                     text(
-                        "INSERT INTO users (id, username, password_hash, role_id, is_active, "
-                        "is_system) VALUES (:id, 'second@system', 'x', :rid, true, true)"
+                        "INSERT INTO users (id, username, password_hash, is_active, "
+                        "is_system) VALUES (:id, 'second@system', 'x', true, true)"
                     ),
-                    {"id": str(uuid.uuid4()), "rid": str(role_id)},
+                    {"id": str(uuid.uuid4())},
                 )
                 await s.commit()
             await s.rollback()

@@ -27,6 +27,7 @@ from app.models.mail_account import MailAccount
 from app.models.role import Role
 from app.models.team import Team, user_teams
 from app.models.user import User
+from app.models.user_role import user_roles
 from sqlalchemy import insert
 from sqlalchemy import text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -102,13 +103,13 @@ async def seed_user(
 ) -> User:
     user = User(
         username=username or f"user-{uuid.uuid4().hex[:10]}",
-        role_id=role.id,
         password_hash="x",
         is_active=True,
         telegram=telegram,
     )
     session.add(user)
     await session.flush()
+    await session.execute(insert(user_roles).values(user_id=user.id, role_id=role.id))
     return user
 
 

@@ -8,6 +8,7 @@ import pytest
 from app.api import deps
 from app.domain.permissions import full_catalog_permissions
 from app.domain.superadmin import SUPERADMIN_USER_ID
+from app.models.user_role import user_roles
 from broadcast_helpers import (
     FakeKnowledgeBot,
     enable_knowledge_bot,
@@ -17,6 +18,7 @@ from broadcast_helpers import (
     sms_db,
 )
 from sms_helpers import build_app, build_principal, client
+from sqlalchemy import insert
 from sqlalchemy import text as sa_text
 
 
@@ -200,6 +202,45 @@ async def test_fanout_same_chat_dedup_and_skipped_not_started(
     assert body["failed"] == 0
     assert {chat for chat, txt in bot.sent} == {9301, 9302}
     assert all(txt == "роль" for _, txt in bot.sent)
+
+
+async def test_fanout_dedup_user_with_two_selected_roles_sent_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ DISTINCT-дедуп адресатов (ADR-079 §5): две ВЫБРАННЫЕ роли — одно сообщение.
+
+    M2M-join `users × user_roles` даёт по строке на каждую роль пользователя, поэтому без
+    `DISTINCT` носитель обеих выбранных ролей получил бы рассылку дважды, а
+    `skipped_not_started` задвоился бы у такого же пользователя без линка.
+    """
+    enable_knowledge_bot(monkeypatch)
+    bot = FakeKnowledgeBot()
+    _install_fake_bot(monkeypatch, bot)
+    async with sms_db() as sm:
+        async with sm() as s:
+            role_one = await seed_role(s, name="Первая")
+            role_two = await seed_role(s, name="Вторая")
+            linked = await seed_user(s, role_one, username="ДвеРоли")
+            not_started = await seed_user(s, role_one, username="ДвеРолиБезЛинка")
+            # Вторая роль — прямой строкой `user_roles` (seed_user выдаёт ровно одну).
+            await s.execute(insert(user_roles).values(user_id=linked.id, role_id=role_two.id))
+            await s.execute(insert(user_roles).values(user_id=not_started.id, role_id=role_two.id))
+            await seed_knowledge_link(s, telegram_user_id=9601, user_id=linked.id)
+            await s.commit()
+            role_ids = [str(role_one.id), str(role_two.id)]
+        app = build_app(sm, build_principal())
+        async with client(app) as c:
+            resp = await c.post(
+                "/api/broadcasts",
+                json={"text": "дедуп", "all": False, "role_ids": role_ids},
+            )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sent"] == 1
+    assert bot.sent == [(9601, "дедуп")]  # ровно одно сообщение, не два
+    assert body["skipped_not_started"] == 1  # не задвоен
+    assert body["failed"] == 0
 
 
 async def test_fanout_telegram_403_marks_dead_and_returns_200(

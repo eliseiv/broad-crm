@@ -384,7 +384,7 @@ describe('SmsMiniAppPage (ADR-031 беспарольный Telegram-SSO)', () =>
 function meResponse(over: Partial<MeResponse> = {}): MeResponse {
   return {
     username: 'ivan',
-    role: 'Оператор',
+    roles: ['Оператор'],
     is_superadmin: false,
     is_admin_level: false,
     sees_all_sms_teams: false,
