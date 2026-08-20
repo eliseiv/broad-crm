@@ -84,7 +84,9 @@ async def test_permissions_catalog_contract_order_includes_users_page() -> None:
     # documents (ADR-059): share — отдельное чувствительное действие смены видимости.
     assert by_page["documents"] == ["view", "create", "edit", "delete", "share"]
     assert by_page["broadcast"] == ["view", "send"]
-    assert pages[-1]["page"] == "broadcast"
+    # Последняя строка матрицы — «Пользователи» (добавлена в конец каталога, Спринт B).
+    assert pages[-1]["page"] == "users"
+    assert by_page["users"] == ["view", "create", "edit", "delete"]
     assert pages[-1]["actions"] == ["view", "send"]
     # backend-users (ADR-069): edit — admin-операции над пользователями бэков.
     assert by_page["backend-users"] == ["view", "edit"]
