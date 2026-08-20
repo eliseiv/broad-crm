@@ -19,6 +19,7 @@ export const ACTION_ORDER = [
   'sync',
   'tags',
   'transfer',
+  'assign_any',
 ] as const;
 
 /** Подписи действий (столбцы матрицы). */
@@ -32,6 +33,7 @@ export const ACTION_LABEL: Record<string, string> = {
   sync: 'Синк',
   tags: 'Теги',
   transfer: 'Перенос',
+  assign_any: 'Назначение любых ролей',
 };
 
 /** Подписи страниц каталога (строки матрицы). */

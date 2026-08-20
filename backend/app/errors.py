@@ -79,6 +79,24 @@ def forbidden() -> AppError:
     )
 
 
+def role_above_actor(role_name: str) -> AppError:
+    """Актор пытается назначить роль шире собственных прав (анти-эскалация реестра).
+
+    Отдельный код и ИМЯ роли в сообщении — вместо безликого `403 Недостаточно прав`:
+    оператор с правом `users:create`, упёршийся в этот запрет, иначе видит отказ на
+    форме, где все поля заполнены верно, и не может понять, что менять.
+    """
+    return AppError(
+        status_code=status.HTTP_403_FORBIDDEN,
+        code="role_above_actor",
+        message=(
+            f"Нельзя назначить роль «{role_name}»: она даёт права шире ваших. "
+            "Выберите роль в пределах ваших прав или попросите администратора."
+        ),
+        details=[{"field": "role_ids", "message": f"Роль «{role_name}» шире ваших прав"}],
+    )
+
+
 def user_not_found() -> AppError:
     return AppError(
         status_code=status.HTTP_404_NOT_FOUND,

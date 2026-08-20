@@ -491,3 +491,60 @@ async def test_complete_walk_still_deletes_vanished_rows(
     assert state["deleted"] == ["u99999"]  # исчезнувший — и только он
     assert state["source"][-1]["refreshed_at"] is not None
     assert state["source"][-1]["error_message"] is None
+
+
+# --- 6. Отказ карточки НЕ роняет цикл (прод-инцидент 2026-08-20) ---------------
+
+
+async def test_failing_user_card_does_not_block_the_whole_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """⛔ Гейт: `500` на карточке оставляет цикл успешным, но помечает расходы неполными.
+
+    На проде несколько бэков стабильно отдавали `500` на карточку ОТДЕЛЬНЫХ
+    пользователей, тогда как список, `/stats` и `/products` у них исправны. Пока отказ
+    карточки ронял цикл, эти источники не собирали снимок НИКОГДА: строки списка уже
+    были верны, но `refreshed_at` не проставлялся, и вся страница показывала «Снимок
+    формируется…».
+
+    Фаза экономики вторична по отношению к списку: её отказ означает «расходы неполны»,
+    а не «список недостоверен». Поэтому цикл завершается, а неполнота уходит в UI
+    флагом `partial` — `revenue_backfill_done` НЕ выставляется.
+    """
+    _capture_sleeps(monkeypatch)
+    state = _state()
+    transport = _healthy_transport(script=[_page([_user(0)])])
+    transport.on("GET", "/users/u00000", status=500)
+    install_transport(monkeypatch, transport)
+
+    service = _service(state)
+    await service._refresh_backend(BACKEND_ID, "veltrio", _client())
+
+    written = state["source"][-1]
+    # Снимок собран: список верен, свежесть проставлена, сбой источника не записан.
+    assert written["refreshed_at"] is not None
+    assert written["error_message"] is None
+    # Но экономика честно помечена неполной — иначе `partial` погас бы при заниженной сумме.
+    assert written["revenue_backfill_done"] is False
+    assert state["revenue_written"] == []
+
+
+async def test_list_walk_failure_still_fails_the_cycle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Обратная сторона: отказ ОБХОДА СПИСКА по-прежнему роняет цикл.
+
+    Разделение принципиально: неполный список нельзя пускать в `delete_rows` — разность
+    «было − встречено» объявила бы пропавшими всех, до кого обход не добрался.
+    """
+    _capture_sleeps(monkeypatch)
+    state = _state()
+    transport = _healthy_transport(script=[Rule(status=500) for _ in range(12)])
+    install_transport(monkeypatch, transport)
+
+    service = _service(state)
+    await service._refresh_backend(BACKEND_ID, "veltrio", _client())
+
+    failure = state["source"][-1]
+    assert "refreshed_at" not in failure
+    assert failure["failed_at"] is not None

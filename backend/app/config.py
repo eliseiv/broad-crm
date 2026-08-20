@@ -175,8 +175,8 @@ class Settings(BaseSettings):
     # Ретраи ТОЛЬКО воркера и ТОЛЬКО на 429/5xx: сколько всего попыток на один
     # upstream-вызов (1 = ретраев нет), база и потолок exponential backoff.
     # Интерактивные пути API (карточка, мутации) ретраев не имеют — там ждёт человек.
-    backend_users_snapshot_retry_attempts: int = Field(default=5, ge=1, le=10)
-    backend_users_snapshot_retry_base_sec: float = Field(default=1.0, ge=0.0, le=60.0)
+    backend_users_snapshot_retry_attempts: int = Field(default=8, ge=1, le=12)
+    backend_users_snapshot_retry_base_sec: float = Field(default=2.0, ge=0.0, le=60.0)
     backend_users_snapshot_retry_cap_sec: float = Field(default=30.0, ge=0.1, le=300.0)
 
     # --- Модуль «Почты» (read-through-прокси, modules/mail, ADR-012) ---

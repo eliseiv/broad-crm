@@ -127,19 +127,25 @@ def _snapshot_item(row: SnapshotRow) -> BackendUserItem:
 def _snapshot_at(
     backend_ids: list[uuid.UUID], states: list[SnapshotSourceState]
 ) -> datetime | None:
-    """`MIN(refreshed_at)` по участвующим источникам; хоть один не собран → `None`.
+    """`MIN(refreshed_at)` по СОБРАННЫМ источникам; ни одного собранного → `None`.
 
-    «Не собран» — это и источник без строки состояния (воркер до него не доходил), и
-    строка с `refreshed_at IS NULL`: метка свежести обязана быть честной для ВСЕЙ
-    выдачи, а не для её собранной части.
+    ⚠️ **Прежняя редакция возвращала `None`, если не собран хоть ОДИН источник** — и это
+    оказалось прод-дефектом, а не честностью. На проде 20 из 30 бэков собирались штатно
+    (68 262 строки в снимке), но три бэка не могли собраться никогда — у двух отвергнут
+    admin-ключ, третий не отдаёт контракт v1. Из-за них метка оставалась `null`, и UI
+    показывал «Снимок формируется…» поверх полностью готовых данных — бессрочно.
+
+    Метка отвечает на вопрос «насколько стары показанные строки», а показаны строки
+    именно СОБРАННЫХ источников. Несобранные не молчат: каждый назван отдельно в
+    `errors[]` — там и место для «этот бэк в выдачу не попал», а не в подмене метки на
+    «данных нет». `MIN` (а не `MAX`) сохранён: из показанных данных честна самая старая.
     """
     by_id = {state.backend_id: state for state in states}
-    marks: list[datetime] = []
-    for backend_id in backend_ids:
-        state = by_id.get(backend_id)
-        if state is None or state.refreshed_at is None:
-            return None
-        marks.append(state.refreshed_at)
+    marks = [
+        state.refreshed_at
+        for backend_id in backend_ids
+        if (state := by_id.get(backend_id)) is not None and state.refreshed_at is not None
+    ]
     return min(marks) if marks else None
 
 

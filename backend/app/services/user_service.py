@@ -30,6 +30,7 @@ from app.domain.permissions import (
 from app.domain.telegram import TelegramFormatError, validate_telegram
 from app.errors import (
     forbidden,
+    role_above_actor,
     telegram_taken,
     unprocessable,
     user_in_use,
@@ -60,6 +61,11 @@ logger = get_logger(__name__)
 # Политика пароля БД-пользователя (05-security.md): 8–128 символов.
 _PASSWORD_MIN_LEN = 8
 _PASSWORD_MAX_LEN = 128
+
+# Право «Назначение любых ролей» (страница `users`): снимает анти-эскалацию набора
+# ролей, НЕ расширяя доступ владельца к страницам.
+_USERS_PAGE = "users"
+_ASSIGN_ANY = "assign_any"
 
 # Имена полей доп-команд каналов в `details[].field` ошибок 422 (04-api.md#users).
 _MAIL_EXTRA_FIELD = "mail_extra_team_ids"
@@ -536,15 +542,26 @@ class UserService:
         пользователю) роль «Админ» и поднял бы привилегии — то есть матрица заменила
         бы собой всю модель доступа. Привилегированный актор (`is_admin_level`)
         не ограничен.
+
+        **`users:assign_any` снимает ограничение явно.** Правило «роль не шире
+        собственных прав» на практике запирает менеджера: чтобы завести тестировщика,
+        PM обязан был бы сам получить доступ к «Продуктам и тарифам» и «Рассылке»
+        (прод-жалоба 2026-08-20 — PM мог выдать 3 роли из 8). Смешивать «управляю
+        людьми» и «имею все права этих людей» неверно, поэтому право разделено:
+        `assign_any` разрешает выдавать ЛЮБУЮ роль, **не** расширяя доступ владельца
+        к страницам. Оно выдаётся администратором осознанно и видно в матрице ролей —
+        это не то же самое, что молча снять проверку для всех.
         """
-        if actor_privileged:
+        if actor_privileged or _ASSIGN_ANY in actor_permissions.get(_USERS_PAGE, []):
             return
         for role_id in sorted(role_ids):
             role = await self._roles.get_by_id(role_id)
             if role is None:
                 continue
             if not permissions_subset(dict(role.permissions or {}), actor_permissions):
-                raise forbidden()
+                # Имя роли в сообщении обязательно: без него оператор видит «Недостаточно
+                # прав» на корректно заполненной форме и не понимает, что менять.
+                raise role_above_actor(role.name)
 
     @staticmethod
     def _is_admin_level_user(user: User) -> bool:

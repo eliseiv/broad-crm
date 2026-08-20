@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
-from app.errors import AppError, backend_admin_response_unusable, backend_admin_unavailable
+from app.errors import backend_admin_response_unusable, backend_admin_unavailable
 from app.repositories.backend_user_snapshot_repository import build_fingerprint
 from app.services.backend_users_snapshot_service import (
     BackendUsersSnapshotService,
@@ -172,13 +172,19 @@ class _FakeClient:
         users: list[dict[str, Any]],
         detail: Any = None,
         detail_exc: Exception | None = None,
+        list_exc: Exception | None = None,
     ) -> None:
         self._users = users
         self._detail = detail
         self._detail_exc = detail_exc
+        self._list_exc = list_exc
         self.detail_calls: list[str] = []
 
     async def list_users(self, *, limit: int, offset: int) -> dict[str, Any]:
+        # Отказ ОБХОДА отделён от отказа карточки: их последствия разные (цикл падает
+        # против «экономика неполна»), и один фейк обязан уметь оба.
+        if self._list_exc is not None:
+            raise self._list_exc
         page = self._users[offset : offset + limit]
         return {"total": len(self._users), "items": page}
 
@@ -235,24 +241,36 @@ async def test_revenue_quota_remainder_goes_to_backfill_queue() -> None:
 # --- MAJOR 1: транспортный сбой карточки роняет ЦИКЛ, а не молча теряется ----
 
 
-async def test_transport_failure_on_detail_fails_the_cycle() -> None:
-    """Гейт дефекта: голый `except` записывал цикл успешным с занижённой экономикой."""
+async def test_transport_failure_on_detail_degrades_economics_not_the_cycle() -> None:
+    """Отказ КАРТОЧКИ не роняет цикл, но помечает расходы неполными (инцидент 2026-08-20).
+
+    Прежняя редакция роняла цикл на любом сбое карточки, и бэки, стабильно отдающие
+    `500` на карточку отдельных пользователей, не собирали снимок НИКОГДА — страница
+    показывала «Снимок формируется…» поверх верных строк списка.
+
+    Прежний дефект (голый `except`, цикл успешен с ТИХО занижённой экономикой) при этом
+    НЕ возвращается: неполнота обязана быть видимой — `revenue_backfill_done` остаётся
+    `false`, и `partial` в UI горит.
+    """
     state = _state()
     client = _FakeClient(users=[_user_row(0)], detail_exc=backend_admin_unavailable())
 
     service = _service(state)
-    with pytest.raises(AppError) as exc:
-        await service._refresh_backend_inner(BACKEND_ID, client)
+    await service._refresh_backend_inner(BACKEND_ID, client)
 
-    assert exc.value.code == "backend_admin_unavailable"
-    # Строка источника НЕ помечена успешной: `refreshed_at` не проставлен.
-    assert all("refreshed_at" not in values for values in state["source"])
+    written = state["source"][-1]
+    assert written["refreshed_at"] is not None
+    assert written["revenue_backfill_done"] is False
 
 
-async def test_transport_failure_keeps_previous_snapshot_and_records_error() -> None:
-    """Сбой цикла: снимок прошлого цикла цел, в источник пишутся error_message/failed_at."""
+async def test_walk_failure_keeps_previous_snapshot_and_records_error() -> None:
+    """Сбой ОБХОДА СПИСКА: снимок прошлого цикла цел, пишутся error_message/failed_at.
+
+    Разделение принципиально: неполный список нельзя пускать в `delete_rows` — разность
+    «было − встречено» объявила бы пропавшими всех, до кого обход не добрался.
+    """
     state = _state()
-    client = _FakeClient(users=[_user_row(0)], detail_exc=backend_admin_unavailable())
+    client = _FakeClient(users=[_user_row(0)], list_exc=backend_admin_unavailable())
 
     service = _service(state)
     await service._refresh_backend(BACKEND_ID, "veltrio", client)

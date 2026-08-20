@@ -29,7 +29,7 @@ def test_full_catalog_permissions_matches_catalog_and_is_independent_copy() -> N
     assert "hack" not in CATALOG["servers"]
     # Страница «Пользователи» вошла в каталог (Спринт B): без неё выдать доступ к
     # реестру не-админской роли было невозможно.
-    assert full["users"] == ["view", "create", "edit", "delete"]
+    assert full["users"] == ["view", "create", "edit", "delete", "assign_any"]
     assert list(CATALOG)[-1] == "users"
     assert CATALOG["broadcast"] == ("view", "send")
 

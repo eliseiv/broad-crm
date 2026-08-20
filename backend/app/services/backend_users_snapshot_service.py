@@ -336,7 +336,7 @@ class BackendUsersSnapshotService:
         stats = self._parse_stats(await self._with_retry(backend_id, "get_stats", client.get_stats))
 
         # 5. Экономика: HTTP-добор карточек, запись — короткими сессиями внутри.
-        supported, fetched = await self._refresh_revenue(
+        supported, fetched, revenue_complete = await self._refresh_revenue(
             backend_id, client, dirty=result.dirty_users
         )
         result.revenue_fetched = fetched
@@ -354,7 +354,10 @@ class BackendUsersSnapshotService:
                 "stats_paid_users": stats.paid_users,
                 "stats_payments_sum_usd": stats.payments_sum_usd,
                 "api_costs": api_costs,
-                "revenue_backfill_done": pending == 0,
+                # Прервавшаяся фаза экономики НЕ считается завершённым backfill'ом,
+                # даже если очередь опустела: иначе `partial` погас бы при заведомо
+                # неполных расходах (ADR-080 §5 — первый дизъюнкт формулы).
+                "revenue_backfill_done": pending == 0 and revenue_complete,
             }
             # `revenue_supported` пересматривается КАЖДЫЙ цикл (бэк, внедривший v1.1,
             # переключается в `true` сам), но только если карточку удалось добрать: иначе
@@ -457,8 +460,8 @@ class BackendUsersSnapshotService:
         client: Any,
         *,
         dirty: set[str],
-    ) -> tuple[bool | None, int]:
-        """Экономика по dirty-set + backfill-квота. Возвращает `(revenue_supported, N)`.
+    ) -> tuple[bool | None, int, bool]:
+        """Экономика по dirty-set + backfill-квота. Возвращает `(supported, N, complete)`.
 
         Инкрементально: изменившийся fingerprint = пользователь что-то потратил ⇒ один
         `GET {P}/users/{id}`. Пассивные пользователи не опрашиваются вовсе.
@@ -486,11 +489,36 @@ class BackendUsersSnapshotService:
 
         supported: bool | None = None
         fetched = 0
+        complete = True
         for index, user_id in enumerate(candidates):
             # Пауза между карточками — вне открытой сессии (запись идёт ниже, короткой).
             if index:
                 await self._throttle()
-            detail = await self._fetch_detail(backend_id, client, user_id)
+            try:
+                detail = await self._fetch_detail(backend_id, client, user_id)
+            except AppError as exc:
+                # ⚠️ Прод-инцидент 2026-08-20: несколько бэков стабильно отдают `500` на
+                # карточку ОТДЕЛЬНЫХ пользователей (список, `/stats` и `/products` у них
+                # при этом исправны — проверено сырым запросом). Пока отказ карточки
+                # ронял цикл, эти бэки НИКОГДА не собирали снимок: строки списка уже были
+                # верны, но `refreshed_at` не проставлялся, и вся страница показывала
+                # «Снимок формируется…».
+                #
+                # Фаза экономики ВТОРИЧНА по отношению к списку: её отказ означает
+                # «расходы неполны», а не «список недостоверен». Поэтому цикл
+                # продолжается, а неполнота честно уходит в UI флагом `partial`
+                # (`revenue_backfill_done` не выставляется). Это НЕ возврат к прежнему
+                # «глотанию всего подряд»: сигнал о неполноте сохранён, отказ
+                # залогирован, и обход списка по-прежнему роняет цикл.
+                logger.warning(
+                    "backend_users_snapshot_revenue_degraded",
+                    backend_id=str(backend_id),
+                    user_id=user_id,
+                    error_type=type(exc).__name__,
+                    fetched=fetched,
+                )
+                complete = False
+                break
             if detail is None:
                 continue
             if supported is None:
@@ -504,7 +532,7 @@ class BackendUsersSnapshotService:
                     refreshed_at=datetime.now(UTC),
                 )
             fetched += 1
-        return supported, fetched
+        return supported, fetched, complete
 
     async def _fetch_detail(
         self, backend_id: uuid.UUID, client: Any, user_id: str

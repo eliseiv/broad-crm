@@ -86,14 +86,14 @@ async def test_permissions_catalog_contract_order_includes_users_page() -> None:
     assert by_page["broadcast"] == ["view", "send"]
     # Последняя строка матрицы — «Пользователи» (добавлена в конец каталога, Спринт B).
     assert pages[-1]["page"] == "users"
-    assert pages[-1]["actions"] == ["view", "create", "edit", "delete"]
+    assert pages[-1]["actions"] == ["view", "create", "edit", "delete", "assign_any"]
     # backend-users (ADR-069): edit — admin-операции над пользователями бэков.
     assert by_page["backend-users"] == ["view", "edit"]
     # backend-economics (ADR-072 §2): НЕ алиас `backend-users:edit` — отдельная страница
     # каталога продуктов/тарифов; edit — правка количества токенов.
     assert by_page["backend-economics"] == ["view", "edit"]
     # Страница «Пользователи» вошла в каталог (Спринт B) — её можно выдать роли.
-    assert by_page["users"] == ["view", "create", "edit", "delete"]
+    assert by_page["users"] == ["view", "create", "edit", "delete", "assign_any"]
 
 
 @pytest.mark.asyncio

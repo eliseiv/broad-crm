@@ -601,3 +601,54 @@ async def test_delete_last_leader_leaves_team_leaderless(db: RbacFakeDb) -> None
 
     assert leader.id not in db.users
     assert db.teams[led.id].leader_id is None
+
+
+@pytest.mark.asyncio
+async def test_assign_any_lets_narrow_actor_grant_wider_role(db: RbacFakeDb) -> None:
+    """`users:assign_any` снимает анти-эскалацию НАБОРА РОЛЕЙ (прод-инцидент 2026-08-20).
+
+    PM с правом `users:create`, но без `backend-users`, не мог завести тестировщика:
+    роль кандидата шире его собственных прав. Лечить выдачей PM недостающих страниц
+    неверно — «управляю людьми» не должно означать «имею все права этих людей».
+    """
+    wider = db.add_role("IOS разработчик", {"backend-users": ["view", "edit"]})
+    service = _service(db)
+    pm_permissions = {"users": ["view", "create", "assign_any"], "dashboard": ["view"]}
+
+    item = await service.create_user(
+        UserCreateRequest(
+            last_name="Иванов",
+            first_name="Пётр",
+            telegram="petr_ios",
+            role_ids=[wider.id],
+        ),
+        actor_permissions=pm_permissions,
+        actor_privileged=False,
+    )
+
+    assert [role.name for role in item.roles] == ["IOS разработчик"]
+
+
+@pytest.mark.asyncio
+async def test_without_assign_any_error_names_the_blocking_role(db: RbacFakeDb) -> None:
+    """Без `assign_any` отказ остаётся, но НАЗЫВАЕТ роль: безликое «Недостаточно прав»
+    на корректно заполненной форме не даёт оператору понять, что менять."""
+    wider = db.add_role("IOS разработчик", {"backend-users": ["view", "edit"]})
+    service = _service(db)
+
+    with pytest.raises(AppError) as exc:
+        await service.create_user(
+            UserCreateRequest(
+                last_name="Иванов",
+                first_name="Пётр",
+                telegram="petr_ios",
+                role_ids=[wider.id],
+            ),
+            actor_permissions={"users": ["view", "create"], "dashboard": ["view"]},
+            actor_privileged=False,
+        )
+
+    assert exc.value.status_code == 403
+    assert exc.value.code == "role_above_actor"
+    assert "IOS разработчик" in exc.value.message
+    assert exc.value.details[0]["field"] == "role_ids"
