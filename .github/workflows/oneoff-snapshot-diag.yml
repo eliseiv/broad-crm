@@ -58,6 +58,12 @@ jobs:
           LEFT JOIN backend_user_snapshots u ON u.backend_id = b.id
           GROUP BY b.name ORDER BY rows_collected DESC LIMIT 20;
 
+          \echo '== 3b. Права ролей (кто что может на странице users) =='
+          SELECT r.name,
+                 coalesce(r.permissions->>'users', '(нет прав на users)') AS users_perm,
+                 (SELECT count(*) FROM jsonb_object_keys(r.permissions)) AS pages_total
+          FROM roles r ORDER BY r.name;
+
           \echo '== 4. Итого строк в снимке =='
           SELECT count(*) AS total_rows,
                  count(*) FILTER (WHERE revenue_refreshed_at IS NOT NULL) AS with_revenue
