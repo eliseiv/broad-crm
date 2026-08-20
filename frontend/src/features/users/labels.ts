@@ -49,6 +49,7 @@ export const PAGE_LABEL: Record<string, string> = {
   teams: 'Команды',
   documents: 'Документы',
   broadcast: 'Рассылка',
+  users: 'Пользователи',
 };
 
 const ACTION_RANK = new Map<string, number>(ACTION_ORDER.map((action, index) => [action, index]));

@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Plus, RefreshCw, Search, User as UserIcon } from 'lucide-react';
+import { toast } from 'sonner';
 import { AddUserModal } from '@/components/AddUserModal';
+import { Modal } from '@/components/ui/Modal';
 import { SummaryCell } from '@/components/SummaryCell';
 import { Badge } from '@/components/ui/Badge';
 import { Button } from '@/components/ui/Button';
@@ -10,7 +12,7 @@ import { Spinner } from '@/components/ui/Spinner';
 import { formatNumber } from '@/lib/format';
 import { useTeams } from '@/features/teams/hooks';
 import { fullName, userSearchHaystack } from '@/features/users/fullName';
-import { useRoles, useUsers } from '@/features/users/hooks';
+import { useResetUserPassword, useRoles, useUsers } from '@/features/users/hooks';
 import type { UserListItem } from '@/types/api';
 
 /**
@@ -43,6 +45,10 @@ export function UsersPage() {
   const [editUser, setEditUser] = useState<UserListItem | undefined>(undefined);
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
+  // Сброс пароля необратим для пользователя (он теряет текущий пароль), поэтому
+  // выполняется через подтверждение, а не по одному клику.
+  const [resetTarget, setResetTarget] = useState<UserListItem | undefined>(undefined);
+  const resetPassword = useResetUserPassword();
 
   // Debounce поиска — тот же интервал, что у таблицы «Юзеры бэков» (ввод не дёргает
   // пересборку списка на каждый символ).
@@ -254,19 +260,32 @@ export function UsersPage() {
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        // Видимая подпись одинакова во всех строках, поэтому
-                        // accessible name дополнен именем пользователя.
-                        aria-label={`Открыть ${name}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          openEdit(user);
-                        }}
-                      >
-                        Открыть
-                      </Button>
+                      <div className="flex items-center gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          // Видимая подпись одинакова во всех строках, поэтому
+                          // accessible name дополнен именем пользователя.
+                          aria-label={`Открыть ${name}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openEdit(user);
+                          }}
+                        >
+                          Открыть
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          aria-label={`Сбросить пароль — ${name}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setResetTarget(user);
+                          }}
+                        >
+                          Сброс
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 );
@@ -284,6 +303,51 @@ export function UsersPage() {
         mode={editUser ? 'edit' : 'add'}
         user={editUser}
       />
+
+      <Modal
+        open={resetTarget !== undefined}
+        onOpenChange={(open) => {
+          if (!open) setResetTarget(undefined);
+        }}
+        title="Сбросить пароль?"
+        description={
+          resetTarget
+            ? `Пароль пользователя ${fullName(resetTarget)} будет удалён. При следующем входе ` +
+              'он задаст новый пароль сам — как при первом входе. Текущий пароль перестанет работать.'
+            : undefined
+        }
+        footer={
+          <>
+            <Button variant="ghost" onClick={() => setResetTarget(undefined)}>
+              Отмена
+            </Button>
+            <Button
+              variant="danger"
+              loading={resetPassword.isPending}
+              onClick={() => {
+                if (!resetTarget) return;
+                const target = resetTarget;
+                resetPassword.mutate(target.id, {
+                  onSuccess: () => {
+                    toast.success(`Пароль сброшен — ${fullName(target)}`);
+                    setResetTarget(undefined);
+                  },
+                  onError: (err: unknown) => {
+                    toast.error(err instanceof Error ? err.message : 'Не удалось сбросить пароль');
+                  },
+                });
+              }}
+            >
+              Сбросить
+            </Button>
+          </>
+        }
+      >
+        <p className="text-[13px] text-text-secondary">
+          Новый пароль не генерируется и никуда не отправляется — пользователь придумает его сам при
+          следующем входе.
+        </p>
+      </Modal>
     </>
   );
 }

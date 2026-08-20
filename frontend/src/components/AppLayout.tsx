@@ -1,5 +1,5 @@
-import { LogOut, Moon, ServerCog, Sun } from 'lucide-react';
-import { useEffect } from 'react';
+import { ChevronLeft, ChevronRight, LogOut, Moon, ServerCog, Sun } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Button } from '@/components/ui/Button';
@@ -70,12 +70,53 @@ export function AppLayout() {
     backends: useCanViewPage('backends'),
     'backend-users': useCanViewPage('backend-users'),
     'backend-economics': useCanViewPage('backend-economics'),
-    users: isAdmin,
+    // Страница вошла в матрицу прав (Спринт B): показываем и по `users:view`, и
+    // admin-уровню — иначе роль-сид «admin» без явного права потеряла бы пункт.
+    users: useCanViewPage('users') || isAdmin,
     roles: useCanViewPage('roles'),
     teams: useCanViewPage('teams'),
     documents: useCanViewPage('documents'),
     broadcast: useCanViewPage('broadcast'),
   };
+
+  // Стрелки прокрутки ряда навигации появляются только при переполнении: замер
+  // делается на реальном DOM (scrollWidth vs clientWidth), а не по брейкпоинту —
+  // ширина ряда зависит от НАБОРА доступных пользователю пунктов, а он у каждой
+  // роли свой, и любой захардкоженный порог врал бы для части ролей.
+  const navRef = useRef<HTMLElement | null>(null);
+  const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const visibleNavSignature = NAV_ITEMS.filter((item) => access[item.page])
+    .map((item) => item.to)
+    .join(',');
+
+  const updateNavOverflow = useCallback(() => {
+    const el = navRef.current;
+    if (!el) return;
+    // 1px допуск: дробные ширины после zoom/DPR дают scrollWidth на доли больше.
+    setCanScrollLeft(el.scrollLeft > 1);
+    setCanScrollRight(el.scrollLeft + el.clientWidth < el.scrollWidth - 1);
+  }, []);
+
+  useEffect(() => {
+    updateNavOverflow();
+    const el = navRef.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    // ResizeObserver на самом ряду: реагирует и на ресайз окна, и на смену набора
+    // пунктов после прихода /me (права приезжают асинхронно).
+    const observer = new ResizeObserver(updateNavOverflow);
+    observer.observe(el);
+    return () => observer.disconnect();
+    // Зависимость — СТРОКА видимых пунктов, а не объект `access`: объект новый на
+    // каждый рендер и пересоздавал бы observer вхолостую.
+  }, [updateNavOverflow, visibleNavSignature]);
+
+  const scrollNav = useCallback((direction: 1 | -1) => {
+    const el = navRef.current;
+    if (!el) return;
+    el.scrollBy({ left: direction * Math.max(160, el.clientWidth * 0.6), behavior: 'smooth' });
+  }, []);
 
   // Два режима shell по маршруту (08-design-system.md «Full-bleed layout», ADR-061):
   //  • /mail и /documents (full-bleed) — фиксированная высота; скролл внутри панелей.
@@ -125,30 +166,64 @@ export function AppLayout() {
           </span>
           {/* Плоский ряд пунктов; на узких вьюпортах — горизонтальный скролл ряда
               (scrollbar-none), высота хэдера фиксирована (flex-nowrap), sticky/
-              full-bleed не ломаются (ADR-033 §Деградация хэдера). */}
-          <nav
-            aria-label="Основная навигация"
-            className="scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto"
-          >
-            {NAV_ITEMS.map((item) => {
-              if (!access[item.page]) return null;
-              return (
-                <NavLink
-                  key={item.to}
-                  to={item.to}
-                  className={({ isActive }) =>
-                    cn(
-                      'shrink-0 whitespace-nowrap rounded-md px-3 py-2 text-[14px] font-medium transition-colors',
-                      'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
-                      isActive ? 'text-accent' : 'text-text-secondary hover:text-text-primary',
-                    )
-                  }
-                >
-                  {item.label}
-                </NavLink>
-              );
-            })}
-          </nav>
+              full-bleed не ломаются (ADR-033 §Деградация хэдера).
+
+              Скрытый скроллбар делал дальние пункты НЕДОСТИЖИМЫМИ мышью (у мыши
+              нет горизонтального колеса, drag по ряду ловят ссылки): часть страниц
+              просто нельзя было открыть на узком экране. Поэтому ряд обёрнут в
+              контейнер со стрелками-прокрутки — они появляются ТОЛЬКО при реальном
+              переполнении, на широком экране разметка прежняя. */}
+          <div className="relative flex min-w-0 flex-1 items-center">
+            {canScrollLeft && (
+              <button
+                type="button"
+                aria-label="Прокрутить навигацию влево"
+                onClick={() => scrollNav(-1)}
+                className="absolute left-0 z-10 flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle bg-bg-base/95 text-text-secondary shadow-sub transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                <ChevronLeft className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
+            {canScrollRight && (
+              <button
+                type="button"
+                aria-label="Прокрутить навигацию вправо"
+                onClick={() => scrollNav(1)}
+                className="absolute right-0 z-10 flex h-7 w-7 items-center justify-center rounded-md border border-border-subtle bg-bg-base/95 text-text-secondary shadow-sub transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+              >
+                <ChevronRight className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
+            <nav
+              ref={navRef}
+              onScroll={updateNavOverflow}
+              aria-label="Основная навигация"
+              className={cn(
+                'scrollbar-none flex min-w-0 flex-1 flex-nowrap items-center gap-1 overflow-x-auto scroll-smooth',
+                canScrollLeft && 'pl-8',
+                canScrollRight && 'pr-8',
+              )}
+            >
+              {NAV_ITEMS.map((item) => {
+                if (!access[item.page]) return null;
+                return (
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    className={({ isActive }) =>
+                      cn(
+                        'shrink-0 whitespace-nowrap rounded-md px-3 py-2 text-[14px] font-medium transition-colors',
+                        'focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent',
+                        isActive ? 'text-accent' : 'text-text-secondary hover:text-text-primary',
+                      )
+                    }
+                  >
+                    {item.label}
+                  </NavLink>
+                );
+              })}
+            </nav>
+          </div>
           <div className="flex shrink-0 items-center gap-3">
             <Button
               variant="ghost"

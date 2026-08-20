@@ -27,6 +27,16 @@ export function updateUser(id: string, payload: UserUpdateRequest): Promise<User
   return apiRequest<UserListItem>(`/users/${id}`, { method: 'PATCH', body: payload });
 }
 
+/**
+ * POST /api/users/{id}/reset-password → 200 с обновлённым `UserListItem`.
+ *
+ * Сбрасывает пароль к «открытому первому входу» (ADR-025): пользователь задаёт новый
+ * пароль сам при следующем входе. Нового пароля в ответе нет и быть не должно.
+ */
+export function resetUserPassword(id: string): Promise<UserListItem> {
+  return apiRequest<UserListItem>(`/users/${id}/reset-password`, { method: 'POST' });
+}
+
 /** DELETE /api/users/{id} → 204 (hard delete). */
 export function deleteUser(id: string): Promise<void> {
   return apiRequest<void>(`/users/${id}`, { method: 'DELETE' });

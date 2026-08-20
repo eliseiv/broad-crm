@@ -17,6 +17,8 @@ const state = vi.hoisted(() => ({
   teams: undefined as TeamListResponse | undefined,
 }));
 
+const resetPasswordMock = vi.fn();
+
 vi.mock('@/features/users/hooks', () => ({
   useUsers: () => ({
     data: state.users,
@@ -35,6 +37,7 @@ vi.mock('@/features/users/hooks', () => ({
   useCreateUser: () => ({ mutate: vi.fn(), isPending: false }),
   useUpdateUser: () => ({ mutate: vi.fn(), isPending: false }),
   useDeleteUser: () => ({ mutate: vi.fn(), isPending: false }),
+  useResetUserPassword: () => ({ mutate: resetPasswordMock, isPending: false }),
 }));
 
 vi.mock('@/features/teams/hooks', () => ({
@@ -489,5 +492,26 @@ describe('UsersPage (таблица пользователей, ADR-079 §10)', 
     await user.click(screen.getByRole('button', { name: 'Открыть Никита' }));
 
     expect(screen.getByRole('heading', { name: 'Изменить пользователя' })).toBeInTheDocument();
+  });
+
+  it('кнопка «Сброс» открывает подтверждение и сбрасывает пароль (ADR-025)', async () => {
+    const user = userEvent.setup();
+    state.users = { items: [makeUser({ id: 'u1', username: 'nikita', first_name: 'Никита' })] };
+
+    render(<UsersPage />, { wrapper });
+
+    // Кнопка стоит рядом с «Открыть» в колонке действий каждой строки.
+    const resetButtons = screen.getAllByRole('button', { name: /^Сбросить пароль — / });
+    expect(resetButtons.length).toBe(1);
+
+    await user.click(resetButtons[0]);
+
+    // Подтверждение обязательно: сброс необратим для пользователя.
+    expect(await screen.findByText('Сбросить пароль?')).toBeInTheDocument();
+    expect(resetPasswordMock).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Сбросить' }));
+    expect(resetPasswordMock).toHaveBeenCalledTimes(1);
+    expect(resetPasswordMock.mock.calls[0][0]).toBe('u1');
   });
 });

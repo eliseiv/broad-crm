@@ -1,8 +1,10 @@
 """Каталог прав RBAC (канон на сервере) и валидация `permissions` роли.
 
 Единственный источник истины прав — константа `CATALOG` (ADR-021, 05-security.md).
-Каталог «страница → допустимые действия». Страница «Пользователи» (`users`) в
-каталог НЕ входит — управление пользователями/ролями гейтится `require_admin`.
+Каталог «страница → допустимые действия». Страница «Пользователи» (`users`) входит
+в каталог со Спринта B: без этого выдать доступ к реестру не-админской роли было
+невозможно. Эскалацию сдерживает не отсутствие страницы в матрице, а инвариант
+`UserService` (роль шире собственной не назначается, admin-level не редактируется).
 
 Функции чистые (без сети/БД), тестируются qa напрямую. Валидация `permissions`
 роли выполняется сервисом; нарушение → `422 unprocessable` (04-api.md).
@@ -34,10 +36,13 @@ CATALOG: dict[str, tuple[str, ...]] = {
     "teams": ("view", "create", "edit", "delete"),
     "documents": ("view", "create", "edit", "delete", "share"),
     "broadcast": ("view", "send"),
+    # «Пользователи» (реестр сотрудников CRM). Со Спринта B страница управляется
+    # матрицей, а не только `require_admin`: без этого роль-не-админ невозможно
+    # пустить на страницу вообще. Security-инвариант эскалации сохранён в
+    # `UserService`: непривилегированный актор не может назначить роль с правами
+    # шире собственного union и не может трогать admin-level пользователя.
+    "users": ("view", "create", "edit", "delete"),
 }
-
-# Страница вне матрицы прав (гейтится require_admin, не через permissions).
-_FORBIDDEN_PAGE = "users"
 
 
 class PermissionsValidationError(ValueError):
@@ -60,8 +65,6 @@ def validate_permissions(permissions: dict[str, list[str]]) -> None:
     `PermissionsValidationError` (сервис преобразует в 422 unprocessable).
     """
     for page, actions in permissions.items():
-        if page == _FORBIDDEN_PAGE:
-            raise PermissionsValidationError("Страница «Пользователи» не входит в матрицу прав")
         allowed = CATALOG.get(page)
         if allowed is None:
             raise PermissionsValidationError(f"Неизвестная страница: {page}")

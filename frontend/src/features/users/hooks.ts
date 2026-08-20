@@ -7,6 +7,7 @@ import {
   getPermissionsCatalog,
   listRoles,
   listUsers,
+  resetUserPassword,
   updateRole,
   updateUser,
 } from '@/features/users/api';
@@ -44,6 +45,17 @@ export function useUpdateUser(id: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (payload: UserUpdateRequest) => updateUser(id, payload),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: usersKey });
+    },
+  });
+}
+
+/** Сброс пароля пользователя к «открытому первому входу» (ADR-025). */
+export function useResetUserPassword() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => resetUserPassword(id),
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: usersKey });
     },

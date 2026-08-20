@@ -1,6 +1,6 @@
 import { Outlet } from 'react-router-dom';
 import { InsufficientPermissions } from '@/components/InsufficientPermissions';
-import { useIsAdmin } from '@/features/auth/hooks';
+import { useCanViewPage, useIsAdmin } from '@/features/auth/hooks';
 
 /**
  * Гард admin-only маршрутов (страница «Пользователи»). Доступ — только
@@ -11,7 +11,10 @@ import { useIsAdmin } from '@/features/auth/hooks';
  */
 export function AdminRoute() {
   const isAdmin = useIsAdmin();
-  if (!isAdmin) {
+  // Со Спринта B страница управляется матрицей (`users:view`), а не только
+  // admin-уровнем: иначе выдать роли доступ к реестру было невозможно.
+  const canViewUsers = useCanViewPage('users');
+  if (!isAdmin && !canViewUsers) {
     return <InsufficientPermissions />;
   }
   return <Outlet />;

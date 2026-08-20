@@ -27,8 +27,10 @@ def test_full_catalog_permissions_matches_catalog_and_is_independent_copy() -> N
     # Мутация результата не затрагивает исходный CATALOG (возвращается копия).
     full["servers"].append("hack")
     assert "hack" not in CATALOG["servers"]
-    assert "users" not in full
-    assert list(CATALOG)[-1] == "broadcast"
+    # Страница «Пользователи» вошла в каталог (Спринт B): без неё выдать доступ к
+    # реестру не-админской роли было невозможно.
+    assert full["users"] == ["view", "create", "edit", "delete"]
+    assert list(CATALOG)[-1] == "users"
     assert CATALOG["broadcast"] == ("view", "send")
 
 
@@ -39,9 +41,12 @@ def test_validate_permissions_accepts_valid_subset_and_empty() -> None:
     validate_permissions(full_catalog_permissions())  # полный каталог валиден
 
 
-def test_validate_permissions_rejects_users_page() -> None:
+def test_validate_permissions_accepts_users_page() -> None:
+    """Страница `users` — обычная строка матрицы (прежний запрет снят, Спринт B)."""
+    validate_permissions({"users": ["view", "edit"]})
+
     with pytest.raises(PermissionsValidationError):
-        validate_permissions({"users": ["view"]})
+        validate_permissions({"users": ["send"]})  # действия — только из каталога
 
 
 def test_validate_permissions_rejects_unknown_page() -> None:

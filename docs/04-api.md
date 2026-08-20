@@ -2404,6 +2404,16 @@ Backend присваивает `position = 0..N-1` по индексу (в од�
 
 **Ошибки:** `401 unauthorized`, `403 forbidden`, `404 user_not_found`, `400 validation_error`, `422 unprocessable` (пустой/несуществующий `role_ids`; несуществующие `team_ids`/`*_extra_team_ids`; невалидные ФИО/`password`; **очистка `telegram`**), `409 telegram_taken`.
 
+### POST `/api/users/{id}/reset-password`
+
+Сбрасывает пароль к **«открытому первому входу»** ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)): `password_hash → NULL`, `first_login_at → NULL`. Ответ — обновлённый `UserListItem` (`has_password: false`, `status: "pending"`).
+
+**Новый пароль не генерируется и в ответе не возвращается** — пользователь задаёт его сам при следующем входе, как новый сотрудник. Иначе пароль пришлось бы передавать оператору и дальше по незащищённому каналу.
+
+Гейт — `require_admin_or("users", "edit")`. **Непривилегированный актор не может сбросить пароль admin-level пользователю** (`403 forbidden`): беспарольный вход открыт любому, кто знает логин/телеграм жертвы, поэтому иначе право `users:edit` означало бы захват админской учётки. Системная строка-якорь недостижима → `404`.
+
+**Ошибки:** `401 unauthorized`, `403 forbidden`, `404 user_not_found`.
+
 ### DELETE `/api/users/{id}`
 Удаляет пользователя (hard delete). Гейт `require_admin`. **Роли** (`user_roles`, [ADR-079](adr/ADR-079-users-m2m-roles-full-name-telegram-table.md)), членства в командах (`user_teams`) и **доп-команды каналов** (`user_channel_teams`, [ADR-055](adr/ADR-055-per-channel-teams-mail-sms.md)) снимаются `ON DELETE CASCADE`.
 

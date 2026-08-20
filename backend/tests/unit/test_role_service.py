@@ -71,12 +71,19 @@ async def test_create_role_permissions_out_of_catalog_is_422_field_permissions(
 
 
 @pytest.mark.asyncio
-async def test_create_role_rejects_users_page_in_permissions(db: RbacFakeDb) -> None:
+async def test_create_role_accepts_users_page_in_permissions(db: RbacFakeDb) -> None:
+    """Страница «Пользователи» — обычная строка матрицы (Спринт B): роль с `users:view`
+    создаётся, а недопустимое действие для неё по-прежнему даёт 422."""
     service = _service(db)
+
+    created = await service.create_role(
+        RoleCreateRequest(name="Оператор", permissions={"users": ["view"]}), **_priv()
+    )
+    assert created.permissions["users"] == ["view"]
 
     with pytest.raises(AppError) as exc:
         await service.create_role(
-            RoleCreateRequest(name="Оператор", permissions={"users": ["view"]}), **_priv()
+            RoleCreateRequest(name="Кадровик", permissions={"users": ["send"]}), **_priv()
         )
     assert exc.value.details[0]["field"] == "permissions"
 

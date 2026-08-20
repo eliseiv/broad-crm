@@ -200,6 +200,23 @@ async def get_setup_principal(
 SetupPrincipalDep = Annotated[SetupTokenClaims, Depends(get_setup_principal)]
 
 
+def require_admin_or(page: str, action: str) -> Callable[[Principal], Awaitable[Principal]]:
+    """Гейт «admin-уровень ИЛИ право матрицы» — для страниц, ранее закрытых `require_admin`.
+
+    Нужен странице «Пользователи»: она вошла в каталог прав (Спринт B), но прежний
+    доступ обязан сохраниться ПОЛНОСТЬЮ. Чистый `require()` его сузил бы — роль с
+    именем `admin` и пустым `permissions` (ADR-021 §5) проходила `require_admin`, но
+    права `users:*` не имеет и получила бы `403`.
+    """
+
+    async def _require(principal: PrincipalDep) -> Principal:
+        if is_admin_level(principal) or action in principal.permissions.get(page, []):
+            return principal
+        raise forbidden()
+
+    return _require
+
+
 def require(page: str, action: str) -> Callable[[Principal], Awaitable[Principal]]:
     """Фабрика зависимости RBAC: пропускает супер-админа или `action ∈ perms[page]`.
 

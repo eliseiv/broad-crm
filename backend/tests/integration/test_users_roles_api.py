@@ -89,7 +89,8 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
     # backend-economics (ADR-072 §2): НЕ алиас `backend-users:edit` — отдельная страница
     # каталога продуктов/тарифов; edit — правка количества токенов.
     assert by_page["backend-economics"] == ["view", "edit"]
-    assert "users" not in by_page
+    # Страница «Пользователи» вошла в каталог (Спринт B) — её можно выдать роли.
+    assert by_page["users"] == ["view", "create", "edit", "delete"]
 
 
 @pytest.mark.asyncio

@@ -22,8 +22,14 @@ from sqlalchemy.exc import IntegrityError
 
 from app.domain.channels import CHANNEL_MAIL, CHANNEL_SMS, CHANNELS, Channel
 from app.domain.identity import IdentityNameError, validate_identity_name
+from app.domain.permissions import (
+    full_catalog_permissions,
+    permissions_subset,
+    union_permissions,
+)
 from app.domain.telegram import TelegramFormatError, validate_telegram
 from app.errors import (
+    forbidden,
     telegram_taken,
     unprocessable,
     user_in_use,
@@ -127,7 +133,13 @@ class UserService:
             ]
         )
 
-    async def create_user(self, payload: UserCreateRequest) -> UserListItem:
+    async def create_user(
+        self,
+        payload: UserCreateRequest,
+        *,
+        actor_permissions: dict[str, list[str]] | None = None,
+        actor_privileged: bool = True,
+    ) -> UserListItem:
         """Создаёт пользователя. Прецеденция (ADR-079 §9, нормативно): формат ФИО/
         telegram/password (422) → непустота и существование `role_ids`, существование
         `team_ids`/`*_extra_team_ids` (422) → **уникальность telegram (409
@@ -151,6 +163,11 @@ class UserService:
         password_hash = self._optional_password_hash(payload.password)
 
         role_ids = await self._validate_role_ids(payload.role_ids)
+        await self._assert_roles_within_actor(
+            role_ids,
+            actor_permissions=actor_permissions or {},
+            actor_privileged=actor_privileged,
+        )
 
         team_ids = await self._validate_team_ids(payload.team_ids)
         extras = {
@@ -204,7 +221,14 @@ class UserService:
         logger.info("user_created", user_id=str(user.id))
         return await self._to_item_reloaded(reloaded)
 
-    async def update_user(self, user_id: uuid.UUID, payload: UserUpdateRequest) -> UserListItem:
+    async def update_user(
+        self,
+        user_id: uuid.UUID,
+        payload: UserUpdateRequest,
+        *,
+        actor_permissions: dict[str, list[str]] | None = None,
+        actor_privileged: bool = True,
+    ) -> UserListItem:
         """Редактирует ФИО/telegram/роли/статус/пароль/команды/доп-команды каналов.
         404 → 422 → 409 (telegram).
 
@@ -228,6 +252,7 @@ class UserService:
         user = await self._users.get_by_id(user_id)
         if user is None:
             raise user_not_found()
+        self._assert_can_touch(user, actor_privileged=actor_privileged)
 
         fields_set = payload.model_fields_set
 
@@ -262,6 +287,11 @@ class UserService:
                     details=[{"field": "role_ids", "message": "Список ролей пуст"}],
                 )
             requested_roles = await self._validate_role_ids(payload.role_ids)
+            await self._assert_roles_within_actor(
+                requested_roles,
+                actor_permissions=actor_permissions or {},
+                actor_privileged=actor_privileged,
+            )
 
         if "password" in fields_set and payload.password is not None:
             _validate_password_length(payload.password)
@@ -344,7 +374,7 @@ class UserService:
         logger.info("user_updated", user_id=str(user_id))
         return await self._to_item_reloaded(reloaded)
 
-    async def delete_user(self, user_id: uuid.UUID) -> None:
+    async def delete_user(self, user_id: uuid.UUID, *, actor_privileged: bool = True) -> None:
         """Hard-delete; повтор → 404. Лидерство ведомых команд авто-передаётся
         следующему участнику (или `NULL`), затем пользователь удаляется (ADR-026).
 
@@ -364,6 +394,7 @@ class UserService:
         user = await self._users.get_by_id(user_id)
         if user is None:
             raise user_not_found()
+        self._assert_can_touch(user, actor_privileged=actor_privileged)
 
         for team_id in await self._teams.ids_led_by(user_id):
             await self._teams.promote_next_leader(team_id, exclude_user_id=user_id)
@@ -462,6 +493,74 @@ class UserService:
         if raw is None or raw.strip() == "":
             return None
         return _validate_name_part(raw, field="middle_name")
+
+    async def reset_password(
+        self, user_id: uuid.UUID, *, actor_privileged: bool = True
+    ) -> UserListItem:
+        """Сброс пароля к «открытому первому входу» (ADR-025): `password_hash → NULL`.
+
+        `first_login_at` тоже гасится — иначе тристатус (ADR-028) показывал бы
+        «Активен» пользователю, который пароль ещё не задал. После сброса вход по
+        логину/телеграму без пароля выдаёт setup-token и форму «задайте пароль» —
+        ровно тот же сценарий, что у нового сотрудника.
+
+        Системный якорь недостижим (`get_by_id` фильтрует `NOT is_system`) → 404.
+
+        **Сброс — вектор эскалации, а не безобидная операция:** беспарольный вход
+        открыт любому, кто знает логин/телеграм жертвы (ADR-025), поэтому сбросить
+        пароль admin-level пользователю непривилегированный актор не может — иначе
+        право `users:edit` превращалось бы в захват админской учётки.
+        """
+        user = await self._users.get_by_id(user_id)
+        if user is None:
+            raise user_not_found()
+        self._assert_can_touch(user, actor_privileged=actor_privileged)
+
+        user.password_hash = None
+        user.first_login_at = None
+        await self._users.session.commit()
+        logger.info("user_password_reset", user_id=str(user.id))
+        return await self._to_item_reloaded(user)
+
+    async def _assert_roles_within_actor(
+        self,
+        role_ids: set[uuid.UUID],
+        *,
+        actor_permissions: dict[str, list[str]],
+        actor_privileged: bool,
+    ) -> None:
+        """Security-инвариант эскалации для реестра пользователей (зеркало ADR-022 §роли).
+
+        Страница `users` вошла в матрицу прав, поэтому право `users:create|edit` может
+        быть у НЕ-админа. Без этой проверки такой актор выдал бы себе (или новому
+        пользователю) роль «Админ» и поднял бы привилегии — то есть матрица заменила
+        бы собой всю модель доступа. Привилегированный актор (`is_admin_level`)
+        не ограничен.
+        """
+        if actor_privileged:
+            return
+        for role_id in sorted(role_ids):
+            role = await self._roles.get_by_id(role_id)
+            if role is None:
+                continue
+            if not permissions_subset(dict(role.permissions or {}), actor_permissions):
+                raise forbidden()
+
+    @staticmethod
+    def _is_admin_level_user(user: User) -> bool:
+        """Целевой пользователь admin-уровня: роль «Админ» ИЛИ union == полный каталог."""
+        roles = list(user.roles or [])
+        if any(role.name.strip().lower() == "admin" for role in roles):
+            return True
+        union = union_permissions(dict(role.permissions or {}) for role in roles)
+        return permissions_subset(full_catalog_permissions(), union)
+
+    def _assert_can_touch(self, user: User, *, actor_privileged: bool) -> None:
+        """Непривилегированный актор не редактирует/не удаляет admin-level пользователя."""
+        if actor_privileged:
+            return
+        if self._is_admin_level_user(user):
+            raise forbidden()
 
     async def _validate_role_ids(self, role_ids: list[uuid.UUID]) -> set[uuid.UUID]:
         """Непустой набор существующих ролей (ADR-079 §1); иначе → 422.
