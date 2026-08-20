@@ -1,0 +1,91 @@
+# One-off READ-ONLY: почему IMAP-проверка ящика упала. Удалить после.
+name: oneoff — mail IMAP diag
+
+on:
+  workflow_dispatch:
+    inputs:
+      email:
+        description: email ящика (фрагмент для grep логов)
+        required: true
+        default: martenkasparilves01@icloud.com
+        type: string
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Pull backend/proxy logs + IMAP reachability
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          EMAIL: ${{ github.event.inputs.email }}
+        run: |
+          set -euo pipefail
+          EMAIL_ESC=$(printf '%s' "$EMAIL" | tr '[:upper:]' '[:lower:]')
+          LOCAL=$(printf '%s' "$EMAIL_ESC" | cut -d@ -f1)
+          DOMAIN=$(printf '%s' "$EMAIL_ESC" | cut -d@ -f2)
+          echo "EMAIL=$EMAIL_ESC LOCAL=$LOCAL DOMAIN=$DOMAIN"
+          ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" bash -s -- "$EMAIL_ESC" "$LOCAL" "$DOMAIN" <<'REMOTE'
+          set -euo pipefail
+          EMAIL="$1"; LOCAL="$2"; DOMAIN="$3"
+          cd /opt/crm
+
+          echo '=== 1. compose services ==='
+          docker compose --env-file .env -f infra/docker-compose.yml ps
+
+          echo '=== 2. backend logs (mail/imap/icloud, last 6h) ==='
+          docker compose --env-file .env -f infra/docker-compose.yml logs --since 6h backend 2>&1 \
+            | grep -iE "imap|mail_imap|icloud|mail\.me\.com|${LOCAL}|smtp_login|invalid_host|mailboxes/test|mailboxes\"" \
+            | tail -n 200 || echo 'NO_BACKEND_MATCH'
+
+          echo '=== 3. proxy logs (mailboxes, last 6h) ==='
+          docker compose --env-file .env -f infra/docker-compose.yml logs --since 6h proxy 2>&1 \
+            | grep -iE "mailboxes|/api/mail|${LOCAL}" \
+            | tail -n 80 || echo 'NO_PROXY_MATCH'
+
+          echo '=== 4. TCP/TLS to iCloud IMAP from backend ==='
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+            python - <<'PY' || true
+          import socket, ssl, sys
+          host, port = "imap.mail.me.com", 993
+          try:
+              raw = socket.create_connection((host, port), timeout=10)
+              ctx = ssl.create_default_context()
+              with ctx.wrap_socket(raw, server_hostname=host) as s:
+                  banner = s.recv(256)
+              print("IMAP_TLS_OK", banner[:120])
+          except Exception as e:
+              print("IMAP_TLS_FAIL", type(e).__name__, e)
+              sys.exit(0)
+          PY
+
+          echo '=== 5. MAIL_API_BASE (no secret) ==='
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend \
+            python -c "from app.config import get_settings; s=get_settings(); print('MAIL_API_BASE=', s.mail_api_base); print('mail_enabled=', bool(s.mail_api_key))"
+
+          echo '=== 6. recent mail_accounts rows for domain (no secrets) ==='
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
+            sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
+          SELECT id, email, imap_host, imap_port, imap_ssl, smtp_host, smtp_port,
+                 last_sync_error, consecutive_failures, created_at
+          FROM mail_accounts
+          WHERE email ILIKE '\''%'"$DOMAIN"'%'\'' OR email ILIKE '\''%'"$LOCAL"'%'\''
+          ORDER BY created_at DESC NULLS LAST
+          LIMIT 20;
+          "' || echo 'NO_MAIL_ACCOUNTS_TABLE_OR_ERROR'
+
+          echo 'DIAG_DONE'
+          REMOTE
