@@ -64,6 +64,9 @@ jobs:
                  (SELECT count(*) FROM jsonb_object_keys(r.permissions)) AS pages_total
           FROM roles r ORDER BY r.name;
 
+          \echo '== 3c. Полные права каждой роли (JSON) =='
+          SELECT r.name, r.permissions::text AS perms FROM roles r ORDER BY r.name;
+
           \echo '== 4. Итого строк в снимке =='
           SELECT count(*) AS total_rows,
                  count(*) FILTER (WHERE revenue_refreshed_at IS NOT NULL) AS with_revenue
