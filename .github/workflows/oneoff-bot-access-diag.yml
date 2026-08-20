@@ -58,11 +58,11 @@ jobs:
           FROM users WHERE telegram = '${IDENT}' OR username = '${IDENT}';
 
           \echo '== 2. ВСЕ knowledge-линки этого пользователя (dead_at!) =='
-          SELECT k.telegram_user_id, k.username, k.dead_at, k.created_at, k.updated_at
+          SELECT k.telegram_user_id, k.username, k.dead_at, k.started_at
           FROM knowledge_bot_links k
           JOIN users u ON u.id = k.user_id
           WHERE u.telegram = '${IDENT}'
-          ORDER BY k.created_at;
+          ORDER BY k.started_at;
 
           \echo '== 3. ВСЕ линки по chat_id (могут указывать на другого юзера) =='
           SELECT 'knowledge' AS src, k.telegram_user_id, k.username, k.dead_at,
