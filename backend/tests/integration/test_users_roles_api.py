@@ -47,7 +47,7 @@ def _client(app: Any) -> AsyncClient:
 
 
 @pytest.mark.asyncio
-async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
+async def test_permissions_catalog_contract_order_includes_users_page() -> None:
     app = _build_app(RbacFakeDb(), make_principal())  # супер-админ
 
     async with _client(app) as client:
@@ -71,6 +71,8 @@ async def test_permissions_catalog_contract_order_and_no_users_page() -> None:
         "teams",
         "documents",
         "broadcast",
+        # Страница «Пользователи» — последняя строка матрицы (Спринт B).
+        "users",
     ]
     by_page = {p["page"]: p["actions"] for p in pages}
     assert by_page["dashboard"] == ["view"]
