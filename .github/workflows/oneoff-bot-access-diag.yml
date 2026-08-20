@@ -1,0 +1,91 @@
+# One-off (диагностика, READ-ONLY): почему бот отвечает «доступ ограничен».
+# Печатает состояние пользователя в CRM: users / user_roles / knowledge_bot_links
+# + логи backend по user_not_linked. Ничего не изменяет. Удалить после разбора.
+name: oneoff — bot access diag
+
+on:
+  workflow_dispatch:
+    inputs:
+      identity:
+        description: telegram-ник без @ (например chekhovandrey)
+        required: true
+        type: string
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Query CRM database (read-only)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          IDENTITY: ${{ github.event.inputs.identity }}
+        run: |
+          set -euo pipefail
+          IDENT=$(printf '%s' "$IDENTITY" | tr '[:upper:]' '[:lower:]' | sed 's/^@//')
+          case "$IDENT" in
+            ''|*[^a-z0-9_.-]*) echo "bad identity: $IDENT"; exit 1 ;;
+          esac
+          echo "IDENTITY_NORM=$IDENT"
+          ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" \
+            "cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
+              sh -lc 'psql -v ON_ERROR_STOP=1 -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"'" <<SQL
+          \echo '== 1. ТОЧНОЕ СОВПАДЕНИЕ telegram/username =='
+          SELECT id, username, telegram, last_name, first_name, is_active, is_system,
+                 (password_hash IS NOT NULL) AS has_password, first_login_at
+          FROM users
+          WHERE username = '${IDENT}' OR telegram = '${IDENT}';
+
+          \echo '== 2. ПОХОЖИЕ (подстрока) =='
+          SELECT id, username, telegram, last_name, first_name, is_active, is_system
+          FROM users
+          WHERE lower(coalesce(telegram,'')) LIKE '%${IDENT}%'
+             OR lower(username) LIKE '%${IDENT}%'
+          ORDER BY is_system, username;
+
+          \echo '== 3. РОЛИ найденного пользователя (пусто = отказ user_not_linked) =='
+          SELECT u.username, u.telegram, r.name AS role_name, ur.created_at
+          FROM users u
+          LEFT JOIN user_roles ur ON ur.user_id = u.id
+          LEFT JOIN roles r ON r.id = ur.role_id
+          WHERE u.username = '${IDENT}' OR u.telegram = '${IDENT}'
+          ORDER BY ur.created_at;
+
+          \echo '== 4. Линки telegram_user_id (knowledge / sms / mail) =='
+          SELECT 'knowledge' AS src, k.telegram_user_id, k.username, k.user_id, u.username AS crm_user, u.is_active
+          FROM knowledge_bot_links k LEFT JOIN users u ON u.id = k.user_id
+          WHERE lower(coalesce(k.username,'')) LIKE '%${IDENT}%';
+
+          \echo '== 5. РЕГРЕСС-ЧЕК: несистемные пользователи БЕЗ ролей =='
+          SELECT count(*) AS users_without_roles
+          FROM users u
+          WHERE u.is_system = false
+            AND NOT EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id);
+
+          \echo '== 6. Итог по всем пользователям =='
+          SELECT count(*) AS total, count(*) FILTER (WHERE is_active) AS active,
+                 count(*) FILTER (WHERE telegram IS NULL) AS without_telegram
+          FROM users WHERE is_system = false;
+          SQL
+
+      - name: Backend logs — user_not_linked / knowledge bot
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" \
+            "cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml logs --since 48h --no-log-prefix backend 2>/dev/null | grep -iE 'user_not_linked|knowledge.?bot|external/knowledge' | tail -40 || echo 'нет совпадений в логах за 48ч'"
