@@ -1,6 +1,6 @@
 # One-off (диагностика, READ-ONLY): почему бот отвечает «доступ ограничен».
 # Печатает состояние пользователя в CRM: users / user_roles / knowledge_bot_links
-# + логи backend по user_not_linked. Ничего не изменяет. Удалить после разбора.
+# + логи backend по внешнему контуру. Ничего не изменяет. Удалить после разбора.
 name: oneoff — bot access diag
 
 on:
@@ -9,6 +9,11 @@ on:
       identity:
         description: telegram-ник без @ (например chekhovandrey)
         required: true
+        type: string
+      telegram_user_id:
+        description: chat_id в Telegram (например 95900854); 0 — пропустить
+        required: false
+        default: "0"
         type: string
 
 jobs:
@@ -33,59 +38,64 @@ jobs:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
           IDENTITY: ${{ github.event.inputs.identity }}
+          TG_ID: ${{ github.event.inputs.telegram_user_id }}
         run: |
           set -euo pipefail
           IDENT=$(printf '%s' "$IDENTITY" | tr '[:upper:]' '[:lower:]' | sed 's/^@//')
           case "$IDENT" in
             ''|*[^a-z0-9_.-]*) echo "bad identity: $IDENT"; exit 1 ;;
           esac
-          echo "IDENTITY_NORM=$IDENT"
+          case "$TG_ID" in
+            ''|*[^0-9]*) TG="0" ;;
+            *) TG="$TG_ID" ;;
+          esac
+          echo "IDENTITY_NORM=$IDENT TG_ID=$TG"
           ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" \
             "cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
               sh -lc 'psql -v ON_ERROR_STOP=1 -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"'" <<SQL
-          \echo '== 1. ТОЧНОЕ СОВПАДЕНИЕ telegram/username =='
-          SELECT id, username, telegram, last_name, first_name, is_active, is_system,
-                 (password_hash IS NOT NULL) AS has_password, first_login_at
-          FROM users
-          WHERE username = '${IDENT}' OR telegram = '${IDENT}';
-
-          \echo '== 2. ПОХОЖИЕ (подстрока) =='
+          \echo '== 1. Пользователь =='
           SELECT id, username, telegram, last_name, first_name, is_active, is_system
-          FROM users
-          WHERE lower(coalesce(telegram,'')) LIKE '%${IDENT}%'
-             OR lower(username) LIKE '%${IDENT}%'
-          ORDER BY is_system, username;
+          FROM users WHERE telegram = '${IDENT}' OR username = '${IDENT}';
 
-          \echo '== 3. РОЛИ найденного пользователя (пусто = отказ user_not_linked) =='
-          SELECT u.username, u.telegram, r.name AS role_name, ur.created_at
-          FROM users u
-          LEFT JOIN user_roles ur ON ur.user_id = u.id
-          LEFT JOIN roles r ON r.id = ur.role_id
-          WHERE u.username = '${IDENT}' OR u.telegram = '${IDENT}'
-          ORDER BY ur.created_at;
+          \echo '== 2. ВСЕ knowledge-линки этого пользователя (dead_at!) =='
+          SELECT k.telegram_user_id, k.username, k.dead_at, k.created_at, k.updated_at
+          FROM knowledge_bot_links k
+          JOIN users u ON u.id = k.user_id
+          WHERE u.telegram = '${IDENT}'
+          ORDER BY k.created_at;
 
-          \echo '== 4. Линки telegram_user_id (knowledge / sms / mail) =='
-          SELECT 'knowledge' AS src, k.telegram_user_id, k.username, k.user_id, u.username AS crm_user, u.is_active
+          \echo '== 3. ВСЕ линки по chat_id (могут указывать на другого юзера) =='
+          SELECT 'knowledge' AS src, k.telegram_user_id, k.username, k.dead_at,
+                 u.username AS crm_user, u.telegram AS crm_telegram, u.is_active
           FROM knowledge_bot_links k LEFT JOIN users u ON u.id = k.user_id
-          WHERE lower(coalesce(k.username,'')) LIKE '%${IDENT}%';
+          WHERE k.telegram_user_id = ${TG};
 
-          \echo '== 5. РЕГРЕСС-ЧЕК: несистемные пользователи БЕЗ ролей =='
-          SELECT count(*) AS users_without_roles
-          FROM users u
-          WHERE u.is_system = false
-            AND NOT EXISTS (SELECT 1 FROM user_roles ur WHERE ur.user_id = u.id);
+          \echo '== 4. Роль PM: права и признак sees_all_documents =='
+          SELECT r.name, jsonb_object_keys(r.permissions) AS page
+          FROM roles r
+          JOIN user_roles ur ON ur.role_id = r.id
+          JOIN users u ON u.id = ur.user_id
+          WHERE u.telegram = '${IDENT}';
 
-          \echo '== 6. Итог по всем пользователям =='
-          SELECT count(*) AS total, count(*) FILTER (WHERE is_active) AS active,
-                 count(*) FILTER (WHERE telegram IS NULL) AS without_telegram
-          FROM users WHERE is_system = false;
+          \echo '== 5. Документы, видимые роли пользователя =='
+          SELECT r.name AS role_name, count(dnr.node_id) AS visible_nodes
+          FROM roles r
+          JOIN user_roles ur ON ur.role_id = r.id
+          JOIN users u ON u.id = ur.user_id
+          LEFT JOIN document_node_roles dnr ON dnr.role_id = r.id
+          WHERE u.telegram = '${IDENT}'
+          GROUP BY r.name;
+
+          \echo '== 6. Дубли chat_id в knowledge_bot_links =='
+          SELECT telegram_user_id, count(*) AS rows, count(*) FILTER (WHERE dead_at IS NULL) AS alive
+          FROM knowledge_bot_links GROUP BY telegram_user_id HAVING count(*) > 1;
           SQL
 
-      - name: Backend logs — user_not_linked / knowledge bot
+      - name: Backend structured logs (external contour)
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
           SSH_USER: ${{ secrets.SSH_USER }}
         run: |
           set -euo pipefail
           ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" \
-            "cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml logs --since 48h --no-log-prefix backend 2>/dev/null | grep -iE 'user_not_linked|knowledge.?bot|external/knowledge' | tail -40 || echo 'нет совпадений в логах за 48ч'"
+            "cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml logs --since 72h --no-log-prefix backend 2>/dev/null | grep -iE 'knowledge_bot|user_not_linked|external' | grep -viE 'INFO: +[0-9]' | tail -40 || echo 'структурных событий не найдено'"
