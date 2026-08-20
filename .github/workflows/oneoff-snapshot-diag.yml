@@ -1,0 +1,87 @@
+# One-off (диагностика, READ-ONLY): почему снимок «Юзеров бэков» не собирается.
+# Печатает состояние источников снимка, объём собранных строк и логи воркера.
+# Ничего не изменяет. Удалить после разбора инцидента.
+name: oneoff — snapshot diag
+
+on:
+  workflow_dispatch:
+    inputs:
+      log_hours:
+        description: за сколько часов брать логи воркера
+        required: false
+        default: "6"
+        type: string
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH deploy key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_DEPLOY_KEY }}
+
+      - name: Add server to known_hosts
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          ssh-keyscan -H "${{ secrets.SSH_HOST }}" >> ~/.ssh/known_hosts
+
+      - name: Snapshot state (read-only)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" \
+            "cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
+              sh -lc 'psql -v ON_ERROR_STOP=1 -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"'" <<'SQL'
+          \echo '== 1. Источники снимка: собран ли цикл =='
+          SELECT b.name, b.code,
+                 s.refreshed_at, s.failed_at, s.revenue_backfill_done, s.revenue_supported,
+                 s.stats_users_total,
+                 left(coalesce(s.error_message, ''), 60) AS error
+          FROM backend_user_snapshot_sources s
+          JOIN backends b ON b.id = s.backend_id
+          ORDER BY (s.refreshed_at IS NULL) DESC, b.name;
+
+          \echo '== 2. Сколько бэков вообще с ключом vs строк состояния =='
+          SELECT (SELECT count(*) FROM backends WHERE admin_api_key_encrypted IS NOT NULL) AS with_key,
+                 (SELECT count(*) FROM backend_user_snapshot_sources) AS source_rows,
+                 (SELECT count(*) FROM backend_user_snapshot_sources WHERE refreshed_at IS NOT NULL) AS refreshed_ok;
+
+          \echo '== 3. Сколько строк пользователей уже накоплено =='
+          SELECT b.name, count(u.user_id) AS rows_collected, max(u.registered_at) AS newest
+          FROM backends b
+          LEFT JOIN backend_user_snapshots u ON u.backend_id = b.id
+          GROUP BY b.name ORDER BY rows_collected DESC LIMIT 20;
+
+          \echo '== 4. Итого строк в снимке =='
+          SELECT count(*) AS total_rows,
+                 count(*) FILTER (WHERE revenue_refreshed_at IS NOT NULL) AS with_revenue
+          FROM backend_user_snapshots;
+          SQL
+
+      - name: Worker logs
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          HOURS: ${{ github.event.inputs.log_hours }}
+        run: |
+          set -euo pipefail
+          H="${HOURS:-6}"
+          case "$H" in ''|*[^0-9]*) H=6 ;; esac
+          ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" \
+            "cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml logs --since ${H}h --no-log-prefix backend 2>/dev/null | grep -iE 'snapshot|backend_users' | tail -60 || echo 'событий воркера не найдено'"
+
+      - name: Upstream failure detail (one failing backend)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+        run: |
+          set -euo pipefail
+          ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" \
+            "cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T backend python - " \
+            < .github/scripts/snapshot_upstream_probe.py
