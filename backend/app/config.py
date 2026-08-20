@@ -164,6 +164,20 @@ class Settings(BaseSettings):
     # на один бэк ради `revenue.providers` (очередь — строки `revenue_refreshed_at IS
     # NULL`, порядок `registered_at DESC`). До завершения backfill — `api_costs.partial`.
     backend_users_snapshot_revenue_batch: int = 2000
+    # --- Бережность к источнику (Q-BU-2, прод-инцидент 2026-08-20) ---
+    # Воркер — единственный клиент, который ходит в бэк ТЫСЯЧАМИ запросов подряд, и
+    # «Claude IOS»-бэки часто живут на одном сервере: fan-out 5 их сам дожимал до 429/500.
+    # Конкурентность fan-out воркера (сколько бэков опрашивается одновременно).
+    backend_users_snapshot_concurrency: int = Field(default=2, ge=1, le=32)
+    # Пауза между страницами обхода `GET {P}/users` и между карточками `GET {P}/users/{id}`.
+    # 0 — троттлинг выключен (полная прежняя скорость).
+    backend_users_snapshot_page_delay_sec: float = Field(default=0.3, ge=0.0, le=10.0)
+    # Ретраи ТОЛЬКО воркера и ТОЛЬКО на 429/5xx: сколько всего попыток на один
+    # upstream-вызов (1 = ретраев нет), база и потолок exponential backoff.
+    # Интерактивные пути API (карточка, мутации) ретраев не имеют — там ждёт человек.
+    backend_users_snapshot_retry_attempts: int = Field(default=5, ge=1, le=10)
+    backend_users_snapshot_retry_base_sec: float = Field(default=1.0, ge=0.0, le=60.0)
+    backend_users_snapshot_retry_cap_sec: float = Field(default=30.0, ge=0.1, le=300.0)
 
     # --- Модуль «Почты» (read-through-прокси, modules/mail, ADR-012) ---
     # Backend проксирует /api/mail/* во внешний сервис postapp.store, подставляя

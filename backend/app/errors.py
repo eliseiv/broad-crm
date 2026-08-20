@@ -264,6 +264,46 @@ def backend_admin_unavailable(message: str = "Бэк не ответил на ad
     )
 
 
+class BackendAdminUpstreamStatus(AppError):
+    """Бэк ответил не-`2xx` статусом, который сохранён МАШИННО (плюс его `Retry-After`).
+
+    Отличимый тип нужен фоновому воркеру снимка «Юзеров бэков»: `429`/`5xx` — временный
+    отказ, который лечится паузой и повтором, а `3xx`/прочие `4xx` — постоянный, повторять
+    бессмысленно. Различать их по ТЕКСТУ сообщения (`"Ошибка бэка (HTTP 429)"`) нельзя —
+    формулировка принадлежит UI, а не протоколу, и первая же её правка молча отключила бы
+    ретраи.
+
+    Контракт наружу НЕ меняется: это `AppError` с тем же `502 backend_admin_unavailable`
+    и тем же текстом — обработчик ошибок и интерактивные пути ведут себя как прежде.
+    """
+
+    def __init__(
+        self,
+        *,
+        message: str,
+        upstream_status: int,
+        retry_after_sec: float | None = None,
+    ) -> None:
+        super().__init__(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            code="backend_admin_unavailable",
+            message=message,
+        )
+        self.upstream_status = upstream_status
+        self.retry_after_sec = retry_after_sec
+
+
+def backend_admin_upstream_status(
+    upstream_status: int, retry_after_sec: float | None = None
+) -> BackendAdminUpstreamStatus:
+    """Не-`2xx` от бэка при вызове CRM Admin API — тот же `502`, но со статусом источника."""
+    return BackendAdminUpstreamStatus(
+        message=f"Ошибка бэка (HTTP {upstream_status})",
+        upstream_status=upstream_status,
+        retry_after_sec=retry_after_sec,
+    )
+
+
 class BackendAdminResponseUnusable(AppError):
     """Бэк подтвердил операцию статусом `2xx`, но тело ответа негодно (не JSON / не объект).
 

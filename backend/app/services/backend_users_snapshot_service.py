@@ -7,8 +7,11 @@
 логируется и задачу не валит. Брокер не вводится (ADR-006/NFR-1) — Postgres уже есть, а
 снимок переживает рестарт.
 
-Алгоритм на один бэк (fan-out под `Semaphore(5)` — тот же лимит, что у прежнего
-live fan-out страницы):
+Алгоритм на один бэк (fan-out под семафором `BACKEND_USERS_SNAPSHOT_CONCURRENCY`, по
+умолчанию 2 — не 5, как у интерактивного fan-out страницы: воркер шлёт тысячи запросов
+подряд, а бэки нередко живут на ОДНОМ сервере, и параллельный обход дожимал их до
+`429`/`500`, Q-BU-2). Все upstream-вызовы цикла идут через `_with_retry` (backoff на
+`429`/`5xx`) и разделяются паузой `_throttle`:
 
 1. fingerprints снимка одним `SELECT`;
 2. **полный** постраничный обход `GET {P}/users?limit=100` **без** окна `_MAX_WINDOW`
@@ -28,15 +31,17 @@ live fan-out страницы):
 снимок в память → сессия закрыта → далее только сеть и короткие `UPDATE`). Каждое
 обращение к БД здесь — отдельная короткая сессия (`_in_session`), а обход и добор
 карточек идут вообще без открытой сессии. Иначе полный обход крупного бэка держал бы
-транзакцию в `idle in transaction` минутами, а `Semaphore(5)` при пуле того же порядка
+транзакцию в `idle in transaction` минутами, а семафор fan-out при пуле того же порядка
 выбирал бы весь пул — и интерактивные запросы API уходили бы в `pool_timeout`.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
+import random
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -46,7 +51,12 @@ from pydantic import ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.config import Settings
-from app.errors import AppError, BackendAdminResponseUnusable
+from app.errors import (
+    AppError,
+    BackendAdminResponseUnusable,
+    BackendAdminUpstreamStatus,
+    backend_admin_unavailable,
+)
 from app.logging import get_logger
 from app.repositories.backend_repository import BackendRepository
 from app.repositories.backend_user_snapshot_repository import (
@@ -59,8 +69,12 @@ from app.services.backend_admin_source import BackendAdminSourceResolver
 
 logger = get_logger(__name__)
 
-# Максимум одновременно опрашиваемых бэков (паттерн backend_monitor_service).
-_FANOUT_CONCURRENCY = 5
+# Статусы источника, которые считаются ВРЕМЕННЫМ отказом и лечатся повтором (Q-BU-2).
+# `429` — rate-limit, `5xx` — сбой на стороне бэка. Прочие исходы (`3xx`, `401/403`,
+# `404`, `400/422`, `409`, таймаут/транспорт) постоянны в пределах цикла: повтор их не
+# лечит, а лишь добавляет нагрузки источнику, который уже отвечает.
+_RETRYABLE_STATUS = 429
+_SERVER_ERROR_MIN = 500
 
 # Страница источника по контракту (§2.1: limit <= 100).
 _SOURCE_PAGE_LIMIT = 100
@@ -130,6 +144,15 @@ class _BackendResult:
     tracked_users: set[str] = field(default_factory=set)
     # Изменившиеся (dirty-set) — вход инкрементального добора экономики (§5).
     dirty_users: set[str] = field(default_factory=set)
+    # Дошёл ли обход до КОНЦА источника. `False` — аварийный обрыв (сбитая пагинация,
+    # упор в `_MAX_PAGES`): `tracked_users` тогда НЕ является полным списком живых
+    # пользователей, и разность с ним — не «исчезнувшие», а «недосмотренные».
+    # Инвариант ADR-080 §2 п.3 (`DELETE` только при ПОЛНОСТЬЮ успешном обходе) держится
+    # на этом признаке: без него оборванный обход прореживал бы снимок, а цикл при этом
+    # записывался бы успешным — потеря данных без единого сигнала оператору.
+    complete: bool = True
+    # Причина обрыва — уходит в `error_message` строки источника (оператору в `errors[]`).
+    incomplete_reason: str = ""
 
 
 class BackendUsersSnapshotService:
@@ -144,6 +167,11 @@ class BackendUsersSnapshotService:
         self._sessionmaker = sessionmaker
         self._interval_sec = settings.backend_users_snapshot_interval_sec
         self._revenue_batch = settings.backend_users_snapshot_revenue_batch
+        self._concurrency: int = settings.backend_users_snapshot_concurrency
+        self._page_delay_sec: float = settings.backend_users_snapshot_page_delay_sec
+        self._retry_attempts: int = settings.backend_users_snapshot_retry_attempts
+        self._retry_base_sec: float = settings.backend_users_snapshot_retry_base_sec
+        self._retry_cap_sec: float = settings.backend_users_snapshot_retry_cap_sec
 
     async def run(self) -> None:
         """Бесконечный цикл: обход → sleep. Ошибка итерации логируется, цикл живёт."""
@@ -173,7 +201,7 @@ class BackendUsersSnapshotService:
         if not targets:
             return
 
-        semaphore = asyncio.Semaphore(_FANOUT_CONCURRENCY)
+        semaphore = asyncio.Semaphore(self._concurrency)
 
         async def _guarded(backend_id: uuid.UUID, code: str, client: Any) -> None:
             async with semaphore:
@@ -197,13 +225,79 @@ class BackendUsersSnapshotService:
             )
             await self._record_failure(backend_id, str(message))
 
+    # --- Бережность к источнику (Q-BU-2) ---------------------------------------
+    #
+    # Обе паузы ниже вызываются ТОЛЬКО там, где сессия БД закрыта (обход и добор карточек
+    # идут вообще без открытой сессии, см. docstring модуля). Пауза с открытой сессией
+    # держала бы транзакцию `idle in transaction` на все секунды backoff'а и выбирала бы
+    # пул — ровно то, от чего уводит канон коротких сессий.
+
+    async def _throttle(self) -> None:
+        """Межстраничная пауза обхода/добора. `0` — троттлинг выключен."""
+        if self._page_delay_sec > 0:
+            await asyncio.sleep(self._page_delay_sec)
+
+    async def _with_retry(
+        self,
+        backend_id: uuid.UUID,
+        operation: str,
+        call: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Повтор upstream-вызова с exponential backoff на `429`/`5xx` (Q-BU-2, вариант «б»).
+
+        Ретраи существуют ТОЛЬКО в воркере: он один ходит в бэк тысячами запросов подряд
+        и сам же доводит источник до rate-limit. Интерактивные пути API (карточка,
+        мутации) остаются без повторов — там ждёт человек, и лишние 30 секунд хуже
+        честной ошибки.
+
+        Исчерпание попыток НЕ меняет прежнего контракта отказа: наружу уходит та же
+        ошибка ⇒ цикл бэка падает, `error_message`/`failed_at` пишутся, снимок прошлого
+        цикла цел (§2 п.7).
+        """
+        attempt = 0
+        while True:
+            try:
+                return await call()
+            except BackendAdminUpstreamStatus as exc:
+                retryable = (
+                    exc.upstream_status == _RETRYABLE_STATUS
+                    or exc.upstream_status >= _SERVER_ERROR_MIN
+                )
+                if not retryable or attempt >= self._retry_attempts - 1:
+                    raise
+                delay = self._retry_delay(attempt, exc.retry_after_sec)
+                logger.warning(
+                    "backend_users_snapshot_upstream_retry",
+                    backend_id=str(backend_id),
+                    operation=operation,
+                    upstream_status=exc.upstream_status,
+                    attempt=attempt + 1,
+                    delay_sec=round(delay, 3),
+                )
+                await asyncio.sleep(delay)
+                attempt += 1
+
+    def _retry_delay(self, attempt: int, retry_after_sec: float | None) -> float:
+        """Задержка перед повтором: `Retry-After` источника, иначе backoff с джиттером.
+
+        `Retry-After` уважается как есть (но не дольше потолка): бэк лучше нас знает,
+        когда откроется его окно. Без заголовка — `base * 2^attempt` с потолком `cap` и
+        джиттером: без джиттера все бэки-соседи по серверу, упавшие в rate-limit
+        одновременно, вернулись бы к нему тоже одновременно.
+        """
+        if retry_after_sec is not None:
+            return min(retry_after_sec, self._retry_cap_sec)
+        window = min(self._retry_base_sec * (2.0**attempt), self._retry_cap_sec)
+        # `random` здесь не криптографический примитив, а разброс момента повтора.
+        return window / 2 + random.uniform(0, window / 2)
+
     @asynccontextmanager
     async def _in_session(self) -> AsyncIterator[BackendUserSnapshotRepository]:
         """Короткая сессия под ОДНО обращение к БД: открыть → записать → commit → закрыть.
 
         Каждый шаг цикла берёт соединение ровно на время своего SQL. Держать сессию
         открытой через HTTP-вызовы запрещено: обход крупного бэка занимает минуты, и
-        транзакция всё это время висела бы `idle in transaction`, а `Semaphore(5)`
+        транзакция всё это время висела бы `idle in transaction`, а семафор fan-out
         параллельных бэков выбрал бы пул целиком — интерактивные запросы API уходили бы
         в `pool_timeout`.
         """
@@ -221,6 +315,15 @@ class BackendUsersSnapshotService:
         #    батч-upsert изменившихся строк.
         result = await self._walk_users(backend_id, client, known)
 
+        # 2а. Обход оборвался, не дойдя до конца источника (сбитая пагинация, упор в
+        #     `_MAX_PAGES`) — это ОТКАЗ цикла, а не его успешное завершение. Ошибка
+        #     поднимается ДО шага 3: иначе `tracked_users` (заведомо неполный) ушёл бы в
+        #     разность, и `DELETE` вычистил бы из снимка всех, до кого обход не добрался,
+        #     а строка источника получила бы `refreshed_at` без единого признака беды.
+        #     Прежний снимок остаётся целым, причина видна оператору в `errors[]` (§2 п.7).
+        if not result.complete:
+            raise backend_admin_unavailable(result.incomplete_reason)
+
         # 3. `DELETE` — строго после ПОЛНОГО успешного обхода (исключение выше сюда не
         #    доходит): оборванный обход снимок не прореживает. Разность считается по
         #    памяти, в SQL уходят только реально исчезнувшие id.
@@ -230,7 +333,7 @@ class BackendUsersSnapshotService:
                 result.deleted = await repo.delete_rows(backend_id, missing)
 
         # 4. Сводка источника — HTTP без открытой сессии.
-        stats = self._parse_stats(await client.get_stats())
+        stats = self._parse_stats(await self._with_retry(backend_id, "get_stats", client.get_stats))
 
         # 5. Экономика: HTTP-добор карточек, запись — короткими сессиями внутри.
         supported, fetched = await self._refresh_revenue(
@@ -279,17 +382,46 @@ class BackendUsersSnapshotService:
 
         Сессия БД **не удерживается**: HTTP-страница читается без соединения, а батч
         изменившихся строк пишется отдельной короткой сессией (`_in_session`).
+
+        Между страницами выдерживается пауза (`_throttle`), а сама страница берётся с
+        ретраями на `429`/`5xx`: обход крупного бэка — тысячи запросов подряд, и без
+        обоих механизмов воркер сам доводит источник до rate-limit (Q-BU-2).
         """
         result = _BackendResult()
         offset = 0
-        for _page_no in range(_MAX_PAGES):
-            raw = await client.list_users(limit=_SOURCE_PAGE_LIMIT, offset=offset)
+        for page_no in range(_MAX_PAGES):
+            if page_no:
+                await self._throttle()
+            raw = await self._with_retry(
+                backend_id,
+                "list_users",
+                functools.partial(client.list_users, limit=_SOURCE_PAGE_LIMIT, offset=offset),
+            )
             items = self._parse_users_page(raw)
             if not items:
                 break
 
+            # Защита от холостого обхода (Q-BU-2, вариант «а»): страница без единого
+            # НОВОГО `user_id` означает сбитую пагинацию источника (повтор/зацикливание
+            # окна). Продолжать бессмысленно — дальше те же строки, а цена ошибки —
+            # десятки тысяч запросов к бэку до упора в `_MAX_PAGES`. Признак —
+            # бесполезность страницы, а не счётчик.
+            fresh = [item for item in items if item.id not in result.tracked_users]
+            if not fresh:
+                logger.warning(
+                    "backend_users_snapshot_walk_stalled",
+                    backend_id=str(backend_id),
+                    offset=offset,
+                    page_size=len(items),
+                )
+                # Обрыв АВАРИЙНЫЙ: до конца источника обход не дошёл, значит список
+                # живых пользователей неполон и разностью пользоваться нельзя.
+                result.complete = False
+                result.incomplete_reason = "Источник повторяет страницу — обход прерван"
+                break
+
             changed_rows: list[dict[str, Any]] = []
-            for item in items:
+            for item in fresh:
                 result.tracked_users.add(item.id)
                 row = self._row_values(backend_id, item)
                 if known.get(item.id) == build_fingerprint(row):
@@ -303,7 +435,20 @@ class BackendUsersSnapshotService:
 
             offset += len(items)
             if len(items) < _SOURCE_PAGE_LIMIT:
-                break
+                break  # неполная страница = конец источника: обход ЗАВЕРШЁН штатно
+        else:
+            # Цикл исчерпал `_MAX_PAGES`, ни разу не встретив конца источника, — тот же
+            # класс дефекта, что и повтор страницы: обход неполон, разностью пользоваться
+            # нельзя. Без этой ветки упор в потолок молча давал бы «успешный» цикл с
+            # `DELETE` всех непросмотренных строк.
+            logger.warning(
+                "backend_users_snapshot_walk_truncated",
+                backend_id=str(backend_id),
+                pages=_MAX_PAGES,
+                tracked=len(result.tracked_users),
+            )
+            result.complete = False
+            result.incomplete_reason = "Источник не отдал конец списка — обход прерван"
         return result
 
     async def _refresh_revenue(
@@ -341,8 +486,11 @@ class BackendUsersSnapshotService:
 
         supported: bool | None = None
         fetched = 0
-        for user_id in candidates:
-            detail = await self._fetch_detail(client, user_id)
+        for index, user_id in enumerate(candidates):
+            # Пауза между карточками — вне открытой сессии (запись идёт ниже, короткой).
+            if index:
+                await self._throttle()
+            detail = await self._fetch_detail(backend_id, client, user_id)
             if detail is None:
                 continue
             if supported is None:
@@ -358,8 +506,9 @@ class BackendUsersSnapshotService:
             fetched += 1
         return supported, fetched
 
-    @staticmethod
-    async def _fetch_detail(client: Any, user_id: str) -> BackendUserDetailResponse | None:
+    async def _fetch_detail(
+        self, backend_id: uuid.UUID, client: Any, user_id: str
+    ) -> BackendUserDetailResponse | None:
         """Карточка пользователя или `None`, если ЭТОГО пользователя у бэка нет/ответ негоден.
 
         **Глотаются ровно два исхода** — оба означают «проблема с одной карточкой», а не с
@@ -375,7 +524,9 @@ class BackendUsersSnapshotService:
         быть отказом цикла: снимок прошлого цикла сохраняется, а причина видна в `errors[]`.
         """
         try:
-            raw = await client.get_user(user_id)
+            raw = await self._with_retry(
+                backend_id, "get_user", functools.partial(client.get_user, user_id)
+            )
         except BackendAdminResponseUnusable as exc:
             logger.info(
                 "backend_users_snapshot_detail_unusable",

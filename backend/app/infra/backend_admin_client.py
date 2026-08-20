@@ -50,6 +50,7 @@ from app.errors import (
     backend_admin_rejected,
     backend_admin_response_unusable,
     backend_admin_unavailable,
+    backend_admin_upstream_status,
     backend_user_not_found,
 )
 from app.logging import get_logger
@@ -488,10 +489,32 @@ class BackendAdminClient:
                     backend_admin_response_unusable("Бэк вернул неожиданный формат ответа"),
                 )
             return data
+        # Статус источника сохраняется МАШИННО (`BackendAdminUpstreamStatus`), а не только
+        # в тексте: фоновый воркер снимка обязан отличать временный отказ (`429`/`5xx`,
+        # лечится backoff'ом) от постоянного, не разбирая формулировку сообщения.
+        # Код/статус/текст контракта прежние — интерактивные пути не меняются.
         raise self._upstream(
             self._status_reason(status_code),
-            backend_admin_unavailable(f"Ошибка бэка (HTTP {status_code})"),
+            backend_admin_upstream_status(status_code, self._retry_after(response)),
         )
+
+    @staticmethod
+    def _retry_after(response: httpx.Response) -> float | None:
+        """`Retry-After` в секундах, если бэк его отдал в числовой форме.
+
+        HTTP-date форма заголовка сознательно НЕ разбирается: она требует доверия к часам
+        источника и к его часовому поясу, а промах здесь дороже пользы — вызывающий и без
+        заголовка имеет свой exponential backoff. Отрицательное/нечисловое значение — то же
+        «заголовка нет».
+        """
+        raw = response.headers.get("Retry-After")
+        if raw is None:
+            return None
+        try:
+            seconds = float(raw.strip())
+        except ValueError:
+            return None
+        return seconds if seconds > 0 else None
 
     @staticmethod
     def _status_reason(status_code: int) -> str:

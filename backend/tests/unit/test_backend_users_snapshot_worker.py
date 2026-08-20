@@ -113,11 +113,27 @@ class _FakeSnapshotRepo:
         self._state["source"].append(values)
 
 
-def _service(state: dict[str, Any], *, revenue_batch: int = 2000) -> BackendUsersSnapshotService:
+def _service(
+    state: dict[str, Any],
+    *,
+    revenue_batch: int = 2000,
+    page_delay_sec: float = 0.0,
+    retry_attempts: int = 5,
+) -> BackendUsersSnapshotService:
+    """Воркер поверх фейковой сессии.
+
+    Троттлинг (`page_delay_sec`) по умолчанию ВЫКЛЮЧЕН: прод-дефолт 0.3 с добавлял бы
+    здесь реальные паузы на каждую карточку (тесты квоты добирают их десятками). Гейты
+    самого троттлинга включают его явно и подменяют `asyncio.sleep`.
+    """
     from app.config import get_settings
 
     settings = get_settings().model_copy(
-        update={"backend_users_snapshot_revenue_batch": revenue_batch}
+        update={
+            "backend_users_snapshot_revenue_batch": revenue_batch,
+            "backend_users_snapshot_page_delay_sec": page_delay_sec,
+            "backend_users_snapshot_retry_attempts": retry_attempts,
+        }
     )
     service = BackendUsersSnapshotService(
         sessionmaker=lambda: None,  # type: ignore[arg-type]

@@ -181,6 +181,11 @@ node_exporter ставится Ansible'ом на целевые серверы �
 | **Grace-порог** непрерывной недоступности бэка перед 🔴-алертом ([ADR-024](adr/ADR-024-monitor-hard-deadline-backend-alert-grace.md)) | `BACKEND_ALERT_AFTER_SEC` | `1800` (30 мин) |
 | **Интервал снимка «Юзеры бэков»** — период фонового воркера `BackendUsersSnapshotService` ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md)); `sleep` **после** завершения итерации, поэтому фактический период ≥ значения | `BACKEND_USERS_SNAPSHOT_INTERVAL_SEC` | `900` (15 мин) |
 | **Квота backfill экономики** на один бэк за цикл — сколько карточек `GET {P}/users/{id}` добирается ради блока «Расходы API» ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md) §5) | `BACKEND_USERS_SNAPSHOT_REVENUE_BATCH` | `2000` |
+| **Конкурентность fan-out воркера снимка** — сколько бэков обходится параллельно ([ADR-080](adr/ADR-080-backend-users-snapshot-and-api-costs.md), амендмент 2026-08-20; снижено с 5) | `BACKEND_USERS_SNAPSHOT_CONCURRENCY` | `2` |
+| **Троттлинг воркера** — пауза между страницами обхода и карточками добора; `0` выключает | `BACKEND_USERS_SNAPSHOT_PAGE_DELAY_SEC` | `0.3` (секунды) |
+| **Попыток upstream-вызова воркера** (backoff на `429`/`5xx`; `401`/`404`/`400`/`422` и транспорт **не** ретраятся) | `BACKEND_USERS_SNAPSHOT_RETRY_ATTEMPTS` | `5` |
+| **База backoff'а** (`base * 2^attempt`, затем джиттер) | `BACKEND_USERS_SNAPSHOT_RETRY_BASE_SEC` | `1.0` (секунды) |
+| **Потолок backoff'а** — им же ограничивается `Retry-After` источника (`min(retry_after, cap)`) | `BACKEND_USERS_SNAPSHOT_RETRY_CAP_SEC` | `30.0` (секунды) |
 | TTL setup-токена первого входа ([ADR-025](adr/ADR-025-passwordless-users-login-identifier-open-first-login.md)) | `PWD_SETUP_TOKEN_EXPIRES_MIN` | `10` (минут) |
 | Конкурентность исходящих PromQL (семафор) | (константа backend) | `4` |
 | `--query.max-concurrency` Prometheus | (флаг запуска) | `50` |
