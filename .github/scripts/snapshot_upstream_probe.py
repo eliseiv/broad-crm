@@ -38,7 +38,7 @@ async def main() -> None:
                     WHERE b.admin_api_key_encrypted IS NOT NULL
                       AND (s.refreshed_at IS NULL)
                     ORDER BY b.name
-                    LIMIT 8
+                    LIMIT 5
                     """
                 )
             )
@@ -52,16 +52,25 @@ async def main() -> None:
     for name, code, domain, encrypted, refreshed_at, err in rows:
         print(f"--- {name} ({code}) domain={domain} refreshed_at={refreshed_at} err={err!r}")
         key = decrypt_secret(encrypted)
+        paths = (
+            # ВАЖЕН порядок: `/products` — это probe детекции префикса (ADR-072 §4а).
+            # Если он падает, клиент не определяет префикс и вся операция валится,
+            # даже когда `/users` полностью исправен.
+            "/products",
+            "/users?limit=1&offset=0",
+            "/users?limit=100&offset=0",
+            "/stats",
+        )
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
-            for prefix in _PREFIXES:
-                url = f"{domain.rstrip('/')}{prefix}/users?limit=1&offset=0"
+            for prefix, path in [(p, q) for p in _PREFIXES for q in paths]:
+                url = f"{domain.rstrip('/')}{prefix}{path}"
                 try:
                     resp = await client.get(url, headers={"X-Admin-Key": key})
                 except Exception as exc:  # noqa: BLE001 — важен любой транспортный отказ
-                    print(f"    {prefix}/users -> TRANSPORT {type(exc).__name__}: {exc}")
+                    print(f"    {prefix}{path} -> TRANSPORT {type(exc).__name__}: {exc}")
                     continue
                 body = resp.text[:_BODY_LIMIT].replace("\n", " ")
-                print(f"    {prefix}/users -> HTTP {resp.status_code}  body={body!r}")
+                print(f"    {prefix}{path} -> HTTP {resp.status_code}  body={body[:160]!r}")
                 # Заголовки, объясняющие 429/5xx на стороне апстрима.
                 for header in ("retry-after", "x-ratelimit-remaining", "server"):
                     if header in resp.headers:
