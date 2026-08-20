@@ -75,6 +75,28 @@ async def main() -> None:
                 for header in ("retry-after", "x-ratelimit-remaining", "server"):
                     if header in resp.headers:
                         print(f"        {header}: {resp.headers[header]}")
+        # Карточка пользователя — единственный вызов цикла, не покрытый выше.
+        # Именно она нужна фазе экономики (`revenue.providers`), и её отказ после
+        # хотфикса роняет ВЕСЬ цикл бэка (транспортные ошибки перестали глотаться).
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
+            try:
+                lst = await client.get(
+                    f"{domain.rstrip('/')}/v1/admin/users?limit=1&offset=0",
+                    headers={"X-Admin-Key": key},
+                )
+                items = lst.json().get("items") or lst.json().get("users") or []
+                if items:
+                    uid = items[0].get("id")
+                    card = await client.get(
+                        f"{domain.rstrip('/')}/v1/admin/users/{uid}",
+                        headers={"X-Admin-Key": key},
+                    )
+                    body = card.text[:200].replace("\n", " ")
+                    print(f"    КАРТОЧКА /v1/admin/users/{uid} -> HTTP {card.status_code} {body!r}")
+                else:
+                    print("    КАРТОЧКА: список пуст, проверять нечего")
+            except Exception as exc:  # noqa: BLE001
+                print(f"    КАРТОЧКА -> TRANSPORT {type(exc).__name__}: {exc}")
         print()
 
 
