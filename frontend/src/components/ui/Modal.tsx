@@ -55,9 +55,15 @@ export function Modal({
             SIZE_CLASS[size],
             'rounded-card border border-border-strong bg-surface-1 p-6 shadow-card',
             'data-[state=open]:animate-content-in focus:outline-none',
+            // Высокая форма (напр. «Новый сотрудник») раньше уходила за края экрана:
+            // контент центрирован по вертикали и не имел ни предела высоты, ни
+            // прокрутки, поэтому верхние и нижние поля становились недостижимы —
+            // прокрутить было нечего. Модалка ограничена вьюпортом и раскладывается
+            // колонкой: шапка и футер закреплены, скроллится ТОЛЬКО тело.
+            'flex max-h-[calc(100dvh-2rem)] flex-col',
           )}
         >
-          <div className="mb-4 flex items-start justify-between gap-4">
+          <div className="mb-4 flex shrink-0 items-start justify-between gap-4">
             <div className="flex flex-col gap-1">
               <Dialog.Title className="text-lg font-semibold text-text-primary">
                 {title}
@@ -83,8 +89,12 @@ export function Modal({
               </Dialog.Close>
             </div>
           </div>
-          {children}
-          {footer && <div className="mt-6 flex justify-end gap-2">{footer}</div>}
+          {/* `min-h-0` обязателен: без него flex-элемент не сжимается ниже
+              content-size и `overflow-y-auto` не даёт полосы прокрутки.
+              `-mx-6 px-6` — чтобы полоса шла по краю карточки, а фокус-кольца
+              полей не срезались внутренним отступом. */}
+          <div className="-mx-6 min-h-0 flex-1 overflow-y-auto px-6">{children}</div>
+          {footer && <div className="mt-6 flex shrink-0 justify-end gap-2">{footer}</div>}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>

@@ -1,11 +1,4 @@
-import {
-  Inbox,
-  Mail,
-  Pencil,
-  Send,
-  Tag,
-  Trash2,
-} from 'lucide-react';
+import { Inbox, Mail, Pencil, Send, Tag, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/Button';
 import { cn } from '@/lib/cn';
 import type { MailTagFull } from '@/types/api';
@@ -60,7 +53,11 @@ function NavItem({
           : 'text-text-secondary hover:bg-surface-3 hover:text-text-primary',
       )}
     >
-      {icon && <span className="shrink-0" aria-hidden="true">{icon}</span>}
+      {icon && (
+        <span className="shrink-0" aria-hidden="true">
+          {icon}
+        </span>
+      )}
       <span className="min-w-0 flex-1 truncate">{label}</span>
       {badge !== undefined && badge > 0 && (
         <span className="shrink-0 rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-semibold text-accent">

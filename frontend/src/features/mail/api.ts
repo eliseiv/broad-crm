@@ -76,7 +76,17 @@ export function listMail(
   authToken?: string,
   skipAuthReset?: boolean,
 ): Promise<MailListResponse> {
-  const { before, limit = MAIL_PAGE_LIMIT, mailAccountId, teamId, noTeam, unread, folder, hasTags, tagId } = params;
+  const {
+    before,
+    limit = MAIL_PAGE_LIMIT,
+    mailAccountId,
+    teamId,
+    noTeam,
+    unread,
+    folder,
+    hasTags,
+    tagId,
+  } = params;
   const qs = new URLSearchParams();
   qs.set('limit', String(limit));
   if (before !== undefined) qs.set('before', before);
@@ -132,10 +142,9 @@ export function getMailUnreadCount(
   if (noTeam) qs.set('no_team', 'true');
   else if (teamId !== undefined) qs.set('team_id', teamId);
   const suffix = qs.toString();
-  return apiRequest<MailUnreadCountResponse>(
-    `/mail/unread-count${suffix ? `?${suffix}` : ''}`,
-    { signal },
-  );
+  return apiRequest<MailUnreadCountResponse>(`/mail/unread-count${suffix ? `?${suffix}` : ''}`, {
+    signal,
+  });
 }
 
 export interface ListMailSentParams {

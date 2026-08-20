@@ -256,7 +256,7 @@ describe('UsersPage (таблица пользователей, ADR-079 §10)', 
     expect(fallback).not.toHaveClass('rounded-chip');
   });
 
-  it('второй строкой ФИО показывает username и только если он ОТЛИЧАЕТСЯ', () => {
+  it('колонка ФИО показывает ТОЛЬКО ФИО — технического username в строке нет', () => {
     state.users = {
       items: [
         makeUser({ id: 'u1', username: 'nikita_01', last_name: 'Петров', first_name: 'Никита' }),
@@ -266,9 +266,54 @@ describe('UsersPage (таблица пользователей, ADR-079 §10)', 
 
     render(<UsersPage />, { wrapper });
 
-    expect(within(rowWith('Петров Никита')).getByText('nikita_01')).toBeInTheDocument();
-    // У строки без ФИО имя = username, дублировать его вторым рядом нельзя.
+    // Прежде под ФИО второй строкой печатался username — убрано: он дублировал
+    // значение у исторических учёток и шумел у остальных.
+    expect(screen.queryByText('nikita_01')).not.toBeInTheDocument();
+    // Строка без ФИО по-прежнему опознаётся: фолбэк-имя = username.
     expect(screen.getAllByText('Пётр')).toHaveLength(1);
+  });
+
+  it('сортировка по ФИО / Ролям / Командам переключается кликом по заголовку', async () => {
+    const user = userEvent.setup();
+    state.users = {
+      items: [
+        makeUser({
+          id: 'u1',
+          username: 'b',
+          last_name: 'Яковлев',
+          first_name: 'Яков',
+          roles: [{ id: 'r1', name: 'Админ' }],
+        }),
+        makeUser({
+          id: 'u2',
+          username: 'a',
+          last_name: 'Абрамов',
+          first_name: 'Артём',
+          roles: [{ id: 'r2', name: 'Оператор' }],
+        }),
+      ],
+    };
+
+    render(<UsersPage />, { wrapper });
+
+    const names = () =>
+      screen
+        .getAllByRole('row')
+        .slice(1)
+        .map((row) => row.querySelector('td')?.textContent);
+
+    // По умолчанию — ФИО по возрастанию.
+    expect(names()).toEqual(['Абрамов Артём', 'Яковлев Яков']);
+
+    // Повторный клик по той же колонке разворачивает направление.
+    await user.click(screen.getByRole('button', { name: /ФИО/ }));
+    expect(names()).toEqual(['Яковлев Яков', 'Абрамов Артём']);
+
+    // Смена колонки начинает с возрастания: «Админ» < «Оператор».
+    await user.click(screen.getByRole('button', { name: /Роли/ }));
+    expect(names()).toEqual(['Яковлев Яков', 'Абрамов Артём']);
+    await user.click(screen.getByRole('button', { name: /Роли/ }));
+    expect(names()).toEqual(['Абрамов Артём', 'Яковлев Яков']);
   });
 
   it('рендерит тристатус-бейдж (ADR-028): «Ожидает входа» / «Активен» / «Неактивен»', () => {

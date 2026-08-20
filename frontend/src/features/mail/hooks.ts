@@ -215,9 +215,7 @@ export interface MailSentFeedResult {
   reload: () => void;
 }
 
-function flattenSentPages(
-  pages: { messages: MailSentMessage[] }[] | undefined,
-): MailSentMessage[] {
+function flattenSentPages(pages: { messages: MailSentMessage[] }[] | undefined): MailSentMessage[] {
   const byId = new Map<string, MailSentMessage>();
   for (const page of pages ?? []) {
     for (const m of page.messages) {
@@ -311,7 +309,9 @@ export function useBatchMarkMailRead() {
     mutationFn: (messageIds) => batchMarkMailRead(messageIds),
     onSuccess: () => invalidateMailFeeds(queryClient),
     onError: (err) => {
-      toast.error(err instanceof ApiError ? err.message : 'Не удалось отметить письма прочитанными');
+      toast.error(
+        err instanceof ApiError ? err.message : 'Не удалось отметить письма прочитанными',
+      );
     },
   });
 }

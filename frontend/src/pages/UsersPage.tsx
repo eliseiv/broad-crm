@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, Plus, RefreshCw, Search, User as UserIcon } from 'lucide-react';
+import {
+  AlertTriangle,
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Plus,
+  RefreshCw,
+  Search,
+  User as UserIcon,
+} from 'lucide-react';
 import { toast } from 'sonner';
 import { AddUserModal } from '@/components/AddUserModal';
 import { Modal } from '@/components/ui/Modal';
@@ -26,6 +35,61 @@ function StatusBadge({ status }: { status: UserListItem['status'] }) {
   return <Badge tone="neutral">Неактивен</Badge>;
 }
 
+/** Колонки, по которым таблица сортируется. */
+type SortKey = 'name' | 'roles' | 'teams';
+
+/**
+ * Первое значение набора чипов (роли/команды) для сравнения — именно оно видно в
+ * колонке первым. Пустой набор → пустая строка (такие строки уезжают в конец).
+ */
+function firstName(items: ReadonlyArray<{ name: string }>): string {
+  return items.length > 0 ? items[0].name : '';
+}
+
+/**
+ * Заголовок сортируемой колонки. Кнопка внутри `th` (а не кликабельный `th`) —
+ * чтобы колонка была доступна с клавиатуры и имела корректную роль; направление
+ * сортировки дублируется в `aria-sort` для скринридера, а не только стрелкой.
+ */
+function SortableHeader({
+  label,
+  sortKey,
+  active,
+  asc,
+  onToggle,
+}: {
+  label: string;
+  sortKey: SortKey;
+  active: SortKey;
+  asc: boolean;
+  onToggle: (key: SortKey) => void;
+}) {
+  const isActive = active === sortKey;
+  return (
+    <th
+      className="px-4 py-3 font-medium"
+      aria-sort={isActive ? (asc ? 'ascending' : 'descending') : 'none'}
+    >
+      <button
+        type="button"
+        onClick={() => onToggle(sortKey)}
+        className="flex items-center gap-1 uppercase tracking-wide transition-colors hover:text-text-primary focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+      >
+        {label}
+        {isActive ? (
+          asc ? (
+            <ArrowUp className="h-3 w-3" aria-hidden="true" />
+          ) : (
+            <ArrowDown className="h-3 w-3" aria-hidden="true" />
+          )
+        ) : (
+          <ArrowUpDown className="h-3 w-3 opacity-40" aria-hidden="true" />
+        )}
+      </button>
+    </th>
+  );
+}
+
 /**
  * Страница «Пользователи» (08-design-system.md «Страница Пользователи», ADR-079 §10,
  * supersedes ADR-065). Admin-only (гейтинг — AdminRoute). Раскладка — ТАБЛИЦА
@@ -45,6 +109,10 @@ export function UsersPage() {
   const [editUser, setEditUser] = useState<UserListItem | undefined>(undefined);
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
+  // Сортировка по колонке: ФИО (по умолчанию), Роли, Команды. Направление
+  // переключается повторным кликом по той же колонке.
+  const [sortKey, setSortKey] = useState<SortKey>('name');
+  const [sortAsc, setSortAsc] = useState(true);
   // Сброс пароля необратим для пользователя (он теряет текущий пароль), поэтому
   // выполняется через подтверждение, а не по одному клику.
   const [resetTarget, setResetTarget] = useState<UserListItem | undefined>(undefined);
@@ -61,12 +129,31 @@ export function UsersPage() {
   const teams = teamsQuery.data?.items ?? [];
   const usersData = usersQuery.data?.items;
 
-  // Сортировка по ФИО-строке (ADR-079 §10): localeCompare с локалью 'ru' — кириллица
-  // по алфавиту, а не по code-unit.
-  const users = useMemo(
-    () => [...(usersData ?? [])].sort((a, b) => fullName(a).localeCompare(fullName(b), 'ru')),
-    [usersData],
-  );
+  // Сортировка (ADR-079 §10): localeCompare с локалью 'ru' — кириллица по алфавиту,
+  // а не по code-unit. Роли/команды сравниваются по ПЕРВОМУ значению чипа (то, что
+  // видит глаз в колонке); пустой набор всегда уезжает в конец независимо от
+  // направления — «Без роли»/«Без команды» не должны занимать голову списка при
+  // сортировке по возрастанию.
+  const users = useMemo(() => {
+    const sorted = [...(usersData ?? [])];
+    sorted.sort((a, b) => {
+      const direction = sortAsc ? 1 : -1;
+      if (sortKey === 'roles' || sortKey === 'teams') {
+        const left = sortKey === 'roles' ? firstName(a.roles) : firstName(a.teams);
+        const right = sortKey === 'roles' ? firstName(b.roles) : firstName(b.teams);
+        if (left === '' || right === '') {
+          if (left === right) return fullName(a).localeCompare(fullName(b), 'ru');
+          return left === '' ? 1 : -1;
+        }
+        const byValue = left.localeCompare(right, 'ru') * direction;
+        // Одинаковая роль/команда — вторичный ключ ФИО, иначе порядок «дрожал» бы
+        // между рендерами при равных значениях.
+        return byValue !== 0 ? byValue : fullName(a).localeCompare(fullName(b), 'ru');
+      }
+      return fullName(a).localeCompare(fullName(b), 'ru') * direction;
+    });
+    return sorted;
+  }, [usersData, sortKey, sortAsc]);
 
   // Клиентский поиск: ФИО + username + telegram, подстрочно, регистронезависимо.
   const visibleUsers = useMemo(() => {
@@ -86,6 +173,15 @@ export function UsersPage() {
     }),
     [users],
   );
+
+  const toggleSort = (key: SortKey) => {
+    if (key === sortKey) {
+      setSortAsc((prev) => !prev);
+      return;
+    }
+    setSortKey(key);
+    setSortAsc(true);
+  };
 
   const openAdd = () => {
     setEditUser(undefined);
@@ -183,9 +279,27 @@ export function UsersPage() {
           <table className="w-full min-w-[960px] text-left text-sm">
             <thead>
               <tr className="border-b border-border-subtle text-[12px] uppercase tracking-wide text-text-tertiary">
-                <th className="px-4 py-3 font-medium">ФИО</th>
-                <th className="px-4 py-3 font-medium">Роли</th>
-                <th className="px-4 py-3 font-medium">Команды</th>
+                <SortableHeader
+                  label="ФИО"
+                  sortKey="name"
+                  active={sortKey}
+                  asc={sortAsc}
+                  onToggle={toggleSort}
+                />
+                <SortableHeader
+                  label="Роли"
+                  sortKey="roles"
+                  active={sortKey}
+                  asc={sortAsc}
+                  onToggle={toggleSort}
+                />
+                <SortableHeader
+                  label="Команды"
+                  sortKey="teams"
+                  active={sortKey}
+                  asc={sortAsc}
+                  onToggle={toggleSort}
+                />
                 <th className="px-4 py-3 font-medium">Telegram</th>
                 <th className="px-4 py-3 font-medium">Статус</th>
                 <th className="px-4 py-3 font-medium">Бот</th>
@@ -201,16 +315,11 @@ export function UsersPage() {
                     onClick={() => openEdit(user)}
                     className="cursor-pointer border-b border-border-subtle transition-colors last:border-b-0 hover:bg-surface-2"
                   >
+                    {/* Только ФИО: технический username из строки убран — он дублировал
+                        то же значение у исторических учёток и шумел у остальных.
+                        Поиском username по-прежнему находится (`userSearchHaystack`). */}
                     <td className="px-4 py-3">
                       <span className="font-medium text-text-primary">{name}</span>
-                      {/* Второй строкой — технический username, и ТОЛЬКО если он
-                          отличается от ФИО-строки: дублировать одно значение дважды
-                          нельзя (08-design-system.md). */}
-                      {user.username !== name && (
-                        <span className="mt-0.5 block font-mono text-[12px] text-text-secondary">
-                          {user.username}
-                        </span>
-                      )}
                     </td>
                     <td className="px-4 py-3">
                       {user.roles.length > 0 ? (

@@ -120,7 +120,11 @@ export function AiKeyDetailModal({
         dismissible={!resetMutation.isPending}
         footer={
           <>
-            <Button variant="ghost" onClick={() => setResetOpen(false)} disabled={resetMutation.isPending}>
+            <Button
+              variant="ghost"
+              onClick={() => setResetOpen(false)}
+              disabled={resetMutation.isPending}
+            >
               Отмена
             </Button>
             <Button loading={resetMutation.isPending} onClick={submitReset}>

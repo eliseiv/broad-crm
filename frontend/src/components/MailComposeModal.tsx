@@ -163,11 +163,7 @@ export function MailComposeModal({ open, onOpenChange }: MailComposeModalProps) 
       dismissible={!isSubmitting}
       footer={
         <>
-          <Button
-            variant="ghost"
-            disabled={isSubmitting}
-            onClick={() => handleOpenChange(false)}
-          >
+          <Button variant="ghost" disabled={isSubmitting} onClick={() => handleOpenChange(false)}>
             Отмена
           </Button>
           <Button

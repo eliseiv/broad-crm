@@ -79,10 +79,7 @@ export function MailListItem({
             </>
           )}
           <span
-            className={cn(
-              'min-w-0 truncate text-sm text-text-primary',
-              unread && 'font-semibold',
-            )}
+            className={cn('min-w-0 truncate text-sm text-text-primary', unread && 'font-semibold')}
           >
             {sender}
           </span>
@@ -104,9 +101,7 @@ export function MailListItem({
           )}
         >
           {subject}
-          {preview && (
-            <span className="font-normal text-text-secondary"> — {preview}</span>
-          )}
+          {preview && <span className="font-normal text-text-secondary"> — {preview}</span>}
         </p>
       </button>
     </div>

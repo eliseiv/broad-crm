@@ -41,17 +41,12 @@ export function MailSentListItem({ message, isActive, onSelect }: MailSentListIt
         <span className="min-w-0 truncate text-sm font-medium text-text-primary">
           {message.to_addrs}
         </span>
-        <time
-          dateTime={message.sent_at}
-          className="shrink-0 text-[12px] text-text-tertiary"
-        >
+        <time dateTime={message.sent_at} className="shrink-0 text-[12px] text-text-tertiary">
           {mailListDate(message.sent_at)}
         </time>
       </div>
       <p className="truncate text-[13px] text-text-primary">{subject}</p>
-      {preview && (
-        <p className="truncate text-[12px] text-text-secondary">{preview}</p>
-      )}
+      {preview && <p className="truncate text-[12px] text-text-secondary">{preview}</p>}
     </button>
   );
 }

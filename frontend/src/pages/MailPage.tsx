@@ -11,11 +11,7 @@ import { MailListToolbar } from '@/components/MailListToolbar';
 import { MailNotificationsToggle } from '@/components/MailNotificationsToggle';
 import { MailSentDetail } from '@/components/MailSentDetail';
 import { MailSentListItem } from '@/components/MailSentListItem';
-import {
-  MailSidebar,
-  type MailAdminView,
-  type MailNavFolder,
-} from '@/components/MailSidebar';
+import { MailSidebar, type MailAdminView, type MailNavFolder } from '@/components/MailSidebar';
 import { TagsTab } from '@/components/TagsTab';
 import { ApiError } from '@/lib/api';
 import { cn } from '@/lib/cn';
@@ -269,9 +265,7 @@ function MailLayout() {
     });
   };
 
-  const shell = (children: React.ReactNode) => (
-    <div className={SHELL_CLASS}>{children}</div>
-  );
+  const shell = (children: React.ReactNode) => <div className={SHELL_CLASS}>{children}</div>;
 
   if (adminView === 'mailboxes') {
     return (
@@ -510,20 +504,16 @@ function MailLayout() {
                   <div className="hidden shrink-0 justify-end border-b border-border-subtle px-3 py-2 md:flex">
                     <MailNotificationsToggle />
                   </div>
-                  {isSent ? (
-                    selectedSent && (
-                      <MailSentDetail message={selectedSent} onBack={closeDetail} />
-                    )
-                  ) : (
-                    selectedInbox && (
-                      <MailDetail
-                        message={selectedInbox}
-                        onBack={closeDetail}
-                        onMarkUnread={(id) => unmarkMutation.mutate(id)}
-                        markUnreadPending={unmarkMutation.isPending}
-                      />
-                    )
-                  )}
+                  {isSent
+                    ? selectedSent && <MailSentDetail message={selectedSent} onBack={closeDetail} />
+                    : selectedInbox && (
+                        <MailDetail
+                          message={selectedInbox}
+                          onBack={closeDetail}
+                          onMarkUnread={(id) => unmarkMutation.mutate(id)}
+                          markUnreadPending={unmarkMutation.isPending}
+                        />
+                      )}
                 </div>
               )}
             </div>

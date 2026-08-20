@@ -122,15 +122,17 @@ function AddAiKeyDialog({
   const [showBillingAdminKey, setShowBillingAdminKey] = useState(false);
   const createMutation = useCreateAiKey();
 
-  const revalidateAdd = (overrides?: Partial<{
-    name: string;
-    provider: AiProvider;
-    key: string;
-    balanceMonitoring: boolean;
-    balanceUsd: string;
-    thresholdUsd: string;
-    billingAdminKey: string;
-  }>) => {
+  const revalidateAdd = (
+    overrides?: Partial<{
+      name: string;
+      provider: AiProvider;
+      key: string;
+      balanceMonitoring: boolean;
+      balanceUsd: string;
+      thresholdUsd: string;
+      billingAdminKey: string;
+    }>,
+  ) => {
     if (touched) {
       setErrors(
         validateAdd({

@@ -17,8 +17,7 @@ interface MailSentDetailProps {
  * Деталь отправленного письма (ответ из CRM, ADR-071).
  */
 export function MailSentDetail({ message, onBack }: MailSentDetailProps) {
-  const accountLabel =
-    message.mail_account.display_name || message.mail_account.email;
+  const accountLabel = message.mail_account.display_name || message.mail_account.email;
   const subject = message.subject ?? '(без темы)';
 
   return (

@@ -33,10 +33,7 @@ export function AiKeyBalanceDisplay({ aiKey, className }: AiKeyBalanceDisplayPro
 
   return (
     <div
-      className={cn(
-        'rounded-sub border border-border-subtle bg-surface-2 px-3 py-2.5',
-        className,
-      )}
+      className={cn('rounded-sub border border-border-subtle bg-surface-2 px-3 py-2.5', className)}
     >
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="text-[13px] font-medium text-text-secondary">Оценочный остаток</span>

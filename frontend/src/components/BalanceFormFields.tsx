@@ -52,8 +52,8 @@ export function BalanceFormFields({
         onChange={(e) => onEnabledChange(e.target.checked)}
       />
       <p className="text-[12px] leading-snug text-text-tertiary">
-        Укажите текущий баланс из личного кабинета провайдера. Остаток = баланс − расход по
-        Admin Cost API. После пополнения обновите баланс вручную.
+        Укажите текущий баланс из личного кабинета провайдера. Остаток = баланс − расход по Admin
+        Cost API. После пополнения обновите баланс вручную.
       </p>
       {enabled && (
         <>
