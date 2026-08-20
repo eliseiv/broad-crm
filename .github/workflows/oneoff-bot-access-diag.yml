@@ -102,6 +102,20 @@ jobs:
           GROUP BY r.name ORDER BY nodes DESC;
           SQL
 
+      - name: Probe external contour (read-only, inside backend container)
+        env:
+          SSH_HOST: ${{ secrets.SSH_HOST }}
+          SSH_USER: ${{ secrets.SSH_USER }}
+          IDENTITY: ${{ github.event.inputs.identity }}
+          TG_ID: ${{ github.event.inputs.telegram_user_id }}
+        run: |
+          set -euo pipefail
+          IDENT=$(printf '%s' "$IDENTITY" | tr '[:upper:]' '[:lower:]' | sed 's/^@//')
+          case "$TG_ID" in ''|0|*[^0-9]*) echo "telegram_user_id не задан — пропуск"; exit 0 ;; esac
+          ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" \
+            "cd /opt/crm && docker compose --env-file .env -f infra/docker-compose.yml exec -T backend python - ${TG_ID} ${IDENT}" \
+            < .github/scripts/bot_access_probe.py
+
       - name: Containers on server and bot logs
         env:
           SSH_HOST: ${{ secrets.SSH_HOST }}
