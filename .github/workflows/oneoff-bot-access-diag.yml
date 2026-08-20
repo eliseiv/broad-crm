@@ -96,6 +96,16 @@ jobs:
                  count(*) FILTER (WHERE EXISTS (SELECT 1 FROM document_node_roles d WHERE d.node_id = n.id)) AS restricted_nodes
           FROM document_nodes n;
 
+          \echo '== 9. ВСЕ пользователи CRM (telegram → роли) =='
+          SELECT u.telegram, u.first_name, u.last_name, u.is_active,
+                 string_agg(r.name, ', ' ORDER BY r.name) AS roles
+          FROM users u
+          LEFT JOIN user_roles ur ON ur.user_id = u.id
+          LEFT JOIN roles r ON r.id = ur.role_id
+          WHERE u.is_system = false
+          GROUP BY u.telegram, u.first_name, u.last_name, u.is_active
+          ORDER BY u.telegram;
+
           \echo '== 8. Раздача документов по ролям =='
           SELECT r.name AS role_name, count(dnr.node_id) AS nodes
           FROM roles r LEFT JOIN document_node_roles dnr ON dnr.role_id = r.id
