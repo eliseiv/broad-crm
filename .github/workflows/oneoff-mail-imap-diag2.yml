@@ -1,4 +1,4 @@
-# One-off READ-ONLY: деталь 422 от агрегатора + проверка mail_accounts. Удалить после.
+# One-off READ-ONLY: деталь 422 от агрегатора. Удалить после.
 name: oneoff — mail IMAP diag2
 
 on:
@@ -27,87 +27,26 @@ jobs:
           SSH_USER: ${{ secrets.SSH_USER }}
         run: |
           set -euo pipefail
-          ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" bash <<'REMOTE'
+          scp /tmp/mail_imap_probe.py "${SSH_USER}@${SSH_HOST}:/tmp/mail_imap_probe.py" 2>/dev/null || true
+          # script is committed next to workflow for scp from checkout
+          scp .github/scripts/mail_imap_probe.py "${SSH_USER}@${SSH_HOST}:/tmp/mail_imap_probe.py"
+          ssh -o BatchMode=yes "${SSH_USER}@${SSH_HOST}" bash -s <<'REMOTE'
           set -euo pipefail
           cd /opt/crm
-
-          echo '=== A. mail_accounts for icloud (schema-safe) ==='
+          echo '=== A. mail_accounts for marten/icloud ==='
           docker compose --env-file .env -f infra/docker-compose.yml exec -T postgres \
             sh -lc 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "
           SELECT id, email, number, app_name, is_active, last_sync_error, consecutive_failures, created_at
           FROM mail_accounts
           WHERE email ILIKE '\''%icloud%'\'' OR email ILIKE '\''%martenkaspar%'\''
-          ORDER BY created_at DESC
-          LIMIT 20;
-          "'
+          ORDER BY created_at DESC LIMIT 20;"'
 
-          echo '=== B. proxy access: mailboxes/test|create last 2h ==='
+          echo '=== B. proxy POST mailboxes last 2h ==='
           docker compose --env-file .env -f infra/docker-compose.yml logs --since 2h proxy 2>&1 \
             | grep -E 'POST /api/mail/mailboxes' | tail -n 40 || true
 
-          echo '=== C. probe aggregator test with INTENTIONALLY BAD password (no secrets logged) ==='
-          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend python - <<'PY'
-          import asyncio, json
-          import httpx
-          from app.config import get_settings
-
-          s = get_settings()
-          url = f"{s.mail_api_base.rstrip('/')}/api/external/mailboxes/test"
-          body = {
-              "email": "martenkasparilves01@icloud.com",
-              "password": "intentionally-wrong-app-password",
-              "imap_host": "imap.mail.me.com",
-              "imap_port": 993,
-              "imap_ssl": True,
-              "smtp_host": "smtp.mail.me.com",
-              "smtp_port": 587,
-              "smtp_ssl": False,
-              "smtp_starttls": True,
-              "smtp_username": "martenkasparilves01@icloud.com",
-          }
-
-          async def main() -> None:
-              async with httpx.AsyncClient(timeout=60.0, verify=True) as client:
-                  r = await client.post(url, json=body, headers={"X-API-Key": s.mail_api_key})
-              print("AGG_STATUS", r.status_code)
-              # тело ошибки без password; password не печатаем
-              try:
-                  payload = r.json()
-              except Exception:
-                  print("AGG_BODY_RAW", (r.text or "")[:500])
-                  return
-              err = payload.get("error") if isinstance(payload, dict) else None
-              if isinstance(err, dict):
-                  safe = {k: err.get(k) for k in ("code", "message", "details", "hint") if k in err}
-                  print("AGG_ERROR", json.dumps(safe, ensure_ascii=False)[:800])
-              else:
-                  print("AGG_JSON_KEYS", list(payload) if isinstance(payload, dict) else type(payload))
-
-          asyncio.run(main())
-          PY
-
-          echo '=== D. direct IMAP LOGIN from CRM backend with same BAD password ==='
-          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend python - <<'PY'
-          import imaplib, ssl
-          host, port = "imap.mail.me.com", 993
-          user = "martenkasparilves01@icloud.com"
-          bad = "intentionally-wrong-app-password"
-          try:
-              ctx = ssl.create_default_context()
-              M = imaplib.IMAP4_SSL(host, port, ssl_context=ctx)
-              try:
-                  M.login(user, bad)
-                  print("IMAP_LOGIN_UNEXPECTED_OK")
-              except imaplib.IMAP4.error as e:
-                  print("IMAP_LOGIN_FAIL", type(e).__name__, str(e)[:300])
-              finally:
-                  try:
-                      M.logout()
-                  except Exception:
-                      pass
-          except Exception as e:
-              print("IMAP_CONNECT_FAIL", type(e).__name__, str(e)[:300])
-          PY
-
-          echo 'DIAG2_DONE'
+          echo '=== C+D. aggregator + direct IMAP probe ==='
+          docker compose --env-file .env -f infra/docker-compose.yml cp /tmp/mail_imap_probe.py backend:/tmp/mail_imap_probe.py
+          docker compose --env-file .env -f infra/docker-compose.yml exec -T backend python /tmp/mail_imap_probe.py
+          echo DIAG2_DONE
           REMOTE
